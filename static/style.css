@@ -1,0 +1,426 @@
+/* =========================================
+   AI 聊天助手 - 样式表
+   负责所有视觉呈现，不包含任何逻辑
+   ========================================= */
+
+/* ===== 全局重置 ===== */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* ===== 页面主体 ===== */
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  background: #f0f2f5;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  margin: 0;
+}
+
+/* ===== 聊天容器 ===== */
+.chat-container {
+  width: 100%;
+  max-width: 700px;
+  height: 90vh;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ===== 聊天头部 ===== */
+.chat-header {
+  padding: 20px;
+  background: linear-gradient(135deg, #1677ff, #0958d9);
+  color: white;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.chat-header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* ===== 消息列表区域 ===== */
+.chat-messages {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scroll-behavior: smooth;
+}
+
+/* ===== 单条消息通用样式 ===== */
+.message {
+  max-width: 80%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  line-height: 1.6;
+  font-size: 15px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  animation: messageIn 0.3s ease-out;
+}
+
+/* 消息出现动画 */
+@keyframes messageIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ===== 用户消息气泡（右对齐，蓝色） ===== */
+.message.user {
+  align-self: flex-end;
+  background: #1677ff;
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+/* =========================================
+   新增：深度思考折叠面板样式
+   ========================================= */
+
+/* 折叠面板整体容器 */
+.reasoning-panel {
+  margin: 8px 0;
+  border-radius: 8px;
+  border: 1px solid #e8e8e8;
+  background: #fafbfc;
+  overflow: hidden;
+  align-self: flex-start; /* 左对齐，与 AI 消息一致 */
+  max-width: 100%;
+}
+
+/* 移除 <details> 默认三角箭头 */
+.reasoning-panel details > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f0f4f8;
+  border-bottom: 1px solid transparent;
+  transition:
+    background 0.2s,
+    border-color 0.2s;
+  user-select: none;
+}
+
+/* 兼容 WebKit 浏览器（Chrome, Safari, Edge） */
+.reasoning-panel details > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 悬停效果 */
+.reasoning-panel details > summary:hover {
+  background: #e4eaf2;
+}
+
+/* 展开状态时，summary 底部加边框 */
+.reasoning-panel details[open] > summary {
+  border-bottom-color: #e8e8e8;
+}
+
+/* 展开/收起图标旋转动画 */
+.reasoning-panel .reasoning-toggle-icon {
+  margin-left: auto;
+  font-size: 12px;
+  transition: transform 0.3s ease;
+  color: #999;
+}
+
+.reasoning-panel details[open] .reasoning-toggle-icon {
+  transform: rotate(90deg);
+}
+
+/* 思考区域标题 */
+.reasoning-panel .reasoning-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #555;
+}
+
+/* 思考图标 */
+.reasoning-panel .reasoning-icon {
+  font-size: 16px;
+}
+
+/* 内容区域 */
+.reasoning-panel .reasoning-content {
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #666;
+  background: #fff;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* 内容区域中的段落间距 */
+.reasoning-panel .reasoning-content p {
+  margin: 8px 0;
+}
+
+/* 代码块样式（思考过程中可能包含代码） */
+.reasoning-panel .reasoning-content code {
+  background: #f0f0f0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.reasoning-panel .reasoning-content pre {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+/* 暗色模式适配 */
+@media (prefers-color-scheme: dark) {
+  .reasoning-panel {
+    border-color: #333;
+    background: #1a1a2e;
+  }
+
+  .reasoning-panel details > summary {
+    background: #16213e;
+    color: #ccc;
+  }
+
+  .reasoning-panel details > summary:hover {
+    background: #1a1a3e;
+  }
+
+  .reasoning-panel .reasoning-content {
+    background: #1a1a2e;
+    color: #aaa;
+  }
+
+  .reasoning-panel details[open] > summary {
+    border-bottom-color: #333;
+  }
+}
+
+/* =========================================
+   新增：AI 响应容器（包裹思考面板 + 回答气泡）
+   ========================================= */
+.assistant-container {
+  align-self: flex-start; /* 左对齐，与 AI 消息一致 */
+  max-width: 80%; /* 与消息气泡最大宽度一致 */
+  display: flex;
+  flex-direction: column; /* 垂直排列：思考面板在上，回答在下 */
+  gap: 4px; /* 思考面板与回答之间的间距 */
+  animation: messageIn 0.3s ease-out; /* 复用消息出现动画 */
+}
+
+/* 容器内的回答气泡继承容器宽度，不再受全局 .message 的 max-width 限制 */
+.assistant-container .message.assistant {
+  max-width: 100%; /* 撑满容器宽度 */
+  align-self: flex-start; /* 保持左对齐 */
+}
+
+/* ===== AI 消息气泡（左对齐，灰色） ===== */
+.message.assistant {
+  align-self: flex-start;
+  background: #f0f2f5;
+  color: #333;
+  border-bottom-left-radius: 4px;
+}
+
+/* ===== 消息中的代码块样式 ===== */
+.message pre {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 8px 0;
+}
+
+.message code {
+  background: rgba(0, 0, 0, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.message.assistant code {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* ===== 输入区域 ===== */
+.chat-input-area {
+  padding: 16px;
+  border-top: 1px solid #eee;
+  display: flex;
+  gap: 10px;
+  background: #fafafa;
+  flex-shrink: 0;
+}
+
+/* ===== 输入框 ===== */
+.chat-input-area input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 15px;
+  outline: none;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+
+.chat-input-area input:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.1);
+}
+
+.chat-input-area input::placeholder {
+  color: #bbb;
+}
+
+/* ===== 发送按钮 ===== */
+.chat-input-area button {
+  padding: 12px 24px;
+  background: #1677ff;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+  transition:
+    background 0.2s,
+    transform 0.1s;
+  white-space: nowrap;
+}
+
+.chat-input-area button:hover {
+  background: #0958d9;
+}
+
+.chat-input-area button:active {
+  transform: scale(0.97);
+}
+
+.chat-input-area button:disabled {
+  background: #aaa;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ===== 打字中指示器 ===== */
+.typing-indicator {
+  align-self: flex-start;
+  background: #f0f2f5;
+  color: #999;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border-bottom-left-radius: 4px;
+  font-style: italic;
+}
+
+/* ===== 滚动条美化 ===== */
+.chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 3px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover {
+  background: #aaa;
+}
+
+/* ===== 响应式适配 ===== */
+@media (max-width: 768px) {
+  .chat-container {
+    height: 100vh;
+    max-width: 100%;
+    border-radius: 0;
+  }
+
+  .message {
+    max-width: 90%;
+  }
+
+  .chat-input-area {
+    padding: 12px;
+  }
+
+  .chat-input-area input {
+    font-size: 16px; /* 防止 iOS 缩放 */
+  }
+}
+
+/* ===== 暗色模式支持（可选） ===== */
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #1a1a2e;
+  }
+
+  .chat-container {
+    background: #16213e;
+  }
+
+  .chat-header {
+    background: linear-gradient(135deg, #0f3460, #533483);
+  }
+
+  .message.assistant {
+    background: #1a1a3e;
+    color: #e0e0e0;
+  }
+
+  .chat-input-area {
+    background: #0f3460;
+    border-top-color: #1a1a3e;
+  }
+
+  .chat-input-area input {
+    background: #1a1a3e;
+    border-color: #333;
+    color: #e0e0e0;
+  }
+
+  .chat-input-area input::placeholder {
+    color: #666;
+  }
+
+  .chat-messages::-webkit-scrollbar-thumb {
+    background: #444;
+  }
+}

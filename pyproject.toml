@@ -1,0 +1,31 @@
+[project]
+name = "asynciodemo"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "aiofiles>=25.1.0",
+    "anthropic>=0.120.2",
+    "dotenv>=0.9.9",
+    "fastapi>=0.139.0",
+    "openai>=2.45.0",
+    "pydantic-settings>=2.14.2",
+    "redis>=8.0.1",
+    "requests>=2.34.2",
+    "sqlalchemy>=2.0.51",
+    "tavily>=1.1.0",
+    "tiktoken>=0.13.0",
+    "uvicorn>=0.51.0",
+]
+
+[dependency-groups]
+dev = [
+    "debugpy>=1.8.21",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
