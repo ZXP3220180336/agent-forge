@@ -24,6 +24,24 @@
   - [日志：JSON 结构化 vs 文本](#日志json-结构化-vs-文本)
 - [配置参考](#配置参考)
 - [最佳实践](#最佳实践)
+- [当前进度与遗留](#当前进度与遗留)
+  - [已实现](#已实现)
+  - [遗留未定事项](#遗留未定事项)
+  - [下一步计划](#下一步计划)
+- [流式整流重试](#流式整流重试)
+  - [问题背景](#问题背景)
+  - [工业调研结论（决策依据）](#工业调研结论决策依据)
+  - [决策（用户确认）](#决策用户确认)
+  - [实现要点](#实现要点)
+  - [测试](#测试)
+  - [遗留微调（可后续评估）](#遗留微调可后续评估)
+- [配额缺口：重试/降级不计入限流申请](#配额缺口重试降级不计入限流申请)
+  - [配额缺口：问题背景](#配额缺口问题背景)
+  - [配额缺口：问题原因](#配额缺口问题原因)
+  - [配额缺口：工业调研结论（决策依据）](#配额缺口工业调研结论决策依据)
+  - [配额缺口：决策（用户确认）](#配额缺口决策用户确认)
+  - [配额缺口：实现要点](#配额缺口实现要点)
+  - [配额缺口：测试](#配额缺口测试)
 - [常见问题](#常见问题)
 
 ---
@@ -935,6 +953,81 @@ print(LLMLogger.format_for_console(record))
 ### 遗留微调（可后续评估）
 
 - **熔断观察盲区**：流式迭代失败不计入熔断窗口（现状）。若下游"create 正常但流频繁中途断开"，熔断器不感知。可后续把"放弃时的 RETRYABLE 迭代失败"喂给 `cb.record_failure()`
+
+---
+
+## 配额缺口：重试/降级不计入限流申请
+
+> 本节记录「限流申请量 vs 实际请求量」不一致的问题（2026-08-02 调研并实施）。跨模块：涉及限流（RateLimiter）与重试（RetryHandler）的配合。
+
+### 配额缺口：问题背景
+
+当前集成中，`async_generate()` / `generate()` 在**进入** `retry.execute()` 前 `acquire` 一次限流（RPM 桶 1 个 + TPM 桶 estimated_tokens 个）。放行后进入重试/熔断/降级阶段——若调用失败会重试、多次失败会降级到备用模型。**这些后续真实发出的 API 请求，都发生在限流申请之后**。
+
+用户的疑问（原文概括）：
+> 我们在限流器处设定为获取 1 个请求和固定 token，限流器放行后进入重试/熔断阶段。一次调用不成功会重试，多次重试失败后降级调用——这期间产生的 token 和向底层接口请求的次数，是不是超过了向限流器申请的量？
+
+**结论：是。** 实际请求数可能远超限流器放行的量。
+
+### 配额缺口：问题原因
+
+以默认配置（`llm_max_retries=2`，retry 循环最多 3 次 call_fn）为例：
+
+| 路径 | 是否重新 acquire | 真实请求数 |
+| --- | --- | --- |
+| 原始调用 | ✅ acquire 了 | 1 |
+| retry 内部重试（×2） | ❌ **不 acquire** | +2 |
+| fallback 降级（备用模型） | ❌ **不 acquire** | +1 |
+
+**一次 `async_generate` 最多可发 4 次真实请求，但只申请了 1 次限流**。
+
+具体影响：
+
+- **RPM 桶低估**：实际放行速率 = `rpm × (1 + 重试率 + 降级率)`。下游越不稳定，放大越严重（失败率 50% 时实际请求约是 RPM 的 2 倍）。
+- **TPM 桶低估**：重试时同样的 prompt 重新发送，token 消耗翻倍，但 TPM 桶只在第一次 acquire 扣过一次。
+- **fallback 零限流保护**：备用模型（`llm_fallback_model_id`）有自己的配额，当前 fallback 完全不 acquire，**无任何限流**。
+- **整流重试是例外**：首 token 前中断的整流每轮都重新 acquire，此路径无缺口。
+
+### 配额缺口：工业调研结论（决策依据）
+
+1. **中间件链布局决定答案**：工业界把限流器和重试做成中间件链，**限流器在重试外层**——每次真实请求（含重试）都重新穿过限流器、消耗 token（如 Go 的 `tgcp`：`"Each request consumes 1 token"`，重试也计）。这是主流做法——**重试天然计入配额**。参考：[Rethinking HTTP API Rate Limiting（IEEE/arXiv）](https://ieeexplore.ieee.org/document/11366354)、[tgcp 中间件链](https://pkg.go.dev/github.com/yogirk/tgcp@v0.4.0/internal/core)
+2. **IETF 留白**：RateLimit Header Fields 草案明确「规范不规定非 2xx 响应是否消耗配额」，留给服务端/客户端设计决策。无唯一正确答案，但工业实现主流倾向是**外层包裹**。[IETF 草案](https://datatracker.ietf.org/meeting/109/agenda/httpapi-drafts.pdf)
+3. **重要澄清**：客户端限流的第一目的是**防突发**（别瞬间打爆服务端），不是精确记账到每一分服务端配额。服务端还有第二道闸（429 + `Retry-After`），重试请求即使客户端没 acquire，服务端可能再 429 兜底。**但当重试原因是 5xx/超时（下游故障）时，重试请求会真实打到服务端并消耗 token——客户端不 acquire 就是超额**。
+4. **LLM 生态实践**：客户端 Token Bucket 限流器（如 [plsno429](https://github.com/appleparan/plsno429)）作为 **proactive** 手段在请求前限流；重试（**reactive**）走指数退避 + jitter + 尊重 `Retry-After`。两者是互补的两层，不是同一件事。参考：[OpenAI 429 官方指南](https://help.openai.com/en/articles/5955604-how-can-i-solve-429-too-many-requests-errors)
+
+### 配额缺口：决策（用户确认）
+
+**acquire 移入 call_fn，但 fallback 不参与 acquire。**
+
+- **重试计入配额**：retry.execute 内部每次重试都重新 acquire（重试=新请求，扣配额合理）。
+- **fallback 不参与 acquire**：客户端限流防的是**主模型**的突发，备用模型（降级路径）无需限流保护，且独立于主模型配额。
+
+### 配额缺口：实现要点
+
+- `_rate_limited_call` 闭包捕获 `limiter` / `estimated` / `client` / `kwargs`，在整流循环外定义（依赖变量均不随 attempt 变化）。
+- `estimated` 在循环外计算一次（messages 在一次 `async_generate` 内不变），避免每次重试重复 tiktoken 计数。
+- **整流重试**：整流循环每轮重新 `execute`，call_fn 内部再次 acquire——「新请求」语义正确。
+- **代价**：重试前会先 acquire，等待与退避叠加，延迟可能增大；但语义正确（重试=新请求，扣配额合理）。
+
+```python
+async def _rate_limited_call():
+    await limiter.acquire(estimated_tokens=estimated)   # 每次真实请求前都 acquire
+    return await client.chat.completions.create(**kwargs)
+
+response = await retry.execute(
+    call_fn=_rate_limited_call,        # 原始 + retry 内部重试都重新 acquire
+    fallback_fn=fallback_fn,           # fallback 不参与 acquire
+)
+```
+
+### 配额缺口：测试
+
+`tests/unit/test_stream_rectify.py`：
+
+- `test_rate_limiter_acquire_before_each_attempt`：整流 2 轮，每轮 call_fn 都 acquire（`calls == 2`）。
+- `test_rate_limiter_acquire_on_retry_inside_execute`：retry.execute 内部重试也 acquire（create 第 1 次抛 RETRYABLE → 重试第 2 次，`calls == 2`）。
+
+> **状态**：✅ 已实施（2026-08-02）。
 
 ---
 

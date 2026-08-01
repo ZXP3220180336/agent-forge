@@ -434,7 +434,7 @@ async def test_logging_records_rectified_attempts(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_rate_limiter_acquire_before_each_attempt(monkeypatch):
-    """限流接入：整流重试时每轮 create 前都 acquire（calls==2 次，estimated>0）。"""
+    """限流接入：整流重试时每轮 call_fn 都 acquire（calls==2 次，estimated>0）。"""
     script = [
         FakeStream([_usage_chunk(10, 0)], fail_at=1, exc=httpx.ReadError("reset")),
         FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
@@ -444,7 +444,34 @@ async def test_rate_limiter_acquire_before_each_attempt(monkeypatch):
     sr, events = await run()
 
     assert completions.calls == 2, "整流重试"
-    assert calls["acquire"] == 2, f"每轮 create 前都应 acquire，实际 {calls['acquire']} 次"
+    assert calls["acquire"] == 2, f"整流 2 轮各 acquire 一次，实际 {calls['acquire']} 次"
     assert calls["last_estimated"] > 0, "estimated_tokens 应为 messages 的 tiktoken 计数"
+    assert sr.content == "ok"
+    assert all("error" not in e for e in events), f"不应有 error: {events}"
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_acquire_on_retry_inside_execute(monkeypatch):
+    """限流接入（核心）：retry.execute 内部重试也 acquire。
+
+    create 阶段第 1 次抛 RETRYABLE 异常（httpx.ReadError）→ retry 内部重试第 2 次。
+    acquire 位于 call_fn 内，每次真实调用前都 acquire → 应调用 2 次。
+    """
+    script = [
+        httpx.ReadError("connection reset"),  # create 第 1 次：可重试 → retry 重试
+        FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
+    ]
+    _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=1)
+    # retry.execute 内部重试需要 llm_max_retries >= 1
+    monkeypatch.setattr(settings, "llm_max_retries", 1)
+    monkeypatch.setattr(settings, "llm_base_delay", 0.001)
+    monkeypatch.setattr(settings, "llm_max_delay", 0.01)
+
+    sr, events = await run()
+
+    assert completions.calls == 2, "create 应重试 1 次"
+    assert calls["acquire"] == 2, (
+        f"重试也应 acquire（每次 call_fn 调用前一次），实际 {calls['acquire']} 次"
+    )
     assert sr.content == "ok"
     assert all("error" not in e for e in events), f"不应有 error: {events}"

@@ -223,19 +223,23 @@ class RateLimiterManager:
 ```
 async_generate() / generate()
     │
-    ├─ estimated = _count_prompt_tokens(model_key, messages)   # tiktoken 实时数
+    ├─ estimated = _count_prompt_tokens(model_key, messages)   # tiktoken 实时数（循环外一次）
     ├─ limiter = RateLimiterManager.get(model_key)
-    ├─ await limiter.acquire(estimated_tokens=estimated)       # ← 限流
-    │      │  桶足 → 立即放行（0 等待）
-    │      │  桶空 → sleep 等待补充（期间事件循环放行其他任务）
-    │      └─ retry_after 存在 → 先 sleep(retry_after)
     │
-    ├─ await retry.execute(call_fn=...)                        # 重试/熔断/fallback
+    ├─ retry.execute(call_fn=_rate_limited_call)               # 重试/熔断/fallback
+    │     └─ 每次 call_fn（原始 + 重试）：
+    │           await limiter.acquire(estimated_tokens=estimated)  # ← 限流
+    │           │  桶足 → 立即放行（0 等待）
+    │           │  桶空 → sleep 等待补充（期间事件循环放行其他任务）
+    │           └─ retry_after 存在 → 先 sleep(retry_after)
+    │           await client.chat.completions.create(**kwargs)     # 真实请求
+    │     fallback（备用模型）：不 acquire，直接降级调用
+    │
     ├─ async for chunk in response:  ...                        # 流式解析
-    └─ (整流重试 → 重新回到 acquire)
+    └─ (整流重试 → 重新进入 retry.execute → 再次 acquire)
 ```
 
-**关键点**：整流重试每轮**重新 acquire**。因为每次重试都是一次新请求，应重新扣配额；测试已断言 `calls["acquire"] == 2`（整流 1 次 → acquire 2 次）。
+**关键点**：acquire 位于 call_fn 内部，**每次真实请求**（原始调用、retry 内部重试、整流重试）都重新 acquire。整流重试每轮重新进入 `retry.execute`，再次 acquire；测试已断言 `calls["acquire"] == 2`（整流 2 轮）。
 
 ---
 
@@ -251,6 +255,8 @@ async_generate() / generate()
 - **两者互补**：客户端限流减少触发服务端 429；真遇到 429，重试层兜底
 
 **注意**：acquire 的 `retry_after` 与 retry 层的 `Retry-After` 是两条独立路径——前者是调用方显式传入的等待，后者是 429 异常响应头内提取的退避。
+
+**跨模块问题**：限流与重试的配合（重试/降级是否计入限流申请）详见 [llm.md「配额缺口」章节](llm.md#配额缺口重试降级不计入限流申请)。
 
 ---
 

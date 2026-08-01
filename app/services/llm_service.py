@@ -286,6 +286,18 @@ class LLMService:
         # 提到循环外，避免循环内定义闭包引用循环变量（Pylance 警告）。
         client = ClientManager.get_client(model_key)
 
+        # 客户端限流：每次真实请求前 acquire（RPM + TPM 双桶）。
+        # estimated_tokens 用 tiktoken 实时数当前 messages（含此前各轮工具结果）。
+        # 限流只保护主模型链路：retry.execute 内部每次重试 call_fn 都重新 acquire；
+        # fallback 备用模型不参与 acquire——客户端限流防的是主模型突发，备用模型无需考虑。
+        estimated = _count_prompt_tokens(model_key, messages)
+        limiter = RateLimiterManager.get(model_key)
+
+        async def _rate_limited_call() -> Any:
+            """每次真实调用主模型前先获取限流配额，再发起请求。"""
+            await limiter.acquire(estimated_tokens=estimated)
+            return await client.chat.completions.create(**kwargs)
+
         # ----- 整流重试循环 -----
         # create 阶段由 retry.execute() 保护（重试/熔断/fallback），失败直接 raise；
         # 迭代阶段异常不受保护，需自行判断是否整流重试。
@@ -297,17 +309,12 @@ class LLMService:
         for attempt in range(stream_max_retries + 1):
             attempt_start = time.monotonic()
 
-            # ----- 阶段 1：客户端限流 + 创建流式响应（带重试 + 熔断 + fallback） -----
+            # ----- 阶段 1：创建流式响应（带重试 + 熔断 + fallback） -----
+            # call_fn 内部先 acquire 再 create：重试每次真实请求都重新扣配额；
+            # fallback 不参与 acquire（备用模型防突发无意义）。
             try:
-                # 限流：RPM + TPM 双 Token Bucket。TPM 的 estimated_tokens 用
-                # tiktoken 实时数当前 messages（含此前各轮工具结果）。
-                # 整流重试每次迭代都重新 acquire（重试=新请求），桶随之扣减。
-                estimated = _count_prompt_tokens(model_key, messages)
-                await RateLimiterManager.get(model_key).acquire(
-                    estimated_tokens=estimated
-                )
                 response = await retry.execute(
-                    call_fn=lambda: client.chat.completions.create(**kwargs),
+                    call_fn=_rate_limited_call,
                     fallback_fn=fallback_fn,
                 )
             except Exception as e:
@@ -436,14 +443,19 @@ class LLMService:
         client = ClientManager.get_client(model_key)
         start_time = time.monotonic()
 
+        # 客户端限流（RPM + TPM 双桶）：acquire 移入 call_fn，
+        # 重试每次真实请求都重新扣配额（与 async_generate 一致）。
+        estimated = _count_prompt_tokens(model_key, messages)
+        limiter = RateLimiterManager.get(model_key)
+
+        async def _rate_limited_call() -> Any:
+            """每次真实调用前先获取限流配额，再发起请求。"""
+            await limiter.acquire(estimated_tokens=estimated)
+            return await client.chat.completions.create(**kwargs)
+
         try:
-            # 客户端限流（RPM + TPM 双桶），tiktoken 实时数 prompt
-            estimated = _count_prompt_tokens(model_key, messages)
-            await RateLimiterManager.get(model_key).acquire(
-                estimated_tokens=estimated
-            )
             response = await retry.execute(
-                call_fn=lambda: client.chat.completions.create(**kwargs),
+                call_fn=_rate_limited_call,
             )
         except Exception as e:
             log_record.success = False
