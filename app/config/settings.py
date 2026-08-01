@@ -89,6 +89,7 @@ class Settings(BaseSettings):
 
     # LLM 高级配置（重试、熔断、限流）
     llm_max_retries: int = 2
+    llm_stream_max_retries: int = 1  # 流式整流重试次数（首 token 前中断才整流；0=禁用）
     llm_base_delay: float = 1.0
     llm_max_delay: float = 30.0
     llm_use_jitter: bool = True

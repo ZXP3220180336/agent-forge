@@ -775,19 +775,24 @@ LLM 层所有配置项集中在 `app/config/settings.py`：
 
 ### 高级配置
 
-| 配置项                          | 类型  | 默认值 | 说明               |
-| ------------------------------- | ----- | ------ | ------------------ |
-| `llm_max_retries`               | int   | `2`    | 最大重试次数       |
-| `llm_base_delay`                | float | `1.0`  | 退避基数（秒）     |
-| `llm_max_delay`                 | float | `30.0` | 退避上限（秒）     |
-| `llm_use_jitter`                | bool  | `True` | 是否启用随机抖动   |
-| `llm_circuit_failure_threshold` | int   | `5`    | 熔断触发阈值       |
-| `llm_circuit_recovery_timeout`  | float | `30.0` | 熔断恢复超时（秒） |
-| `llm_fallback_model_id`         | str   | `""`   | 降级备用模型       |
-| `llm_proxy_url`                 | str   | `""`   | HTTP 代理          |
-| `llm_main_rpm`                  | int   | `60`   | 主模型 RPM 限流    |
-| `llm_reasoning_rpm`             | int   | `30`   | 推理模型 RPM 限流  |
-| `llm_fast_rpm`                  | int   | `100`  | 快速模型 RPM 限流  |
+| 配置项                                 | 类型  | 默认值 | 说明                                                |
+| -------------------------------------- | ----- | ------ | --------------------------------------------------- |
+| `llm_max_retries`                      | int   | `2`    | 最大重试次数                                        |
+| `llm_stream_max_retries`               | int   | `1`    | 流式整流重试次数（首 token 前中断才整流；`0`=禁用） |
+| `llm_base_delay`                       | float | `1.0`  | 退避基数（秒）                                      |
+| `llm_max_delay`                        | float | `30.0` | 退避上限（秒）                                      |
+| `llm_use_jitter`                       | bool  | `True` | 是否启用随机抖动                                    |
+| `llm_circuit_window_seconds`           | float | `10.0` | 滑动时间窗口长度（秒）                              |
+| `llm_circuit_error_threshold`          | float | `0.5`  | 窗口内错误率熔断阈值（50%）                         |
+| `llm_circuit_request_volume_threshold` | int   | `20`   | 窗口内最小请求量，不足不做错误率评估                |
+| `llm_circuit_all_failed_min`           | int   | `3`    | 低流量纯失败保护：全部失败且达此样本量才熔断        |
+| `llm_circuit_recovery_timeout`         | float | `30.0` | 熔断恢复超时（秒）                                  |
+| `llm_circuit_half_open_max_requests`   | int   | `3`    | 半开状态最大探针数                                  |
+| `llm_fallback_model_id`                | str   | `""`   | 降级备用模型                                        |
+| `llm_proxy_url`                        | str   | `""`   | HTTP 代理                                           |
+| `llm_main_rpm`                         | int   | `60`   | 主模型 RPM 限流                                     |
+| `llm_reasoning_rpm`                    | int   | `30`   | 推理模型 RPM 限流                                   |
+| `llm_fast_rpm`                         | int   | `100`  | 快速模型 RPM 限流                                   |
 
 ---
 
@@ -870,21 +875,64 @@ print(LLMLogger.format_for_console(record))
 
 - 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / LLMLogger / RateLimiter / CostTracker + `EmbeddingService`
 - retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针失败一律回 OPEN、流式迭代保护（详见 [retry.md](retry.md)）
+- **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。详见下文「流式整流重试」小节
 
 ### 遗留未定事项
 
 | 事项                                              | 当前状态           | 说明                                                                                                            |
 | ------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------- |
 | **RateLimiter 未集成**                            | 有代码无效果       | `rate_limiter.py` 已实现（双 Token Bucket，RPM+TPM），但 `LLMService.async_generate()` / `generate()` 均未调用  |
-| **流式迭代是否自动重试**                          | 仅捕获报错         | `async_generate()` 的 `async for chunk` 已包进 try/except（失败记录日志 + 错误事件），但不自动重试流            |
-| **`APIResponseValidationError` 是否容忍网关故障** | 默认 NON_RETRYABLE | 当前重试无效；若网关偶发损坏响应，可评估改为 RETRYABLE                                                          |
+| **流式迭代是否自动重试**                          | ✅ 已决策（整流）  | 首 token 前中断整流重试（复用 `classify_error`，新增 `llm_stream_max_retries` 配置）；已产出 token 后中断不整流 |
+| **`APIResponseValidationError` 是否容忍网关故障** | 保持 NON_RETRYABLE | 决策：当前直连服务商场景下重试无效，保持现状不修改                                                              |
 | **`generate_structured` 重复实现**                | 两个入口           | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback） |
 
 ### 下一步计划
 
 1. **集成 RateLimiter 到 LLMService**：`async_generate()` / `generate()` 在调用 ClientManager 前调用 `RateLimiter.acquire()`；settings 已有 `llm_main_rpm` / `llm_reasoning_rpm` / `llm_fast_rpm`
-2. **决策遗留事项**：流式迭代是否自动重试、`APIResponseValidationError` 是否容忍网关故障
+2. **决策遗留事项**：~~流式迭代是否自动重试~~（已决策，见下）——剩余 `APIResponseValidationError` 已决策保持；`generate_structured` 统一待评估
 3. **统一结构化输出入口**：评估 `LLMService.generate_structured` 与 `StructuredOutput.extract` 的合并
+
+---
+
+## 流式整流重试
+
+> 本节记录 `async_generate()` 流式迭代整流重试的前因后果（2026-08-01 实施）。
+
+### 问题背景
+
+`retry.execute()` 只保护 `client.chat.completions.create()`（创建响应对象），真正的 `async for chunk in response:` 迭代在重试范围外。流中途断掉（读超时 / 连接重置 / 解析失败）时，旧实现只捕获报错（记日志 + 错误事件），不重试。
+
+### 工业调研结论（决策依据）
+
+- **OpenAI Python SDK**：`max_retries` 只覆盖初始 HTTP 请求，不重试 mid-stream。官方维护者明确"用户已消费部分输出，mid-stream 重试语义不清晰"
+- **LangChain `langchain-failover`**：只在主模型**产出第一个 token 前**死亡时 failover——"你永远不会得到重复的、半流输出"
+- **awaken 运行时**：4 级恢复（ContinueText / SynthesizeToolUse / TruncateBeforeTool / WholeRestart），WholeRestart（整流重试）只在无文本、无完整工具调用时用
+
+### 决策（用户确认）
+
+1. **首 token 前中断 → 整流重试**（重新 create + 重新迭代）：用户没看到任何输出，整流不会产生重复内容
+2. **已产出 token 后中断 → 不整流**：避免重复输出 / token 双倍计费 / tool_calls 残缺
+3. **新增独立配置 `llm_stream_max_retries`**（默认 1），不复用 `llm_max_retries`——create 重试（HTTP 请求级）与整流重试（已开始流式后重启）属不同故障阶段，需独立调优；设为 `0` 即禁用整流，行为退化为旧版
+4. **整流条件复用 `classify_error`**：只有 RETRYABLE / RATE_LIMITED 的迭代异常才整流；NON_RETRYABLE（4xx/校验错误/token 截断/未知）不整流——重试大概率无效，避免白打下游
+5. **create 阶段异常绝不整流**：`retry.execute` 已决定重试/熔断/fallback；400 / `CircuitBreakerOpenError` / fallback 失败走既有错误路径
+6. **cancel_event 置位永不整流**：迭代内取消检查 + 整流分支退避前后各一道守卫
+
+### 实现要点
+
+- `async_generate` 重构为显式 `for attempt in range(llm_stream_max_retries + 1)` 循环（async generator 无法用 `retry.execute` 直接包，因其 `call_fn` 返回 Awaitable 而非 AsyncGenerator）
+- **`emitted_any` 标志**：`reasoning_token` / `message_token` / `tool_call_deltas` 任一非空即置位；`finish_reason` / `usage` 不算"首 token"（纯 usage/finish 死流仍可整流）
+- **result 复用**：整流写同一 `result` 对象；`emitted_any=False` 保证 content/reasoning/tool_calls 未写，重试幂等安全。整流前清空死流的 `result.finish_reason` / `result.usage` 残留
+- **退避**：复用 `llm_base_delay` / `llm_max_delay` / `llm_use_jitter`（`_stream_backoff` 辅助，公式与 create 阶段一致），不新增退避配置
+- **日志**：每次尝试独立计时，失败走 `success=False` + error，成功清 `error=None`（整流成功 = 1 条失败 + 1 条成功日志）
+- **fallback**：仍只绑定 create 阶段（`retry.execute` 内部），流式中断不触发额外 fallback
+
+### 测试
+
+`tests/unit/test_stream_rectify.py`（11 用例）：首 token 前中断整流成功 / 已产出后不整流 / 连续中断超上限 / cancel 不整流 / create 失败不整流 / 整流尝试中 create 失败 / tool_call 增量算已产出 / 仅 usage/finish 后中断整流 / 成功路径回归 / NON_RETRYABLE 迭代异常不整流 / 日志正确性。
+
+### 遗留微调（可后续评估）
+
+- **熔断观察盲区**：流式迭代失败不计入熔断窗口（现状）。若下游"create 正常但流频繁中途断开"，熔断器不感知。可后续把"放弃时的 RETRYABLE 迭代失败"喂给 `cb.record_failure()`
 
 ---
 
