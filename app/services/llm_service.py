@@ -104,13 +104,13 @@ def _build_retry_handler() -> RetryHandler:
 
 
 def _build_fallback_fn(
+    kwargs: dict[str, Any],
     model_key: str,
-    messages: list[dict],
-    temperature: float,
-    max_tokens: int,
-    tools: list[dict] | None,
 ) -> Callable[[], Awaitable[Any]] | None:
     """构建 fallback 降级函数（仅主模型配置了备用模型时启用）。
+
+    fallback 复用主调用构建的 kwargs，仅替换 model 为备用模型——
+    避免手动逐参重复（stream_options / tools 等自动继承，不会遗漏）。
 
     fallback 是纯兜底：只在 create 阶段由 retry.execute 调用，
     流式中断的整流重试不触发额外 fallback。
@@ -119,15 +119,9 @@ def _build_fallback_fn(
         return None
 
     def fallback_fn() -> Awaitable[Any]:
-        return ClientManager.get_client(model_key).chat.completions.create(
-            model=settings.llm_fallback_model_id,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-            stream_options={"include_usage": True},
-            **(dict(tools=tools) if tools else {}),
-        )
+        fb_kwargs = dict(kwargs)
+        fb_kwargs["model"] = settings.llm_fallback_model_id
+        return ClientManager.get_client(model_key).chat.completions.create(**fb_kwargs)
 
     return fallback_fn
 
@@ -237,12 +231,13 @@ class LLMService:
 
         # 准备重试执行器 + fallback 函数 + 日志记录（辅助函数统一构建）
         retry = _build_retry_handler()
-        fallback_fn = _build_fallback_fn(
-            model_key, messages, temperature, max_tokens, tools
-        )
+        fallback_fn = _build_fallback_fn(kwargs, model_key)
         log_record = _build_log_record(
             model_key, messages, temperature, bool(tools), stream=True
         )
+        # client 由 ClientManager 连接池按 key 缓存复用，与整流 attempt 无关，
+        # 提到循环外，避免循环内定义闭包引用循环变量（Pylance 警告）。
+        client = ClientManager.get_client(model_key)
 
         # ----- 整流重试循环 -----
         # create 阶段由 retry.execute() 保护（重试/熔断/fallback），失败直接 raise；
@@ -257,7 +252,6 @@ class LLMService:
 
             # ----- 阶段 1：创建流式响应（带重试 + 熔断 + fallback） -----
             try:
-                client = ClientManager.get_client(model_key)
                 response = await retry.execute(
                     call_fn=lambda: client.chat.completions.create(**kwargs),
                     fallback_fn=fallback_fn,
