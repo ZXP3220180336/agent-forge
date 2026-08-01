@@ -19,7 +19,7 @@
 - [讨论与决策](#讨论与决策)
 - [配置项清单](#配置项清单)
 - [边界情况](#边界情况)
-- [附录：问题 1 改造设计（工业级熔断判定）](#附录问题-1-改造设计工业级熔断判定)
+- [附录：问题 1 改造记录（工业级熔断判定）](#附录问题-1-改造记录工业级熔断判定)
 
 ---
 
@@ -66,16 +66,16 @@ delay = random.uniform(0, base_delay × 2^attempt)
 参考电路断路器的概念，三种状态：
 
 ```
-CLOSED（关闭/正常）──连续失败≥阈值──→ OPEN（开启/熔断）
-    ↑                               │
-    │                               │ recovery_timeout 超时
-    │                               ▼
-    │                          HALF_OPEN（半开/探测）
-    └── 连续 N 次探针都成功 ────┘
-           任一次探针失败 ────────→ OPEN（继续熔断）
+CLOSED（关闭/正常）──窗口错误率≥阈值 或 全部失败≥样本 ──→ OPEN（开启/熔断）
+    ↑                                                    │
+    │                                                    │ recovery_timeout 超时
+    │                                                    ▼
+    │                                               HALF_OPEN（半开/探测）
+    └── 连续 N 次探针都成功 ────────────────────┘
+           任一次探针失败 ─────────────────────→ OPEN（继续熔断）
 ```
 
-- **CLOSED**：正常状态，所有请求放行
+- **CLOSED**：正常状态，所有请求放行。熔断判定基于**滑动时间窗口**内的错误率（参考 Hystrix 模型）：窗口内总请求达到最小请求量且错误率 ≥ 阈值 → 熔断；或窗口内**全部失败**且失败数 ≥ 样本下限（低流量纯失败保护）→ 熔断
 - **OPEN**：熔断状态，请求快速拒绝（有 fallback 则走纯兜底，无则抛 `CircuitBreakerOpenError`），不调用 API
 - **HALF_OPEN**：恢复探测状态，放行 `N` 个探针请求，要求**全部连续成功**才恢复，任何一个失败则回到 OPEN
 
@@ -85,6 +85,7 @@ CLOSED（关闭/正常）──连续失败≥阈值──→ OPEN（开启/熔�
 
 - **所有探针全部连续成功** → 熔断器关闭，恢复正常
 - **任何一个探针失败** → 熔断器重新开启，计时器重置，已积累的成功计数清零
+- **探针收到 429**：不计入熔断状态机——限流不代表未恢复，本次探测不改变熔断状态（保持 HALF_OPEN）
 
 每个探针都是**单次调用**（走 `_probe_attempt`，不进入重试循环）——一次探测失败若被重试放大成多次调用，会干扰对下游恢复状态的判断。
 
@@ -102,7 +103,7 @@ CLOSED（关闭/正常）──连续失败≥阈值──→ OPEN（开启/熔�
 
 Fallback 的目的是**保证服务不中断**——响应可能不是最好的模型生成的，但总比没有响应好。
 
-> **关键约束**：fallback 是**纯兜底**，其成败**完全不进入熔断状态机**（不调用 `record_success`/`record_failure`）。熔断器只观察主链路（`call_fn`）的健康：备用链路通不能证明主链路恢复，备用链路故障也不代表主链路故障。主链路的故障—恢复判定只由主链路自身给出：CLOSED 下主链路成功即清零失败计数；熔断（OPEN）后，恢复只能由半开探针验证。
+> **关键约束**：fallback 是**纯兜底**，其成败**完全不进入熔断状态机**（不调用 `record_success`/`record_failure`）。熔断器只观察主链路（`call_fn`）的健康：备用链路通不能证明主链路恢复，备用链路故障也不代表主链路故障。主链路的故障—恢复判定只由主链路自身给出：CLOSED 下主链路成功向滑动窗口追加成功记录，错误率随之自然回落；熔断（OPEN）后，恢复只能由半开探针验证。
 
 ### 羊群效应（Thundering Herd）
 
@@ -119,20 +120,20 @@ Fallback 的目的是**保证服务不中断**——响应可能不是最好的�
         ▼            ▼            ▼
    RetryConfig  CircuitBreaker  classify_error
         │            │            │
-   max_retries  failure_threshold  超时→RETRYABLE
-   base_delay   recovery_timeout   5xx→RETRYABLE
-   max_delay    half_open_max      429→RATE_LIMITED
-   use_jitter                     4xx→NON_RETRYABLE
+   max_retries  window_seconds   超时→RETRYABLE
+   base_delay   error_threshold  5xx→RETRYABLE
+   max_delay    request_volume   429→RATE_LIMITED
+   use_jitter   all_failed_min   4xx→NON_RETRYABLE
 ```
 
 ### 分层关系
 
-| 层     | 组件               | 职责                         |
-| ------ | ------------------ | ---------------------------- |
-| 配置层 | `RetryConfig`      | 重试参数（次数、退避、抖动） |
-| 保护层 | `CircuitBreaker`   | 熔断状态机（关闭/开启/半开） |
-| 判定层 | `classify_error()` | 异常分类（可重试/致命/限流） |
-| 编排层 | `RetryHandler`     | 整合上述三者的主循环         |
+| 层             | 组件                       | 职责                                 |
+| -------------- | -------------------------- | ------------------------------------ |
+| 配置层         | `RetryConfig`              | 重试参数（次数、退避、抖动）         |
+| 保护层         | `CircuitBreaker`           | 熔断状态机（关闭/开启/半开）         |
+| 判定层         | `classify_error()`         | 异常分类（可重试/致命/限流）         |
+| 编排层         | `RetryHandler`             | 整合上述三者的主循环                 |
 
 ---
 
@@ -156,27 +157,31 @@ class RetryConfig:
 ```python
 @dataclass
 class CircuitBreaker:
-    failure_threshold: int = 5               # 连续失败 N 次后熔断
+    window_seconds: float = 10.0             # 滑动时间窗口长度（秒）
+    error_threshold: float = 0.5             # 窗口内错误率熔断阈值（50%）
+    request_volume_threshold: int = 20       # 窗口内最小请求量，不足则不做错误率评估
+    all_failed_min: int = 3                  # 低流量纯失败保护：全部失败且达此样本量才熔断
     recovery_timeout: float = 30.0           # 熔断持续秒数后进入半开
     half_open_max_requests: int = 3          # 半开状态最大探针数
 ```
 
 **关键方法**：
 
-| 方法               | 触发时机   | 行为                                                                                     |
-| ------------------ | ---------- | ---------------------------------------------------------------------------------------- |
-| `allow_request()`  | 每次执行前 | CLOSED/探针→True；OPEN→False；半开耗尽→False                                            |
-| `record_success()` | 执行成功   | HALF_OPEN 下累计连续成功，达阈值才关闭；CLOSED 下重置；**OPEN 下 no-op**（见下）          |
-| `record_failure()` | 执行失败   | 返回 `bool`；累计计数达阈值→OPEN；半开失败→OPEN 并清空成功；OPEN 下 no-op（见下）       |
+| 方法                         | 触发时机             | 行为                                                                                                             |
+| ---------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `allow_request()`            | 每次执行前           | CLOSED/探针→True；OPEN→False；半开耗尽→False                                                                     |
+| `record_success()`           | 请求成功             | 窗口追加成功；HALF_OPEN 下累计连续成功，达探针阈值才关闭；**OPEN 下 no-op**（见下）                              |
+| `record_failure()`           | 请求失败             | 返回 `bool`；窗口追加失败并评估（错误率/全失败）→OPEN；半开失败→OPEN 并清空成功；OPEN 下 no-op（见下）           |
 
 **状态机细节**：
 
 - `OPEN→HALF_OPEN` 切换时，当前请求作为第一个探针（`half_open_requests=1`），所以 `half_open_max_requests=3` 时共放行 3 个探针，第 4 个拒绝
 - `HALF_OPEN` 下需要**全部探针连续成功**才关闭熔断器（`_consecutive_successes ≥ half_open_max_requests`），任何一个失败则回到 OPEN 并清空成功计数
-- CLOSED 下的 `record_success()` 仅重置计数器，不改变状态
+- CLOSED 下的 `record_success()` 向滑动窗口追加一条成功记录（`_window`），不直接改变状态——错误率随窗口滑动自然回落
 - **OPEN 下的 `record_success()` 是 no-op**（防御）：正常路径下 OPEN 不会执行 call_fn（`allow_request()` 会拒绝它），此状态收到成功只能来自外部误调用，不得据此关闭熔断器
-- `record_failure()` 返回 `True` 表示本次失败**触发了 OPEN**，调用方（RetryHandler）应立即停止剩余重试
-- **`_last_failure_time` 只在熔断器"进入 OPEN"那一刻更新**（冷却期起点）。OPEN 期间的延续失败不再改写它——否则 `allow_request()` 的 `now - _last_failure_time >= recovery_timeout` 判定被反复推迟，熔断器永远进不了 HALF_OPEN，下游已恢复也探测不到。探针失败（HALF_OPEN→OPEN）属于新一轮故障，重置冷却计时。fallback 与熔断器隔离（不调用 `record_failure`），所以 OPEN 期间的失败来源已不存在——该守卫是防御性保护
+- CLOSED 下的 `record_failure()` 向窗口追加一条失败记录并**评估**：窗口内错误率达标（且请求量达门槛）或全部失败（且达样本下限）→ OPEN。返回 `True` 表示本次失败**触发了 OPEN**
+- **请求级粒度**：一次 `execute()` 的多次重试失败只调用一次 `record_failure()`（重试耗尽后统一记录），避免单请求的重试放大窗口统计。429 / 不可恢复错误不记录
+- **`_last_failure_time` 只在熔断器"进入 OPEN"那一刻更新**（冷却期起点）。OPEN 期间的延续失败不再改写它——否则 `allow_request()` 的 `now - _last_failure_time >= recovery_timeout` 判定被反复推迟，熔断器永远进不了 HALF_OPEN，下游已恢复也探测不到。探针失败（HALF_OPEN→OPEN）属于新一轮故障，重置冷却计时。fallback 与熔断器隔离（不调用 `record_failure`），429 也不记录，所以 OPEN 期间的失败来源已不存在——该守卫是防御性保护
 
 ### RetryHandler — 重试执行器
 
@@ -193,26 +198,27 @@ class RetryHandler:
 
 - `call_fn` 和 `fallback_fn` 都是 `Callable[[], Awaitable[Any]]`——零参数的可等待函数，通过闭包捕获上下文
 - 熔断检查在**重试循环之前**：CLOSED 放行进重试循环；HALF_OPEN 走单次探针（`_probe_attempt`）；OPEN（或半开探针占满）拒绝主调用——有 fallback 则走纯兜底，无则抛 `CircuitBreakerOpenError`
-- 重试循环**仅 CLOSED 下执行**；`record_failure()` 返回 `True`（本次失败触发 OPEN）时**立即 break**，停止剩余重试
+- 重试循环**仅 CLOSED 下执行**：失败按类别处理——`NON_RETRYABLE` 直接抛出，`RATE_LIMITED` 退避重试（尊重 `Retry-After`），`RETRYABLE` 退避重试
+- **请求级熔断记录**：重试耗尽后，若本次请求**任一次尝试**出现过 `RETRYABLE` 失败（超时/5xx），统一调用一次 `cb.record_failure()`（可能触发 OPEN）；纯 429 / 不可恢复错误不记录。判定看"整个请求是否触及下游故障"，而非最后一次异常——混合 429 与超时时，只要出现过超时就计入窗口。`record_failure()` 返回 `True` 表示本次失败触发了熔断（影响后续请求放行）
 - fallback 是**纯兜底**：成功/失败都不触碰熔断器（不调用 `record_success`/`record_failure`）——熔断器只观察主链路 `call_fn` 的成败
 
 ### classify_error — 错误分类
 
 ```python
-RETRYABLE      # 超时、5xx → 重试 + 计入熔断计数
-RATE_LIMITED   # 429 → 重试 + 计入熔断计数
-NON_RETRYABLE  # 400/401/403/422 → 直接抛出，不重试
+RETRYABLE      # 超时、5xx → 重试 + 计入熔断窗口
+RATE_LIMITED   # 429 → 退避重试（尊重 Retry-After），不计入熔断窗口
+NON_RETRYABLE  # 400/401/403/422 → 直接抛出，不重试、不记录
 ```
 
 **分类规则**：
 
-| 异常 / HTTP 状态                   | 分类                  | 处理           |
-| ---------------------------------- | --------------------- | -------------- |
-| `TimeoutError` / `APITimeoutError` | RETRYABLE             | 重试           |
-| 5xx（500-599）                     | RETRYABLE             | 重试           |
-| 429 / `RateLimitError`             | RATE_LIMITED          | 重试           |
-| 400 / 401 / 403 / 422              | NON_RETRYABLE         | 直接抛出不重试 |
-| 其他异常                           | RETRYABLE（保守兜底） | 重试           |
+| 异常 / HTTP 状态                           | 分类                          | 处理                                                 |
+| ------------------------------------------ | ----------------------------- | ---------------------------------------------------- |
+| `TimeoutError` / `APITimeoutError`         | RETRYABLE                     | 重试 + 计入熔断窗口                                  |
+| 5xx（500-599）                             | RETRYABLE                     | 重试 + 计入熔断窗口                                  |
+| 429 / `RateLimitError`                     | RATE_LIMITED                  | 退避重试（尊重 Retry-After），**不计入熔断**         |
+| 400 / 401 / 403 / 422                      | NON_RETRYABLE                 | 直接抛出不重试                                       |
+| 其他异常                                   | RETRYABLE（保守兜底）         | 重试 + 计入熔断窗口                                  |
 
 ---
 
@@ -239,9 +245,11 @@ flowchart TB
         PROBE_ENTRY --> P_CALL["call_fn()"]
         P_CALL -- "✅ 成功" --> P_OK["record_success()<br>连续成功 ≥ 3 → CLOSED"]
         P_OK --> P_RET(["↩ 返回结果"])
-        P_CALL -- "❌ 非致命异常" --> P_FAIL["record_failure()<br>→ 回 OPEN，冷却重置"]
-        P_FAIL --> P_FB["fallback_fn()<br>（纯兜底）"]
-        P_CALL -- "❌ 致命异常" --> P_FB
+        P_CALL -- "❌ 致命异常" --> P_FB["fallback_fn()<br>（纯兜底）"]
+        P_CALL -- "❌ 429 限流" --> P_RL["不计入熔断<br>（保持 HALF_OPEN）"]
+        P_RL --> P_FB
+        P_CALL -- "❌ 其他异常" --> P_FAIL["record_failure()<br>→ 回 OPEN，冷却重置"]
+        P_FAIL --> P_FB
         P_FB --> P_RET
     end
 
@@ -249,110 +257,114 @@ flowchart TB
 
     LOOP -- "进入 attempt" --> CALL["call_fn()"]
 
-    CALL -- "✅ 成功" --> SUCCESS["record_success()<br>重置失败计数"]
+    CALL -- "✅ 成功" --> SUCCESS["record_success()<br>窗口追加成功"]
     SUCCESS --> RETURN(["↩ 返回结果"])
 
     CALL -- "❌ 异常" --> CLASSIFY["classify_error(e)"]
 
-    CLASSIFY -- "NON_RETRYABLE<br>(400/401/403/422)" --> THROW["raise e<br>（不重试、不记录熔断）"]
+    CLASSIFY -- "NON_RETRYABLE<br>(400/401/403/422)" --> THROW["raise e<br>（不重试、不记录）"]
     THROW --> END_FATAL(["❌ 抛出异常，流程结束"])
 
-    CLASSIFY -- "RETRYABLE / RATE_LIMITED" --> COUNT["record_failure()"]
+    CLASSIFY -- "RATE_LIMITED（429）" --> RL_DELAY["退避 delay<br>= max(指数退避, Retry-After)<br>（不计入熔断窗口）"]
 
-    subgraph CB_COUNT[熔断计数累加]
-        COUNT --> F1["_failure_count += 1"]
-        F1 --> CHECK_OPEN{"达到阈值?<br>_failure_count ≥ failure_threshold"}
-        CHECK_OPEN -- "否" --> NOT_OPEN["保持 CLOSED<br>（不改写冷却计时）"]
-        CHECK_OPEN -- "是" --> TO_OPEN["_state = OPEN<br>_last_failure_time = now<br>（冷却起点）"]
+    CLASSIFY -- "RETRYABLE<br>（超时/5xx）" --> RL_DELAY
+
+    RL_DELAY --> RL_WAIT["await asyncio.sleep(delay)"]
+    RL_WAIT --> RL_LAST{"attempt ≥ max_retries?"}
+    RL_LAST -- "否" --> LOOP
+    RL_LAST -- "是" --> REQUEST_REC["请求级统一记录<br>record_failure()<br>（仅 RETRYABLE，一次）"]
+
+    subgraph CB_EVAL[熔断评估]
+        REQUEST_REC --> EVAL["窗口追加失败并评估<br>全部失败≥样本 或 错误率≥阈值"]
+        EVAL -- "未触发" --> NOT_OPEN["保持 CLOSED<br>（不改写冷却计时）"]
+        EVAL -- "触发" --> TO_OPEN["_state = OPEN<br>_last_failure_time = now<br>（冷却起点）"]
     end
 
-    NOT_OPEN --> CHECK_LAST{"attempt ≥ max_retries?"}
-    TO_OPEN -- "熔断触发 → 立即 break<br>（停止剩余重试）" --> BREAK
-
-    CHECK_LAST -- "否（还有重试次数）" --> DELAY["计算退避 delay<br>base_delay × 2^attempt<br>（可选加抖动）"]
-    DELAY --> WAIT["await asyncio.sleep(delay)<br>⏳ 等待后继续循环"]
-    WAIT --> LOOP
-
-    CHECK_LAST -- "是（重试次数耗尽）" --> BREAK
-
-    BREAK --> FALLBACK{"fallback_fn 是否存在?"}
+    NOT_OPEN --> FALLBACK{"fallback_fn 是否存在?"}
+    TO_OPEN --> FALLBACK
 
     FALLBACK -- "否" --> RAISE_LAST["raise last_exc"]
     RAISE_LAST --> END_FAIL(["❌ 所有重试失败，抛出异常"])
 
     FALLBACK -- "是" --> FB_CALL["fallback_fn()<br>（纯兜底，不进入熔断状态机）"]
 
-    FB_CALL -- "✅ 成功" --> FB_OK["直接返回<br>（不清零熔断计数）"]
+    FB_CALL -- "✅ 成功" --> FB_OK["直接返回<br>（不清零熔断窗口）"]
     FB_OK --> FB_RET(["↩ fallback 结果"])
-    FB_CALL -- "❌ 失败" --> FB_FAIL["raise last_exc<br>（不累计熔断计数）"]
+    FB_CALL -- "❌ 失败" --> FB_FAIL["raise last_exc<br>（不累计熔断窗口）"]
     FB_FAIL --> FB_END(["❌ fallback 也失败"])
 ```
 
-### 计数器累加详解
+### 熔断器内部状态详解
 
-熔断器内部有三个核心计数器：
+熔断器内部维护三块状态（滑动窗口模型下**没有"熔断计数"概念**，改为窗口记录 + 状态变量）：
 
-| 计数器       | 字段                     | 累加时机                         | 清零时机                                     |
-| ------------ | ------------------------ | -------------------------------- | -------------------------------------------- |
-| 连续失败计数 | `_failure_count`         | 每次 `record_failure()` +1（**OPEN 下除外**：熔断期间冻结） | `record_success()` → 0        |
-| 半开探针计数 | `_half_open_requests`    | `allow_request()` 放行探针时 +1  | `record_success()` → 0；`OPEN→HALF_OPEN` → 1 |
-| 连续成功计数 | `_consecutive_successes` | 半开下每次 `record_success()` +1 | 熔断关闭时 → 0；半开中失败 → 0               |
+| 状态项                 | 字段                               | 更新时机                                                                             | 清除时机                                                |
+| ---------------------- | ---------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| 窗口请求记录           | `_window`（deque）                 | 每次请求级 `record_success()`/`record_failure()` 追加 `(ts, 成败)`；429 不计入       | 窗口滑动过期剔除；熔断关闭 → `clear()`；`reset()`       |
+| 半开探针计数           | `_half_open_requests`              | `allow_request()` 放行探针时 +1                                                      | `record_success()` → 0；`OPEN→HALF_OPEN` → 1            |
+| 连续成功计数           | `_consecutive_successes`           | 半开下每次 `record_success()` +1                                                     | 熔断关闭时 → 0；半开中失败 → 0                          |
 
 ### 场景推演：一次完整的"熔断-恢复"周期
 
-以下推演使用默认配置：`max_retries=2`、`failure_threshold=5`、`half_open_max_requests=3`。
+以下推演使用默认配置：`max_retries=2`、`window_seconds=10`、`request_volume_threshold=20`、`error_threshold=0.5`、`all_failed_min=3`、`half_open_max_requests=3`。
 
 ```
-熔断器初始状态：CLOSED, _failure_count=0
+熔断器初始状态：CLOSED, _window=[]
 
 ─────────────────────────────────────────
 请求 A（第 1 次请求）
 ─────────────────────────────────────────
   attempt=0 → call_fn() → ❌ 超时（RETRYABLE）
-    record_failure() → _failure_count=1  ← 未达阈值 5
     退避 ~1s
   attempt=1 → call_fn() → ❌ 超时
-    record_failure() → _failure_count=2
     退避 ~2s
   attempt=2 → call_fn() → ❌ 超时
-    record_failure() → _failure_count=3
-    重试耗尽 → fallback_fn → ❌ 也失败
-    ★ fallback 纯兜底：失败不记录熔断（不调用 record_failure），
-      异常自然抛出（raise last_exc）
-  raise last_exc
+    重试耗尽 → 请求级统一记录：任一次尝试是超时（RETRYABLE）→ record_failure() 一次 → _window=[(T,✗)]
+    评估：failures=1, total=1 → 全部失败但 < all_failed_min(3) → 不熔断
+  → 无 fallback → raise last_exc
 
-熔断器状态：CLOSED, _failure_count=3
+熔断器状态：CLOSED, _window=[✗]
 
 ─────────────────────────────────────────
 请求 B（第 2 次请求）
 ─────────────────────────────────────────
   attempt=0 → call_fn() → ❌ 超时
-    record_failure() → _failure_count=4  ← 未达阈值 5
     退避 ~1s
   attempt=1 → call_fn() → ❌ 超时
-    record_failure() → _failure_count=5  ← 达到阈值 5！
-    record_failure() 返回 True → _state = OPEN
-    ★ 熔断触发 → 立即 break，不再执行剩余重试
-    （修复前：会继续 attempt=2，浪费 1 次调用 + 退避等待）
+    退避 ~2s
+  attempt=2 → call_fn() → ❌ 超时
+    重试耗尽 → record_failure() → _window=[✗, ✗]
+    评估：failures=2, total=2 → 全部失败但 < 3 → 不熔断
   → 无 fallback → raise last_exc
 
-熔断器状态：OPEN, _failure_count=5, _last_failure_time=T2
+熔断器状态：CLOSED, _window=[✗, ✗]
 
 ─────────────────────────────────────────
-请求 C ~ F（第 3~6 次请求，熔断持续中）
+请求 C（第 3 次请求）
+─────────────────────────────────────────
+  重试耗尽 → record_failure() → _window=[✗, ✗, ✗]
+  评估：failures=3, total=3 → 全部失败且 ≥ all_failed_min(3) → 触发 OPEN！
+  （低流量纯失败保护：请求量不足门槛也能熔断）
+  ★ record_failure() 返回 True，熔断器切到 OPEN，_last_failure_time = T3
+  → 无 fallback → raise last_exc
+
+熔断器状态：OPEN, _last_failure_time=T3
+
+─────────────────────────────────────────
+请求 D ~ G（第 4~7 次请求，熔断持续中）
 ─────────────────────────────────────────
   每次 allow_request() → OPEN → False
   ← 全部抛出 CircuitBreakerOpenError
   ★ 不执行 call_fn，不消耗 API 配额
-  ★ 不累加 _failure_count（请求未到 record_failure 环节就被拒绝了）
+  ★ 窗口统计冻结（请求未到 record_failure 环节就被拒绝）
 
-熔断器状态：OPEN（T2 开始计时）
+熔断器状态：OPEN（T3 开始计时）
 
 ─────────────────────────────────────────
-T2 + 30s 后 → 请求 G（探针 #1）
+T3 + 30s 后 → 请求 H（探针 #1）
 ─────────────────────────────────────────
   allow_request()：
-    检测到 now - T2 ≥ recovery_timeout(30s)
+    检测到 now - T3 ≥ recovery_timeout(30s)
     → _state = HALF_OPEN
     → _half_open_requests = 1
     → 放行（探针 #1）
@@ -364,7 +376,7 @@ T2 + 30s 后 → 请求 G（探针 #1）
 熔断器状态：HALF_OPEN（还需 2 次成功）
 
 ─────────────────────────────────────────
-请求 H（探针 #2）
+请求 I（探针 #2）
 ─────────────────────────────────────────
   allow_request() → HALF_OPEN, 有空位 → 放行
 
@@ -375,23 +387,26 @@ T2 + 30s 后 → 请求 G（探针 #1）
 熔断器状态：HALF_OPEN（还需 1 次成功）
 
 ─────────────────────────────────────────
-请求 I（探针 #3）
+请求 J（探针 #3）
 ─────────────────────────────────────────
   allow_request() → HALF_OPEN, 有空位 → 放行
 
   单次调用（探针不进入重试循环）→ call_fn() → ✅ 成功！
   record_success() → _consecutive_successes=3 ≥ 3
     → _state = CLOSED
-    → _failure_count, _half_open_requests, _consecutive_successes 全部清零
+    → _window.clear()，_half_open_requests / _consecutive_successes 清零
   ↩ 返回结果
 
-熔断器已恢复：CLOSED，全部计数器=0
+熔断器已恢复：CLOSED，窗口清空
 
 ★ 如果探针 #2 或 #3 中任一个失败：
   record_failure() → _state = OPEN, _consecutive_successes = 0
   熔断器重新开启，等待下一个 recovery_timeout
   （若配置了 fallback：探针失败后调用 fallback_fn 纯兜底返回给用户，
    不触碰熔断器——熔断器只观察主链路探针的成败）
+
+★ 探针收到 429：不计入熔断状态机，保持 HALF_OPEN——
+  限流不代表下游未恢复，不能把探针打回 OPEN。
 
 ★ 探针失败后的流程（问题 4 修复）：探针走**单次调用**路径
   （`_probe_attempt`），不做重试。修复前探针失败 → OPEN 后仍继续重试，
@@ -404,102 +419,105 @@ T2 + 30s 后 → 请求 G（探针 #1）
 
 ### 关键边界说明
 
-**熔断触发后当前请求的剩余重试立即停止**（问题 2 修复）。`record_failure()` 返回 `True`（表示本次失败把熔断器切换到了 OPEN）时，重试循环立即 `break`，不再对已确认故障的下游发无用请求、也不再空等退避延迟。此前"熔断不影响当前请求已分配重试次数"的设计是错误的：那会让一个请求在熔断触发后仍继续打已确认故障的下游，浪费配额并放大失败信号。
+**熔断判定基于滑动窗口错误率 + 低流量纯失败保护**（问题 1 实施）。CLOSED 下每次请求完成后评估：窗口内总请求达门槛且错误率 ≥ 阈值 → 熔断；或窗口内**全部失败**且失败数 ≥ `all_failed_min` → 熔断。请求量不足门槛且未全部失败时保持 CLOSED（防低流量误判）。
 
-提前退出循环的情况有二：`classify_error` 返回 `NON_RETRYABLE`（直接 raise），或 `record_failure()` 返回 `True`（熔断触发）。
+**请求级粒度**：一次 `execute()` 的多次重试失败只调用一次 `record_failure()`（重试耗尽后统一记录），`record_failure()` 返回 `True` 表示本次失败把熔断器切到了 OPEN（影响后续请求放行，不再有"当前请求剩余重试"的概念）。
 
-**熔断期间熔断器计数与冷却计时保持冻结**。熔断 OPEN 时 `allow_request()` 拒绝主调用（有 fallback 则走纯兜底），`call_fn` 从未被执行，`record_failure()` 不会被正常调用；即便外部误调用，OPEN 下 `record_failure()` 也是 **no-op**（不累加 `_failure_count`、不改写 `_last_failure_time`）。所以 `_failure_count` 在熔断期间保持不变，直到 `record_success()` 将其清零。
+**429 不计入熔断**：限流只退避重试（尊重服务端 `Retry-After`），不进入窗口统计。探针收到 429 也不改变熔断状态。
 
-### 修复记录（问题 2 / 问题 4）
+**熔断期间熔断器统计与冷却计时保持冻结**。熔断 OPEN 时 `allow_request()` 拒绝主调用（有 fallback 则走纯兜底），`call_fn` 从未被执行，`record_failure()` 不会被正常调用；即便外部误调用，OPEN 下 `record_failure()` 也是 **no-op**（不追加窗口、不改写 `_last_failure_time`）。所以窗口统计在熔断期间保持不变，直到 `record_success()` 将其清空（熔断关闭）。
 
-| 问题 | 修复前 | 修复后 |
-| ---- | ------ | ------ |
-| 问题 2：熔断触发后仍继续剩余重试 | `record_failure()` 触发 OPEN 后重试循环照常跑完剩余 attempt，浪费配额、延迟放大 | `record_failure()` 返回 `bool`，触发 OPEN 时立即 `break` |
-| 问题 4a：半开探针进入重试循环 | 探针失败 → OPEN → 继续重试，把一次探测放大成多次调用，干扰恢复判断 | 半开状态走 `_probe_attempt`：单次调用，失败即确认未恢复 |
-| 问题 4b：OPEN 下 `record_success()` 误关熔断 | OPEN 下收到成功（重试泄漏 / fallback）走"重置为 CLOSED"兜底分支，熔断器被误关 | OPEN 下 `record_success()` 为 no-op |
-| 修复补充：`_last_failure_time` 被延续失败反复刷新 | 任何失败都刷新 `_last_failure_time`，OPEN 下 fallback 兜底失败把冷却期无限推迟，熔断器永远无法进入 HALF_OPEN | `_last_failure_time` 仅在熔断器进入 OPEN 时更新（冷却期起点）；OPEN 下延续失败不改写，探针失败（新一轮故障）重置 |
-| 问题 4 深化：fallback 成败不进入熔断状态机 | fallback 成功清零熔断计数（主链路持续故障永不熔断）；fallback 失败累计熔断计数；熔断 OPEN 期 fallback 被当作主链路传入单次调用路径 | fallback 纯兜底：成功直接返回、失败自然抛出，不调用 `record_success`/`record_failure`，熔断器只观察主链路 `call_fn` |
-| 审核补充：OPEN 下 `record_failure()` 未冻结计数 | OPEN 守卫在 `_failure_count += 1` **之后**，外部误调用（或防御路径）会继续累加计数、破坏"熔断期间冻结"语义，熔断消息里的"连续失败"数失真 | OPEN 守卫前置到累加之前：OPEN 下不累加 `_failure_count`、不改写 `_last_failure_time`，返回 `False` |
+### 修复记录（问题 1 / 2 / 4）
 
-对应测试：`tests/unit/test_retry.py`（10 个用例）。
+| 问题                                                      | 修复前                                                                                                                                            | 修复后                                                                                                                           |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 问题 1：计数粒度错位，熔断极易触发                        | 计数单位是单次 `call_fn()`，一次请求的多次重试被放大累计（`threshold=5, max_retries=2` 时约 2 次请求即熔断）                                      | **请求级粒度**：一次 `execute()` 只记录一次结果，避免单请求重试放大窗口统计                                                      |
+| 问题 1：无时间维度，连续失败永久累计                      | 失败计数从 CLOSED 起只增不减，5 次失败分布在 1 秒或 10 分钟同样熔断                                                                               | **滑动时间窗口**（默认 10s）：窗口内统计请求数与错误率，过期记录惰性剔除，错误率随窗口自然回落                                   |
+| 问题 1：429 混入熔断判据                                  | `RATE_LIMITED` 计入 `_failure_count`，限流期误熔断                                                                                                | **429 分离**：不计入窗口，只退避（尊重服务端 `Retry-After`）                                                                     |
+| 问题 2：熔断触发后仍继续剩余重试                          | `record_failure()` 触发 OPEN 后重试循环照常跑完剩余 attempt，浪费配额、延迟放大                                                                   | `record_failure()` 返回 `bool`，触发 OPEN 时立即 `break`                                                                         |
+| 问题 4a：半开探针进入重试循环                             | 探针失败 → OPEN → 继续重试，把一次探测放大成多次调用，干扰恢复判断                                                                                | 半开状态走 `_probe_attempt`：单次调用，失败即确认未恢复                                                                          |
+| 问题 4b：OPEN 下 `record_success()` 误关熔断              | OPEN 下收到成功（重试泄漏 / fallback）走"重置为 CLOSED"兜底分支，熔断器被误关                                                                     | OPEN 下 `record_success()` 为 no-op                                                                                              |
+| 修复补充：`_last_failure_time` 被延续失败反复刷新         | 任何失败都刷新 `_last_failure_time`，OPEN 下 fallback 兜底失败把冷却期无限推迟，熔断器永远无法进入 HALF_OPEN                                      | `_last_failure_time` 仅在熔断器进入 OPEN 时更新（冷却期起点）；OPEN 下延续失败不改写，探针失败（新一轮故障）重置                 |
+| 问题 4 深化：fallback 成败不进入熔断状态机                | fallback 成功清零熔断计数（主链路持续故障永不熔断）；fallback 失败累计熔断计数；熔断 OPEN 期 fallback 被当作主链路传入单次调用路径                | fallback 纯兜底：成功直接返回、失败自然抛出，不调用 `record_success`/`record_failure`，熔断器只观察主链路 `call_fn`              |
+| 审核补充：OPEN 下 `record_failure()` 未冻结计数           | OPEN 守卫在 `_failure_count += 1` **之后**，外部误调用（或防御路径）会继续累加计数、破坏"熔断期间冻结"语义，熔断消息里的"连续失败"数失真          | OPEN 守卫前置到累加之前：OPEN 下不追加窗口、不改写 `_last_failure_time`，返回 `False`                                            |
+
+对应测试：`tests/unit/test_retry.py`（21 个用例）。
 
 ---
 
 ## 讨论与决策
 
-### Q1: RETRYABLE 错误为什么也要计入熔断计数？
+### Q1: RETRYABLE（超时/5xx）为什么计入滑动窗口的错误率分子？
 
-之前的设计只有 `RATE_LIMITED` 才触发熔断，`RETRYABLE`（超时/5xx）不计入。这意味着 5xx 即使连续失败 100 次也不会触发熔断，流量会持续打到宕机的下游。
+**因为超时/5xx 是"下游故障"的直接证据**，熔断器存在的意义就是识别并规避这类故障。
 
-修复：**所有非致命错误都调用 `record_failure()`**。超时/5xx 和 429 共同累积熔断计数，阈值到达后统一熔断。
+若把 RETRYABLE 排除在错误率之外，窗口内只会统计成功请求，错误率恒为 0——即便下游 5xx 成片，熔断器也不会打开，流量持续打到宕机的服务。所以超时/5xx 必须计入错误率分子（作为失败），驱动错误率抬升 → 触发熔断。
 
-### Q2: Fallback 成功要重置熔断器吗？
+对比而言，**429 不计入窗口**（详见附录「429 分离」）：429 是"客户端触发自身限额"，不是下游故障证据，只退避。
 
-**不。fallback 的成败与熔断器完全无关**（问题 4 修复后）。
+> 相关：`classify_error()` 的 `RETRYABLE` 语义——「计入窗口失败 + 退避重试」；`RATE_LIMITED` 语义——「不计入窗口 + 退避重试」。
+
+### Q2: Fallback 的成功/失败要反映到滑动窗口吗？
+
+**不要。fallback 的成败完全不触碰滑动窗口**（fallback 隔离契约，问题 4 修复后）。
 
 熔断器只观察主链路（`call_fn`）的健康。fallback 是备用链路，纯兜底：
 
-- **成功**：说明备用链路可用，返回给用户即可。不清零熔断计数——否则主链路持续故障时，每次都被 fallback 救场清零计数，熔断器永远不会打开
-- **失败**：说明备用链路也不可用。不累计熔断计数、不改写冷却计时——备用链路的故障不是主链路故障的证据
+- **成功**：说明备用链路可用，返回给用户即可。不向窗口追加成功记录——否则主链路持续故障时，每次都被 fallback 救场追加成功、把错误率稀释回正常，熔断器永远不会打开
+- **失败**：说明备用链路也不可用。不向窗口追加失败记录、不改写冷却计时——备用链路的故障不是主链路故障的证据
 
-> **修复前**：fallback 成功重置熔断器（乐观恢复），失败计入熔断计数。这导致：① 主链路持续故障但熔断永不触发（计数被救场清零）；② 备用链路故障被误记到主链路熔断器；③ 熔断 OPEN 期 fallback 被当作主链路传入单次调用路径，备用链路的失败累计进主链路冷却期。
+> **修复前**：fallback 成功被当作主链路成功记入熔断（乐观恢复），失败被当作主链路失败记入。这导致：① 主链路持续故障但熔断永不触发（错误率被 fallback 救场稀释）；② 备用链路故障被误记到主链路熔断器；③ 熔断 OPEN 期 fallback 被当作主链路传入单次调用路径，备用链路的失败累计进主链路冷却期。
 
-### Q3: max_retries、failure_threshold、half_open_max_requests 三者有什么关系？一般怎么设置？
+### Q3: max_retries 与熔断参数（window / error_threshold / request_volume / half_open）有什么关系？一般怎么设置？
 
-这三个参数在故障生命周期中控制**不同阶段**：
+熔断判定已改为滑动窗口错误率模型（问题 1 实施，参考 Hystrix），各参数在故障生命周期中控制**不同阶段**：
 
 ```
 时间轴：  首次失败 → 重试 → 重试 → ... → 熔断开启 → 等待 recovery → 半开探针 → 关闭/继续熔断
-           ├──────── max_retries 控制 ────────┤
-                                              ├ failure_threshold 控制┤
-                                                                      ├ half_open_max_requests ┤
+           ├── max_retries 控制 ──┤
+                                          ├ window_seconds + error_threshold 控制 ┤
+                                                                  ├ half_open_max_requests ┤
 ```
 
 - **`max_retries`** — 单次请求的"挣扎"次数。控制一个请求在放弃前尝试几次
-- **`failure_threshold`** — 熔断器连续失败的容忍次数，计数单位是**单次 `call_fn()` 的失败**，每次 `record_failure()` 加 1
+- **`window_seconds`** — 熔断评估的时间范围。窗口内累计请求数与失败数，过期记录剔除
+- **`error_threshold`** — 窗口内错误率阈值。总请求达标时，错误率 ≥ 阈值 → 熔断
+- **`request_volume_threshold`** — 最小请求量门槛。窗口内请求数不足时不做错误率评估（防低流量误判）
+- **`all_failed_min`** — 低流量纯失败保护。窗口内**全部失败**且失败数达此值 → 熔断（即使请求量不足门槛）
 - **`half_open_max_requests`** — 恢复时的"验证"数量。控制半开状态下放行几个探针验证下游是否恢复
 
-#### 关系 1：`failure_threshold` 应 ≥ `max_retries + 1`
+#### 关系 1：`max_retries` 与熔断判定解耦（问题 1 核心改进）
 
-不然一次请求的多次重试就可能打满熔断阈值，把单次波动放大成熔断：
+修复前 `failure_threshold` 按**单次 `call_fn()` 失败**累计（一次请求的多次重试被放大成多个失败信号，`threshold=5, max_retries=2` 时约 2 次请求即熔断）。修复后**记录粒度是请求级**：一次 `execute()` 只向窗口追加一条记录（`record_success()` 或 `record_failure()`），单请求的多次重试不再放大错误率。所以 `max_retries` 与熔断判定**互不影响**——重试次数再多，也只贡献一条窗口记录。
 
-```python
-# 反例：
-max_retries = 3       # 1 次请求最多重试 3 次
-failure_threshold = 2 # 连续 2 次失败就熔断
+#### 关系 2：`window_seconds + error_threshold` 决定熔断灵敏度
 
-# 场景：API 短暂超时
-# 请求 A（3 次重试全部超时）→ 失败计数 +4 → 阈值 2 → 熔断！
-# 其他正常请求被熔断拒绝
-```
+- 窗口越短、错误率阈值越低 → 对故障越敏感，但也越容易受偶发抖动影响
+- 窗口越长 → 统计越平滑，但对持续故障的反应越慢
+- 默认 `10s + 50%` 是工业常用起点：半数是请求失败的窗口即熔断
 
-如果一次请求的重试次数 ≥ 熔断阈值，**一次临时抖动就能把电路打爆**。当前默认值 `max_retries=2, threshold=5` 比较安全（3 次尝试 vs 5 次阈值）。
+#### 关系 3：`request_volume_threshold` 与 `all_failed_min` 是防误判的互补机制
 
-#### 关系 2：`half_open_max_requests` 决定恢复速度 vs 稳定性的权衡
+- **高流量**下主要靠 `request_volume_threshold` + `error_threshold`：请求量充足时按错误率判断
+- **低流量**下 `request_volume_threshold` 永远达不到 → 靠 `all_failed_min`：全部失败且达最小样本量即熔断，避免"连续失败却永不熔断"
+- 两者互补：一个防高流量误判，一个防低流量漏判
+
+#### 关系 4：`half_open_max_requests` 决定恢复速度 vs 稳定性的权衡
 
 - **太小（1）**：一个探针成功就恢复，但如果探针刚好走运（网络抖动），恢复后立刻被正常请求打爆 → 频繁开关
 - **太大（10）**：半开期放行大量探针，如果下游仍故障，这些探针都白费 → 恢复慢 + Token 浪费
-
-一般 3~5 之间，和熔断阈值配合：**阈值大（保守）→ 半开探针可以多一些**，因为阈值已过滤了偶然波动，恢复时要更确信下游已恢复。
-
-#### 关系 3：`max_retries + failure_threshold` → 熔断的真实灵敏度
-
-真正决定"多久熔断"的是——`failure_threshold` 计数的是**单次 `call_fn()` 的失败**，而一个 `execute()` 会多次调用 `call_fn()`：
-
-- `threshold=5, max_retries=2` → 5 次 `call_fn()` 失败后熔断。一次 `execute()` 最多执行 3 次 `call_fn()`（attempt 0 + 2 次重试），所以约 **2 次请求**就能触达阈值
-- `threshold=5, max_retries=0` → 5 次请求（无重试）后熔断
-- `threshold=3, max_retries=1` → 3 次 `call_fn()` 失败后熔断，约 **2 次请求**触达阈值
+- 一般 3~5 之间。熔断越保守（错误率阈值高）→ 半开探针可多一些，恢复时更确信下游已恢复
 
 #### 典型组合策略
 
-| 场景                 | max_retries | failure_threshold | half_open | 理由                                                 |
-| -------------------- | ----------- | ----------------- | --------- | ---------------------------------------------------- |
-| **默认保守**         | 2           | 5                 | 3         | 约 2 次请求（5 次 call_fn 失败）后熔断，容忍偶发波动 |
-| **高可用/敏感**      | 1           | 3                 | 2         | 约 2 次请求（3 次 call_fn 失败）后快速熔断           |
-| **深度容错**         | 3           | 10                | 5         | 约 3~4 次请求后才熔断，API 不稳定时尽可能多试        |
-| **不熔断（纯重试）** | 2           | 999               | 3         | 开大阈值等于禁用熔断，只做重试不保护                 |
+| 场景                   | max_retries   | window_seconds   | error_threshold   | request_volume   | all_failed_min   | half_open   | 理由                                                         |
+| ---------------------- | ------------- | ---------------- | ----------------- | ---------------- | ---------------- | ----------- | ------------------------------------------------------------ |
+| **默认保守**           | 2             | 10               | 0.5               | 20               | 3                | 3           | 高流量按错误率 50% 熔断，低流量全部失败 3 次即熔断           |
+| **高可用/敏感**        | 1             | 5                | 0.3               | 10               | 3                | 2           | 窗口短、阈值低 → 快速熔断                                    |
+| **深度容错**           | 3             | 20               | 0.7               | 30               | 5                | 5           | 窗口长、阈值高 → 尽可能多试，大面积故障才熔断                |
+| **不熔断（纯重试）**   | 2             | 10               | 0.99              | 1000             | 999              | 3           | 阈值开到不可能触发，等于禁用熔断，只做重试不保护             |
 
-当前默认值走的是**保守路线**——平衡了偶发波动和大面积故障。如果要更紧一点，把 `threshold` 降到 3 比把 `max_retries` 降到 0 更合理（保留重试的恢复能力，只缩短熔断触发的窗口期）。
+当前默认值走的是**保守路线**——平衡了偶发波动和大面积故障。要更敏感就把 `window` 缩短 / `error_threshold` 降低 / `all_failed_min` 调小；要更宽松则反之。
 
 ### Q4: 为什么 `RetryConfig` 和 `CircuitBreaker` 的默认值不从代码硬编码而是从 settings 读取？
 
@@ -517,105 +535,115 @@ failure_threshold = 2 # 连续 2 次失败就熔断
 
 所有配置项集中在 `app/config/settings.py`，通过 `.env` 覆盖：
 
-| 配置项                               | 默认值 | 说明                         | 关联组件                                |
-| ------------------------------------ | ------ | ---------------------------- | --------------------------------------- |
-| `LLM_MAX_RETRIES`                    | `2`    | 最大重试次数                 | `RetryConfig.max_retries`               |
-| `LLM_BASE_DELAY`                     | `1.0`  | 退避基数（秒）               | `RetryConfig.base_delay`                |
-| `LLM_MAX_DELAY`                      | `30.0` | 退避上限（秒）               | `RetryConfig.max_delay`                 |
-| `LLM_USE_JITTER`                     | `True` | 是否启用随机抖动             | `RetryConfig.use_jitter`                |
-| `LLM_CIRCUIT_FAILURE_THRESHOLD`      | `5`    | 连续失败熔断阈值             | `CircuitBreaker.failure_threshold`      |
-| `LLM_CIRCUIT_RECOVERY_TIMEOUT`       | `30.0` | 熔断恢复到半开的时间（秒）   | `CircuitBreaker.recovery_timeout`       |
-| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | `3`    | 半开状态最大探针数           | `CircuitBreaker.half_open_max_requests` |
-| `LLM_FALLBACK_MODEL_ID`              | `""`   | 降级备用模型 ID（空=不启用） | `RetryHandler.fallback_fn`              |
+| 配置项                                       | 默认值         | 说明                                           | 关联组件                                        |
+| -------------------------------------------- | -------------- | ---------------------------------------------- | ----------------------------------------------- |
+| `LLM_MAX_RETRIES`                            | `2`            | 最大重试次数                                   | `RetryConfig.max_retries`                       |
+| `LLM_BASE_DELAY`                             | `1.0`          | 退避基数（秒）                                 | `RetryConfig.base_delay`                        |
+| `LLM_MAX_DELAY`                              | `30.0`         | 退避上限（秒）                                 | `RetryConfig.max_delay`                         |
+| `LLM_USE_JITTER`                             | `True`         | 是否启用随机抖动                               | `RetryConfig.use_jitter`                        |
+| `LLM_CIRCUIT_WINDOW_SECONDS`                 | `10.0`         | 滑动时间窗口长度（秒）                         | `CircuitBreaker.window_seconds`                 |
+| `LLM_CIRCUIT_ERROR_THRESHOLD`                | `0.5`          | 窗口内错误率熔断阈值（50%）                    | `CircuitBreaker.error_threshold`                |
+| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD`       | `20`           | 窗口内最小请求量，不足则不做错误率评估         | `CircuitBreaker.request_volume_threshold`       |
+| `LLM_CIRCUIT_ALL_FAILED_MIN`                 | `3`            | 低流量纯失败保护：全部失败且达此样本量才熔断   | `CircuitBreaker.all_failed_min`                 |
+| `LLM_CIRCUIT_RECOVERY_TIMEOUT`               | `30.0`         | 熔断恢复到半开的时间（秒）                     | `CircuitBreaker.recovery_timeout`               |
+| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS`         | `3`            | 半开状态最大探针数                             | `CircuitBreaker.half_open_max_requests`         |
+| `LLM_FALLBACK_MODEL_ID`                      | `""`           | 降级备用模型 ID（空=不启用）                   | `RetryHandler.fallback_fn`                      |
 
 ---
 
 ## 边界情况
 
 1. **熔断 OPEN 时的请求**：不执行 `call_fn`。有 `fallback_fn` 时走纯兜底（单次、不重试、不触碰熔断器），保证服务不中断；无 fallback 时抛 `CircuitBreakerOpenError`，调用方应捕获并返回降级响应或错误消息
-2. **熔断触发后当前请求的剩余重试立即停止**：`record_failure()` 返回 `True`（本次失败把熔断器切到 OPEN）时重试循环立即 `break`，不再对已确认故障的下游发无用请求
+2. **请求级熔断记录**：一次 `execute()` 的多次重试失败只调用一次 `record_failure()`（重试耗尽后统一记录），返回 `True` 表示本次失败把熔断器切到 OPEN（影响后续请求放行）。429 / 不可恢复错误不记录
 3. **半开探针耗尽**：拒绝主调用（有 fallback 走纯兜底）但不改变熔断状态，直到现有探针完成（成功或失败）
 4. **fallback 也失败**：抛出最后异常（可能是 fallback 的异常或主模型的异常，取决于哪个是 last_exc）；fallback 的成败不进入熔断状态机
-5. **OPEN 下防御性 no-op**：`record_success()`/`record_failure()` 在 OPEN 下均不修改任何状态（成功不得关闭熔断器，失败不得累计计数、不得改写冷却计时）
-6. **并发熔断状态竞争**：`CircuitBreaker` 不是线程安全的，但 `RetryHandler` 在 asyncio 单线程事件循环中运行，无并发问题
-7. **`max_retries=0`**：不重试，但熔断器仍然生效。首次失败后 `record_failure()` 被调用，计数器累积
+5. **429 不计入熔断**：限流只退避重试（尊重服务端 `Retry-After`），不进入窗口统计。探针收到 429 也不改变熔断状态（保持 HALF_OPEN）
+6. **OPEN 下防御性 no-op**：`record_success()`/`record_failure()` 在 OPEN 下均不修改任何状态（成功不得关闭熔断器，失败不得追加窗口、不得改写冷却计时）
+7. **并发熔断状态竞争**：`CircuitBreaker` 不是线程安全的，但 `RetryHandler` 在 asyncio 单线程事件循环中运行，无并发问题
+8. **`max_retries=0`**：不重试，但熔断器仍然生效。首次失败后 `record_failure()` 被调用（请求级 1 次），窗口累积
 
 ---
 
-## 附录：问题 1 改造设计（工业级熔断判定）
+## 附录：问题 1 改造记录（工业级熔断判定）
 
-> **状态：待审查**。本附录是问题 1 的**设计提案**，尚未实现。用户审查确认后按此实施，并同步更新上方正文（方法表 / 流程图 / 场景推演 / 配置项）。
+> **状态：已实施（2026-08-01）**。本附录记录问题 1 的改造背景、方案与决策结论，上方正文（方法表 / 流程图 / 场景推演 / 配置项）已同步到新模型。
 
 ### 背景与现状问题
 
-当前熔断判据是 `_failure_count ≥ failure_threshold`（[retry.py:100](app/services/llm/retry.py#L100)），即**连续失败次数**。问题有三：
+改造前熔断判据是 `_failure_count ≥ failure_threshold`，即**连续失败次数**。问题有三：
 
-| #     | 问题                                                                                                  | 后果                                                                                                                 |
-| ----- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| 1     | **计数粒度错位**：计数单位是单次 `call_fn()`，而一次 `execute()` 会多次调用 `call_fn()`（重试循环）   | 一次请求的多次重试失败被当作多次独立失败累计，**熔断极易触发**（`threshold=5, max_retries=2` 时约 2 次请求即熔断）   |
-| 2     | **无时间维度**：失败计数从 CLOSED 起只增不减，无窗口约束                                              | 5 次失败分布在 1 秒或 10 分钟同样触发熔断——低流量下误熔断，高流量下反应过慢                                          |
-| 3     | **429 混入熔断判据**：`RATE_LIMITED` 也计入 `_failure_count`                                          | 429 是"客户触发自身限流"，不是"下游故障"证据，限流期误熔断                                                           |
+| #             | 问题                                                                                                          | 后果                                                                                                                         |
+| ------------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1             | **计数粒度错位**：计数单位是单次 `call_fn()`，而一次 `execute()` 会多次调用 `call_fn()`（重试循环）           | 一次请求的多次重试失败被当作多次独立失败累计，**熔断极易触发**（`threshold=5, max_retries=2` 时约 2 次请求即熔断）           |
+| 2             | **无时间维度**：失败计数从 CLOSED 起只增不减，无窗口约束                                                      | 5 次失败分布在 1 秒或 10 分钟同样触发熔断——低流量下误熔断，高流量下反应过慢                                                  |
+| 3             | **429 混入熔断判据**：`RATE_LIMITED` 也计入 `_failure_count`                                                  | 429 是"客户触发自身限流"，不是"下游故障"证据，限流期误熔断                                                                   |
 
 ### 工业级参考：Hystrix 熔断模型
 
-| 维度       | 当前实现           | Hystrix 工业标准                                                                               |
-| ---------- | ------------------ | ---------------------------------------------------------------------------------------------- |
-| 判据       | 连续失败计数       | **错误率**（失败 / 窗口内总请求 ≥ 阈值，默认 50%）                                             |
-| 时间       | 无窗口             | **滑动时间窗口**（默认 10s）                                                                   |
-| 防误触发   | 无                 | **最小请求量门槛**（`requestVolumeThreshold`，默认 20/窗口）——窗口内请求量不足则不做熔断评估   |
-| 计数粒度   | 单次 `call_fn()`   | 单次命令执行（请求粒度）                                                                       |
-| 429        | 计入熔断           | 单独处理（只退避，不计入错误率）                                                               |
+| 维度               | 当前实现                   | Hystrix 工业标准                                                                                       |
+| ------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| 判据               | 连续失败计数               | **错误率**（失败 / 窗口内总请求 ≥ 阈值，默认 50%）                                                     |
+| 时间               | 无窗口                     | **滑动时间窗口**（默认 10s）                                                                           |
+| 防误触发           | 无                         | **最小请求量门槛**（`requestVolumeThreshold`，默认 20/窗口）——窗口内请求量不足则不做熔断评估           |
+| 计数粒度           | 单次 `call_fn()`           | 单次命令执行（请求粒度）                                                                               |
+| 429                | 计入熔断                   | 单独处理（只退避，不计入错误率）                                                                       |
 
-### 改造方案
+### 改造方案（已实施）
 
-#### 1. 计数粒度：请求粒度（execute）替代 call_fn 粒度
+#### 1. 记录粒度：请求粒度（execute）替代 call_fn 粒度 ✅
 
-- 每个 `execute()` 只向熔断器汇报**一次**结果（成功 / 失败 / 忽略），由 `RetryHandler` 汇总重试结果后统一汇报，而非每次 `call_fn()` 失败都调 `record_failure()`
-- 避免单次请求的多次重试放大熔断计数
+- 每个 `execute()` 只向窗口汇报**一条**结果：成功在循环内 `record_success()`；失败在重试耗尽后**统一 `record_failure()` 一次**；429 / 不可恢复错误不记录
+- 避免单次请求的多次重试放大窗口失败记录（同一请求内重试再多次，也只贡献一条记录）
 
-#### 2. 滑动时间窗口：替换"从 CLOSED 起的永久计数"
+#### 2. 滑动时间窗口：替换"从 CLOSED 起的永久计数" ✅
 
 - 窗口统计 `[now - window, now]` 内的请求总数与失败数，窗口滑动（旧记录过期即弃）
-- 实现：环形缓冲区 / 双指针队列记录 `(timestamp, success/failure)`，O(1) 追加，惰性清理过期条目
+- 实现：`collections.deque` 记录 `(timestamp, is_success)`，O(1) 追加，`_prune_window()` 惰性清理过期条目
 - **本请求完成后更新统计**：窗口统计当前请求的成败，作为**后续请求**是否放行的依据
 
-#### 3. 熔断判定：错误率 + 最小请求量门槛
+#### 3. 熔断判定：错误率 + 最小请求量门槛 + 低流量纯失败保护 ✅
 
 ```
 CLOSED 下每次请求完成后：
-    滑动窗口更新（总请求 +1，成败各归其位）
-    if 窗口内总请求 ≥ request_volume_threshold      # 最小请求量，防低流量误判
-       and 窗口内错误率 ≥ error_threshold:           # 默认 50%
+    if 窗口内全部失败 and 失败数 ≥ all_failed_min:   # 低流量纯失败保护
+        → OPEN
+    elif 窗口内总请求 ≥ request_volume_threshold      # 最小请求量，防低流量误判
+         and 窗口内错误率 ≥ error_threshold:           # 默认 50%
         → OPEN
 ```
 
-#### 4. 429 分离：只退避，不参与熔断评估
+- **主判据**：窗口内总请求达门槛（默认 20）且错误率达阈值（默认 50%）→ 熔断
+- **低流量纯失败保护**（决策点 3 采纳）：请求量不足门槛时，若窗口内**全部失败**且失败数 ≥ `all_failed_min`（默认 3）→ 也熔断。避免低流量下"连续失败却永不熔断"——主判据的门槛在低流量时永远无法满足
 
-- 429 失败**不计入错误率分母或分子**，也不计入总请求量
-- 429 失败触发**退避重试**（尊重 `Retry-After`），与"下游故障"的 5xx / 超时路径彻底分离
+#### 4. 429 分离：只退避，不参与熔断评估 ✅
 
-### 新配置项（拟）
+- 429 失败**不计入错误率分母或分子**，也不计入总请求量（`record_failure()` 前排除，探针下也不记录）
+- 429 失败触发**退避重试**（尊重服务端 `Retry-After`，`_extract_retry_after` + `max(delay, retry_after)`），与"下游故障"的 5xx / 超时路径彻底分离
 
-| 配置项（settings）                       | 默认值   | 说明                                       |
-| ---------------------------------------- | -------- | ------------------------------------------ |
-| `LLM_CIRCUIT_WINDOW_SECONDS`             | `10.0`   | 滑动时间窗口长度（秒）                     |
-| `LLM_CIRCUIT_ERROR_THRESHOLD`            | `0.5`    | 窗口内错误率熔断阈值（50%）                |
-| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD`   | `20`     | 窗口内最小请求量，不足则不做熔断评估       |
+### 新配置项（已实施）
 
-原 `LLM_CIRCUIT_FAILURE_THRESHOLD`（连续失败计数）将被上述配置替代。
+| 配置项（settings）                               | 默认值           | 说明                                                  |
+| ------------------------------------------------ | ---------------- | ----------------------------------------------------- |
+| `LLM_CIRCUIT_WINDOW_SECONDS`                     | `10.0`           | 滑动时间窗口长度（秒）                                |
+| `LLM_CIRCUIT_ERROR_THRESHOLD`                    | `0.5`            | 窗口内错误率熔断阈值（50%）                           |
+| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD`           | `20`             | 窗口内最小请求量，不足则不做错误率评估                |
+| `LLM_CIRCUIT_ALL_FAILED_MIN`                     | `3`              | 低流量纯失败保护：全部失败且达此样本量才熔断          |
+
+原 `LLM_CIRCUIT_FAILURE_THRESHOLD`（连续失败计数）**已移除**（决策点 1）。
 
 ### 行为对比（示意）
 
 ```
 熔断器状态：CLOSED
 
-请求 A（窗口内第 1~5 次）→ 5 次失败，但窗口内总请求 < 20 → 不熔断（防低流量误判）
+请求 A（窗口内第 1~3 次）→ 3 次失败，全部失败且 ≥ all_failed_min(3) → 熔断
+                         （低流量纯失败保护；修复前需满 5 次才熔断）
 请求 B（窗口内第 20~25 次）→ 20 次请求中 15 次失败 → 错误率 75% ≥ 50% → 熔断
 请求 C（窗口内 429 增多）→ 429 不计入错误率 → 不熔断，仅退避重试
 ```
 
-### 待确认决策点
+### 决策结论（用户 2026-08-01 确认）
 
-1. **保留还是移除 `failure_threshold`**：提案为用错误率 + 窗口完全替代；若希望保留"连续失败"语义作为辅助判据（双判据），需确认
-2. **429 的退避**：当前 `_calculate_delay` 无 `Retry-After` 感知；是否本次一并支持（尊重服务端退避时间）
-3. **窗口内"请求量不足"时的默认行为**：提案为不评估（保持 CLOSED）；备选为「窗口内总请求足够但失败全部」时仍熔断（低流量下的纯失败保护）
+1. **移除 `failure_threshold`**：由滑动窗口错误率 + 低流量纯失败保护完全替代
+2. **429 退避尊重服务端时间**：`Retry-After` 感知已实现
+3. **低流量纯失败保护**：窗口内全部失败且失败数 ≥ `all_failed_min`（默认 3）时熔断

@@ -1,11 +1,16 @@
 """
 RetryHandler / CircuitBreaker 单元测试
 
-覆盖问题 2/4 的回归防护：
-    问题 2：熔断触发（record_failure 返回 True）后，剩余重试应立即停止，
-            不再对已确认故障的下游发无用请求。
-    问题 4：半开探针只允许单次调用（不进入重试循环）；
-            OPEN 状态下收到的成功（重试泄漏 / fallback 成功）不得关闭熔断器。
+覆盖问题 1/2/4 的回归防护（问题 1：工业级熔断判定——滑动窗口错误率）：
+    问题 1：熔断判定改为滑动窗口错误率（Hystrix 模型），计数粒度为请求级
+    问题 2：熔断 OPEN 后拒绝主调用，不再对故障下游发请求
+    问题 4：半开探针只允许单次调用；OPEN 状态下收到成功不得关闭熔断器
+
+关键行为：
+    - 窗口内总请求 ≥ request_volume_threshold 且错误率 ≥ error_threshold → OPEN
+    - 或 窗口内全部失败且失败数 ≥ all_failed_min → OPEN（低流量纯失败保护）
+    - 429（限流）不计入窗口，只退避（尊重 Retry-After）
+    - fallback 与熔断器完全隔离
 """
 
 import time
@@ -14,6 +19,7 @@ import pytest
 
 from app.services.llm.retry import (
     CircuitBreaker,
+    CircuitBreakerOpenError,
     RetryConfig,
     RetryHandler,
 )
@@ -30,45 +36,149 @@ def _fail_always(exc: Exception, counter: list[int] | None = None):
     return call_fn
 
 
+class _RateLimited(Exception):
+    """模拟 429 限流异常（含 Retry-After 头）。"""
+
+    status_code = 429
+    headers: dict[str, str] = {}
+
+
+def _quick_cb(**kwargs) -> CircuitBreaker:
+    """快速触发熔断的测试熔断器：单次失败即可 OPEN。"""
+    return CircuitBreaker(request_volume_threshold=1, **kwargs)
+
+
+def _force_open(cb: CircuitBreaker) -> None:
+    """触发 OPEN（依赖 request_volume_threshold=1）。"""
+    cb.record_failure()  # 窗口 1 失败 → total=1≥1, 错误率 100% → OPEN
+    assert cb.state.value == "open"
+
+
+def _force_half_open(cb: CircuitBreaker) -> None:
+    """把熔断器推进到 HALF_OPEN 状态（OPEN 后等过 recovery_timeout）。"""
+    _force_open(cb)
+    cb._last_failure_time = time.monotonic() - 1000  # 模拟恢复时间已过
+    assert cb.allow_request() is True  # 触发 OPEN → HALF_OPEN，当前作为探针 #1
+    assert cb.state.value == "half_open"
+
+
 # =====================================================================
-# 问题 2：熔断触发后，剩余重试立即停止
+# 问题 1：滑动窗口 + 错误率熔断判定
 # =====================================================================
+
+
+def test_window_error_rate_opens_breaker():
+    """主判据：窗口内总请求达标且错误率达标 → OPEN。"""
+    cb = CircuitBreaker(
+        window_seconds=1000,
+        error_threshold=0.5,
+        request_volume_threshold=5,
+    )
+    # 5 次请求中 4 次失败 → 错误率 80% ≥ 50%，total=5 ≥ 5 → OPEN
+    cb.record_success()
+    cb.record_failure()
+    cb.record_failure()
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state.value == "open"
+
+
+def test_error_rate_below_threshold_keeps_closed():
+    """错误率低于阈值 → 不熔断（有成功稀释，错误率回落）。"""
+    cb = CircuitBreaker(
+        window_seconds=1000,
+        error_threshold=0.5,
+        request_volume_threshold=4,
+    )
+    # 4 次请求中 1 次失败 → 错误率 25% < 50% → 不熔断
+    cb.record_success()
+    cb.record_success()
+    cb.record_success()
+    cb.record_failure()
+    assert cb.state.value == "closed"
+
+
+def test_window_volume_not_reached_keeps_closed():
+    """窗口内请求量不足 → 不评估，保持 CLOSED（防低流量误判）。"""
+    cb = CircuitBreaker(
+        window_seconds=1000,
+        error_threshold=0.5,
+        request_volume_threshold=5,
+        all_failed_min=10,  # 关闭纯失败保护，只测主判据
+    )
+    # 只有 3 次请求全失败：total=3 < 5 不达请求量门槛；failures=3 < 10 也不达纯失败保护
+    cb.record_failure()
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state.value == "closed"
+
+
+def test_all_failed_low_volume_opens_breaker():
+    """低流量纯失败保护：请求量不足但全部失败且达最小样本量 → 熔断。"""
+    cb = CircuitBreaker(
+        window_seconds=1000,
+        error_threshold=0.5,
+        request_volume_threshold=100,  # 主判据永不满足
+        all_failed_min=3,
+    )
+    cb.record_failure()
+    cb.record_failure()
+    cb.record_failure()  # 全部失败且 ≥ 3 → OPEN
+    assert cb.state.value == "open"
+
+
+def test_window_expiry_prunes_old_failures():
+    """滑动窗口：过期失败记录被清理，不再计入统计。"""
+    cb = CircuitBreaker(window_seconds=0.01, error_threshold=0.5, request_volume_threshold=3)
+    # 注入一条早已过期的失败记录
+    cb._window.append((time.monotonic() - 100, False))
+    assert cb.failure_count == 0, "过期失败应被清理"
 
 
 @pytest.mark.asyncio
-async def test_open_breaker_stops_remaining_retries():
-    """熔断触发后不应再继续剩余重试。
+async def test_request_granularity_one_record_per_execute():
+    """请求粒度：一次 execute 的多次重试失败只记 1 次窗口失败。
 
-    配置：failure_threshold=2, max_retries=5（本可尝试 6 次）。
-    修复前：第 2 次失败已把计数器打到阈值 → OPEN，但仍继续第 3~6 次调用。
-    修复后：第 2 次失败触发 OPEN → 立即 break，仅调用 2 次。
+    问题 1 的核心：修复前每次 call_fn() 失败都累计熔断计数
+    （threshold=5, max_retries=2 时约 2 次请求即熔断）。
+    修复后：一个请求的多重重试合并为 1 次结果。
     """
-    calls = [0]
     handler = RetryHandler(
-        config=RetryConfig(max_retries=5),
-        circuit_breaker=CircuitBreaker(failure_threshold=2),
+        config=RetryConfig(max_retries=3),  # 4 次 call_fn
+        circuit_breaker=CircuitBreaker(),   # 默认窗口，1 次失败不熔断
     )
 
-    with pytest.raises(TimeoutError):
-        await handler.execute(_fail_always(TimeoutError("boom"), calls))
-
-    assert calls[0] == 2, f"熔断触发后仍重试，实际调用 {calls[0]} 次"
-    assert handler.circuit_breaker.state.value == "open"
-
-
-@pytest.mark.asyncio
-async def test_threshold_not_reached_keeps_retrying():
-    """未达阈值时，重试次数不受影响（防止误伤正常重试）。"""
-    handler = RetryHandler(
-        config=RetryConfig(max_retries=2),
-        circuit_breaker=CircuitBreaker(failure_threshold=10),
-    )
-
-    # 3 次尝试全部失败（threshold=10 远未触发）
     with pytest.raises(TimeoutError):
         await handler.execute(_fail_always(TimeoutError("boom")))
 
-    assert handler.circuit_breaker.state.value == "closed"
+    assert handler.circuit_breaker.failure_count == 1, (
+        "一次 execute 的多重失败应合并为 1 次窗口失败"
+    )
+    assert handler.circuit_breaker.state.value == "closed"  # 1 次失败不熔断
+
+
+# =====================================================================
+# 问题 2：熔断 OPEN 后拒绝主调用
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_open_breaker_rejects_call_fn():
+    """熔断 OPEN 后，后续请求不执行 call_fn（快速拒绝，不再对故障下游发请求）。"""
+    calls = [0]
+    cb = _quick_cb()
+    _force_open(cb)
+
+    handler = RetryHandler(config=RetryConfig(max_retries=5), circuit_breaker=cb)
+
+    async def call_fn():
+        calls[0] += 1
+        return "ok"
+
+    with pytest.raises(CircuitBreakerOpenError):
+        await handler.execute(call_fn)
+
+    assert calls[0] == 0, f"熔断 OPEN 时不应执行 call_fn，实际 {calls[0]} 次"
 
 
 # =====================================================================
@@ -76,25 +186,14 @@ async def test_threshold_not_reached_keeps_retrying():
 # =====================================================================
 
 
-def _force_half_open(cb: CircuitBreaker) -> None:
-    """把熔断器推进到 HALF_OPEN 状态（OPEN 后等过 recovery_timeout）。"""
-    cb.record_failure()  # threshold=1 → OPEN
-    assert cb.state.value == "open"
-    cb._last_failure_time = time.monotonic() - 1000  # 模拟恢复时间已过
-    assert cb.allow_request() is True  # 触发 OPEN → HALF_OPEN，当前作为探针 #1
-    assert cb.state.value == "half_open"
-
-
 @pytest.mark.asyncio
 async def test_half_open_probe_fails_without_retry():
     """半开探针失败后：不再重试，熔断器保持 OPEN。
 
-    修复前：探针失败 → OPEN，但重试循环继续 → 第 2 次调用失败 → 仍 OPEN
-            （更坏的情况见下一条：第 2 次调用若成功会误关熔断器）。
-    修复后：探针单次调用，失败即确认未恢复 → OPEN，只调用 1 次。
+    探针走单次调用路径（_probe_attempt），失败即确认未恢复 → OPEN。
     """
     calls = [0]
-    cb = CircuitBreaker(failure_threshold=1, half_open_max_requests=3)
+    cb = _quick_cb(half_open_max_requests=3)
     _force_half_open(cb)
 
     handler = RetryHandler(
@@ -110,24 +209,35 @@ async def test_half_open_probe_fails_without_retry():
 
 
 @pytest.mark.asyncio
-async def test_open_record_success_does_not_close_breaker():
+async def test_probe_rate_limited_keeps_half_open():
+    """探针收到 429：不计入熔断状态机，熔断器保持 HALF_OPEN（限流≠未恢复）。"""
+    cb = _quick_cb()
+    _force_half_open(cb)
+
+    handler = RetryHandler(circuit_breaker=cb)
+
+    async def call_fn():
+        raise _RateLimited()
+
+    with pytest.raises(_RateLimited):
+        await handler.execute(call_fn)
+
+    assert cb.state.value == "half_open", "探针 429 不得把熔断器打回 OPEN"
+
+
+def test_open_record_success_does_not_close_breaker():
     """OPEN 状态下的 record_success 必须 no-op，不得把熔断器误关为 CLOSED。
 
-    修复前的 bug：探针失败 → record_failure 把 state 置 OPEN → 旧代码继续重试
-    → 重试泄漏的成功 → record_success 在 OPEN 下走"重置为 CLOSED"兜底分支
-    → 熔断器被误关，后续请求全部放行打向仍故障的下游。
-    修复后：探针单次调用（无重试泄漏），且 OPEN 下 record_success 为 no-op，
-    双重防护。此处直接验证后者。
+    成功可能来自重试泄漏 / fallback，不能证明主链路恢复；恢复只能由
+    主链路探针验证。
     """
-    cb = CircuitBreaker(failure_threshold=1, half_open_max_requests=3)
-    cb.record_failure()  # → OPEN
-    assert cb.state.value == "open"
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_open(cb)
 
     # 假设发生重试泄漏 / fallback 成功，调用了 record_success
     cb.record_success()
     assert cb.state.value == "open", (
-        f"OPEN 下 record_success 不应关闭熔断器（当前 {cb.state.value}），"
-        "成功可能来自重试泄漏 / fallback，不能证明主链路恢复"
+        f"OPEN 下 record_success 不应关闭熔断器（当前 {cb.state.value}）"
     )
     assert cb.failure_count == 1
 
@@ -141,12 +251,10 @@ async def test_open_record_success_does_not_close_breaker():
 async def test_breaker_open_fallback_still_serves_but_keeps_breaker_open():
     """熔断 OPEN 时主调用被拒，但 fallback 仍可尝试（服务不中断）。
 
-    fallback 是纯兜底：其成败完全不触碰熔断器（状态、计数、时间戳都不变），
-    熔断器保持 OPEN，等待主链路探针验证。
+    fallback 是纯兜底：其成败完全不触碰熔断器（状态、窗口、时间戳都不变）。
     """
-    cb = CircuitBreaker(failure_threshold=1)
-    cb.record_failure()  # → OPEN
-    assert cb.state.value == "open"
+    cb = _quick_cb()
+    _force_open(cb)
     count_before = cb.failure_count
     opened_at = cb._last_failure_time
 
@@ -162,21 +270,21 @@ async def test_breaker_open_fallback_still_serves_but_keeps_breaker_open():
 
     assert result == "fallback-ok"
     assert cb.state.value == "open", "fallback 成功不得关闭熔断器"
-    assert cb.failure_count == count_before, "fallback 成功不得改变熔断计数"
+    assert cb.failure_count == count_before, "fallback 成功不得改变熔断窗口"
     assert cb._last_failure_time == opened_at, "fallback 成功不得改变冷却计时"
 
 
 @pytest.mark.asyncio
 async def test_fallback_success_does_not_reset_breaker():
-    """CLOSED 下 fallback 成功不清零熔断计数（备用链路成功 ≠ 主链路恢复）。
+    """CLOSED 下 fallback 成功不清零熔断窗口（备用链路成功 ≠ 主链路恢复）。
 
     修复前：主链路重试耗尽 → fallback 成功 → record_success 清零计数，
     主链路持续故障时熔断器永远不会打开（每次都被 fallback 救场清零）。
-    修复后：熔断计数只反映主链路，fallback 成功不触碰它。
+    修复后：熔断窗口只反映主链路，fallback 成功不触碰它。
     """
     handler = RetryHandler(
         config=RetryConfig(max_retries=0),  # 不重试，1 次失败直接 fallback
-        circuit_breaker=CircuitBreaker(failure_threshold=100),
+        circuit_breaker=CircuitBreaker(),   # 默认窗口，1 次失败不熔断
     )
 
     async def call_fn():
@@ -191,19 +299,15 @@ async def test_fallback_success_does_not_reset_breaker():
     assert handler.circuit_breaker.failure_count == 1, (
         "fallback 成功不得清零主链路失败计数（否则主链路持续故障永不熔断）"
     )
-    assert handler.circuit_breaker.state.value == "closed"  # 计数 1 未达阈值，不误开
+    assert handler.circuit_breaker.state.value == "closed"  # 1 次失败未达熔断条件
 
 
 @pytest.mark.asyncio
 async def test_fallback_failure_does_not_count_toward_breaker():
-    """CLOSED 下 fallback 失败不计入熔断计数（备用链路失败 ≠ 主链路故障）。
-
-    修复前：fallback 失败额外 record_failure，把备用链路故障记到主链路熔断器。
-    修复后：熔断计数只反映主链路，fallback 失败不额外累计。
-    """
+    """CLOSED 下 fallback 失败不计入熔断窗口（备用链路失败 ≠ 主链路故障）。"""
     handler = RetryHandler(
         config=RetryConfig(max_retries=0),
-        circuit_breaker=CircuitBreaker(failure_threshold=100),
+        circuit_breaker=CircuitBreaker(),
     )
 
     async def call_fn():
@@ -216,7 +320,7 @@ async def test_fallback_failure_does_not_count_toward_breaker():
         await handler.execute(call_fn, fallback_fn=fallback_fn)
 
     assert handler.circuit_breaker.failure_count == 1, (
-        "熔断计数应只计主链路 1 次失败，fallback 失败不得额外累计"
+        "熔断窗口应只计主链路 1 次失败，fallback 失败不得额外累计"
     )
 
 
@@ -224,12 +328,10 @@ async def test_fallback_failure_does_not_count_toward_breaker():
 async def test_open_fallback_failure_does_not_touch_breaker():
     """熔断 OPEN 下 fallback 兜底失败不触碰熔断器。
 
-    修复前：OPEN 下 fallback 被当作主链路传入 _single_attempt，失败会
-    record_failure → _failure_count 累加。修复后：fallback 纯兜底，
-    熔断器的状态、计数、时间戳完全不受影响。
+    OPEN 下 fallback 走纯兜底，熔断器的状态、窗口、时间戳完全不受影响。
     """
-    cb = CircuitBreaker(failure_threshold=1)
-    cb.record_failure()  # → OPEN
+    cb = _quick_cb()
+    _force_open(cb)
     opened_at = cb._last_failure_time
     count_before = cb.failure_count
 
@@ -245,7 +347,7 @@ async def test_open_fallback_failure_does_not_touch_breaker():
         await handler.execute(call_fn, fallback_fn=fallback_fn)
 
     assert cb.state.value == "open"
-    assert cb.failure_count == count_before, "OPEN 下 fallback 失败不得累计熔断计数"
+    assert cb.failure_count == count_before, "OPEN 下 fallback 失败不得累计熔断窗口"
     assert cb._last_failure_time == opened_at, "OPEN 下 fallback 失败不得改变冷却计时"
 
 
@@ -258,16 +360,15 @@ def test_open_failures_do_not_extend_recovery_window():
     """熔断 OPEN 下的延续失败不得推后恢复探测窗口。
 
     _last_failure_time 只在熔断器进入 OPEN 时设置一次（冷却期起点）。
-    OPEN 期间 fallback 等失败若反复刷新它，allow_request() 的
-    now - _last_failure_time >= recovery_timeout 判定会永不满足，
-    熔断器永远无法进入 HALF_OPEN —— 下游已恢复也无法被探测到。
+    OPEN 期间多次 record_failure（no-op）不改写它，窗口统计冻结——
+    否则 allow_request() 的 now - _last_failure_time >= recovery_timeout
+    判定被反复推迟，熔断器永远无法进入 HALF_OPEN。
     """
-    cb = CircuitBreaker(failure_threshold=1, recovery_timeout=1000)
-    cb.record_failure()  # CLOSED → OPEN
-    assert cb.state.value == "open"
+    cb = _quick_cb(recovery_timeout=1000)
+    _force_open(cb)
     opened_at = cb._last_failure_time
 
-    # 熔断期内多次失败（fallback 兜底失败）
+    # 熔断期内多次失败（fallback 兜底失败等误调用）
     cb.record_failure()
     cb.record_failure()
     cb.record_failure()
@@ -276,7 +377,7 @@ def test_open_failures_do_not_extend_recovery_window():
         "OPEN 下失败不得改写 _last_failure_time（否则恢复探测被无限推迟）"
     )
     assert cb.failure_count == 1, (
-        "OPEN 下失败不得累计 _failure_count（熔断期间计数应冻结，"
+        "OPEN 下失败不得累计窗口失败数（熔断期间统计应冻结，"
         f"实际 {cb.failure_count}）"
     )
     assert cb.state.value == "open"
@@ -288,7 +389,7 @@ def test_probe_failure_resets_recovery_clock():
     与上一测试对照：冷却计时重置只发生在状态切换进 OPEN 时，
     探针失败重新打开熔断器属于新一轮故障，必须重新计时。
     """
-    cb = CircuitBreaker(failure_threshold=1, recovery_timeout=1000)
+    cb = _quick_cb(recovery_timeout=1000)
     cb.record_failure()  # → OPEN
     opened_at = cb._last_failure_time
 
@@ -300,6 +401,130 @@ def test_probe_failure_resets_recovery_clock():
     # 探针失败 → 回 OPEN，冷却重新计时（新起点 > 旧起点）
     cb.record_failure()
     assert cb.state.value == "open"
-    assert cb._last_failure_time > opened_at, (
-        "探针失败进入 OPEN 应重置冷却计时"
+    assert cb._last_failure_time > opened_at, "探针失败进入 OPEN 应重置冷却计时"
+
+
+# =====================================================================
+# 429：不计入熔断，只退避（尊重 Retry-After）
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_not_counted_toward_breaker():
+    """429 不计入熔断：单次限流失败（正常配置下会熔断）不触发熔断。"""
+    handler = RetryHandler(
+        config=RetryConfig(max_retries=0),  # 不重试，1 次失败
+        circuit_breaker=CircuitBreaker(request_volume_threshold=1),  # 正常 1 次失败即熔断
     )
+
+    async def call_fn():
+        raise _RateLimited()
+
+    with pytest.raises(_RateLimited):
+        await handler.execute(call_fn)
+
+    cb = handler.circuit_breaker
+    assert cb.state.value == "closed", "429 不应触发熔断"
+    assert cb.failure_count == 0, "429 不应计入窗口失败"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_respected():
+    """429 退避尊重服务端 Retry-After，且总延迟不低于指数退避。"""
+    calls = [0]
+    handler = RetryHandler(
+        config=RetryConfig(max_retries=1, base_delay=0.01, use_jitter=False),
+        circuit_breaker=CircuitBreaker(),
+    )
+
+    class _RateLimitedWithHeader(_RateLimited):
+        headers = {"retry-after": "0.05"}
+
+    async def call_fn():
+        calls[0] += 1
+        raise _RateLimitedWithHeader()
+
+    start = time.monotonic()
+    with pytest.raises(_RateLimitedWithHeader):
+        await handler.execute(call_fn)
+    elapsed = time.monotonic() - start
+
+    assert calls[0] == 2, "429 应触发重试"
+    assert elapsed >= 0.05, f"退避应至少等 Retry-After(0.05s)，实际 {elapsed:.3f}s"
+    assert handler.circuit_breaker.state.value == "closed", "429 重试不应熔断"
+
+
+# =====================================================================
+# 混合失败：一次请求含限流 + 可重试失败时，按"是否出现过下游故障"记录
+# =====================================================================
+
+
+def _make_sequence_handler(sequence: list[Exception]) -> RetryHandler:
+    """构造按序抛异常的 handler（max_retries=2，即 3 次尝试）。"""
+    handler = RetryHandler(
+        config=RetryConfig(max_retries=2, base_delay=0.01, use_jitter=False),
+        circuit_breaker=CircuitBreaker(),  # 默认窗口，1 次失败不熔断
+    )
+    idx = [0]
+
+    async def call_fn():
+        exc = sequence[idx[0]]
+        idx[0] += 1
+        raise exc
+
+    return handler, call_fn
+
+
+@pytest.mark.asyncio
+async def test_mixed_failures_429_then_timeout_counts_once():
+    """429 → 429 → 超时（最后一次是可重试失败）→ 应计入 1 次失败。
+
+    当前实现按最后一次异常判断，碰巧正确；此处作为正向回归。
+    """
+    handler, call_fn = _make_sequence_handler(
+        [_RateLimited(), _RateLimited(), TimeoutError("boom")]
+    )
+
+    with pytest.raises(TimeoutError):
+        await handler.execute(call_fn)
+
+    assert handler.circuit_breaker.failure_count == 1, (
+        "请求中出现过超时（下游故障），应计入 1 次失败"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mixed_failures_timeout_then_429_counts_once():
+    """超时 → 429 → 429（最后一次是限流）→ 仍应计入 1 次失败。
+
+    修复前的 bug：只看最后一次异常（429）→ 漏记。但中间出现过超时，
+    说明本次请求确实触及了下游故障，必须计入熔断窗口。
+    """
+    handler, call_fn = _make_sequence_handler(
+        [TimeoutError("boom"), _RateLimited(), _RateLimited()]
+    )
+
+    with pytest.raises(_RateLimited):
+        await handler.execute(call_fn)
+
+    assert handler.circuit_breaker.failure_count == 1, (
+        "请求中出现过超时（下游故障），即使最后一次是 429 也应计入失败"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mixed_failures_all_rate_limited_not_counted():
+    """429 → 429 → 429（纯限流）→ 不计入熔断窗口。
+
+    限流是客户端自身限额，不代表下游故障；即使连续 3 次限流也不得熔断。
+    """
+    handler, call_fn = _make_sequence_handler(
+        [_RateLimited(), _RateLimited(), _RateLimited()]
+    )
+
+    with pytest.raises(_RateLimited):
+        await handler.execute(call_fn)
+
+    cb = handler.circuit_breaker
+    assert cb.failure_count == 0, "纯限流请求不得计入熔断窗口"
+    assert cb.state.value == "closed"

@@ -92,7 +92,13 @@ class Settings(BaseSettings):
     llm_base_delay: float = 1.0
     llm_max_delay: float = 30.0
     llm_use_jitter: bool = True
-    llm_circuit_failure_threshold: int = 5
+    # 熔断：滑动时间窗口 + 错误率判定（参考 Hystrix 模型）
+    llm_circuit_window_seconds: float = 10.0  # 滑动时间窗口长度（秒）
+    llm_circuit_error_threshold: float = 0.5  # 窗口内错误率熔断阈值（50%）
+    llm_circuit_request_volume_threshold: int = (
+        20  # 窗口内最小请求量，不足则不做错误率评估
+    )
+    llm_circuit_all_failed_min: int = 3  # 低流量纯失败保护：全部失败且达此样本量才熔断
     llm_circuit_recovery_timeout: float = 30.0
     llm_circuit_half_open_max_requests: int = 3
     llm_fallback_model_id: str = ""  # 主模型降级备用
@@ -112,19 +118,22 @@ class Settings(BaseSettings):
     agent_streaming: bool = True
 
     # 任务优先级配置
-    agent_priority_levels: list[
-        Literal["low", "normal", "high", "urgent"]
-    ] = ["low", "normal", "high", "urgent"]
+    agent_priority_levels: list[Literal["low", "normal", "high", "urgent"]] = [
+        "low",
+        "normal",
+        "high",
+        "urgent",
+    ]
     agent_default_priority: Literal["low", "normal", "high", "urgent"] = "normal"
     agent_high_priority_timeout: int = 600  # 高优先级任务超时时间（10分钟）
-    agent_low_priority_timeout: int = 180   # 低优先级任务超时时间（3分钟）
-    agent_priority_queue_size: int = 100    # 优先级队列大小
+    agent_low_priority_timeout: int = 180  # 低优先级任务超时时间（3分钟）
+    agent_priority_queue_size: int = 100  # 优先级队列大小
 
     # 并发控制配置
-    agent_max_concurrent_tasks: int = 10      # 最大并发任务数
-    agent_max_concurrent_tools: int = 3        # 单个任务最大并发工具数
-    agent_task_queue_size: int = 50            # 任务队列大小
-    agent_worker_pool_size: int = 5            # 工作线程池大小
+    agent_max_concurrent_tasks: int = 10  # 最大并发任务数
+    agent_max_concurrent_tools: int = 3  # 单个任务最大并发工具数
+    agent_task_queue_size: int = 50  # 任务队列大小
+    agent_worker_pool_size: int = 5  # 工作线程池大小
 
     # ===== 记忆配置 =====
     memory_enabled: bool = False
@@ -143,10 +152,10 @@ class Settings(BaseSettings):
     redis_session_ttl: int = 604800  # 7天
 
     # ===== 工具配置 =====
-    tool_timeout: int = 30               # 工具执行超时（秒）
-    tool_max_retries: int = 3            # 工具执行最大重试次数
-    tool_max_output_length: int = 100_000   # 工具输出最大字符数（code_exec、readFile）
-    tool_max_content_length: int = 50_000   # 网页抓取最大字符数（web_browse）
+    tool_timeout: int = 30  # 工具执行超时（秒）
+    tool_max_retries: int = 3  # 工具执行最大重试次数
+    tool_max_output_length: int = 100_000  # 工具输出最大字符数（code_exec、readFile）
+    tool_max_content_length: int = 50_000  # 网页抓取最大字符数（web_browse）
 
     # ===== Tavily 配置 =====
     tavily_api_key: str = ""
