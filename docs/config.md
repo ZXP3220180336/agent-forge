@@ -620,6 +620,25 @@ from app.config import settings
 # 会打印配置加载过程
 ```
 
+### Q6: 导入 `BaseSettings` 报错？
+
+**A:** Pydantic v2 将 `BaseSettings` 移到了独立的 `pydantic_settings` 包。需安装 `pydantic-settings`，然后：
+
+```python
+from pydantic_settings import BaseSettings
+```
+
+而不是 `from pydantic import BaseSettings`。
+
+### Q7: `os.getenv()` 读不到 `.env` 中的配置？
+
+**A:** `.env` 由 Pydantic Settings 加载，**不写入** `os.environ`。统一通过 `settings` 单例读取：
+
+```python
+from app.config import settings
+api_key = settings.llm_api_key  # ✅ 而不是 os.getenv("LLM_API_KEY")
+```
+
 ---
 
 ## 总结

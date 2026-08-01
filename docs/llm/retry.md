@@ -224,6 +224,8 @@ NON_RETRYABLE   # 4xx、响应校验错误、token 截断、内容被过滤、�
 | 未知异常（无 status_code、非已知类型）                                                        | **NON_RETRYABLE（默认兜底）**             | 直接抛出不重试                                                   |
 
 > **行为变更（2026-08-01）**：改造前未知异常默认 RETRYABLE（保守兜底），导致 404/405/413 等"重试无效"的 4xx 和非 HTTP 异常被盲目重试、白打下游并计入熔断窗口。改造后白名单映射，未知异常默认 NON_RETRYABLE。
+>
+> **坑：`InternalServerError` 没有硬编码 status_code** —— openai `InternalServerError` 继承 `APIStatusError` 但无字面量状态码（不像 `BadRequestError` 硬编码 400），`status_code` 是响应里的实际 5xx 值。**`classify_error` 不能依赖 `isinstance(exc, InternalServerError)` 判定**，必须走 `status_code` 分支（5xx → RETRYABLE）。
 
 ---
 
@@ -456,6 +458,8 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | 流式迭代异常无保护                                                    | `llm_service.py` 的 `async for chunk` 不在任何 try/except 内 → 流中断/解析失败时异常泄漏到调用方，不重试不熔断不记录日志                                                                                                             | 流式迭代包进 try/except：失败时记录日志 + 产出错误事件（不重试，符合流式语义）                                                                                                                                                                                                           |
 
 对应测试：`tests/unit/test_retry.py`（24 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）。
+
+> **坑：测试构造 openai 异常** —— 构造 `openai.APIStatusError` 子类（如 `BadRequestError`/`InternalServerError`/`RateLimitError`）需要 `message` + `response` 两个参数（`InternalServerError` 无字面量 status_code，值来自传入的 `httpx.Response`）。`LengthFinishReasonError` 需要真实 `ChatCompletion` 对象（访问 `.usage`），不能传 None。**构造测试异常统一用 `httpx.Response(status_code, request=...)` 传参。**
 
 ---
 

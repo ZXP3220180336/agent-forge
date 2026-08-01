@@ -75,10 +75,10 @@ Agent 模块
 
 3. **LLM / Agent 分层清晰**
 
-   | 层     | 职责                           | 不涉及               |
-   | ------ | ------------------------------ | -------------------- |
-   | LLM 层 | 单轮推理、Token 提取、连接重试 | 消息管理、循环控制   |
-   | Agent  | 循环编排、工具调用、结果判定   | Token 解析、API 重试 |
+| 层     | 职责                           | 不涉及               |
+| ------ | ------------------------------ | -------------------- |
+| LLM 层 | 单轮推理、Token 提取、连接重试 | 消息管理、循环控制   |
+| Agent  | 循环编排、工具调用、结果判定   | Token 解析、API 重试 |
 
 4. **事件流驱动**
 
@@ -694,6 +694,17 @@ class MyCustomAgent(BaseAgent):
 ```
 
 建议始终做 `if result.usage:` 检查。
+
+### Q7: 回传 tool 消息时报 400 `Messages with role 'tool' must be a response to a previous message with 'tool_calls'`？
+
+**A:** OpenAI 兼容 API 的硬性规则：ReAct 循环把 tool 消息回传前，**前置的 assistant 消息必须带 `tool_calls` 字段**。修复前 executor 只回传 `content` + `reasoning_content`，DeepSeek 第二轮必报 400，Agent 空转重试到迭代上限。
+
+```python
+# 回传 assistant 消息时必须带上 tool_calls
+assistant_msg["tool_calls"] = stream_result.tool_calls  # 见 executor.py 步骤 2
+```
+
+已加测试断言防回归。
 
 ---
 

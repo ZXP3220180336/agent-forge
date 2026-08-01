@@ -67,13 +67,13 @@ app/services/
 2. **纯化职责**：每个模块只做一件事 —— `StreamParser` 只解析 chunk，不构造事件
 3. **三权分立**：逻辑拆分遵循以下边界：
 
-   | 层次     | 职责                   | 对应模块                                        |
-   | -------- | ---------------------- | ----------------------------------------------- |
-   | 传输层   | 连接、代理、认证       | `ClientManager`                                 |
-   | 可靠性层 | 重试、熔断、限流、降级 | `RetryHandler`, `RateLimiter`, `CircuitBreaker` |
-   | 数据层   | 流式/非流式解析        | `StreamParser`, `StructuredOutput`              |
-   | 治理层   | 日志、成本             | `LLMLogger`, `CostTracker`                      |
-   | 服务层   | 统一对外接口           | `LLMService`（Facade）                          |
+| 层次     | 职责                   | 对应模块                                        |
+| -------- | ---------------------- | ----------------------------------------------- |
+| 传输层   | 连接、代理、认证       | `ClientManager`                                 |
+| 可靠性层 | 重试、熔断、限流、降级 | `RetryHandler`, `RateLimiter`, `CircuitBreaker` |
+| 数据层   | 流式/非流式解析        | `StreamParser`, `StructuredOutput`              |
+| 治理层   | 日志、成本             | `LLMLogger`, `CostTracker`                      |
+| 服务层   | 统一对外接口           | `LLMService`（Facade）                          |
 
 ### 依赖关系
 
@@ -862,6 +862,32 @@ print(LLMLogger.format_for_console(record))
 
 ---
 
+## 当前进度与遗留
+
+> 本节记录 LLM 层自身的进度、遗留工作与下一步计划（项目整体进度见 [HANDOFF.md](../HANDOFF.md)）。
+
+### 已实现
+
+- 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / LLMLogger / RateLimiter / CostTracker + `EmbeddingService`
+- retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针失败一律回 OPEN、流式迭代保护（详见 [retry.md](retry.md)）
+
+### 遗留未定事项
+
+| 事项                                              | 当前状态           | 说明                                                                                                            |
+| ------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------- |
+| **RateLimiter 未集成**                            | 有代码无效果       | `rate_limiter.py` 已实现（双 Token Bucket，RPM+TPM），但 `LLMService.async_generate()` / `generate()` 均未调用  |
+| **流式迭代是否自动重试**                          | 仅捕获报错         | `async_generate()` 的 `async for chunk` 已包进 try/except（失败记录日志 + 错误事件），但不自动重试流            |
+| **`APIResponseValidationError` 是否容忍网关故障** | 默认 NON_RETRYABLE | 当前重试无效；若网关偶发损坏响应，可评估改为 RETRYABLE                                                          |
+| **`generate_structured` 重复实现**                | 两个入口           | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback） |
+
+### 下一步计划
+
+1. **集成 RateLimiter 到 LLMService**：`async_generate()` / `generate()` 在调用 ClientManager 前调用 `RateLimiter.acquire()`；settings 已有 `llm_main_rpm` / `llm_reasoning_rpm` / `llm_fast_rpm`
+2. **决策遗留事项**：流式迭代是否自动重试、`APIResponseValidationError` 是否容忍网关故障
+3. **统一结构化输出入口**：评估 `LLMService.generate_structured` 与 `StructuredOutput.extract` 的合并
+
+---
+
 ## 常见问题
 
 ### Q: `LLMService` 和 `ClientManager` 的关系是什么？
@@ -936,3 +962,17 @@ result = await llm.generate(messages, model_key="ultra_fast")
 
 1. **通过 proxy 层转换**（推荐）：部署一个兼容层（如 LiteLLM、one-api），对外暴露 OpenAI 接口，内部转发到目标 API
 2. **重新实现一个 Client 类**：继承或组合 `RetryHandler` / `StreamParser`，实现自己的传输逻辑
+
+### Q: 调用 `generate_structured` 报 TypeError？
+
+**A:** `StructuredOutput.extract()` 内部 `_try_extract()` 和 `_fallback_extract()` 的形参名是 `model_key`，不是 `model`。调用时须传 `model_key=model_key`：
+
+```python
+# ❌ 形参名错误
+data = await llm.generate_structured(..., model="fast")
+
+# ✅ 形参名正确
+data = await llm.generate_structured(..., model_key="fast")
+```
+
+历史上曾因方法签名用 `model`、调用时用 `model_key=` 导致运行时 TypeError。
