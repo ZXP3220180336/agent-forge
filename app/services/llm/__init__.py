@@ -14,7 +14,7 @@ LLM 子包 — 工业级 LLM 通信组件
 from .client import ClientManager
 from .cost_tracker import CostTracker
 from .logger import LLMLogger, LLMRequestRecord
-from .rate_limiter import RateLimiter
+from .rate_limiter import RateLimiter, RateLimiterManager
 from .retry import CircuitBreaker, RetryConfig, RetryHandler
 from .streaming import StreamParser
 from .structured import StructuredOutput
@@ -26,6 +26,7 @@ __all__ = [
     "LLMLogger",
     "LLMRequestRecord",
     "RateLimiter",
+    "RateLimiterManager",
     "RetryConfig",
     "RetryHandler",
     "StreamParser",

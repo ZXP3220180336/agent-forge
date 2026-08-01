@@ -25,6 +25,7 @@ from app.services.llm import (
     ClientManager,
     LLMLogger,
     LLMRequestRecord,
+    RateLimiterManager,
     RetryConfig,
     RetryHandler,
     StreamParser,
@@ -168,6 +169,52 @@ def _should_rectify(
 
 
 # =====================================================================
+# 请求 Token 估算（TPM 限流用）
+# =====================================================================
+
+
+_encoder_cache: dict[str, Any] = {}
+
+
+def _get_encoder(model: str) -> Any:
+    """按模型名解析 tiktoken 编码器（进程内缓存，未知模型回退 cl100k_base）。
+
+    与 ContextManager 的编码器解析逻辑一致；此处独立缓存是因为
+    LLM 层拿到的 messages 是实时最终版（ReAct 每轮追加工具结果），
+    不能复用上层的上下文预算计数。
+    """
+    if model in _encoder_cache:
+        return _encoder_cache[model]
+    try:
+        import tiktoken
+
+        encoder = tiktoken.encoding_for_model(model)
+    except (KeyError, ImportError):
+        import tiktoken
+
+        encoder = tiktoken.get_encoding("cl100k_base")
+    _encoder_cache[model] = encoder
+    return encoder
+
+
+def _count_prompt_tokens(model_key: str, messages: list[dict]) -> int:
+    """估算 messages 的 prompt token 数（tiktoken 精确计数）。
+
+    计费口径与 ContextManager.count_messages_tokens 一致：
+        每条消息 +4（格式开销）+ content token 数 + name 额外 +1；
+        末尾 +2（回复格式开销）。
+    """
+    encoder = _get_encoder(ClientManager.get_model(model_key))
+    total = 0
+    for msg in messages:
+        total += 4
+        total += len(encoder.encode(msg.get("content", "")))
+        if msg.get("name"):
+            total += 1
+    return total + 2
+
+
+# =====================================================================
 # LLM 服务
 # =====================================================================
 
@@ -250,8 +297,15 @@ class LLMService:
         for attempt in range(stream_max_retries + 1):
             attempt_start = time.monotonic()
 
-            # ----- 阶段 1：创建流式响应（带重试 + 熔断 + fallback） -----
+            # ----- 阶段 1：客户端限流 + 创建流式响应（带重试 + 熔断 + fallback） -----
             try:
+                # 限流：RPM + TPM 双 Token Bucket。TPM 的 estimated_tokens 用
+                # tiktoken 实时数当前 messages（含此前各轮工具结果）。
+                # 整流重试每次迭代都重新 acquire（重试=新请求），桶随之扣减。
+                estimated = _count_prompt_tokens(model_key, messages)
+                await RateLimiterManager.get(model_key).acquire(
+                    estimated_tokens=estimated
+                )
                 response = await retry.execute(
                     call_fn=lambda: client.chat.completions.create(**kwargs),
                     fallback_fn=fallback_fn,
@@ -379,11 +433,15 @@ class LLMService:
         log_record = _build_log_record(
             model_key, messages, temperature, bool(tools), stream=False
         )
-
+        client = ClientManager.get_client(model_key)
         start_time = time.monotonic()
 
         try:
-            client = ClientManager.get_client(model_key)
+            # 客户端限流（RPM + TPM 双桶），tiktoken 实时数 prompt
+            estimated = _count_prompt_tokens(model_key, messages)
+            await RateLimiterManager.get(model_key).acquire(
+                estimated_tokens=estimated
+            )
             response = await retry.execute(
                 call_fn=lambda: client.chat.completions.create(**kwargs),
             )

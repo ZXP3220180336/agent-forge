@@ -21,6 +21,7 @@ from openai import APIResponseValidationError, BadRequestError
 
 from app.config import settings
 from app.services.llm import ClientManager
+from app.services.llm.rate_limiter import RateLimiter, RateLimiterManager
 from app.services.llm_service import LLMService, StreamResult
 
 
@@ -180,6 +181,20 @@ def _setup(monkeypatch, script, stream_max_retries=1):
     monkeypatch.setattr(settings, "llm_max_retries", 0)
     monkeypatch.setattr(settings, "llm_stream_max_retries", stream_max_retries)
 
+    # 限流 stub：acquire 立即放行，记录调用次数与 estimated_tokens。
+    # 避免真实 Token Bucket 的等待拖慢测试，且能断言整流重试会重新 acquire。
+    calls = {"acquire": 0, "last_estimated": 0}
+
+    class _StubRateLimiter(RateLimiter):
+        async def acquire(self, estimated_tokens=0, retry_after=None):
+            calls["acquire"] += 1
+            calls["last_estimated"] = estimated_tokens
+            return 0.0
+
+    monkeypatch.setattr(
+        RateLimiterManager, "get", staticmethod(lambda key: _StubRateLimiter())
+    )
+
     completions = fake_client.completions
     llm = LLMService()  # 不传参 → 不触发 register_config
 
@@ -193,7 +208,7 @@ def _setup(monkeypatch, script, stream_max_retries=1):
             events.append(ev)
         return sr, events
 
-    return llm, completions, run
+    return llm, completions, run, calls
 
 
 # =====================================================================
@@ -210,7 +225,7 @@ async def test_pre_first_token_interrupt_rectifies(monkeypatch):
         # 尝试 2：正常完整流
         FakeStream([_content_chunk("你"), _content_chunk("好"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=1)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     sr, events = await run()
 
@@ -231,7 +246,7 @@ async def test_post_token_interrupt_no_rectify(monkeypatch):
     script = [
         FakeStream([_content_chunk("你好"), _finish_chunk("stop")], fail_at=1),
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=1)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     sr, events = await run()
 
@@ -247,7 +262,7 @@ async def test_consecutive_interrupt_exhausts_retries(monkeypatch):
         FakeStream([], fail_at=0),
         FakeStream([], fail_at=0),
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=1)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     sr, events = await run()
 
@@ -298,7 +313,7 @@ async def test_create_failure_no_rectify(monkeypatch):
     """create 阶段失败（NON_RETRYABLE）→ 绝不整流（calls==1）。"""
     resp = httpx.Response(400, request=httpx.Request("POST", "http://x"))
     script = [BadRequestError("bad request", response=resp, body=None)]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=3)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=3)
 
     sr, events = await run()
 
@@ -315,7 +330,7 @@ async def test_rectify_then_create_failure(monkeypatch):
         FakeStream([], fail_at=0),  # 尝试 1：死流 → 整流
         TimeoutError("create timeout"),  # 尝试 2：create 抛超时（max_retries=0 不重试）
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=1)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     sr, events = await run()
 
@@ -330,7 +345,7 @@ async def test_tool_call_delta_counts_as_emitted(monkeypatch):
     script = [
         FakeStream([_tool_call_chunk()], fail_at=1),
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=1)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     sr, events = await run()
 
@@ -348,7 +363,7 @@ async def test_usage_only_interrupt_rectifies(monkeypatch):
         # 尝试 2：正常流
         FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(1, 2)]),
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=1)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     sr, events = await run()
 
@@ -368,7 +383,7 @@ async def test_success_path_regression(monkeypatch):
     script = [
         FakeStream([_content_chunk("hi"), _finish_chunk("stop"), _usage_chunk(1, 2)]),
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=1)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     sr, events = await run()
 
@@ -388,7 +403,7 @@ async def test_non_retryable_iter_exception_no_rectify(monkeypatch):
     script = [
         FakeStream([], fail_at=0, exc=exc),
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=3)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=3)
 
     sr, events = await run()
 
@@ -403,7 +418,7 @@ async def test_logging_records_rectified_attempts(monkeypatch, caplog):
         FakeStream([_usage_chunk(10, 0)], fail_at=1, exc=httpx.ReadError("reset")),
         FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
     ]
-    _, completions, run = _setup(monkeypatch, script, stream_max_retries=1)
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     with caplog.at_level(logging.INFO, logger="app.llm"):
         await run()
@@ -415,3 +430,21 @@ async def test_logging_records_rectified_attempts(monkeypatch, caplog):
     assert records[1]["success"] is True, "第 2 条应为成功日志"
     assert records[1]["error"] is None, "成功日志不应有错误"
     assert all(r["duration"] >= 0 for r in records), "duration 应为非负"
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_acquire_before_each_attempt(monkeypatch):
+    """限流接入：整流重试时每轮 create 前都 acquire（calls==2 次，estimated>0）。"""
+    script = [
+        FakeStream([_usage_chunk(10, 0)], fail_at=1, exc=httpx.ReadError("reset")),
+        FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
+    ]
+    _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=1)
+
+    sr, events = await run()
+
+    assert completions.calls == 2, "整流重试"
+    assert calls["acquire"] == 2, f"每轮 create 前都应 acquire，实际 {calls['acquire']} 次"
+    assert calls["last_estimated"] > 0, "estimated_tokens 应为 messages 的 tiktoken 计数"
+    assert sr.content == "ok"
+    assert all("error" not in e for e in events), f"不应有 error: {events}"

@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     llm_main_rpm: int = 60
     llm_reasoning_rpm: int = 30
     llm_fast_rpm: int = 100
+    # TPM（Tokens Per Minute）—— 与 RPM 组成双桶限流。默认参考 DeepSeek 官方限额
+    llm_main_tpm: int = 2_000_000
+    llm_reasoning_tpm: int = 2_000_000
+    llm_fast_tpm: int = 2_000_000
 
     # ===== 上下文配置 =====
     max_context_tokens: int = 128000

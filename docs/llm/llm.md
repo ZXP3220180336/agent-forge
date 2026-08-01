@@ -775,24 +775,26 @@ LLM 层所有配置项集中在 `app/config/settings.py`：
 
 ### 高级配置
 
-| 配置项                                 | 类型  | 默认值 | 说明                                                |
-| -------------------------------------- | ----- | ------ | --------------------------------------------------- |
-| `llm_max_retries`                      | int   | `2`    | 最大重试次数                                        |
-| `llm_stream_max_retries`               | int   | `1`    | 流式整流重试次数（首 token 前中断才整流；`0`=禁用） |
-| `llm_base_delay`                       | float | `1.0`  | 退避基数（秒）                                      |
-| `llm_max_delay`                        | float | `30.0` | 退避上限（秒）                                      |
-| `llm_use_jitter`                       | bool  | `True` | 是否启用随机抖动                                    |
-| `llm_circuit_window_seconds`           | float | `10.0` | 滑动时间窗口长度（秒）                              |
-| `llm_circuit_error_threshold`          | float | `0.5`  | 窗口内错误率熔断阈值（50%）                         |
-| `llm_circuit_request_volume_threshold` | int   | `20`   | 窗口内最小请求量，不足不做错误率评估                |
-| `llm_circuit_all_failed_min`           | int   | `3`    | 低流量纯失败保护：全部失败且达此样本量才熔断        |
-| `llm_circuit_recovery_timeout`         | float | `30.0` | 熔断恢复超时（秒）                                  |
-| `llm_circuit_half_open_max_requests`   | int   | `3`    | 半开状态最大探针数                                  |
-| `llm_fallback_model_id`                | str   | `""`   | 降级备用模型                                        |
-| `llm_proxy_url`                        | str   | `""`   | HTTP 代理                                           |
-| `llm_main_rpm`                         | int   | `60`   | 主模型 RPM 限流                                     |
-| `llm_reasoning_rpm`                    | int   | `30`   | 推理模型 RPM 限流                                   |
-| `llm_fast_rpm`                         | int   | `100`  | 快速模型 RPM 限流                                   |
+| -------------------------------------- | ----- | ------    | --------------------------------------------------- |
+| `llm_max_retries`                      | int   | `2`       | 最大重试次数                                        |
+| `llm_stream_max_retries`               | int   | `1`       | 流式整流重试次数（首 token 前中断才整流；`0`=禁用） |
+| `llm_base_delay`                       | float | `1.0`     | 退避基数（秒）                                      |
+| `llm_max_delay`                        | float | `30.0`    | 退避上限（秒）                                      |
+| `llm_use_jitter`                       | bool  | `True`    | 是否启用随机抖动                                    |
+| `llm_circuit_window_seconds`           | float | `10.0`    | 滑动时间窗口长度（秒）                              |
+| `llm_circuit_error_threshold`          | float | `0.5`     | 窗口内错误率熔断阈值（50%）                         |
+| `llm_circuit_request_volume_threshold` | int   | `20`      | 窗口内最小请求量，不足不做错误率评估                |
+| `llm_circuit_all_failed_min`           | int   | `3`       | 低流量纯失败保护：全部失败且达此样本量才熔断        |
+| `llm_circuit_recovery_timeout`         | float | `30.0`    | 熔断恢复超时（秒）                                  |
+| `llm_circuit_half_open_max_requests`   | int   | `3`       | 半开状态最大探针数                                  |
+| `llm_fallback_model_id`                | str   | `""`      | 降级备用模型                                        |
+| `llm_proxy_url`                        | str   | `""`      | HTTP 代理                                           |
+| `llm_main_rpm`                         | int   | `60`      | 主模型 RPM 限流                                     |
+| `llm_reasoning_rpm`                    | int   | `30`      | 推理模型 RPM 限流                                   |
+| `llm_fast_rpm`                         | int   | `100`     | 快速模型 RPM 限流                                   |
+| `llm_main_tpm`                         | int   | `2000000` | 主模型 TPM 限流（默认参考 DeepSeek 限额）           |
+| `llm_reasoning_tpm`                    | int   | `2000000` | 推理模型 TPM 限流（默认参考 DeepSeek 限额）         |
+| `llm_fast_tpm`                         | int   | `2000000` | 快速模型 TPM 限流（默认参考 DeepSeek 限额）         |
 
 ---
 
@@ -879,17 +881,17 @@ print(LLMLogger.format_for_console(record))
 
 ### 遗留未定事项
 
-| 事项                                              | 当前状态           | 说明                                                                                                            |
-| ------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------- |
-| **RateLimiter 未集成**                            | 有代码无效果       | `rate_limiter.py` 已实现（双 Token Bucket，RPM+TPM），但 `LLMService.async_generate()` / `generate()` 均未调用  |
-| **流式迭代是否自动重试**                          | ✅ 已决策（整流）  | 首 token 前中断整流重试（复用 `classify_error`，新增 `llm_stream_max_retries` 配置）；已产出 token 后中断不整流 |
-| **`APIResponseValidationError` 是否容忍网关故障** | 保持 NON_RETRYABLE | 决策：当前直连服务商场景下重试无效，保持现状不修改                                                              |
-| **`generate_structured` 重复实现**                | 两个入口           | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback） |
+| 事项                                              | 当前状态           | 说明                                                                                                                                                                    |
+| ------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------                                                         |
+| **RateLimiter 未集成**                            | ✅ 已集成          | `async_generate()` / `generate()` create 前调用 `RateLimiter.acquire()`（RPM+TPM 双桶）；新增 `RateLimiterManager` 按 model_key 共享实例，TPM 用 tiktoken 实时数 prompt |
+| **流式迭代是否自动重试**                          | ✅ 已决策（整流）  | 首 token 前中断整流重试（复用 `classify_error`，新增 `llm_stream_max_retries` 配置）；已产出 token 后中断不整流                                                         |
+| **`APIResponseValidationError` 是否容忍网关故障** | 保持 NON_RETRYABLE | 决策：当前直连服务商场景下重试无效，保持现状不修改                                                                                                                      |
+| **`generate_structured` 重复实现**                | 两个入口           | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback）                                                         |
 
 ### 下一步计划
 
-1. **集成 RateLimiter 到 LLMService**：`async_generate()` / `generate()` 在调用 ClientManager 前调用 `RateLimiter.acquire()`；settings 已有 `llm_main_rpm` / `llm_reasoning_rpm` / `llm_fast_rpm`
-2. **决策遗留事项**：~~流式迭代是否自动重试~~（已决策，见下）——剩余 `APIResponseValidationError` 已决策保持；`generate_structured` 统一待评估
+1. ~~**集成 RateLimiter 到 LLMService**~~（已实施，见下）：`async_generate()` / `generate()` create 前 `RateLimiterManager.get(model_key).acquire(estimated_tokens)`；estimated_tokens 由 `_count_prompt_tokens` 用 tiktoken 实时数 messages
+2. **决策遗留事项**：~~流式迭代是否自动重试~~（已决策）——剩余 `APIResponseValidationError` 已决策保持；`generate_structured` 统一待评估
 3. **统一结构化输出入口**：评估 `LLMService.generate_structured` 与 `StructuredOutput.extract` 的合并
 
 ---
