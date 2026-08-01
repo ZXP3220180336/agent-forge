@@ -173,39 +173,49 @@ class LLMService:
         # ----- 逐 chunk 解析 -----
         tool_deltas: list[Any] = []
 
-        async for chunk in response:
-            # 取消检查
-            if cancel_event and cancel_event.is_set():
-                yield build_error_event("用户取消了请求")
-                log_record.success = False
-                log_record.error = "用户取消"
-                log_record.duration = time.monotonic() - start_time
-                await LLMLogger.log_call(log_record)
-                return
+        # 流式迭代异常不受 retry.execute() 保护（响应对象创建后重试循环已退出），
+        # 此处捕获并转为错误事件，避免未处理异常向上泄漏到调用方。
+        try:
+            async for chunk in response:
+                # 取消检查
+                if cancel_event and cancel_event.is_set():
+                    yield build_error_event("用户取消了请求")
+                    log_record.success = False
+                    log_record.error = "用户取消"
+                    log_record.duration = time.monotonic() - start_time
+                    await LLMLogger.log_call(log_record)
+                    return
 
-            parsed = StreamParser.parse_chunk(chunk)
+                parsed = StreamParser.parse_chunk(chunk)
 
-            # reasoning
-            if parsed.reasoning_token:
-                result.reasoning_content += parsed.reasoning_token
-                yield build_reasoning_event(parsed.reasoning_token)
+                # reasoning
+                if parsed.reasoning_token:
+                    result.reasoning_content += parsed.reasoning_token
+                    yield build_reasoning_event(parsed.reasoning_token)
 
-            # message
-            if parsed.message_token:
-                result.content += parsed.message_token
-                yield build_message_event(parsed.message_token)
+                # message
+                if parsed.message_token:
+                    result.content += parsed.message_token
+                    yield build_message_event(parsed.message_token)
 
-            # finish_reason
-            if parsed.finish_reason:
-                result.finish_reason = parsed.finish_reason
+                # finish_reason
+                if parsed.finish_reason:
+                    result.finish_reason = parsed.finish_reason
 
-            # tool_calls deltas
-            if parsed.tool_call_deltas:
-                tool_deltas.extend(parsed.tool_call_deltas)
+                # tool_calls deltas
+                if parsed.tool_call_deltas:
+                    tool_deltas.extend(parsed.tool_call_deltas)
 
-            # usage（最后一个 chunk）
-            if parsed.usage:
-                result.usage = parsed.usage
+                # usage（最后一个 chunk）
+                if parsed.usage:
+                    result.usage = parsed.usage
+        except Exception as e:
+            log_record.success = False
+            log_record.error = f"流式读取中断: {e!s}"[:200]
+            log_record.duration = time.monotonic() - start_time
+            await LLMLogger.log_call(log_record)
+            yield build_error_event(f"流式响应中断: {e!s}")
+            return
 
         # 合并 tool_calls
         if tool_deltas:

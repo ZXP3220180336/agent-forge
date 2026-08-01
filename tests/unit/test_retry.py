@@ -20,6 +20,7 @@ import pytest
 from app.services.llm.retry import (
     CircuitBreaker,
     CircuitBreakerOpenError,
+    CircuitState,
     RetryConfig,
     RetryHandler,
 )
@@ -60,6 +61,19 @@ def _force_half_open(cb: CircuitBreaker) -> None:
     cb._last_failure_time = time.monotonic() - 1000  # 模拟恢复时间已过
     assert cb.allow_request() is True  # 触发 OPEN → HALF_OPEN，当前作为探针 #1
     assert cb.state.value == "half_open"
+
+
+def _force_half_open_fresh(cb: CircuitBreaker) -> None:
+    """把熔断器推进到 HALF_OPEN，且不消耗探针槽位（_half_open_requests=0）。
+
+    与 _force_half_open 区别：后者由 allow_request() 触发 OPEN→HALF_OPEN 时
+    会把当前请求计为探针 #1（_half_open_requests=1）。本函数手动置位，
+    让测试能精确控制接下来放行的探针数量。
+    """
+    _force_open(cb)
+    cb._last_failure_time = time.monotonic() - 1000
+    cb._state = CircuitState.HALF_OPEN
+    cb._half_open_requests = 0
 
 
 # =====================================================================
@@ -209,20 +223,109 @@ async def test_half_open_probe_fails_without_retry():
 
 
 @pytest.mark.asyncio
-async def test_probe_rate_limited_keeps_half_open():
-    """探针收到 429：不计入熔断状态机，熔断器保持 HALF_OPEN（限流≠未恢复）。"""
-    cb = _quick_cb()
-    _force_half_open(cb)
+async def test_probe_rate_limited_opens_breaker():
+    """探针收到 429：视为下游仍过载，熔断器回 OPEN（停止探测让下游喘息）。
 
+    429 是下游过载信号：不得计入成功（防误关熔断器），也不得保持 HALF_OPEN
+    持续探测（给过载下游施加压力）。回 OPEN 后冷却期停止所有探测。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
     handler = RetryHandler(circuit_breaker=cb)
 
-    async def call_fn():
+    async def rl_fn():
         raise _RateLimited()
 
     with pytest.raises(_RateLimited):
-        await handler.execute(call_fn)
+        await handler.execute(rl_fn)
 
-    assert cb.state.value == "half_open", "探针 429 不得把熔断器打回 OPEN"
+    assert cb.state.value == "open", "429 探针应把熔断器打回 OPEN（让下游喘息）"
+    assert cb._last_failure_time > 0, "回 OPEN 应开始新一轮冷却"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_429_no_false_close():
+    """429 探针不得关闭熔断器，且回 OPEN 后不再放行探针。
+
+    修复前（可达性成功）：3 次 429 → _consecutive_successes=3 → 关闭熔断器，
+    全部流量涌入仍过载的下游 → 加重负担。
+    修复后：429 → record_failure 回 OPEN → allow_request 拒绝后续请求。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    async def rl_fn():
+        raise _RateLimited()
+
+    with pytest.raises(_RateLimited):
+        await handler.execute(rl_fn)
+
+    assert cb.state.value == "open", "429 探针应回 OPEN（过载信号）"
+    assert cb._consecutive_successes == 0, "429 不得计入连续成功"
+    # 回 OPEN 后：后续请求被熔断拒绝，不再放行探针
+    assert cb.allow_request() is False, "回 OPEN 后应停止放行（冷却期）"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_429_resets_recovery():
+    """探针 429 回 OPEN 后，恢复探测需等新一轮冷却（不连续探测过载下游）。
+
+    场景：half_open_max_requests=3，前 2 次探针成功（_consecutive_successes=2），
+    第 3 次探针收到 429。
+    修复前（中性）：429 归还槽位 → 继续探测 → 反复压过载下游。
+    修复后：429 → record_failure 回 OPEN + 重置冷却 → 恢复探测延后，下游喘息。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    # 探针 #1 / #2：成功
+    async def ok_fn():
+        return "ok"
+
+    assert await handler.execute(ok_fn) == "ok"
+    assert await handler.execute(ok_fn) == "ok"
+    assert cb._consecutive_successes == 2
+
+    opened_at = cb._last_failure_time
+
+    # 探针 #3：429 → 回 OPEN，冷却重新计时
+    async def rl_fn():
+        raise _RateLimited()
+
+    with pytest.raises(_RateLimited):
+        await handler.execute(rl_fn)
+
+    assert cb.state.value == "open", "429 探针应把熔断器打回 OPEN"
+    assert cb._consecutive_successes == 0, "回 OPEN 应清空连续成功"
+    assert cb._last_failure_time >= opened_at, "回 OPEN 应重置冷却计时"
+    assert cb.allow_request() is False, "冷却期内后续请求被熔断拒绝"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_non_retryable_opens_and_raises():
+    """探针收到 4xx：熔断器回 OPEN，且异常直接抛给上层（客户端问题）。
+
+    4xx 是客户端配置/参数/权限错误：熔断器回 OPEN（下游不可用状态），
+    且异常直接抛出——上层必须修复请求后才能重试，避免带病请求在
+    恢复探测阶段反复打下游。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    class _BadRequest(Exception):
+        status_code = 400
+
+    async def bad_fn():
+        raise _BadRequest()
+
+    with pytest.raises(_BadRequest):
+        await handler.execute(bad_fn)
+
+    assert cb.state.value == "open", "4xx 探针应把熔断器打回 OPEN"
+    assert cb._consecutive_successes == 0, "4xx 不得计入连续成功"
 
 
 def test_open_record_success_does_not_close_breaker():

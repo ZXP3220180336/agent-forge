@@ -9,6 +9,7 @@ dependencies = [
     "anthropic>=0.120.2",
     "dotenv>=0.9.9",
     "fastapi>=0.139.0",
+    "httpx>=0.28.1",
     "openai>=2.45.0",
     "pydantic-settings>=2.14.2",
     "redis>=8.0.1",
