@@ -15,6 +15,8 @@
 
 构建一个**工业级 AI Agent 系统**，基于 FastAPI + OpenAI API 协议（兼容 DeepSeek），实现完整的 ReAct 循环 Agent。
 
+**产品定位**：多 Agent 任务执行引擎 + 半导体良率异常根因分析场景（Yield RCA）。主方向、备选方向（工业 RAG）与已关闭方向（EDA）的详细决策见 [product.md](product.md)。
+
 ### 架构分层
 
 ```text
@@ -44,14 +46,14 @@ API 层（FastAPI 路由）
 ## 2. 顶层计划
 
 | Phase   | 模块                                                       | 状态                                                                        |
-| ------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
+|-------|----------------------------------------------------------|---------------------------------------------------------------------------|
 | 1       | 配置模块 + 工具模块                                        | ✅ 已完成                                                                   |
-| 2       | LLM 服务层重构（8 子模块）                                 | ✅ 已完成（retry 熔断/错误分类/探针 + RateLimiter 集成 + 限流双文件拆分）     |
+| 2       | LLM 服务层重构（8 子模块）                                 | ✅ 已完成（retry 熔断/错误分类/探针 + RateLimiter 集成 + 限流双文件拆分）   |
 | 3       | 核心 Agent 层（BaseAgent + ReActAgent + Prompts + Events） | ✅ 已完成（闭环打通 + 工具并行执行）                                        |
 | 4       | 基础设施层（Database/Redis/VectorStore/MessageQueue）      | 🔶 有文件但未验证（asyncpg 驱动未安装，DB 恒降级）                          |
 | 5       | 服务层补全（ToolService / MemoryService / TaskService）    | 🔶 ToolService/TaskService 已实现（并发信号量）；Memory 空；Task 编排规划中 |
 | 6       | API 路由完善（Admin / Agent / Tool 路由）                  | 🔶 chat 已接入 ReActAgent；Admin/Agent/Tool 路由仍为空文件                  |
-| 7       | 测试 + 文档收尾                                            | 🔶 98 测试通过；task.md 已建；architecture/api/deployment 仍空               |
+| 7       | 测试 + 文档收尾                                            | 🔶 98 测试通过；task.md 已建；architecture/api/deployment 仍空              |
 
 ---
 
@@ -184,18 +186,19 @@ API 层（FastAPI 路由）
 
 **2026-08-03 轮（文档）：**
 8. **TaskService 顶层计划**：[task.md](task/task.md)（调度枢纽 + 多 Agent 编排规划）
+9. **产品方向决策**：[product.md](product.md)（多 Agent 引擎 + 良率 RCA 主方向；工业 RAG 备选；EDA 关闭）
 
 ### 5.3 项目级遗留问题（无模块文档归属的部分）
 
-| #   | 问题                 | 说明                                                                                                                  |
-| --- | -------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| 1   | **DB 恒降级**        | `asyncpg` 驱动未安装（`No module named 'asyncpg'`），即使有 PostgreSQL 也无法连接 → 需在 pyproject 依赖中加 `asyncpg` |
-| 2   | **基础设施层空**     | `infrastructure/`（database/redis/vector_store/message_queue）全部为空文件；DB/Redis 由 `app_state.py` 直接管理       |
-| 3   | **服务层未补全**     | `MemoryService` 仍为空文件（TaskService 已实现并发信号量，编排规划见 [task.md](task/task.md)）                       |
+| #   | 问题                 | 说明                                                                                                                    |
+|---|--------------------|-----------------------------------------------------------------------------------------------------------------------|
+| 1   | **DB 恒降级**        | `asyncpg` 驱动未安装（`No module named 'asyncpg'`），即使有 PostgreSQL 也无法连接 → 需在 pyproject 依赖中加 `asyncpg`   |
+| 2   | **基础设施层空**     | `infrastructure/`（database/redis/vector_store/message_queue）全部为空文件；DB/Redis 由 `app_state.py` 直接管理         |
+| 3   | **服务层未补全**     | `MemoryService` 仍为空文件（TaskService 已实现并发信号量，编排规划见 [task.md](task/task.md)）                          |
 | 4   | **API 路由未补全**   | `admin.py` / `agent.py` / `tool.py` 为空文件（tool 路由可基于 ToolService 的 stats 实现；agent 路由可承接 TaskService） |
-| 5   | **文档未补全**       | `architecture.md` / `api.md` / `deployment.md` 为空                                                                   |
-| 6   | **中间件未实现**     | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                            |
-| 7   | **TaskService 编排** | 已实现并发闸门；队列/优先级/状态/多 Agent 编排待实现（顶层计划见 [task.md](task/task.md)）                            |
+| 5   | **文档未补全**       | `architecture.md` / `api.md` / `deployment.md` 为空                                                                     |
+| 6   | **中间件未实现**     | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                              |
+| 7   | **TaskService 编排** | 已实现并发闸门；队列/优先级/状态/多 Agent 编排待实现（顶层计划见 [task.md](task/task.md)）                              |
 
 > **LLM 层自身遗留**（`generate_structured` 重复实现待统一；`APIResponseValidationError` 已决策保持；流式迭代自动重试已决策整流）：见 [llm.md](llm/llm.md)「当前进度与遗留」。
 
@@ -213,39 +216,40 @@ API 层（FastAPI 路由）
 
 ### 关键文件索引
 
-| 文件                                | 重要程度  | 说明                                                  |
-| ----------------------------------- | --------- | ----------------------------------------------------- |
-| `app/main.py`                       | ⭐⭐⭐    | FastAPI 入口                                          |
-| `app/config/settings.py`            | ⭐⭐⭐    | 全局配置（约 350 行）                                 |
-| `app/app_state.py`                  | ⭐⭐⭐    | 应用状态管理                                          |
-| `app/services/llm_service.py`       | ⭐⭐⭐    | LLM Facade（流式迭代保护 + 限流闭环）                 |
-| `app/services/llm/`                 | ⭐⭐⭐    | LLM 子包（ClientManager/Retry/Stream/Structured/Logger/RateLimiter/Reservation/Cost） |
-| `app/services/llm/client.py`        | ⭐⭐⭐    | 连接池管理                                            |
-| `app/services/llm/retry.py`         | ⭐⭐⭐    | 重试+熔断（滑动窗口熔断/错误分类/半开探针）           |
-| `app/services/llm/reservation_limiter.py` | ⭐⭐⭐ | 限流（reserve/settle 形态，llm_service 实际使用）     |
-| `app/services/task_service.py`      | ⭐⭐⭐    | 任务调度（并发信号量；编排规划见 task.md）            |
-| `app/core/agent/base.py`            | ⭐⭐⭐    | Agent 基类 + 数据结构                                 |
-| `app/core/agent/executor.py`        | ⭐⭐⭐    | ReAct 执行引擎                                        |
-| `app/core/events.py`                | ⭐⭐⭐    | SSE 事件定义                                          |
-| `app/tools/`                        | ⭐⭐⭐    | 工具系统                                              |
-| `app/api/routes/chat.py`            | ⭐⭐      | 聊天 API（已接入 ReActAgent）                         |
-| `tests/unit/test_retry.py`          | ⭐⭐      | retry 单元测试（24 用例）                             |
-| `tests/unit/test_classify_error.py` | ⭐⭐      | 错误分类单测（22 用例，本轮新增）                     |
+| 文件                                      | 重要程度  | 说明                                                                                  |
+|-----------------------------------------|---------|-------------------------------------------------------------------------------------|
+| `app/main.py`                             | ⭐⭐⭐    | FastAPI 入口                                                                          |
+| `app/config/settings.py`                  | ⭐⭐⭐    | 全局配置（约 350 行）                                                                 |
+| `app/app_state.py`                        | ⭐⭐⭐    | 应用状态管理                                                                          |
+| `app/services/llm_service.py`             | ⭐⭐⭐    | LLM Facade（流式迭代保护 + 限流闭环）                                                 |
+| `app/services/llm/`                       | ⭐⭐⭐    | LLM 子包（ClientManager/Retry/Stream/Structured/Logger/RateLimiter/Reservation/Cost） |
+| `app/services/llm/client.py`              | ⭐⭐⭐    | 连接池管理                                                                            |
+| `app/services/llm/retry.py`               | ⭐⭐⭐    | 重试+熔断（滑动窗口熔断/错误分类/半开探针）                                           |
+| `app/services/llm/reservation_limiter.py` | ⭐⭐⭐    | 限流（reserve/settle 形态，llm_service 实际使用）                                     |
+| `app/services/task_service.py`            | ⭐⭐⭐    | 任务调度（并发信号量；编排规划见 task.md）                                            |
+| `app/core/agent/base.py`                  | ⭐⭐⭐    | Agent 基类 + 数据结构                                                                 |
+| `app/core/agent/executor.py`              | ⭐⭐⭐    | ReAct 执行引擎                                                                        |
+| `app/core/events.py`                      | ⭐⭐⭐    | SSE 事件定义                                                                          |
+| `app/tools/`                              | ⭐⭐⭐    | 工具系统                                                                              |
+| `app/api/routes/chat.py`                  | ⭐⭐      | 聊天 API（已接入 ReActAgent）                                                         |
+| `tests/unit/test_retry.py`                | ⭐⭐      | retry 单元测试（24 用例）                                                             |
+| `tests/unit/test_classify_error.py`       | ⭐⭐      | 错误分类单测（22 用例，本轮新增）                                                     |
 
 ### 文档清单
 
-| 文档                               | 说明                                                        |
-| ---------------------------------- | ----------------------------------------------------------- |
-| [config.md](config.md)             | ✅ 配置模块                                                 |
-| [tools.md](tools.md)               | ✅ 工具模块                                                 |
-| [agent.md](agent.md)               | ✅ Agent 模块                                               |
-| [llm/llm.md](llm/llm.md)           | ✅ LLM 层总览                                               |
-| [llm/client.md](llm/client.md)     | ✅ ClientManager 设计                                       |
-| [llm/retry.md](llm/retry.md)       | ✅ RetryHandler 设计（滑动窗口/错误分类/半开探针/修复记录） |
-| [task/task.md](task/task.md)       | ✅ TaskService 顶层计划（调度枢纽 + 多 Agent 编排规划）     |
-| [architecture.md](architecture.md) | ❌ 空                                                       |
-| [api.md](api.md)                   | ❌ 空                                                       |
-| [deployment.md](deployment.md)     | ❌ 空                                                       |
+| 文档                               | 说明                                                            |
+|----------------------------------|---------------------------------------------------------------|
+| [config.md](config.md)             | ✅ 配置模块                                                     |
+| [tools.md](tools.md)               | ✅ 工具模块                                                     |
+| [agent.md](agent.md)               | ✅ Agent 模块                                                   |
+| [llm/llm.md](llm/llm.md)           | ✅ LLM 层总览                                                   |
+| [llm/client.md](llm/client.md)     | ✅ ClientManager 设计                                           |
+| [llm/retry.md](llm/retry.md)       | ✅ RetryHandler 设计（滑动窗口/错误分类/半开探针/修复记录）     |
+| [task/task.md](task/task.md)       | ✅ TaskService 顶层计划（调度枢纽 + 多 Agent 编排规划）         |
+| [product.md](product.md)           | ✅ 产品定位与方向（良率 RCA 主方向 / 工业 RAG 备选 / EDA 关闭） |
+| [architecture.md](architecture.md) | ❌ 空                                                           |
+| [api.md](api.md)                   | ❌ 空                                                           |
+| [deployment.md](deployment.md)     | ❌ 空                                                           |
 
 ### 常用命令
 
