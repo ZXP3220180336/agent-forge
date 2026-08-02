@@ -12,6 +12,7 @@
 - [核心概念解释](#核心概念解释)
   - [限流（Rate Limiting）](#限流rate-limiting)
   - [Token Bucket 算法](#token-bucket-算法)
+  - [其他限流算法](#其他限流算法)
   - [RPM / TPM](#rpm--tpm)
   - [Retry-After 响应头](#retry-after-响应头)
   - [突发（Burst）与平滑（Smoothing）](#突发burst与平滑smoothing)
@@ -24,6 +25,7 @@
 - [与重试/熔断的分层配合](#与重试熔断的分层配合)
 - [配置项清单](#配置项清单)
 - [已知边界与设计取舍](#已知边界与设计取舍)
+- [工业级对比：修复方案 vs 主流实现](#工业级对比修复方案-vs-主流实现)
 - [附录：2026-08-01 代码审核记录](#附录2026-08-01-代码审核记录)
 
 ---
@@ -72,6 +74,93 @@ _tokens       当前剩余 Token（初始 = capacity）
 | 滑动窗口日志 | — | 精确 | 随窗口增长 |
 
 Token Bucket 在「允许突发」和「长期平滑」间取得平衡，适合 Agent 的突发调用模式。
+
+### 其他限流算法
+
+限流算法不止 Token Bucket 一种。按「是否允许突发、是否精确、实现复杂度」的维度，主流算法可归为几类：
+
+```
+               允许突发？      平滑性        内存/复杂度       典型实现
+Token Bucket     ✅             长期平滑        常数           x/time/rate, Bucket4j
+漏桶 Leaky       ❌（恒定速率）   严格整形        常数           queue + 定时出队
+固定窗口         窗口边界双倍     一般            常数           Nginx limit_req（早期）
+滑动窗口日志     精确            精确            随窗口增长     直方图/Redis ZSET
+滑动窗口计数     部分（分桶粒度） 接近平滑         常数（分桶）   Redis INCR + 时间桶
+GCRA             ✅             精确            常数           rate-limit 库（Ruby）
+```
+
+各算法要点与适用场景：
+
+#### 固定窗口（Fixed Window）
+
+按固定时间窗（如 1 分钟）计数，窗口内计数达到上限即拒绝。
+
+```
+窗口 [0,60) 计数 55 → 剩余 5
+窗口 [60,120) 计数 40 → 剩余 20   ← 窗口切换，计数清零
+```
+
+- **优点**：实现最简单（一个计数器 + 窗口边界判断），内存常数
+- **缺点**：**窗口边界双倍请求**——若 59s 用了 55 个、61s 又用 55 个，两秒内实际发了 110 个（两倍配额），跨窗口交界突发无防护
+- **适用**：对瞬时峰值不敏感、实现优先的场景；Nginx 早期 `limit_req`、Redis 简单计数
+
+#### 滑动窗口日志（Sliding Window Log）
+
+记录窗口内每次请求的时间戳，查询时剔除过期时间戳后计数。
+
+```
+窗口 [T-60, T)：每个请求一个时间戳，滑动删除超窗的
+请求到来 → 删除 < T-60 的 → 计数 → 超限拒绝
+```
+
+- **优点**：**最精确**——任意时刻窗口内的请求数都真实反映，无边界双倍问题
+- **缺点**：**内存随窗口内请求量增长**（每个请求一个时间戳）；高吞吐下内存和淘汰开销大
+- **适用**：低 QPS 但要求精确的场景；Redis ZSET（Sorted Set）实现
+
+#### 滑动窗口计数（Sliding Window Counter）
+
+固定窗口 + 细粒度分桶的折中：把窗口切成 N 个小桶，滑动时按比例加权历史桶计数。
+
+```
+窗口 = 4 个 15s 小桶，当前桶按剩余时间加权：
+current + 上一桶 × (剩余比例) = 近似窗口计数
+```
+
+- **优点**：内存常数（N 个桶），比固定窗口平滑（无边界双倍），比滑动窗口日志省内存
+- **缺点**：分桶粒度内仍不精确（边界内的小幅突刺）
+- **适用**：Redis 分桶实现（`INCR + EXPIRE`）、Cloudflare 的限流方案；多数生产网关（API Gateway）的实际选择
+
+#### 漏桶（Leaky Bucket）
+
+恒定速率流出：请求先入队（桶），以固定速率逐出执行；桶满则拒绝（或丢弃）。
+
+```
+         ┌──────────────┐
+ 请求 →  │   漏桶（队列）  │ → 恒定速率流出
+         └──────────────┘
+  桶满 → 拒绝新请求（队尾丢弃）
+```
+
+- **优点**：输出速率**严格恒定**，天然整形流量；内存常数
+- **缺点**：**无法应对突发**——即使桶是空的，新请求也按恒定速率流出；空闲期积攒的能力无法用于短时高峰
+- **适用**：视频流、消息队列背压、需要严格平滑输出速率的场景（流量整形而非突发容忍）
+
+#### GCRA（Generic Cell Rate Algorithm）
+
+以「理论到达时间（TAT）」为核心的精确节流算法，常被视为 Token Bucket 的一种精确等价格式。
+
+```
+TAT = 上次请求的理论到达时间
+新请求 → TAT' = max(now, TAT) + 1/rate
+  若 TAT' - now > burst   → 拒绝（超出突发容忍）
+  否则 → 接受，TAT = TAT'
+```
+
+- **优点**：**内存常数**（只存一个 TAT）+ 精确节流（无边界双倍）；单桶即可同时表达速率与突发上限
+- **缺点**：概念上比 Token Bucket 抽象，理解成本略高
+- **适用**：Ruby `rack/rate-limit`、部分 API Gateway；很多实现（如 x/time/rate 的 `advance`）本质等价于 GCRA
+
+> **本模块为何选 Token Bucket**：Agent 场景（瞬时多个工具调用）需要**突发容忍**（排除固定窗口/漏桶），同时要**常数内存**（排除滑动窗口日志）。Token Bucket 与 GCRA 都满足，但 Token Bucket 的概念直观、与「桶/补充速率」的直觉一致，便于按 RPM/TPM 双桶独立建模。若未来需要更精确的边界控制，可评估滑动窗口计数或 GCRA。
 
 ### RPM / TPM
 
@@ -137,17 +226,24 @@ class TokenBucket:
         self._lock = asyncio.Lock()
 
     async def acquire(self, tokens=1.0) -> float:
-        async with self._lock:
-            self._refill()
-            if self._tokens >= tokens:
-                self._tokens -= tokens
-                return 0.0
-            needed = tokens - self._tokens
-            wait_time = needed / self.refill_rate
-            await asyncio.sleep(wait_time)   # 持锁等待（见「已知边界」）
-            self._refill()
-            self._tokens -= tokens
-            return wait_time
+        # 配置 0 = 禁用限流：refill_rate <= 0 时无限速率直接放行，避免除零崩溃
+        if self.refill_rate <= 0:
+            return 0.0
+
+        # 锁内计算 → 锁外 sleep → 循环重检（见「已知边界」边界 1）
+        total_wait = 0.0
+        while True:
+            async with self._lock:
+                self._refill()
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return total_wait
+                wait_time = (tokens - self._tokens) / self.refill_rate
+
+            # 锁外 sleep：期间其他请求可获取锁、扣减 token
+            await asyncio.sleep(wait_time)
+            total_wait += wait_time
+            # 回到循环顶部重新检查——sleep 期间 token 可能被其他请求抢走
 
     def _refill(self):
         now = time.monotonic()
@@ -161,9 +257,10 @@ class TokenBucket:
 - **时间源**：`time.monotonic()`（单调时钟），不受系统时间调整影响
 - **惰性补充**：`_refill()` 只在 acquire 时调用，无需后台定时器，按经过时间换算补 token
 - **容量封顶**：`min(capacity, ...)`，闲置期间不会无限积累 token，突发上限被约束
-- **互斥**：`asyncio.Lock` 保证桶状态一致性（并发请求同时扣 token 不会超扣）
+- **互斥**：`asyncio.Lock` 保证桶状态一致性（并发请求同时扣 token 不会超扣）；等待在锁外进行，锁不阻塞其他请求、可响应取消
+- **配置 0 语义**：`refill_rate <= 0` 直接放行（配置 0 = 禁用限流，见「已知边界」边界 4）
 
-**返回语义**：`acquire` 返回**桶内等待时间**（秒），桶充足时立即返回 `0.0`。
+**返回语义**：`acquire` 返回**桶内累计等待时间**（秒），桶充足时立即返回 `0.0`。
 
 ### RateLimiter — 双桶组合
 
@@ -184,7 +281,7 @@ class RateLimiter:
 **要点**：
 
 - **RPM 桶固定扣 1**：每次请求 = 1 次调用
-- **TPM 桶按 `estimated_tokens` 扣**：请求前预估的 prompt token 数（`max(..., 1.0)` 防止 0 造成桶不扣）
+- **TPM 桶按 `estimated_tokens` 扣**：请求前预估的 token 消耗 = prompt + `max_tokens` 输出余量（`max(..., 1.0)` 防止 0 造成桶不扣）
 - **固定顺序**：先 RPM 后 TPM，无锁竞争死锁
 - **`retry_after` 在最前**：不持桶锁，让所有请求统一遵守服务端退避
 
@@ -223,7 +320,7 @@ class RateLimiterManager:
 ```
 async_generate() / generate()
     │
-    ├─ estimated = _count_prompt_tokens(model_key, messages)   # tiktoken 实时数（循环外一次）
+    ├─ estimated = _count_prompt_tokens(model_key, messages, max_tokens)  # prompt + 输出余量，循环外一次
     ├─ limiter = RateLimiterManager.get(model_key)
     │
     ├─ retry.execute(call_fn=_rate_limited_call)               # 重试/熔断/fallback
@@ -284,6 +381,94 @@ async_generate() / generate()
 
 ---
 
+## 工业级对比：修复方案 vs 主流实现
+
+> 本节对照工业级限流实现（Go `x/time/rate`、Guava、Bucket4j、resilience4j、LiteLLM、aiolimiter、Fenic 等），检视我们针对附录 4 个缺陷的修复方案。调研日期 2026-08-02，来源见各节。
+
+### 对比 1：「禁用限流」的表达（对应问题 1，配置 0 除零崩溃）
+
+**工业级语义：`0` 不是「禁用」，而是「不允许任何事件」。** 禁用必须用显式开关或极大值表达。
+
+| 库 | 0 的语义 | 禁用方式 |
+| --- | --- | --- |
+| Go `x/time/rate` | "A zero Limit allows no events"——桶不再补 token，消费完 burst 后全部拒绝 | `rate.Inf`（`Limit(math.MaxFloat64)`）允许所有事件 |
+| Bucket4j（Java） | 无 0 特殊语义 | `replaceConfiguration(无限大配置, RESET)` 动态切换，或 starter 层 `enabled=false` |
+| resilience4j | 无独立 enabled 布尔 | 参数配置为极大值 + 上层开关 |
+
+> 真实事故：Traefik 曾依赖 `x/time/rate` 的 0-limit 行为实现「禁用」，2024 年 x/time 修复 0-limit 语义（`NewLimiter(0, b)` 会预填 burst token，首个请求仍通过）后被迫改用 `SetLimit(rate.Inf)`。[Traefik PR #9621](https://github.com/traefik/traefik/pull/9621)
+
+**我们的方案 vs 工业级**：
+
+- 我们采用「`refill_rate <= 0` 直接放行」——**语义上是把 0 当作禁用**。这与工业级「0 = 拒绝一切」相反，但**在本项目语境下是安全的**：我们的 `capacity` 与 `refill_rate` 同源于 `rpm/tpm` 配置，`0` 只会来自「配置未填」，不会来自「业务上要禁止某模型」——那是 `RateLimiterManager.get` 对未知 key 抛 `ValueError` 的职责。
+- **差异提醒**：工业级更推荐「显式 `enabled` 开关」，语义更清晰、且不会产生「0 到底算禁用还是拒绝」的歧义。若未来需要表达「某个模型限流关闭但配置仍是 0」，应引入独立的开关字段，而非继续依赖 0 的特殊处理。
+
+**来源**：[x/time/rate 文档](https://pkg.go.dev/golang.org/x/time/rate) · [x/time/rate 源码](https://go.googlesource.com/time/+/refs/tags/v0.10.0/rate/rate.go) · [Traefik PR #9621](https://github.com/traefik/traefik/pull/9621) · [Bucket4j 动态启用/禁用](https://stackoverflow.com/questions/76016472/bucket4j-enable-or-disable-dynamically/76036679#76036679)
+
+### 对比 2：等待是否持锁（对应问题 2，持锁 sleep 阻塞其他请求）
+
+**工业级共识：锁内只做记账（reserve），锁外等待。** 没有任何主流实现会在持锁状态下 sleep。
+
+| 库 | 等待模型 | 持锁等待？ | 取消/超时 |
+| --- | --- | --- | --- |
+| Go `x/time/rate` | `reserveN` 锁内记账 → `Wait(ctx)` 锁外 timer/select | 否 | `ctx.Done()` 取消时 `Cancel()` 退还 token |
+| Guava `acquire()` | `reserve()` 锁内记账 → `sleepMicrosUninterruptibly()` 锁外 sleep | 否（源码注释确认刻意设计） | 仅 `tryAcquire(timeout)` 有超时 |
+| Bucket4j | 非阻塞 `tryConsume()`（拿不到返回 false），等待由调用方做 | 否（默认 LOCK_FREE/CAS） | 由调用方处理 |
+
+**我们的方案 vs 工业级**：
+
+- 我们的「锁内计算 → 锁外 sleep → 循环重检」**与 Guava 的 `reserve` + 锁外 sleep 同构**——锁只做记账，等待让出事件循环（asyncio 等价于 Go 的锁外等待）。方向正确。
+- **差异提醒（可改进点）**：我们目前**没有「取消时退还已预留 token」**的语义。Go 的 `Wait(ctx)` 被取消时会 `Cancel()` 把预留的 token 还给桶；我们的实现中，等待中的 acquire 被 `CancelledError` 中断后，不会向桶退还任何东西（因为我们还没扣减——扣减只发生在 `_tokens >= tokens` 的分支，即真正拿到许可时）。**严格说我们的语义已经比 Go 更保守**：没有提前预留，取消即无事发生，桶不被污染（测试 `test_bucket_cancel_does_not_corrupt_state` 已覆盖）。若要支持「先预留、后结算」的 TPM 精确记账（见对比 3），才需要引入 Reservation 模型。
+
+**来源**：[x/time/rate 源码（reserveN/WaitN/CancelAt）](https://go.googlesource.com/time/+/refs/tags/v0.10.0/rate/rate.go) · [Guava RateLimiter 源码（acquire/reserve 两段式）](https://guava.dev/releases/17.0/api/docs/src-html/com/google/common/util/concurrent/RateLimiter.html#line.274) · [Bucket4j SynchronizationStrategy](https://javadoc.io/static/com.bucket4j/bucket4j_jdk8-core/8.10.1/io/github/bucket4j/local/SynchronizationStrategy.html)
+
+### 对比 3：TPM 消耗估算（对应问题 3，只算 prompt 低估输出）
+
+**工业级共识：TPM 官方口径 = 输入 + 输出都计入；单次调用预估值 = prompt + max_tokens（输出上限），请求完成后按实际 usage 结算。** 只算 prompt 是已知的严重低估。
+
+| 方案 | 输入侧 | 输出侧 | 结算 |
+| --- | --- | --- | --- |
+| OpenAI/Azure 官方 | 提交时估算 | `estimated = prompt_tokens + max_tokens × best_of` | 响应 `usage` 事后校准 |
+| LiteLLM | tiktoken 精确计数 | 预留有效输出上限（max_tokens → 模型上限 → 4096） | ITPM/OTPM 分桶，实际 `prompt+completion` 结算 |
+| Fenic 网关 | tiktoken 精确计数 | p95 自适应预留（推理模型 p99）× 1.15 | 结算退差 `reserved − actual`（吞吐提升约 23×） |
+
+**我们的方案 vs 工业级**：
+
+- 我们采用「prompt（tiktoken 精确）+ `max_tokens` 输出余量」——**与 OpenAI 官方估算公式、LiteLLM 的预留上限一致**，方向正确。
+- **差异提醒（可改进点）**：
+  1. **我们没有结算退差**——`max_tokens` 是上限，实际输出往往远小于它，TPM 桶会长期偏保守（低估实际可用量）。Fenic 的数据显示结算退差能显著提升吞吐。但结算需要「请求完成后回写实际 usage」，而我们的 `acquire` 是「请求前一次性扣减」的拉模式，天然不支持回退。这是预留-结算协议（reserve/settle）的范畴，见对比 4。
+  2. **`max_tokens` 设得过大反而空耗配额**——OpenAI 明确警告：提交时按 `max_tokens` 估，设太高会白白消耗 TPM。我们继承了这个特性：`max_tokens=4096` 但实际只输出 200 token 时，每次调用都按 4096 扣 TPM。**这是「宁多勿少」的保守取舍，可接受**；要更精确需引入 Fenic 式的自适应分布预留。
+
+**来源**：[OpenAI Rate limits 文档](https://developers.openai.com/api/docs/guides/rate-limits) · [LiteLLM ITPM/OTPM 限流](https://docs.litellm.ai/docs/proxy/io_token_rate_limits) · [Fenic 自适应 token 估算设计](https://github.com/typedef-ai/fenic/blob/main/specs/adaptive_token_estimation_design.md) · [LangChain rate_limiters（仅时间限制）](https://reference.langchain.com/python/langchain-core/rate_limiters)
+
+### 对比 4：限流器 API 形态（对应问题 5，`async with` 语义误导）
+
+**工业级结论：RPM 按请求计数的桶可用 `async with`；TPM 按量计费的桶应用显式 `reserve/settle` 方法。** `async with`（无参）在按量场景有先天局限——硬编码消耗 1，且无法表达「先预留、后结算」。
+
+| 库 | 形态 | 按量消耗支持 |
+| --- | --- | --- |
+| aiolimiter | `async with limiter:`（= `acquire(1)`）+ `await limiter.acquire(amount)` / `limiter.limit(amount)` | 提供带参变体 |
+| limits | 纯方法：`hit()` / `test()` / `get_window_stats()` | `hit()` 每次 1，无上下文管理器 |
+| aiometer | 批量任务形态 `run_all(max_per_second=...)` | 不适合单次按量扣减 |
+| Go `x/time/rate` | `Reserve()` 返回 Reservation → `DelayFrom()` / `Wait(ctx)` → `CancelAt(t)` | 预留-取消模型 |
+
+**我们的方案 vs 工业级**：
+
+- 我们**移除了 `__aenter__/__aexit__`**（无使用方），`await acquire()` 成为唯一用法——与 limits、PyrateLimiter 的方法调用形态一致，避免了 `async with` 对 TPM 桶的「消耗 1」误导。**方向正确且更简洁**（业界 aiolimiter 需要用 `limiter.limit(amount)` 绕开这个局限，我们直接没有这个陷阱）。
+- **差异提醒（可改进点）**：我们的 `acquire` 是「请求前一次性扣减」的拉模式，没有暴露 Reservation 形态的「预留 → 结算 → 退还」API。若未来要落地对比 3 的结算退差，API 层需要演进为类似 Go 的 `reserve(amount) → settle(actual)`。
+
+**来源**：[aiolimiter GitHub](https://github.com/mjpieters/aiolimiter) · [aiolimiter Discussion #181（按 payload 限流）](https://github.com/mjpieters/aiolimiter/discussions/181) · [limits 文档](https://limits.readthedocs.io/) · [aiometer GitHub](https://github.com/florimondmanca/aiometer)
+
+### 速查表
+
+| 我们的缺陷 | 工业级正确做法 | 我们的方案 | 参照实现 | 结论 |
+| --- | --- | --- | --- | --- |
+| 配置 0 除零崩溃 | 显式 `enabled` 开关或 `Inf`/极大值；0 = 拒绝一切 | `refill_rate <= 0` 直接放行 | x/time/rate `rate.Inf`、Bucket4j `enabled=false` | ✅ 本项目语境下安全；未来需独立开关则演进 |
+| 持锁 sleep 阻塞其他请求 | 锁内记账、锁外等待；等待让出事件循环、支持取消 | 锁内计算 → 锁外 sleep → 循环重检 | Guava `acquire()` 两段式、x/time/rate `Wait(ctx)` | ✅ 与工业级同构 |
+| 只算 prompt 低估输出 | 预留 = prompt + max_tokens，完成后按实际结算退差 | prompt + max_tokens 输出余量 | OpenAI 估算公式、LiteLLM、Fenic | ✅ 方向正确；缺结算退差（可改进） |
+| `async with` 语义误导 | TPM 桶用显式 reserve/settle；RPM 桶可 `async with` | 移除上下文管理器，`await acquire()` 唯一用法 | aiolimiter `acquire(amount)`、limits `hit()` | ✅ 更简洁，无 TPM 桶误导 |
+
+---
+
 ## 附录：2026-08-01 代码审核记录
 
 > 本次审核（初始版本）发现的遗留问题，先记录待办；修复状态逐条标注（✅ 已修复）。
@@ -332,8 +517,10 @@ async_generate() / generate()
 
 **修复（2026-08-02）**：采用更彻底的方案——**移除 `__aenter__` / `__aexit__` 死代码**（已确认全项目无 `async with limiter:` 使用方，仅 docstring 与类自身）。`await acquire()` 成为唯一用法，模块 docstring 同步改为直接用法示例，消除「TPM 桶退化」的误导路径。
 
-### 问题 6（低）：`_tokens` 可轻微为负
+### 问题 6（低）：`_tokens` 可轻微为负 ✅
 
 **位置**：[rate_limiter.py:62](app/services/llm/rate_limiter.py#L62)
 
 **问题**：sleep 后直接 `-= tokens`，浮点时序可能产生负零点几。当前无害，可加 `max(0, ...)` 加固。
+
+**修复（2026-08-02）**：由问题 2 的重构**连带解决**——新实现只在 `_tokens >= tokens` 的分支内扣减，等待中的请求在 sleep 后回到循环顶部重检（不足则继续等、不会扣），不存在"先扣为负"的路径。新增测试 `test_bucket_cancel_does_not_corrupt_state` 覆盖取消路径下的桶状态完整性。
