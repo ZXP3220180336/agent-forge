@@ -13,8 +13,14 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .config import settings
-from .services import ContextManager, LLMService, SessionManager
-from .services.tool_service import ToolService
+from .services import (
+    ContextManager,
+    EmbeddingService,
+    LLMService,
+    SessionManager,
+    TaskService,
+    ToolService,
+)
 
 
 class AppState:
@@ -37,7 +43,8 @@ class AppState:
         self.context_manager: ContextManager | None = None
         self.llm_service: LLMService | None = None
         self.tool_service: ToolService | None = None
-
+        self.task_service: TaskService | None = None
+        self.embedding_service: EmbeddingService | None = None
         # 记录初始化状态
         self.initialized = False
         self._errors: list[str] = []
@@ -137,9 +144,10 @@ class AppState:
             self._errors.append(f"工具初始化失败: {e}")
             print(f"  [WARN] 工具初始化失败（服务降级）: {e}")
 
-        # 5. EmbeddingService
-        from app.services.embedding_service import EmbeddingService
+        # 5. 任务调度服务（并发 Agent 任务信号量）
+        self.task_service = TaskService()
 
+        # 6. EmbeddingService
         self.embedding_service = EmbeddingService(
             client=ClientManager.get_client("main"),
             model=settings.llm_embedding_model_id,

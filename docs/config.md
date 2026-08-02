@@ -241,6 +241,12 @@ Pydantic 类型验证
 | `AGENT_TASK_QUEUE_SIZE`      | int  | 50     | 任务队列大小           |
 | `AGENT_WORKER_POOL_SIZE`     | int  | 5      | 工作线程池大小         |
 
+**落地状态（✅ 已实现）：**
+
+- `AGENT_MAX_CONCURRENT_TASKS` → `TaskService` 任务级并发信号量（`asyncio.Semaphore`），限制同时运行的 Agent 任务数
+- `AGENT_MAX_CONCURRENT_TOOLS` → `ToolRegistry` 工具级并发信号量，限制单任务内同时执行的工具数（配合 `ReActAgent._execute_tool_calls` 的 `asyncio.gather` 并行）
+- 信号量用 `async with` 管理，异常/取消时自动释放，不会挂死占坑
+
 **调优建议：**
 
 - **CPU 密集型**：`WORKER_POOL_SIZE = CPU 核心数`

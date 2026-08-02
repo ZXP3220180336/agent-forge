@@ -58,6 +58,9 @@ class ToolRegistry:
         self._tools: dict[str, BaseTool] = {}
         self._execution_hooks: list[Callable] = []
         self._stats: dict[str, ToolStats] = {}
+        # 工具级并发信号量：限制单任务内最大并发工具调用数。
+        # Agent 维度（GPU/服务器资源），对应配置 agent_max_concurrent_tools。
+        self._tool_semaphore = asyncio.Semaphore(settings.agent_max_concurrent_tools)
 
     # ===== 注册管理 =====
 
@@ -145,7 +148,10 @@ class ToolRegistry:
         retry_delay: float = 1.0,
     ) -> ToolResult:
         """
-        执行工具（带参数验证、自动重试、执行统计）
+        执行工具（带参数验证、自动重试、执行统计、并发控制）。
+
+        工具级并发信号量限制单任务内最大并发工具调用数（agent_max_concurrent_tools）。
+        async with 天然保证异常/取消时释放信号量，不会挂死占坑。
 
         Args:
             name: 工具名称
@@ -157,6 +163,25 @@ class ToolRegistry:
         Returns:
             ToolResult: 执行结果
         """
+        async with self._tool_semaphore:
+            return await self._execute_impl(
+                name,
+                parameters,
+                timeout=timeout,
+                max_retries=max_retries,
+                retry_delay=retry_delay,
+            )
+
+    async def _execute_impl(
+        self,
+        name: str,
+        parameters: dict[str, Any] | str,
+        timeout: int | None = None,
+        max_retries: int | None = None,
+        retry_delay: float = 1.0,
+    ) -> ToolResult:
+        """执行工具（带参数验证、自动重试、执行统计），在信号量保护内调用。"""
+
         # 1. 使用配置默认值（调用方传 None 则走 settings）
         timeout = timeout if timeout is not None else settings.tool_timeout
         max_retries = max_retries if max_retries is not None else settings.tool_max_retries

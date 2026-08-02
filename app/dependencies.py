@@ -6,7 +6,7 @@
 from fastapi import Header, HTTPException
 
 from .app_state import app_state
-from .services import ContextManager, LLMService, SessionManager
+from .services import ContextManager, LLMService, SessionManager, TaskService
 from .tools import ToolRegistry
 
 
@@ -78,3 +78,17 @@ async def get_tool_registry() -> ToolRegistry:
             "ToolService 尚未初始化。请确保在应用启动时调用了 app_state.initialize()。"
         )
     return app_state.tool_service.registry
+
+
+async def get_task_service() -> TaskService:
+    """
+    获取任务调度服务（依赖注入）。
+
+    TaskService 用信号量限制并发 Agent 任务数（agent_max_concurrent_tasks），
+    chat 路由通过它在任务级并发约束下运行 Agent。
+    """
+    if app_state.task_service is None:
+        raise RuntimeError(
+            "TaskService 尚未初始化。请确保在应用启动时调用了 app_state.initialize()。"
+        )
+    return app_state.task_service

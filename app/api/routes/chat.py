@@ -13,9 +13,10 @@ from app.dependencies import (
     get_current_user,
     get_llm_service,
     get_session_manager,
+    get_task_service,
     get_tool_registry,
 )
-from app.services import ContextManager, LLMService, SessionManager
+from app.services import ContextManager, LLMService, SessionManager, TaskService
 from app.tools import ToolRegistry
 
 router = APIRouter(prefix="/api", tags=["聊天"])
@@ -38,6 +39,7 @@ async def send_message(
     context_manager: ContextManager = Depends(get_context_manager),  # noqa: B008
     llm_service: LLMService = Depends(get_llm_service),  # noqa: B008
     tool_registry: ToolRegistry = Depends(get_tool_registry),  # noqa: B008
+    task_service: TaskService = Depends(get_task_service),  # noqa: B008
 ):
     """
     发送消息，流式返回 AI 回复
@@ -83,10 +85,12 @@ async def send_message(
 
         try:
             # 4. ReAct 闭环：LLM 思考 → 工具调用 → LLM 总结
-            async for event in agent.run(
+            # 经 TaskService 在任务级并发信号量（agent_max_concurrent_tasks）保护下运行
+            async for event in task_service.run_agent(
                 user_input=request.message,
                 messages=messages,
                 context=ctx,
+                agent=agent,
             ):
                 yield event
 

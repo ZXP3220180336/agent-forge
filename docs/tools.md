@@ -9,6 +9,7 @@
 - [内置工具详解](#内置工具详解)
 - [注册中心详解](#注册中心详解)
 - [如何开发新工具](#如何开发新工具)
+- [并发控制](#并发控制)
 - [自动重试机制](#自动重试机制)
 - [执行统计](#执行统计)
 - [最佳实践](#最佳实践)
@@ -438,6 +439,23 @@ from app.tools.builtin import CurrentTimeTool  # 直接可用
 5. **`execute`**：必须是 `async def`，返回 `ToolResult`
 6. **参数验证**：总是调用 `self.validate_parameters(**kwargs)` 保护
 7. **错误处理**：所有异常捕获为 `ToolResult(success=False, error=...)`，不要让异常抛出
+
+---
+
+## 并发控制
+
+注册中心实现了**工具级并发信号量**，限制单任务内最大并发工具调用数：
+
+```python
+# ToolRegistry.__init__
+self._tool_semaphore = asyncio.Semaphore(settings.agent_max_concurrent_tools)
+```
+
+- **并发上限**：`agent_max_concurrent_tools`（默认 3），同一时刻最多 N 个工具同时执行
+- **并发度来源**：`ReActAgent._execute_tool_calls` 用 `asyncio.gather` 并行执行工具，信号量限制并发数
+- **超时/异常释放**：`async with self._tool_semaphore` 天然保证异常/取消时释放信号量，不会挂死占坑
+
+> **信号量在 execute() 入口**：所有工具调用（含 Agent、未来非 Agent 调用方）统一经过此限制。
 
 ---
 

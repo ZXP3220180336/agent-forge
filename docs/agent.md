@@ -454,14 +454,34 @@ async def _execute_tool_calls(
     """
 ```
 
-**每个工具的流程：**
+**执行方式：并行（asyncio.gather）+ 信号量限并发**
+
+```python
+results = await asyncio.gather(*[_execute_one(tc) for tc in tool_calls])
+# gather 保证结果顺序 = tool_calls 输入顺序
+for exec_result, tool_name, tool_args, tc, elapsed in results:
+    yield build_tool_call_event(...)
+    yield build_tool_result_event(...)
+    tool_messages.append({...})
+messages.extend(tool_messages)
+```
+
+- **并行执行**：`asyncio.gather` 并发执行所有工具（单任务内）
+- **并发上限**：`ToolRegistry` 的工具级信号量（`agent_max_concurrent_tools`，默认 3）限制同时执行的工具数
+- **顺序保持**：`gather` 保证结果顺序 = 输入顺序 → `tool_messages` / `_tool_call_records` 与 `tool_calls` 顺序一致（OpenAI 兼容 API 要求 tool 消息与 assistant.tool_calls 的 tool_call_id 配对，顺序不能乱）
+- **事件不交错**：SSE 事件只在主 generator 内按顺序 yield，不在并发 task 内 yield
+
+**每个工具的流程（并行 task 内）：**
 
 1. 解析工具名称和参数（含 `json.loads` 异常保护）
-2. `yield build_tool_call_event(...)` — 通知前端
-3. `tool_registry.execute(name, args)` — 执行工具（带超时重试）
-4. 记录 `_tool_call_records` — 含耗时、成功状态
-5. `yield build_tool_result_event(...)` — 通知前端
-6. 追加 tool 角色消息到 `messages`
+2. `tool_registry.execute(name, args)` — 执行工具（带超时重试、信号量限并发）
+
+**主 generator 按序 yield：**
+
+1. `yield build_tool_call_event(...)` — 通知前端
+2. 记录 `_tool_call_records` — 含耗时、成功状态
+3. `yield build_tool_result_event(...)` — 通知前端
+4. 追加 tool 角色消息到 `messages`
 
 ---
 

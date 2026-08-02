@@ -17,6 +17,7 @@ ReAct Agent 实现
 每次 run() 是独立的，上下文通过 AgentContext 传入。
 """
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncGenerator
@@ -160,25 +161,39 @@ class ReActAgent(BaseAgent):
         iteration: int,
     ) -> AsyncGenerator[str]:
         """
-        执行工具调用列表，追加结果到 messages，记录到 _tool_call_records。
+        并行执行工具调用列表，追加结果到 messages，记录到 _tool_call_records。
+
+        并发执行：asyncio.gather 并行执行所有工具（并发度由 ToolRegistry 的
+        工具级信号量 agent_max_concurrent_tools 限制）。gather 保证结果顺序 =
+        输入顺序，因此 tool_messages / _tool_call_records 的顺序与 tool_calls
+        一致——OpenAI 兼容 API 要求 tool 消息与前置 assistant.tool_calls 的
+        tool_call_id 配对，顺序不能乱。
+
+        SSE 事件只在主 generator 内按顺序 yield（不在并发 task 内 yield，
+        避免事件交错）。
 
         Yields:
             tool_call / tool_result SSE 事件
         """
-        tool_messages: list[dict] = []
-        for tc in tool_calls:
+
+        async def _execute_one(tc: dict) -> tuple:
+            """并行执行单个工具（并发 task 内只做执行，不 yield 事件）。"""
             tool_name = tc["function"]["name"]
             try:
                 tool_args = json.loads(tc["function"]["arguments"])
             except (json.JSONDecodeError, KeyError):
                 tool_args = {}
-
-            yield build_tool_call_event(tool_name, tool_args, iteration)
-
-            # 执行工具
             start = time.monotonic()
             exec_result = await self._tools.execute(tool_name, tool_args)
             elapsed = time.monotonic() - start
+            return exec_result, tool_name, tool_args, tc, elapsed
+
+        # gather 保证结果顺序 = tool_calls 输入顺序
+        results = await asyncio.gather(*[_execute_one(tc) for tc in tool_calls])
+
+        tool_messages: list[dict] = []
+        for exec_result, tool_name, tool_args, tc, elapsed in results:
+            yield build_tool_call_event(tool_name, tool_args, iteration)
 
             self._tool_call_records.append(
                 {

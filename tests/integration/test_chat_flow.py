@@ -17,6 +17,7 @@ import pytest
 from app.api.routes.chat import SendMessageRequest, send_message
 from app.services.context_manager import ContextManager
 from app.services.llm_service import StreamResult
+from app.services.task_service import TaskService
 from app.tools.builtin import WriteFileTool
 from app.tools.registry import ToolRegistry
 
@@ -147,6 +148,7 @@ async def test_chat_send_message_react_loop(tmp_path):
         context_manager=context_manager,
         llm_service=fake_llm,
         tool_registry=registry,
+        task_service=TaskService(),
     )
 
     # 3. 消费 SSE 流
@@ -213,6 +215,7 @@ async def test_chat_send_message_no_tools_plain_answer():
         context_manager=context_manager,
         llm_service=fake_llm,
         tool_registry=registry,
+        task_service=TaskService(),
     )
 
     chunks: list[str] = []

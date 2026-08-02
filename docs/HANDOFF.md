@@ -49,7 +49,7 @@ API 层（FastAPI 路由）
 | 2       | LLM 服务层重构（8 子模块）                                 | ✅ 已完成（本轮大幅改造 retry.py：熔断工业级、错误分类、半开探针）          |
 | 3       | 核心 Agent 层（BaseAgent + ReActAgent + Prompts + Events） | ✅ 已完成（闭环打通）                                                       |
 | 4       | 基础设施层（Database/Redis/VectorStore/MessageQueue）      | 🔶 有文件但未验证（asyncpg 驱动未安装，DB 恒降级）                          |
-| 5       | 服务层补全（ToolService / MemoryService / TaskService）    | 🔶 ToolService 已实现；Memory/Task 仍为空文件                               |
+| 5       | 服务层补全（ToolService / MemoryService / TaskService）    | 🔶 ToolService 已实现；TaskService 已实现（并发信号量）；Memory 仍为空文件 |
 | 6       | API 路由完善（Admin / Agent / Tool 路由）                  | 🔶 chat 已接入 ReActAgent；Admin/Agent/Tool 路由仍为空文件                  |
 | 7       | 测试 + 文档收尾                                            | 🔶 部分完成（48 测试通过：test_retry 24 + test_classify_error 22 + 集成 2） |
 
@@ -109,7 +109,7 @@ API 层（FastAPI 路由）
 
 - **作用**：业务调度枢纽，串起会话、上下文、记忆、任务、工具等服务。
 - **需要实现**：SessionManager / ContextManager / MemoryService / TaskService / ToolService。
-- **已经实现**：`SessionManager`（会话 CRUD + Redis 缓存 + 分页/搜索/统计）、`ContextManager`（Token 计数 + 超限截断）、`ToolService`（工具注册 + 统计）；`MemoryService` / `TaskService` 仍为空文件。
+- **已经实现**：`SessionManager`（会话 CRUD + Redis 缓存 + 分页/搜索/统计）、`ContextManager`（Token 计数 + 超限截断）、`ToolService`（工具注册 + 统计）、`TaskService`（任务级并发信号量，`agent_max_concurrent_tasks`）；`MemoryService` 仍为空文件。
 
 **详见**：暂无文档（待补充）
 
@@ -163,7 +163,7 @@ API 层（FastAPI 路由）
 ### 5.1 整体完成度
 
 - **Phase 1-3 已完成**：配置、工具、LLM 服务层、核心 Agent 层全部落地，「用户输入 → LLM 思考 → 工具调用 → LLM 总结 → 回复用户」完整闭环已用真实 API（DeepSeek + Tavily）验证打通。
-- **Phase 4-7 部分实现**：基础设施层与中间件为空文件；服务层（Session/Context/Tool 已实现，Memory/Task 空）、API 路由（chat/session 已实现，admin/agent/tool 空）部分落地；测试与文档部分完成。
+- **Phase 4-7 部分实现**：基础设施层与中间件为空文件；服务层（Session/Context/Tool/Task 已实现，Memory 空）、API 路由（chat/session 已实现，admin/agent/tool 空）部分落地；测试与文档部分完成。
 
 ### 5.2 本轮（2026-08-01）已完成
 
@@ -179,7 +179,7 @@ API 层（FastAPI 路由）
 | --- | ------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | 1   | **DB 恒降级**      | `asyncpg` 驱动未安装（`No module named 'asyncpg'`），即使有 PostgreSQL 也无法连接 → 需在 pyproject 依赖中加 `asyncpg` |
 | 2   | **基础设施层空**   | `infrastructure/`（database/redis/vector_store/message_queue）全部为空文件；DB/Redis 由 `app_state.py` 直接管理       |
-| 3   | **服务层未补全**   | `MemoryService` / `TaskService` 为空文件                                                                              |
+| 3   | **服务层未补全**   | `MemoryService` 仍为空文件（TaskService 已实现并发信号量）                                                            |
 | 4   | **API 路由未补全** | `admin.py` / `agent.py` / `tool.py` 为空文件（tool 路由可基于 ToolService 的 stats 实现）                             |
 | 5   | **文档未补全**     | `architecture.md` / `api.md` / `deployment.md` 为空                                                                   |
 | 6   | **中间件未实现**   | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                            |
