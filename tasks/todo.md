@@ -3,6 +3,18 @@
 > 来源：`docs/llm/rate_limiter.md` 附录「2026-08-01 代码审核记录」6 个遗留问题。
 > 方式：**逐个修复**，每修完一个停下来总结并更新文档。
 
+---
+
+# 结算退差 + reserve/settle（后续任务）
+
+> 承接「工业级对比」章节的可改进点（对比 3/4），2026-08-02 已实现。
+
+- [x] `rate_limiter.py`：TokenBucket.refund + Reservation + ReservationTokenBucket + ReservationRateLimiter（超集单类）+ Manager 单类单缓存
+- [x] `llm_service.py`：迁移到 reserve/settle 统一闭环（R1/R2/R3/R8 防护：create 失败 cancel、create 成功后 settle、迭代硬取消 finally 兜底）
+- [x] `test_rate_limiter.py`：新增 11 个测试（refund/Reservation/reserve），24/24 通过
+- [x] `test_stream_rectify.py`：stub 适配 reserve，15/15 通过
+- [x] 文档：rate_limiter.md 组件详解/调用流程/工业级对比更新
+
 ## 进度
 
 - [x] **问题 1（严重）** 配置 0 除零崩溃 —— `TokenBucket.acquire` 对 `refill_rate <= 0` 防御，直接放行

@@ -21,7 +21,7 @@ from openai import APIResponseValidationError, BadRequestError
 
 from app.config import settings
 from app.services.llm import ClientManager
-from app.services.llm.rate_limiter import RateLimiter, RateLimiterManager
+from app.services.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
 from app.services.llm_service import LLMService, StreamResult
 
 
@@ -181,18 +181,34 @@ def _setup(monkeypatch, script, stream_max_retries=1):
     monkeypatch.setattr(settings, "llm_max_retries", 0)
     monkeypatch.setattr(settings, "llm_stream_max_retries", stream_max_retries)
 
-    # 限流 stub：acquire 立即放行，记录调用次数与 estimated_tokens。
-    # 避免真实 Token Bucket 的等待拖慢测试，且能断言整流重试会重新 acquire。
-    calls = {"acquire": 0, "last_estimated": 0}
+    # 限流 stub：reserve 立即放行，记录调用次数与 estimated_tokens，并统计 settle 退差。
+    # 避免真实 Token Bucket 的等待拖慢测试，且能断言整流/重试会重新 reserve。
+    calls = {"reserve": 0, "last_estimated": 0, "settle": 0, "settle_total": 0, "cancel": 0}
 
-    class _StubRateLimiter(RateLimiter):
-        async def acquire(self, estimated_tokens=0, retry_after=None):
-            calls["acquire"] += 1
+    class _NoopReservation:
+        def __init__(self):
+            self.settled = False
+
+        async def settle(self, actual=None):
+            self.settled = True
+            calls["settle"] += 1
+            if actual is not None:
+                calls["settle_total"] += calls["last_estimated"] - actual
+
+        async def cancel(self):
+            self.settled = True
+            calls["cancel"] += 1
+
+    class _StubRateLimiter(ReservationLimiter):
+        async def reserve(self, estimated_tokens=0, retry_after=None):
+            calls["reserve"] += 1
             calls["last_estimated"] = estimated_tokens
-            return 0.0
+            return _NoopReservation()
 
     monkeypatch.setattr(
-        RateLimiterManager, "get", staticmethod(lambda key: _StubRateLimiter())
+        ReservationLimiterManager,
+        "get",
+        staticmethod(lambda key: _StubRateLimiter()),
     )
 
     completions = fake_client.completions
@@ -444,8 +460,11 @@ async def test_rate_limiter_acquire_before_each_attempt(monkeypatch):
     sr, events = await run()
 
     assert completions.calls == 2, "整流重试"
-    assert calls["acquire"] == 2, f"整流 2 轮各 acquire 一次，实际 {calls['acquire']} 次"
+    assert calls["reserve"] == 2, f"整流 2 轮各 reserve 一次，实际 {calls['reserve']} 次"
     assert calls["last_estimated"] > 0, "estimated_tokens 应为 messages 的 tiktoken 计数"
+    # 每次尝试都 settle（成功那次按 usage 退差，死流那次 settle(None) 保守）
+    assert calls["settle"] == 2, f"每轮 create 成功后应 settle，实际 {calls['settle']} 次"
+    assert calls["cancel"] == 0, "create 成功后不应 cancel（请求已发出）"
     assert sr.content == "ok"
     assert all("error" not in e for e in events), f"不应有 error: {events}"
 
@@ -470,8 +489,47 @@ async def test_rate_limiter_acquire_on_retry_inside_execute(monkeypatch):
     sr, events = await run()
 
     assert completions.calls == 2, "create 应重试 1 次"
-    assert calls["acquire"] == 2, (
-        f"重试也应 acquire（每次 call_fn 调用前一次），实际 {calls['acquire']} 次"
+    assert calls["reserve"] == 2, (
+        f"重试也应 reserve（每次 call_fn 调用前一次），实际 {calls['reserve']} 次"
     )
+    # 第 1 次 create 失败在 call_fn 内 cancel 全额退；第 2 次成功 settle 退差
+    assert calls["cancel"] == 1, f"create 失败应 cancel 全额退，实际 {calls['cancel']} 次"
+    assert calls["settle"] == 1, f"成功那次应 settle，实际 {calls['settle']} 次"
     assert sr.content == "ok"
     assert all("error" not in e for e in events), f"不应有 error: {events}"
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_settle_refunds_overestimate(monkeypatch):
+    """结算退差：成功路径按 usage.total_tokens 退差（预估 > 实际）。"""
+    script = [
+        FakeStream(
+            [_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]
+        ),
+    ]
+    _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=0)
+
+    await run()
+
+    # estimated = prompt(10 的计数) + max_tokens，必 > actual total(15) → settle 退正数
+    assert calls["settle"] == 1, "成功路径应 settle"
+    assert calls["cancel"] == 0, "成功路径不应 cancel"
+    assert calls["settle_total"] > 0, f"应退还预估多余部分: {calls['settle_total']}"
+    assert calls["last_estimated"] > 15, "estimated 应含 max_tokens 输出余量"
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_cancel_on_create_failure(monkeypatch):
+    """create 失败全额退：call_fn 内 cancel，不 settle。"""
+    script = [
+        httpx.ReadError("connection reset"),  # create 失败 → cancel 全额退
+    ]
+    _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=0)
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
+
+    sr, events = await run()
+
+    assert completions.calls == 1
+    assert calls["cancel"] == 1, f"create 失败应 cancel，实际 {calls['cancel']} 次"
+    assert calls["settle"] == 0, "create 失败不应 settle"
+    assert any("error" in e for e in events), "应产出 error 事件"

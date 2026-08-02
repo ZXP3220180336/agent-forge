@@ -21,7 +21,7 @@
 API 层（FastAPI 路由）
     ↓
 服务层（LLMService / SessionManager / ContextManager / MemoryService / TaskService / ToolService）
-    ├── LLM 子包（ClientManager / RetryHandler / StreamParser / RateLimiter / CostTracker / LLMLogger / StructuredOutput）
+    ├── LLM 子包（ClientManager / RetryHandler / StreamParser / RateLimiter / ReservationLimiter / CostTracker / LLMLogger / StructuredOutput）
     └── EmbeddingService
     ↓
 核心层（Agent / Reasoning / Memory / Prompts）
@@ -79,7 +79,7 @@ API 层（FastAPI 路由）
 
 - **作用**：系统的模型通信基础设施，统一封装与大语言模型的所有交互。
 - **需要实现**：连接池管理、重试与熔断、流式/非流式解析、结构化输出、请求日志、客户端限流、成本计算、文本向量化。
-- **已经实现**：`LLMService` Facade + `app/services/llm/` 8 子模块（ClientManager / RetryHandler / StreamParser / StructuredOutput / LLMLogger / RateLimiter / CostTracker）+ `EmbeddingService`。
+- **已经实现**：`LLMService` Facade + `app/services/llm/` 子模块（ClientManager / RetryHandler / StreamParser / StructuredOutput / LLMLogger / RateLimiter / ReservationLimiter / CostTracker）+ `EmbeddingService`。限流双文件：`rate_limiter.py`（acquire 形态）+ `reservation_limiter.py`（reserve/settle 形态，独立实现，llm_service 实际使用）。
 - **本轮核心改造（2026-08-01，retry.py）**：
   - 熔断判定升级为**滑动窗口错误率模型**（Hystrix 参考），请求级粒度，429 分离
   - 错误分类**白名单映射**（`classify_error`），未知异常默认 NON_RETRYABLE，显式捕获 httpx 网络异常
@@ -248,7 +248,7 @@ uv run python -c "
 from app.services.llm import (
     ClientManager, CircuitBreaker, RetryConfig, RetryHandler,
     StreamParser, StructuredOutput, CostTracker, RateLimiter,
-    LLMLogger, LLMRequestRecord,
+    ReservationLimiterManager, LLMLogger, LLMRequestRecord,
 )
 print('OK')
 "

@@ -11,6 +11,8 @@ RateLimiter — 客户端限流
 
 RateLimiterManager 负责按 model_key 提供共享限流器实例
 （RPM / TPM 从配置中心读取，实例跨请求复用，同一模型共享同一个桶）。
+
+reserve/settle 形态见 reservation_limiter.py。
 """
 
 from __future__ import annotations

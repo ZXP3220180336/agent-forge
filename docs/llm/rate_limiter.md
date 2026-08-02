@@ -2,6 +2,7 @@
 
 > **模块**：`app/services/llm/rate_limiter.py`
 > **职责**：LLM API 调用的客户端限流（RPM + TPM 双 Token Bucket）
+> **reserve/settle 形态**：见 [reservation_limiter.md](reservation_limiter.md)（独立文件，不共用代码）
 > **配套**：集成于 `LLMService.async_generate()` / `generate()`，见 `llm_service.py`
 
 ---
@@ -308,7 +309,7 @@ class RateLimiterManager:
 
 **要点**：
 
-- **共享实例**：同一 model_key 复用同一个 RateLimiter——**双桶必须跨请求记账**，每次 new 会重置桶、等于没限流
+- **共享实例**：同一 model_key 复用同一个 `RateLimiter`——**双桶必须跨请求记账**，每次 new 会重置桶、等于没限流
 - **懒加载**：首次 `get()` 才创建，读取 `settings` 的 RPM/TPM 配置
 - **同步无竞态**：`get` 无 await，GIL 下天然原子，不会双实例
 - **`reset()`**：配置变更或测试时清空缓存
@@ -337,6 +338,8 @@ async_generate() / generate()
 ```
 
 **关键点**：acquire 位于 call_fn 内部，**每次真实请求**（原始调用、retry 内部重试、整流重试）都重新 acquire。整流重试每轮重新进入 `retry.execute`，再次 acquire；测试已断言 `calls["acquire"] == 2`（整流 2 轮）。
+
+> 注：本文件的 acquire 形态为独立实现；llm_service.py 实际使用的是 reserve/settle 形态（见 [reservation_limiter.md](reservation_limiter.md)）。
 
 ---
 
@@ -417,7 +420,7 @@ async_generate() / generate()
 **我们的方案 vs 工业级**：
 
 - 我们的「锁内计算 → 锁外 sleep → 循环重检」**与 Guava 的 `reserve` + 锁外 sleep 同构**——锁只做记账，等待让出事件循环（asyncio 等价于 Go 的锁外等待）。方向正确。
-- **差异提醒（可改进点）**：我们目前**没有「取消时退还已预留 token」**的语义。Go 的 `Wait(ctx)` 被取消时会 `Cancel()` 把预留的 token 还给桶；我们的实现中，等待中的 acquire 被 `CancelledError` 中断后，不会向桶退还任何东西（因为我们还没扣减——扣减只发生在 `_tokens >= tokens` 的分支，即真正拿到许可时）。**严格说我们的语义已经比 Go 更保守**：没有提前预留，取消即无事发生，桶不被污染（测试 `test_bucket_cancel_does_not_corrupt_state` 已覆盖）。若要支持「先预留、后结算」的 TPM 精确记账（见对比 3），才需要引入 Reservation 模型。
+- **差异提醒（可改进点）**：我们当前在 `acquire` 路径下**没有「取消时退还已预留 token」**的语义——等待中的 acquire 被取消即无事发生，桶不被污染（`test_bucket_cancel_does_not_corrupt_state` 已覆盖）。**已通过新增的 reserve/settle 形态补全**：`Reservation` 的 `settle(actual)` / `cancel()` 提供「先预留、后结算/退还」的完整语义（见「组件详解」reserve/settle 节与对比 3）。
 
 **来源**：[x/time/rate 源码（reserveN/WaitN/CancelAt）](https://go.googlesource.com/time/+/refs/tags/v0.10.0/rate/rate.go) · [Guava RateLimiter 源码（acquire/reserve 两段式）](https://guava.dev/releases/17.0/api/docs/src-html/com/google/common/util/concurrent/RateLimiter.html#line.274) · [Bucket4j SynchronizationStrategy](https://javadoc.io/static/com.bucket4j/bucket4j_jdk8-core/8.10.1/io/github/bucket4j/local/SynchronizationStrategy.html)
 
@@ -434,9 +437,9 @@ async_generate() / generate()
 **我们的方案 vs 工业级**：
 
 - 我们采用「prompt（tiktoken 精确）+ `max_tokens` 输出余量」——**与 OpenAI 官方估算公式、LiteLLM 的预留上限一致**，方向正确。
-- **差异提醒（可改进点）**：
-  1. **我们没有结算退差**——`max_tokens` 是上限，实际输出往往远小于它，TPM 桶会长期偏保守（低估实际可用量）。Fenic 的数据显示结算退差能显著提升吞吐。但结算需要「请求完成后回写实际 usage」，而我们的 `acquire` 是「请求前一次性扣减」的拉模式，天然不支持回退。这是预留-结算协议（reserve/settle）的范畴，见对比 4。
-  2. **`max_tokens` 设得过大反而空耗配额**——OpenAI 明确警告：提交时按 `max_tokens` 估，设太高会白白消耗 TPM。我们继承了这个特性：`max_tokens=4096` 但实际只输出 200 token 时，每次调用都按 4096 扣 TPM。**这是「宁多勿少」的保守取舍，可接受**；要更精确需引入 Fenic 式的自适应分布预留。
+- **差异提醒（可改进点，部分已落地）**：
+  1. **结算退差 ✅ 已实现**（2026-08-02）：新增 `reservation_limiter.py` 的 `ReservationLimiter.reserve() → Reservation`（独立文件），请求完成后 `settle(actual)` 退 TPM 差（`max(0, est-actual)`），`llm_service` 已迁移到 reserve/settle 统一闭环。`max_tokens` 是上限、实际输出远小于它导致的 TPM 偏保守问题已缓解。详见 [reservation_limiter.md](reservation_limiter.md)。
+  2. **`max_tokens` 设得过大仍会空耗配额（已缓解但未消除）**——结算退差在「实际消耗 > 预留」时无法补扣，`max_tokens` 若远大于实际输出，预留阶段仍按上限扣、只是结算时退回。**「宁多勿少」的保守取舍仍成立**；要更精确需引入 Fenic 式的自适应分布预留（p95 自适应 × 1.15），暂未实现。
 
 **来源**：[OpenAI Rate limits 文档](https://developers.openai.com/api/docs/guides/rate-limits) · [LiteLLM ITPM/OTPM 限流](https://docs.litellm.ai/docs/proxy/io_token_rate_limits) · [Fenic 自适应 token 估算设计](https://github.com/typedef-ai/fenic/blob/main/specs/adaptive_token_estimation_design.md) · [LangChain rate_limiters（仅时间限制）](https://reference.langchain.com/python/langchain-core/rate_limiters)
 
@@ -454,7 +457,7 @@ async_generate() / generate()
 **我们的方案 vs 工业级**：
 
 - 我们**移除了 `__aenter__/__aexit__`**（无使用方），`await acquire()` 成为唯一用法——与 limits、PyrateLimiter 的方法调用形态一致，避免了 `async with` 对 TPM 桶的「消耗 1」误导。**方向正确且更简洁**（业界 aiolimiter 需要用 `limiter.limit(amount)` 绕开这个局限，我们直接没有这个陷阱）。
-- **差异提醒（可改进点）**：我们的 `acquire` 是「请求前一次性扣减」的拉模式，没有暴露 Reservation 形态的「预留 → 结算 → 退还」API。若未来要落地对比 3 的结算退差，API 层需要演进为类似 Go 的 `reserve(amount) → settle(actual)`。
+- **差异提醒（可改进点，已落地）**：我们保留了 `acquire`（拉模式，向后兼容），并**在独立文件 `reservation_limiter.py` 新增 `ReservationLimiter.reserve() → Reservation`**——类似 Go 的 `Reserve()` → `CancelAt()` 形态，支持「预留 → 结算 → 退还」（`settle(actual)` / `cancel()`）。`llm_service` 已迁移到 reserve/settle 统一闭环，`acquire` 仍可用于不关心退差的场景。
 
 **来源**：[aiolimiter GitHub](https://github.com/mjpieters/aiolimiter) · [aiolimiter Discussion #181（按 payload 限流）](https://github.com/mjpieters/aiolimiter/discussions/181) · [limits 文档](https://limits.readthedocs.io/) · [aiometer GitHub](https://github.com/florimondmanca/aiometer)
 
@@ -464,8 +467,8 @@ async_generate() / generate()
 | --- | --- | --- | --- | --- |
 | 配置 0 除零崩溃 | 显式 `enabled` 开关或 `Inf`/极大值；0 = 拒绝一切 | `refill_rate <= 0` 直接放行 | x/time/rate `rate.Inf`、Bucket4j `enabled=false` | ✅ 本项目语境下安全；未来需独立开关则演进 |
 | 持锁 sleep 阻塞其他请求 | 锁内记账、锁外等待；等待让出事件循环、支持取消 | 锁内计算 → 锁外 sleep → 循环重检 | Guava `acquire()` 两段式、x/time/rate `Wait(ctx)` | ✅ 与工业级同构 |
-| 只算 prompt 低估输出 | 预留 = prompt + max_tokens，完成后按实际结算退差 | prompt + max_tokens 输出余量 | OpenAI 估算公式、LiteLLM、Fenic | ✅ 方向正确；缺结算退差（可改进） |
-| `async with` 语义误导 | TPM 桶用显式 reserve/settle；RPM 桶可 `async with` | 移除上下文管理器，`await acquire()` 唯一用法 | aiolimiter `acquire(amount)`、limits `hit()` | ✅ 更简洁，无 TPM 桶误导 |
+| 只算 prompt 低估输出 | 预留 = prompt + max_tokens，完成后按实际结算退差 | prompt + max_tokens 输出余量 + **reserve/settle 结算退差** | OpenAI 估算公式、LiteLLM、Fenic | ✅ 已实现结算退差；自适应预留未实现 |
+| `async with` 语义误导 | TPM 桶用显式 reserve/settle；RPM 桶可 `async with` | 移除上下文管理器；`acquire` 保留 + **新增 reserve/settle** | aiolimiter `acquire(amount)`、limits `hit()`、Go Reservation | ✅ 更简洁；reserve/settle 已落地 |
 
 ---
 

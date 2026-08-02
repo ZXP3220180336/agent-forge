@@ -11,7 +11,7 @@
   - [StreamParser — 流式解析](#streamparser--流式解析)
   - [StructuredOutput — 结构化输出](#structuredoutput--结构化输出)
   - [LLMLogger — 请求日志](#llmlogger--请求日志)
-  - [RateLimiter — 客户端限流](#ratelimiter--客户端限流)
+  - [RateLimiter — 客户端限流（acquire 形态）](#ratelimiter--客户端限流acquire-形态)
   - [CostTracker — 成本计算](#costtracker--成本计算)
   - [EmbeddingService — 向量化](#embeddingservice--向量化)
 - [设计选型对比](#设计选型对比)
@@ -75,7 +75,8 @@ app/services/
 │   ├── streaming.py               ← StreamParser 流式/非流式解析
 │   ├── structured.py              ← StructuredOutput 结构化输出
 │   ├── logger.py                  ← LLMLogger 请求日志
-│   ├── rate_limiter.py            ← RateLimiter 客户端限流
+│   ├── rate_limiter.py            ← RateLimiter 客户端限流（acquire 形态）
+│   ├── reservation_limiter.py     ← ReservationLimiter 客户端限流（reserve/settle 形态，独立实现）
 │   └── cost_tracker.py            ← CostTracker 成本计算
 ```
 
@@ -85,13 +86,15 @@ app/services/
 2. **纯化职责**：每个模块只做一件事 —— `StreamParser` 只解析 chunk，不构造事件
 3. **三权分立**：逻辑拆分遵循以下边界：
 
-| 层次     | 职责                   | 对应模块                                        |
-| -------- | ---------------------- | ----------------------------------------------- |
-| 传输层   | 连接、代理、认证       | `ClientManager`                                 |
-| 可靠性层 | 重试、熔断、限流、降级 | `RetryHandler`, `RateLimiter`, `CircuitBreaker` |
-| 数据层   | 流式/非流式解析        | `StreamParser`, `StructuredOutput`              |
-| 治理层   | 日志、成本             | `LLMLogger`, `CostTracker`                      |
-| 服务层   | 统一对外接口           | `LLMService`（Facade）                          |
+| 层次     | 职责                   | 对应模块                                                      |
+| -------- | ---------------------- | ------------------------------------------------------------- |
+| 传输层   | 连接、代理、认证       | `ClientManager`                                               |
+| 可靠性层 | 重试、熔断、限流、降级 | `RetryHandler`, `ReservationLimiter`, `CircuitBreaker`        |
+| 数据层   | 流式/非流式解析        | `StreamParser`, `StructuredOutput`                            |
+| 治理层   | 日志、成本             | `LLMLogger`, `CostTracker`                                    |
+| 服务层   | 统一对外接口           | `LLMService`（Facade）                                        |
+
+> 限流双文件：`rate_limiter.py`（acquire 形态，独立保留）与 `reservation_limiter.py`（reserve/settle 形态，llm_service 实际使用）。见 [rate_limiter.md](rate_limiter.md) / [reservation_limiter.md](reservation_limiter.md)。
 
 ### 依赖关系
 
@@ -105,7 +108,7 @@ app/services/
     │     ├── RetryConfig
     │     └── CircuitBreaker
     ├── StreamParser
-    ├── RateLimiter
+    ├── ReservationLimiter
     ├── LLMLogger
     └── CostTracker
 
@@ -565,9 +568,11 @@ class LLMRequestRecord:
 
 ---
 
-### RateLimiter — 客户端限流
+### RateLimiter — 客户端限流（acquire 形态）
 
 **文件**：`app/services/llm/rate_limiter.py`
+
+> **说明**：本模块为 acquire 形态（一次性扣减，不退款），独立保留用于对比/兼容。llm_service.py 实际使用的是 reserve/settle 形态的 `reservation_limiter.py`（见 [reservation_limiter.md](reservation_limiter.md)）。
 
 #### 功能
 

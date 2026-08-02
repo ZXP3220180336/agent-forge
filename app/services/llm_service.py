@@ -25,7 +25,7 @@ from app.services.llm import (
     ClientManager,
     LLMLogger,
     LLMRequestRecord,
-    RateLimiterManager,
+    ReservationLimiterManager,
     RetryConfig,
     RetryHandler,
     StreamParser,
@@ -294,17 +294,35 @@ class LLMService:
         # 提到循环外，避免循环内定义闭包引用循环变量（Pylance 警告）。
         client = ClientManager.get_client(model_key)
 
-        # 客户端限流：每次真实请求前 acquire（RPM + TPM 双桶）。
+        # 客户端限流：reserve/settle 统一闭环。
         # estimated_tokens 用 tiktoken 实时数当前 messages（含此前各轮工具结果）。
-        # 限流只保护主模型链路：retry.execute 内部每次重试 call_fn 都重新 acquire；
-        # fallback 备用模型不参与 acquire——客户端限流防的是主模型突发，备用模型无需考虑。
+        # 限流只保护主模型链路：retry.execute 内部每次重试 call_fn 都重新 reserve；
+        # fallback 备用模型不参与 reserve——客户端限流防的是主模型突发，备用模型无需考虑。
+        # 闭环语义（按"请求是否已发出"分界）：
+        #   - create 失败/取消 → cancel() 全额退（请求未确认发出）
+        #   - create 成功后一切出口 → settle(actual)，有 usage 退差、无 usage 保守保留
         estimated = _count_prompt_tokens(model_key, messages, max_tokens)
-        limiter = RateLimiterManager.get(model_key)
+        limiter = ReservationLimiterManager.get(model_key)
+
+        # 当前活跃 reservation，跨 create 与迭代传递。定义在整流循环外：
+        # 循环内各 attempt 的迭代分支与 call_fn 需要读写同一个 dict。
+        active: dict[str, Any] = {}
 
         async def _rate_limited_call() -> Any:
-            """每次真实调用主模型前先获取限流配额，再发起请求。"""
-            await limiter.acquire(estimated_tokens=estimated)
-            return await client.chat.completions.create(**kwargs)
+            """每次真实调用主模型前先预留配额，再发起请求。
+
+            create 失败/被取消时全额退（cancel）再 re-raise——retry.execute
+            捕获最终抛出的异常，不关心 call_fn 内部是否 catch 过，重试/fallback
+            判定不受影响。
+            """
+            res = await limiter.reserve(estimated_tokens=estimated)
+            active["res"] = res
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except BaseException:  # 含 CancelledError（R1：硬取消不泄漏预留）
+                await res.cancel()
+                active.pop("res", None)
+                raise
 
         # ----- 整流重试循环 -----
         # create 阶段由 retry.execute() 保护（重试/熔断/fallback），失败直接 raise；
@@ -318,8 +336,8 @@ class LLMService:
             attempt_start = time.monotonic()
 
             # ----- 阶段 1：创建流式响应（带重试 + 熔断 + fallback） -----
-            # call_fn 内部先 acquire 再 create：重试每次真实请求都重新扣配额；
-            # fallback 不参与 acquire（备用模型防突发无意义）。
+            # call_fn 内部先 reserve 再 create：重试每次真实请求都重新预留配额；
+            # fallback 不参与 reserve（备用模型防突发无意义）。
             try:
                 response = await retry.execute(
                     call_fn=_rate_limited_call,
@@ -339,10 +357,18 @@ class LLMService:
 
             # 流式迭代异常不受 retry.execute() 保护（响应对象创建后重试循环已退出），
             # 此处捕获并判断是否整流重试，避免未处理异常向上泄漏到调用方。
+            # try 正常结束 = 迭代成功，在块内结算；except 处理整流/失败；
+            # finally 兜底硬取消（CancelledError 不被 except Exception 捕获）。
             try:
                 async for chunk in response:
                     # 取消检查
                     if cancel_event and cancel_event.is_set():
+                        # 请求已发出（create 成功）→ settle（退 TPM 差），非 cancel
+                        res = active.pop("res", None)
+                        if res is not None:
+                            await res.settle(
+                                (result.usage or {}).get("total_tokens")
+                            )
                         yield build_error_event("用户取消了请求")
                         log_record.success = False
                         log_record.error = "用户取消"
@@ -376,11 +402,26 @@ class LLMService:
                     # usage（最后一个 chunk）
                     if parsed.usage:
                         result.usage = parsed.usage
+
+                # ----- try 正常结束 = 成功：本次尝试完整读完 -----
+                # 合并 tool_calls + 结算退差（请求已发出，settle 而非 cancel）
+                if tool_deltas:
+                    result.tool_calls = StreamParser.merge_tool_calls(tool_deltas)
+                res = active.pop("res", None)
+                if res is not None:
+                    await res.settle((result.usage or {}).get("total_tokens"))
             except Exception as e:
                 log_record.success = False
                 log_record.error = f"流式读取中断: {e!s}"[:200]
                 log_record.duration = time.monotonic() - attempt_start
                 await LLMLogger.log_call(log_record)
+
+                # 请求已发出（create 成功）→ settle，无论整流与否
+                # 死流可能已带回 usage（如 test_usage_only_interrupt_rectifies），
+                # 用它退差；无 usage 则保守保留。settle 在 backoff sleep 前（R8）。
+                res = active.pop("res", None)
+                if res is not None:
+                    await res.settle((result.usage or {}).get("total_tokens"))
 
                 # 整流条件：首 token 前 + 可恢复异常 + 未超上限 + 未取消
                 if _should_rectify(
@@ -400,10 +441,14 @@ class LLMService:
                 yield build_error_event(f"流式响应中断: {e!s}")
                 return
 
-            # ----- 成功：本次尝试完整读完 -----
-            # 合并 tool_calls
-            if tool_deltas:
-                result.tool_calls = StreamParser.merge_tool_calls(tool_deltas)
+            finally:
+                # R1：迭代阶段硬取消（CancelledError，BaseException 不被上面 except
+                # Exception 捕获）时兜底闭环，避免 reservation 泄漏。
+                # 成功路径已在 try 内 settle+pop，此处 active 应为空；仅异常/硬取消
+                # 未闭环时兜底 cancel。
+                res = active.pop("res", None)
+                if res is not None and not res.settled:
+                    await res.cancel()
 
             log_record.success = True
             log_record.error = None  # 清掉整流失败尝试残留的 error（同一 record 复用）
@@ -451,15 +496,25 @@ class LLMService:
         client = ClientManager.get_client(model_key)
         start_time = time.monotonic()
 
-        # 客户端限流（RPM + TPM 双桶）：acquire 移入 call_fn，
-        # 重试每次真实请求都重新扣配额（与 async_generate 一致）。
+        # 客户端限流：reserve/settle 统一闭环（与 async_generate 一致）。
+        # 每次真实请求（含 retry 内部重试）都重新 reserve，create 失败全额退。
         estimated = _count_prompt_tokens(model_key, messages, max_tokens)
-        limiter = RateLimiterManager.get(model_key)
+        limiter = ReservationLimiterManager.get(model_key)
+
+        # 当前活跃 reservation（跨 create 与结算传递）。generate 无整流循环，
+        # 但 retry 内部重试会多次调用 call_fn，需用同一 dict 让成功路径读到。
+        active: dict[str, Any] = {}
 
         async def _rate_limited_call() -> Any:
-            """每次真实调用前先获取限流配额，再发起请求。"""
-            await limiter.acquire(estimated_tokens=estimated)
-            return await client.chat.completions.create(**kwargs)
+            """每次真实调用前先预留配额，再发起请求。create 失败全额退再 re-raise。"""
+            res = await limiter.reserve(estimated_tokens=estimated)
+            active["res"] = res
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except BaseException:
+                await res.cancel()
+                active.pop("res", None)
+                raise
 
         try:
             response = await retry.execute(
@@ -479,6 +534,11 @@ class LLMService:
         sr.finish_reason = parsed.get("finish_reason")
         sr.tool_calls = parsed.get("tool_calls", [])
         sr.usage = parsed.get("usage")
+
+        # 结算退差：实际消耗 = usage.total_tokens，退还预估多余部分
+        res = active.pop("res", None)
+        if res is not None:
+            await res.settle((sr.usage or {}).get("total_tokens"))
 
         log_record.success = True
         log_record.prompt_tokens = (sr.usage or {}).get("prompt_tokens")

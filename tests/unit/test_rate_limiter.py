@@ -1,10 +1,12 @@
 """
 RateLimiter / RateLimiterManager 单元测试
 
-覆盖：
+覆盖（acquire 形态）：
     TokenBucket      桶容量 / 补充速率 / 等待耗尽后放行
     RateLimiter      双桶（RPM + TPM）各自扣减，Retry-After 优先等待
     RateLimiterManager  按 model_key 懒创建 + 同 key 共享实例 + reset 清空
+
+reserve/settle 形态测试见 test_reservation_limiter.py。
 
 不依赖真实 API：直接用内置 TimeoutError 或短等待断言，不走网络。
 """
@@ -15,7 +17,11 @@ import time
 import pytest
 
 from app.config import settings
-from app.services.llm.rate_limiter import RateLimiter, RateLimiterManager, TokenBucket
+from app.services.llm.rate_limiter import (
+    RateLimiter,
+    RateLimiterManager,
+    TokenBucket,
+)
 
 
 # =====================================================================
