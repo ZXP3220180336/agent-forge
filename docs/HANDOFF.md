@@ -226,6 +226,7 @@ API 层（FastAPI 路由）
 | [llm/llm.md](llm/llm.md)           | ✅ LLM 层总览                                               |
 | [llm/client.md](llm/client.md)     | ✅ ClientManager 设计                                       |
 | [llm/retry.md](llm/retry.md)       | ✅ RetryHandler 设计（滑动窗口/错误分类/半开探针/修复记录） |
+| [task/task.md](task/task.md)       | ✅ TaskService 顶层计划（调度枢纽 + 多 Agent 编排规划）     |
 | [architecture.md](architecture.md) | ❌ 空                                                       |
 | [api.md](api.md)                   | ❌ 空                                                       |
 | [deployment.md](deployment.md)     | ❌ 空                                                       |
