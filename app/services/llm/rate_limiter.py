@@ -4,10 +4,10 @@ RateLimiter — 客户端限流
 使用 Token Bucket 算法，支持按模型独立配置。
 集成 Retry-After 响应头的处理。
 
-用法：
+用法（唯一入口是 acquire，限流是排队而非拒绝）：
     limiter = RateLimiter(rpm=60, tpm=100000)
-    async with limiter:
-        result = await client.chat.completions.create(...)
+    await limiter.acquire(estimated_tokens=est)   # 配额不足时等待，够了才继续
+    result = await client.chat.completions.create(...)
 
 RateLimiterManager 负责按 model_key 提供共享限流器实例
 （RPM / TPM 从配置中心读取，实例跨请求复用，同一模型共享同一个桶）。
@@ -47,20 +47,30 @@ class TokenBucket:
         Returns:
             等待时间（秒）
         """
-        async with self._lock:
-            self._refill()
-            if self._tokens >= tokens:
-                self._tokens -= tokens
-                return 0.0
+        # 配置 0 = 禁用限流：refill_rate <= 0 时无限速率直接放行，避免除零崩溃
+        # （capacity 与 refill_rate 同源，rpm/tpm 配置为 0 时两者均为 0）
+        if self.refill_rate <= 0:
+            return 0.0
 
-            # 计算需要等待的时间
-            needed = tokens - self._tokens
-            wait_time = needed / self.refill_rate
+        # 锁内计算 → 锁外 sleep → 循环重检。
+        # sleep 在锁外进行：等待期间锁不被持有，其他排队请求可并行计算；
+        # 也保证 sleep 期间能响应取消（CancelledError 不会被锁阻塞吞掉）。
+        total_wait = 0.0
+        while True:
+            async with self._lock:
+                self._refill()
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return total_wait
+
+                # 计算需要等待的时间
+                wait_time = (tokens - self._tokens) / self.refill_rate
+
+            # 锁外 sleep：期间其他请求可获取锁、扣减 token
             await asyncio.sleep(wait_time)
-
-            self._refill()
-            self._tokens -= tokens
-            return wait_time
+            total_wait += wait_time
+            # 回到循环顶部重新检查——sleep 期间 token 可能被其他请求抢走，
+            # 也可能因容量封顶不需要等满 wait_time，重检保证公平且不过等
 
     def _refill(self) -> None:
         """补充 Token。"""
@@ -95,11 +105,12 @@ class RateLimiter:
         获取许可。
 
         Args:
-            estimated_tokens: 预估的 Token 消耗
-            retry_after: 服务端返回的 Retry-After 时间
+            estimated_tokens: 预估的 Token 消耗（RPM 桶固定扣 1，TPM 桶按此值扣）
+            retry_after: 服务端返回的 Retry-After 时间（秒）
 
         Returns:
-            总等待时间（秒）
+            桶内等待时间（秒，wait1 + wait2）；不含 retry_after 的 sleep——
+            后者是独立的事前等待，调用方如需完整墙钟等待应自行计时。
         """
         if retry_after:
             await asyncio.sleep(retry_after)
@@ -109,13 +120,6 @@ class RateLimiter:
             max(estimated_tokens, 1.0),
         )
         return wait1 + wait2
-
-    async def __aenter__(self) -> RateLimiter:
-        await self.acquire()
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
 
 
 # =====================================================================

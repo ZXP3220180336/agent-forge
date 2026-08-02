@@ -277,18 +277,18 @@ async_generate() / generate()
 
 ## 已知边界与设计取舍
 
-1. **等待期间持锁**（[TokenBucket.acquire](app/services/llm/rate_limiter.py#L50-L63)）：等待补充时持有 `asyncio.Lock`，阻塞其他排队请求并行计算。单桶场景总耗时由 refill_rate 支配，实测 10 并发各 0.1s 总 1.0s 符合预期；但长等待会阻塞短等待请求，且无法在 sleep 中响应取消。详见附录问题 2。
-2. **estimated_tokens 仅含 prompt**：`_count_prompt_tokens` 只数 messages，不含输出 token。TPM 桶可能低估实际消耗（输出大时偏差明显）。见附录问题 3。
-3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep。调用方通常忽略返回值。见附录问题 4。
-4. **配置 0 的语义未定义**：`RateLimiterManager.get` 用 `getattr(settings, field, 0)`，0 值会构造 capacity=0 的桶，桶空时除零崩溃。**配置 0 = 禁用限流**是最自然的表达，当前实现不满足。见附录问题 1。
+1. **等待期间锁外 sleep**（[TokenBucket.acquire](app/services/llm/rate_limiter.py#L55-L70)）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见附录问题 2（✅ 已修复）。
+2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见附录问题 3（✅ 已修复）。
+3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见附录问题 4（✅ 已修复）。
+4. **配置 0 = 禁用限流**：`RateLimiterManager.get` 用 `getattr(settings, field, 0)`；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见附录问题 1（✅ 已修复）。
 
 ---
 
 ## 附录：2026-08-01 代码审核记录
 
-> 本次审核（初始版本）发现的遗留问题，尚未修复，先记录待办。
+> 本次审核（初始版本）发现的遗留问题，先记录待办；修复状态逐条标注（✅ 已修复）。
 
-### 问题 1（严重）：配置为 0 时除零崩溃
+### 问题 1（严重）：配置为 0 时除零崩溃 ✅
 
 **位置**：[rate_limiter.py:59](app/services/llm/rate_limiter.py#L59) + [rate_limiter.py:167-168](app/services/llm/rate_limiter.py#L167-L168)
 
@@ -296,9 +296,9 @@ async_generate() / generate()
 
 **已实测**：`rpm=0` 时 `acquire` 直接崩溃。而「配置 0 表示禁用限流」是用户最自然的表达。
 
-**建议**：`RateLimiterManager.get` 对 0 值跳过限流（直接放行），或在 TokenBucket 对 `refill_rate <= 0` 防御。
+**修复（2026-08-02）**：采用建议方案二——`TokenBucket.acquire` 开头对 `refill_rate <= 0` 防御，直接放行返回 `0.0`。`capacity` 与 `refill_rate` 同源（`rpm/tpm` 配置为 0 时两者均为 0），一个 guard 覆盖所有路径，`RateLimiterManager.get` 无需改动。新增测试 `test_bucket_zero_refill_disabled`（断言立即放行、无等待、不崩溃）。
 
-### 问题 2（中）：持锁 sleep
+### 问题 2（中）：持锁 sleep ✅
 
 **位置**：[rate_limiter.py:50-63](app/services/llm/rate_limiter.py#L50-L63)
 
@@ -306,31 +306,31 @@ async_generate() / generate()
 
 **实测边界**：单桶总耗时由 refill_rate 支配，10 并发各 0.1s 总 1.0s，未出现放大。属理论缺陷，非紧急。
 
-**改进方向**：锁内计算 → 锁外 sleep → 循环重检。需处理 sleep 后 token 被抢的公平性，改动需谨慎。
+**修复（2026-08-02）**：按改进方向实施——`TokenBucket.acquire` 重构为「锁内计算 → 锁外 sleep → 循环重检」：锁内仅计算 `wait_time`，`asyncio.sleep` 移到锁外，醒来回到循环顶部重新检查（sleep 期间 token 可能被其他请求抢走，重检保证公平且不过等）。等待期间锁不被持有，其他请求可并行计算；sleep 期间可响应取消（`CancelledError` 正常传播）。**连带解决问题 6**：新实现只在 `_tokens >= tokens` 时才扣减，不再出现负 token。新增测试 `test_bucket_wait_does_not_block_others`（短等待不被长等待阻塞）+ `test_bucket_cancel_does_not_corrupt_state`（取消不破坏桶状态）。
 
-### 问题 3（中）：TPM 桶只算 prompt token
+### 问题 3（中）：TPM 桶只算 prompt token ✅
 
 **位置**：`_count_prompt_tokens`（llm_service.py）
 
 **影响**：`estimated_tokens` 不含输出 token（completion），输出大时 TPM 桶低估实际消耗。
 
-**建议**：可加 `max_tokens` 余量，或保持 prompt-only 的保守估算（当前取舍）。
+**修复（2026-08-02）**：采纳「加 max_tokens 余量」方案——`_count_prompt_tokens(model_key, messages, max_tokens)` 新增第三参，估算 = prompt tokens + `max_tokens`（输出上限的保守余量）。TPM 桶按"请求可能消耗的最大 token"扣减，宁可高估不错放。`async_generate()` / `generate()` 两处调用点传入各自的实际 `max_tokens`；签名向后兼容（默认 0 = 退化为旧口径）。
 
-### 问题 4（低）：`acquire` 返回值表述不准确
+### 问题 4（低）：`acquire` 返回值表述不准确 ✅
 
 **位置**：[rate_limiter.py:102](app/services/llm/rate_limiter.py#L102) docstring「总等待时间」
 
 **问题**：实际返回 `wait1 + wait2`（桶内等待），**不含** `retry_after` 的 sleep。docstring 措辞「总等待时间」与实现不符；调用方集成点也忽略了返回值。
 
-**建议**：docstring 改为「桶内等待时间（不含 retry_after）」，或让返回值涵盖完整等待。
+**修复（2026-08-02）**：采纳「docstring 改为桶内等待时间」——明确标注返回 `wait1 + wait2`、不含 `retry_after` 的 sleep，并提示调用方如需完整墙钟等待应自行计时。同步补充 `estimated_tokens` 的语义（RPM 桶固定扣 1、TPM 桶按此值扣）。
 
-### 问题 5（低）：`async with` 用法误导
+### 问题 5（低）：`async with` 用法误导 ✅
 
 **位置**：[rate_limiter.py:113-118](app/services/llm/rate_limiter.py#L113-L118) + 顶部 docstring
 
 **问题**：docstring 主推 `async with limiter:`，但 `__aenter__` 调 `acquire()` 无参（estimated_tokens=0，TPM 桶退化）；`__aexit__` 空操作无释放语义。实际集成点都直接 `await acquire(estimated_tokens=...)`，docstring 与实际脱节。
 
-**建议**：docstring 改为直接 `await acquire()` 为唯一用法，`async with` 标注「仅简化场景」。
+**修复（2026-08-02）**：采用更彻底的方案——**移除 `__aenter__` / `__aexit__` 死代码**（已确认全项目无 `async with limiter:` 使用方，仅 docstring 与类自身）。`await acquire()` 成为唯一用法，模块 docstring 同步改为直接用法示例，消除「TPM 桶退化」的误导路径。
 
 ### 问题 6（低）：`_tokens` 可轻微为负
 

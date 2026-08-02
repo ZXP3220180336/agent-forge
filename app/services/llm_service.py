@@ -197,12 +197,20 @@ def _get_encoder(model: str) -> Any:
     return encoder
 
 
-def _count_prompt_tokens(model_key: str, messages: list[dict]) -> int:
-    """估算 messages 的 prompt token 数（tiktoken 精确计数）。
+def _count_prompt_tokens(
+    model_key: str,
+    messages: list[dict],
+    max_tokens: int = 0,
+) -> int:
+    """估算一次 LLM 调用的 token 消耗（prompt + 输出余量，供 TPM 限流扣减）。
 
-    计费口径与 ContextManager.count_messages_tokens 一致：
+    prompt 口径与 ContextManager.count_messages_tokens 一致：
         每条消息 +4（格式开销）+ content token 数 + name 额外 +1；
         末尾 +2（回复格式开销）。
+
+    输出余量：TPM 桶若只扣 prompt，输出 token 大的调用会低估实际消耗
+    （限流偏宽松）。加 max_tokens 作为输出上限的保守估算——TPM 桶按
+    "请求可能消耗的最大 token" 扣减，宁可高估不错放。
     """
     encoder = _get_encoder(ClientManager.get_model(model_key))
     total = 0
@@ -211,7 +219,7 @@ def _count_prompt_tokens(model_key: str, messages: list[dict]) -> int:
         total += len(encoder.encode(msg.get("content", "")))
         if msg.get("name"):
             total += 1
-    return total + 2
+    return total + 2 + max_tokens
 
 
 # =====================================================================
@@ -290,7 +298,7 @@ class LLMService:
         # estimated_tokens 用 tiktoken 实时数当前 messages（含此前各轮工具结果）。
         # 限流只保护主模型链路：retry.execute 内部每次重试 call_fn 都重新 acquire；
         # fallback 备用模型不参与 acquire——客户端限流防的是主模型突发，备用模型无需考虑。
-        estimated = _count_prompt_tokens(model_key, messages)
+        estimated = _count_prompt_tokens(model_key, messages, max_tokens)
         limiter = RateLimiterManager.get(model_key)
 
         async def _rate_limited_call() -> Any:
@@ -445,7 +453,7 @@ class LLMService:
 
         # 客户端限流（RPM + TPM 双桶）：acquire 移入 call_fn，
         # 重试每次真实请求都重新扣配额（与 async_generate 一致）。
-        estimated = _count_prompt_tokens(model_key, messages)
+        estimated = _count_prompt_tokens(model_key, messages, max_tokens)
         limiter = RateLimiterManager.get(model_key)
 
         async def _rate_limited_call() -> Any:

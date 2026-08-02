@@ -58,6 +58,53 @@ async def test_bucket_capacity_caps_accumulation():
     assert wait > 0, "超出 capacity 后应等待补充"
 
 
+@pytest.mark.asyncio
+async def test_bucket_zero_refill_disabled():
+    """配置 0 = 禁用限流：refill_rate=0 时直接放行，不除零崩溃。"""
+    b = TokenBucket(capacity=0, refill_rate=0)
+    start = time.monotonic()
+    wait = await b.acquire(1.0)
+    assert wait == 0.0
+    assert time.monotonic() - start < 0.05, "禁用限流不应等待"
+
+
+@pytest.mark.asyncio
+async def test_bucket_wait_does_not_block_others():
+    """等待期间锁不被持有：短等待请求不被长等待请求阻塞（问题 2 修复）。"""
+    b = TokenBucket(capacity=10, refill_rate=10)  # 每秒补 10（0.1s 补 1）
+    await b.acquire(9)  # 剩 1
+    await b.acquire(1)  # 耗尽
+
+    # A 需 9 个（等 0.9s 补充），B 只需 1 个（0.1s 后即够）
+    a_task = asyncio.create_task(b.acquire(9))
+    await asyncio.sleep(0.05)  # 确保 A 先拿到锁进入等待
+    start = time.monotonic()
+    wait_b = await b.acquire(1)
+    b_elapsed = time.monotonic() - start
+    assert b_elapsed < 0.3, f"短等待请求被长等待阻塞: {b_elapsed:.2f}s"
+    await a_task
+
+
+@pytest.mark.asyncio
+async def test_bucket_cancel_does_not_corrupt_state():
+    """取消等待中的 acquire 不破坏桶状态：后续 acquire 仍正常。"""
+    b = TokenBucket(capacity=10, refill_rate=10)
+    await b.acquire(10)  # 耗尽
+
+    task = asyncio.create_task(b.acquire(5))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    # 取消后桶状态完好：等待 0.25s（补 ~2.5 个）后 acquire(2) 应立即放行
+    await asyncio.sleep(0.25)
+    wait = await b.acquire(2)
+    assert wait == 0.0, "取消不应破坏桶计数"
+
+
 # =====================================================================
 # RateLimiter 双桶
 # =====================================================================
