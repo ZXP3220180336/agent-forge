@@ -46,12 +46,12 @@ API 层（FastAPI 路由）
 | Phase   | 模块                                                       | 状态                                                                        |
 | ------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
 | 1       | 配置模块 + 工具模块                                        | ✅ 已完成                                                                   |
-| 2       | LLM 服务层重构（8 子模块）                                 | ✅ 已完成（本轮大幅改造 retry.py：熔断工业级、错误分类、半开探针）          |
-| 3       | 核心 Agent 层（BaseAgent + ReActAgent + Prompts + Events） | ✅ 已完成（闭环打通）                                                       |
+| 2       | LLM 服务层重构（8 子模块）                                 | ✅ 已完成（retry 熔断/错误分类/探针 + RateLimiter 集成 + 限流双文件拆分）     |
+| 3       | 核心 Agent 层（BaseAgent + ReActAgent + Prompts + Events） | ✅ 已完成（闭环打通 + 工具并行执行）                                        |
 | 4       | 基础设施层（Database/Redis/VectorStore/MessageQueue）      | 🔶 有文件但未验证（asyncpg 驱动未安装，DB 恒降级）                          |
-| 5       | 服务层补全（ToolService / MemoryService / TaskService）    | 🔶 ToolService 已实现；TaskService 已实现（并发信号量）；Memory 仍为空文件 |
+| 5       | 服务层补全（ToolService / MemoryService / TaskService）    | 🔶 ToolService/TaskService 已实现（并发信号量）；Memory 空；Task 编排规划中 |
 | 6       | API 路由完善（Admin / Agent / Tool 路由）                  | 🔶 chat 已接入 ReActAgent；Admin/Agent/Tool 路由仍为空文件                  |
-| 7       | 测试 + 文档收尾                                            | 🔶 部分完成（48 测试通过：test_retry 24 + test_classify_error 22 + 集成 2） |
+| 7       | 测试 + 文档收尾                                            | 🔶 98 测试通过；task.md 已建；architecture/api/deployment 仍空               |
 
 ---
 
@@ -80,11 +80,14 @@ API 层（FastAPI 路由）
 - **作用**：系统的模型通信基础设施，统一封装与大语言模型的所有交互。
 - **需要实现**：连接池管理、重试与熔断、流式/非流式解析、结构化输出、请求日志、客户端限流、成本计算、文本向量化。
 - **已经实现**：`LLMService` Facade + `app/services/llm/` 子模块（ClientManager / RetryHandler / StreamParser / StructuredOutput / LLMLogger / RateLimiter / ReservationLimiter / CostTracker）+ `EmbeddingService`。限流双文件：`rate_limiter.py`（acquire 形态）+ `reservation_limiter.py`（reserve/settle 形态，独立实现，llm_service 实际使用）。
-- **本轮核心改造（2026-08-01，retry.py）**：
+- **核心改造（2026-08-01，retry.py）**：
   - 熔断判定升级为**滑动窗口错误率模型**（Hystrix 参考），请求级粒度，429 分离
   - 错误分类**白名单映射**（`classify_error`），未知异常默认 NON_RETRYABLE，显式捕获 httpx 网络异常
   - 半开探针**失败一律回 OPEN**（429/超时/5xx 回 OPEN 冷却；4xx 回 OPEN + 抛上层）
   - 流式迭代保护（`llm_service.py` chunk 异常捕获）
+- **核心改造（2026-08-02，限流）**：
+  - RateLimiter 集成 + **结算退差**（reserve/settle）+ 6 个审核问题修复
+  - 限流模块**拆分为双文件**：`rate_limiter.py`（acquire）+ `reservation_limiter.py`（reserve/settle，零共享代码）
 
 **详见** [llm.md](llm/llm.md)（层总览）· [client.md](llm/client.md)（ClientManager）· [retry.md](llm/retry.md)（熔断/错误分类/探针设计 + 修复记录 + 场景推演）
 
@@ -92,7 +95,7 @@ API 层（FastAPI 路由）
 
 - **作用**：系统的决策与行动核心，编排 LLM 推理和工具调用的循环流程。
 - **需要实现**：统一入口 + 策略接口、ReAct 循环（推理→行动→观察）、SSE 事件流、预留 Plan-then-Execute / Reflection 策略。
-- **已经实现**：`BaseAgent`（`run()` 统一入口 + `_strategy_cycle()` 策略接口）、`ReActAgent` 执行引擎（LLM 推理 → finish_reason 判断 → tool_calls 执行 → 循环）、AgentState/Context/Result 数据结构、事件层 7 种事件类型、planner/reasoning 预留。
+- **已经实现**：`BaseAgent`（`run()` 统一入口 + `_strategy_cycle()` 策略接口）、`ReActAgent` 执行引擎（LLM 推理 → finish_reason 判断 → tool_calls 执行 → 循环）、AgentState/Context/Result 数据结构、事件层 7 种事件类型、planner/reasoning 预留。**工具调用并行执行**（`asyncio.gather` + ToolRegistry 信号量限并发，2026-08-02）。
 
 **详见** [agent.md](agent.md)
 
@@ -110,8 +113,9 @@ API 层（FastAPI 路由）
 - **作用**：业务调度枢纽，串起会话、上下文、记忆、任务、工具等服务。
 - **需要实现**：SessionManager / ContextManager / MemoryService / TaskService / ToolService。
 - **已经实现**：`SessionManager`（会话 CRUD + Redis 缓存 + 分页/搜索/统计）、`ContextManager`（Token 计数 + 超限截断）、`ToolService`（工具注册 + 统计）、`TaskService`（任务级并发信号量，`agent_max_concurrent_tasks`）；`MemoryService` 仍为空文件。
+- **规划**：TaskService 扩展为**完整调度枢纽**（队列/优先级/状态/多 Agent 编排），顶层计划见 [task.md](task/task.md)。
 
-**详见**：暂无文档（待补充）
+**详见**：[task.md](task/task.md)（TaskService 顶层计划）· 其余待补充
 
 ### 3.7 API 路由（Phase 6）🔶
 
@@ -125,7 +129,7 @@ API 层（FastAPI 路由）
 
 - **作用**：质量保障与知识沉淀。
 - **需要实现**：单元/集成测试覆盖、完整文档体系。
-- **已经实现**：48 测试通过（test_retry 24 + test_classify_error 22 + 集成 2）；配置/工具/Agent/LLM 模块文档齐全；`architecture.md` / `api.md` / `deployment.md` 仍为空。
+- **已经实现**：98 测试通过；配置/工具/Agent/LLM/Task 模块文档齐全；`architecture.md` / `api.md` / `deployment.md` 仍为空。
 
 **详见**：暂无文档（待补充）
 
@@ -163,35 +167,45 @@ API 层（FastAPI 路由）
 ### 5.1 整体完成度
 
 - **Phase 1-3 已完成**：配置、工具、LLM 服务层、核心 Agent 层全部落地，「用户输入 → LLM 思考 → 工具调用 → LLM 总结 → 回复用户」完整闭环已用真实 API（DeepSeek + Tavily）验证打通。
-- **Phase 4-7 部分实现**：基础设施层与中间件为空文件；服务层（Session/Context/Tool/Task 已实现，Memory 空）、API 路由（chat/session 已实现，admin/agent/tool 空）部分落地；测试与文档部分完成。
+- **Phase 4-7 部分实现**：基础设施层与中间件为空文件；服务层（Session/Context/Tool/Task 已实现，Memory 空）、API 路由（chat/session 已实现，admin/agent/tool 空）部分落地；测试（98）与文档（含 task.md）部分完成。
 
-### 5.2 本轮（2026-08-01）已完成
+### 5.2 已完成轮次
 
+**2026-08-01 轮：**
 1. **retry.py 三大改造**：滑动窗口熔断 / 错误分类白名单 / 半开探针失败一律回 OPEN（详见 [retry.md](llm/retry.md)）
 2. **流式迭代保护**：`llm_service.py` 流式 chunk 异常捕获
 3. **chat_router → ReActAgent 闭环打通**：`ContextManager.build_messages()` → `ReActAgent.run()` → SSE 事件流 → `agent.result` 保存回复；配套实现 `ToolService`、启动注册 5 个内置工具、新增 `get_tool_registry` 依赖注入
-4. **测试**：48 测试通过（test_retry 24 + test_classify_error 22 + 集成 2）
-5. **git 提交**：`248a86e`（滑动窗口熔断）、`9b8cc37`（错误分类 + 探针 + 流式）
+
+**2026-08-02 轮（限流）：**
+4. **RateLimiter 集成**：RPM + TPM 双 Token Bucket 客户端限流；**结算退差**（reserve/settle）请求完成后退还未用 TPM 配额
+5. **RateLimiter 审核 6 问题修复**：配置 0 除零 / 持锁 sleep / TPM 只算 prompt / 返回值表述 / async with 误导 / _tokens 为负
+6. **限流模块拆分为双文件**：`rate_limiter.py`（acquire 形态）+ `reservation_limiter.py`（reserve/settle 形态，零共享代码）
+7. **Agent 维度并发信号量**：任务级 TaskService + 工具级 ToolRegistry，`_execute_tool_calls` 改 `asyncio.gather` 并行
+
+**2026-08-03 轮（文档）：**
+8. **TaskService 顶层计划**：[task.md](task/task.md)（调度枢纽 + 多 Agent 编排规划）
 
 ### 5.3 项目级遗留问题（无模块文档归属的部分）
 
-| #   | 问题               | 说明                                                                                                                  |
-| --- | ------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| 1   | **DB 恒降级**      | `asyncpg` 驱动未安装（`No module named 'asyncpg'`），即使有 PostgreSQL 也无法连接 → 需在 pyproject 依赖中加 `asyncpg` |
-| 2   | **基础设施层空**   | `infrastructure/`（database/redis/vector_store/message_queue）全部为空文件；DB/Redis 由 `app_state.py` 直接管理       |
-| 3   | **服务层未补全**   | `MemoryService` 仍为空文件（TaskService 已实现并发信号量）                                                            |
-| 4   | **API 路由未补全** | `admin.py` / `agent.py` / `tool.py` 为空文件（tool 路由可基于 ToolService 的 stats 实现）                             |
-| 5   | **文档未补全**     | `architecture.md` / `api.md` / `deployment.md` 为空                                                                   |
-| 6   | **中间件未实现**   | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                            |
+| #   | 问题                 | 说明                                                                                                                  |
+| --- | -------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 1   | **DB 恒降级**        | `asyncpg` 驱动未安装（`No module named 'asyncpg'`），即使有 PostgreSQL 也无法连接 → 需在 pyproject 依赖中加 `asyncpg` |
+| 2   | **基础设施层空**     | `infrastructure/`（database/redis/vector_store/message_queue）全部为空文件；DB/Redis 由 `app_state.py` 直接管理       |
+| 3   | **服务层未补全**     | `MemoryService` 仍为空文件（TaskService 已实现并发信号量，编排规划见 [task.md](task/task.md)）                       |
+| 4   | **API 路由未补全**   | `admin.py` / `agent.py` / `tool.py` 为空文件（tool 路由可基于 ToolService 的 stats 实现；agent 路由可承接 TaskService） |
+| 5   | **文档未补全**       | `architecture.md` / `api.md` / `deployment.md` 为空                                                                   |
+| 6   | **中间件未实现**     | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                            |
+| 7   | **TaskService 编排** | 已实现并发闸门；队列/优先级/状态/多 Agent 编排待实现（顶层计划见 [task.md](task/task.md)）                            |
 
-> **LLM 层自身遗留**（RateLimiter 未集成、`APIResponseValidationError` 网关容忍决策、流式迭代自动重试决策、`generate_structured` 重复实现）：见 [llm.md](llm/llm.md)「当前进度与遗留」。
+> **LLM 层自身遗留**（`generate_structured` 重复实现待统一；`APIResponseValidationError` 已决策保持；流式迭代自动重试已决策整流）：见 [llm.md](llm/llm.md)「当前进度与遗留」。
 
 ### 5.4 下一步方向（项目级）
 
-- **优先 4**：验证基础设施 + 服务层模块 —— 先补依赖 `asyncpg`，逐个验证 `infrastructure/`、`services/` 现有文件，补全 `memory_service` / `task_service`
-- **优先 5**：补全缺失模块 —— `api/routes/admin.py` / `agent.py` / `tool.py`（空文件）；`docs/architecture.md` / `api.md` / `deployment.md`（空）；单元测试覆盖仍少
+- **优先 1**：TaskService 阶段 A —— 按 [task.md](task/task.md) 顶层计划实现队列/优先级/状态/worker 池
+- **优先 2**：验证基础设施 + 服务层 —— 补依赖 `asyncpg`，补全 `memory_service`
+- **优先 3**：补全缺失模块 —— `api/routes/admin.py` / `agent.py` / `tool.py`（空文件）；`docs/architecture.md` / `api.md` / `deployment.md`（空）
 
-> **LLM 层内部下一步**（集成 RateLimiter 到 `LLMService`、retry 层遗留微调）：见 [llm.md](llm/llm.md)「当前进度与遗留」。
+> **LLM 层内部下一步**（`generate_structured` 双入口统一、retry 层遗留微调）：见 [llm.md](llm/llm.md)「当前进度与遗留」。
 
 ---
 
@@ -204,10 +218,12 @@ API 层（FastAPI 路由）
 | `app/main.py`                       | ⭐⭐⭐    | FastAPI 入口                                          |
 | `app/config/settings.py`            | ⭐⭐⭐    | 全局配置（约 350 行）                                 |
 | `app/app_state.py`                  | ⭐⭐⭐    | 应用状态管理                                          |
-| `app/services/llm_service.py`       | ⭐⭐⭐    | LLM Facade（本轮补流式迭代保护）                      |
-| `app/services/llm/`                 | ⭐⭐⭐    | LLM 子包（8 个模块）                                  |
+| `app/services/llm_service.py`       | ⭐⭐⭐    | LLM Facade（流式迭代保护 + 限流闭环）                 |
+| `app/services/llm/`                 | ⭐⭐⭐    | LLM 子包（ClientManager/Retry/Stream/Structured/Logger/RateLimiter/Reservation/Cost） |
 | `app/services/llm/client.py`        | ⭐⭐⭐    | 连接池管理                                            |
-| `app/services/llm/retry.py`         | ⭐⭐⭐    | 重试+熔断（本轮大改：滑动窗口熔断/错误分类/半开探针） |
+| `app/services/llm/retry.py`         | ⭐⭐⭐    | 重试+熔断（滑动窗口熔断/错误分类/半开探针）           |
+| `app/services/llm/reservation_limiter.py` | ⭐⭐⭐ | 限流（reserve/settle 形态，llm_service 实际使用）     |
+| `app/services/task_service.py`      | ⭐⭐⭐    | 任务调度（并发信号量；编排规划见 task.md）            |
 | `app/core/agent/base.py`            | ⭐⭐⭐    | Agent 基类 + 数据结构                                 |
 | `app/core/agent/executor.py`        | ⭐⭐⭐    | ReAct 执行引擎                                        |
 | `app/core/events.py`                | ⭐⭐⭐    | SSE 事件定义                                          |
