@@ -44,7 +44,7 @@ app/core/agent/
 Agent 模块
     │
     ├── app.services.LLMService    ← LLM 通信（单轮推理）
-    ├── app.tools.ToolRegistry     ← 工具注册中心（执行工具）
+    ├── app.services.ToolService  ← 工具服务（执行工具）
     ├── app.core.events            ← SSE 事件构建（共享 LLM 层）
     └── app.config.settings        ← 配置中心（默认值）
 ```
@@ -105,7 +105,7 @@ BaseAgent.run(user_input, messages, context)
     │   │   │
     │   │   └─ _execute_tool_calls()
     │   │       ├─ yield tool_call 事件
-    │   │       ├─ tool_registry.execute()
+    │   │       ├─ tool_service.execute()
     │   │       └─ yield tool_result 事件
     │   │
     │   ├─ finish_reason == "stop" / "length"
@@ -128,7 +128,7 @@ import asyncio
 from app.config import settings
 from app.core.agent import AgentContext, ReActAgent
 from app.services import LLMService
-from app.tools import ToolRegistry
+from app.services import ToolService
 
 async def main():
     # 1. 准备依赖
@@ -137,7 +137,7 @@ async def main():
         model=settings.llm_model_id,
         base_url=settings.llm_base_url,
     )
-    tools = ToolRegistry()
+    tools = ToolService()
     # tools.register(...)  — 注册所需的工具
 
     # 2. 创建 Agent 上下文
@@ -186,7 +186,7 @@ async def agent_chat(request: Request):
     )
     messages = build_messages(request.message)
 
-    agent = ReActAgent(llm=llm_service, tools=tool_registry)
+    agent = ReActAgent(llm=llm_service, tools=tool_service)
 
     async def generate():
         async for event in agent.run(request.message, messages, ctx):
@@ -302,7 +302,7 @@ class AgentResult:
 ```python
 class BaseAgent(ABC):
     def __init__(self, llm, tools):
-        # 注入 LLMService 和 ToolRegistry
+        # 注入 LLMService 和 ToolService
 
     async def run(self, user_input, messages, context) -> AsyncGenerator[str]:
         """统一入口，流式产出 SSE 事件"""
@@ -372,7 +372,7 @@ class LoggingReActAgent(ReActAgent):
     │   │
     │   ├─ 4. _execute_tool_calls()
     │   │   ├─ yield tool_call 事件
-    │   │   ├─ tool_registry.execute(name, args)
+    │   │   ├─ tool_service.execute(name, args)
     │   │   ├─ yield tool_result 事件
     │   │   └─ 追加 tool 角色到 messages
     │   │
@@ -467,14 +467,14 @@ messages.extend(tool_messages)
 ```
 
 - **并行执行**：`asyncio.gather` 并发执行所有工具（单任务内）
-- **并发上限**：`ToolRegistry` 的工具级信号量（`agent_max_concurrent_tools`，默认 3）限制同时执行的工具数
+- **并发上限**：`ToolService` 的工具级信号量（`agent_max_concurrent_tools`，默认 3）限制同时执行的工具数
 - **顺序保持**：`gather` 保证结果顺序 = 输入顺序 → `tool_messages` / `_tool_call_records` 与 `tool_calls` 顺序一致（OpenAI 兼容 API 要求 tool 消息与 assistant.tool_calls 的 tool_call_id 配对，顺序不能乱）
 - **事件不交错**：SSE 事件只在主 generator 内按顺序 yield，不在并发 task 内 yield
 
 **每个工具的流程（并行 task 内）：**
 
 1. 解析工具名称和参数（含 `json.loads` 异常保护）
-2. `tool_registry.execute(name, args)` — 执行工具（带超时重试、信号量限并发）
+2. `tool_service.execute(name, args)` — 执行工具（带超时重试、信号量限并发）
 
 **主 generator 按序 yield：**
 
@@ -745,8 +745,8 @@ Agent 模块与 `settings.py` 中的以下配置项关联：
 
 ## 相关文档
 
-- [架构设计文档](architecture.md)
-- [配置管理模块说明](config.md)
-- [工具模块说明](tools.md)
-- [API 文档](api.md)
-- [部署文档](deployment.md)
+- [架构设计文档](../../architecture.md)
+- [配置管理模块说明](../../config.md)
+- [工具模块说明](../../tool_doc/tools.md)
+- [API 文档](../../api_doc/api.md)
+- [部署文档](../../deployment.md)

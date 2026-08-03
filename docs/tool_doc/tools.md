@@ -35,9 +35,8 @@
 
 ```
 app/tools/
-├── __init__.py          # 模块导出（BaseTool, ToolRegistry, ToolResult, tool_registry）
+├── __init__.py          # 模块导出（BaseTool, ToolResult）
 ├── base.py              # 基类定义（BaseTool, ToolResult）
-├── registry.py          # 注册中心（ToolRegistry, ToolStats）
 ├── builtin/             # 内置工具（自动发现）
 │   ├── __init__.py      # 自动扫描目录，发现 BaseTool 子类
 │   ├── search.py        # 网络搜索（Tavily API）
@@ -46,6 +45,8 @@ app/tools/
 │   └── web_browse.py    # 网页内容抓取
 └── external/            # 外部工具（预留，按需加载）
     └── __init__.py
+
+app/services/tool_service.py   ← 工具服务统一入口（ToolService，原 ToolRegistry 合并于此）
 ```
 
 ---
@@ -60,7 +61,7 @@ app/tools/
    - 新增工具不影响现有代码
 
 2. **统一入口**
-   - 所有工具通过 `ToolRegistry` 执行
+   - 所有工具通过 `ToolService` 执行（工具系统对外唯一入口）
    - 统一实现：参数验证、超时、重试、统计、日志
    - 调用方不需要关心内部复杂性
 
@@ -68,9 +69,9 @@ app/tools/
 
    ```
    Agent 层 (LLM 运行时)
-       │ 调用 tool_registry.execute("search", ...)
+       │ 调用 tool_service.execute("search", ...)
        ▼
-   Registry 层 (ToolRegistry)
+   服务层 (ToolService)
        │ 参数验证 → 执行 → 重试 → 统计
        ▼
    Tool 层 (BaseTool)
@@ -92,10 +93,10 @@ app/tools/
 ```python
 import asyncio
 from app.tools.builtin import SearchTool
-from app.tools.registry import ToolRegistry
+from app.services import ToolService
 
 async def main():
-    reg = ToolRegistry()
+    reg = ToolService()
 
     # 1. 注册工具
     reg.register(SearchTool())
@@ -118,11 +119,11 @@ asyncio.run(main())
 ```python
 import asyncio
 from app.tools.builtin import __all__ as builtin_tools
-from app.tools.registry import ToolRegistry
+from app.services import ToolService
 from app.tools.base import BaseTool
 
 async def main():
-    reg = ToolRegistry()
+    reg = ToolService()
 
     # 根据 __all__ 中的类名动态导入并注册
     import importlib
@@ -281,9 +282,9 @@ mv /, > /dev/sda
 
 ---
 
-## 注册中心详解
+## ToolService 详解
 
-### `ToolRegistry` 主要方法
+### `ToolService` 主要方法
 
 | 方法                       | 作用                     | 使用场景               |
 | -------------------------- | ------------------------ | ---------------------- |
@@ -447,7 +448,7 @@ from app.tools.builtin import CurrentTimeTool  # 直接可用
 注册中心实现了**工具级并发信号量**，限制单任务内最大并发工具调用数：
 
 ```python
-# ToolRegistry.__init__
+# ToolService.__init__
 self._tool_semaphore = asyncio.Semaphore(settings.agent_max_concurrent_tools)
 ```
 
@@ -594,7 +595,7 @@ result = await reg.execute("search", {"query": "..."}, timeout=60)
 ### Q2: 如何禁用某个内置工具？
 
 ```python
-reg = ToolRegistry()
+reg = ToolService()
 reg.register(SearchTool())
 # 不注册 web_browse，Agent 就无法调用它
 # reg.register(WebBrowseTool())
@@ -684,6 +685,7 @@ TOOL_MAX_CONTENT_LENGTH=500000
 
 ## 相关文档
 
-- [配置管理模块说明](config.md)
-- [架构设计文档](architecture.md)
-- [API 文档](api.md)
+- [配置管理模块说明](../config.md)
+- [架构设计文档](../architecture.md)
+- [API 文档](../api_doc/api.md)
+- [内置工具详解](builtin_doc/builtin.md)（BaseTool + 5 个内置工具）

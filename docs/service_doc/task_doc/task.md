@@ -246,7 +246,7 @@ SubTask[1..n]（并行调度）
 
 ### 关键设计点
 
-1. **子 Agent 共享 LLM/Tools**：默认复用全局 `LLMService` / `ToolRegistry`（Explore 确认可行）
+1. **子 Agent 共享 LLM/Tools**：默认复用全局 `LLMService` / `ToolService`（Explore 确认可行）
 2. **模型切换**：子 Agent 可通过 `AgentContext.metadata["model_key"]` 指定不同模型（main/fast/reasoning）
 3. **依赖**：`SubTask.depends_on` 支持链式（有依赖的子任务等待前置完成）
 4. **事件**：新增 `task_submitted` / `task_started` / `task_completed` / `agent_spawned` / `plan_generated` / `aggregation_complete` 事件（复用 `build_sse_event`）
@@ -282,7 +282,7 @@ TaskService 相关配置（`app/config/settings.py`）：
 | 配置项 | 默认值 | 说明 | 使用 |
 | --- | --- | --- | --- |
 | `agent_max_concurrent_tasks` | 10 | 最大并发任务数 | ✅ 已用（信号量） |
-| `agent_max_concurrent_tools` | 3 | 单任务最大并发工具数 | ✅ 已用（ToolRegistry） |
+| `agent_max_concurrent_tools` | 3 | 单任务最大并发工具数 | ✅ 已用（ToolService） |
 | `agent_task_queue_size` | 50 | 任务队列大小 | 🔶 规划 |
 | `agent_worker_pool_size` | 5 | worker 池大小 | 🔶 规划 |
 | `agent_priority_levels` | [low/normal/high/urgent] | 优先级等级 | 🔶 规划 |
@@ -299,7 +299,7 @@ TaskService 相关配置（`app/config/settings.py`）：
 
 - **并发闸门**：`agent_max_concurrent_tasks` 信号量，限制同时运行的 Agent 任务数
 - **接入 chat 路由**：`task_service.run_agent()` 在任务级并发约束下运行 Agent
-- **工具级并发**：`ToolRegistry` 信号量 + `ReActAgent._execute_tool_calls` 并行（Agent 维度）
+- **工具级并发**：`ToolService` 信号量 + `ReActAgent._execute_tool_calls` 并行（Agent 维度）
 
 ### 规划中（本次仅顶层设计）
 
@@ -320,7 +320,7 @@ TaskService 相关配置（`app/config/settings.py`）：
 
 ## 相关文档
 
-- [Agent 模块说明](../agent.md)（Agent 层：单任务执行）
-- [配置管理模块](../config.md)（任务/并发配置）
-- [工具模块](../tools.md)（工具级并发）
-- [HANDOFF](../HANDOFF.md)（项目交接）
+- [Agent 模块说明](../../core_doc/agent_doc/agent.md)（Agent 层：单任务执行）
+- [配置管理模块](../../config.md)（任务/并发配置）
+- [工具模块](../../tool_doc/tools.md)（工具级并发）
+- [HANDOFF](../../HANDOFF.md)（项目交接）

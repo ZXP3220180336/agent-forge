@@ -244,7 +244,7 @@ Pydantic 类型验证
 **落地状态（✅ 已实现）：**
 
 - `AGENT_MAX_CONCURRENT_TASKS` → `TaskService` 任务级并发信号量（`asyncio.Semaphore`），限制同时运行的 Agent 任务数
-- `AGENT_MAX_CONCURRENT_TOOLS` → `ToolRegistry` 工具级并发信号量，限制单任务内同时执行的工具数（配合 `ReActAgent._execute_tool_calls` 的 `asyncio.gather` 并行）
+- `AGENT_MAX_CONCURRENT_TOOLS` → `ToolService` 工具级并发信号量，限制单任务内同时执行的工具数（配合 `ReActAgent._execute_tool_calls` 的 `asyncio.gather` 并行）
 - 信号量用 `async with` 管理，异常/取消时自动释放，不会挂死占坑
 
 **调优建议：**
@@ -661,8 +661,8 @@ api_key = settings.llm_api_key  # ✅ 而不是 os.getenv("LLM_API_KEY")
 **相关文档：**
 
 - [架构设计文档](architecture.md)
-- [工具模块说明](tools.md)
-- [API 文档](api.md)
+- [工具模块说明](tool_doc/tools.md)
+- [API 文档](api_doc/api.md)
 - [部署文档](deployment.md)
 
 ## 后续优化建议
