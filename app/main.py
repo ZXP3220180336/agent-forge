@@ -13,11 +13,19 @@ if _root not in sys.path:
 
 # Windows 控制台默认 GBK 编码，统一切换为 UTF-8，
 # 避免日志中的符号（⚠✓ 等）触发 UnicodeEncodeError 导致启动崩溃
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except (AttributeError, ValueError):
-    pass
+# 防御性处理三种环境：stdout/stderr 可能为 None（pythonw 等无控制台）、
+# 已被替换为无 reconfigure 方法的对象（pytest/debugpy 捕获流）、或
+# 底层 fd 已失效（重定向 / CI / reloader 子进程 → OSError）。
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is None:
+        continue
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is None:
+        continue
+    try:
+        _reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
