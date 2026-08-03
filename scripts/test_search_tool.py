@@ -1,13 +1,13 @@
 import asyncio
 
+from app.services import ToolService
 from app.tools.base import BaseTool
 from app.tools.builtin import SearchTool
 from app.tools.builtin import __all__ as builtin_tools
-from app.tools.registry import ToolRegistry
 
 
 async def demo():
-    reg = ToolRegistry()
+    reg = ToolService()
 
     # 1. 注册工具
     reg.register(SearchTool())
@@ -24,7 +24,7 @@ async def demo():
 
 
 async def main():
-    reg = ToolRegistry()
+    reg = ToolService()
 
     # 根据 __all__ 中的类名动态导入并注册
     import importlib

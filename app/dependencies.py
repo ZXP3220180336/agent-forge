@@ -6,8 +6,13 @@
 from fastapi import Header, HTTPException
 
 from .app_state import app_state
-from .services import ContextManager, LLMService, SessionManager, TaskService
-from .tools import ToolRegistry
+from .services import (
+    ContextManager,
+    LLMService,
+    SessionManager,
+    TaskService,
+    ToolService,
+)
 
 
 async def get_current_user(
@@ -66,18 +71,18 @@ async def get_llm_service() -> LLMService:
     return app_state.llm_service
 
 
-async def get_tool_registry() -> ToolRegistry:
+async def get_tool_service() -> ToolService:
     """
-    获取全局工具注册中心（依赖注入）。
+    获取工具服务（依赖注入）。
 
-    内置工具在 app_state.initialize() 时通过 ToolService 注册到全局单例，
+    内置工具在 app_state.initialize() 时通过 init_default_tools() 注册到服务实例，
     ReActAgent 通过它获取工具定义并执行工具调用。
     """
     if app_state.tool_service is None:
         raise RuntimeError(
             "ToolService 尚未初始化。请确保在应用启动时调用了 app_state.initialize()。"
         )
-    return app_state.tool_service.registry
+    return app_state.tool_service
 
 
 async def get_task_service() -> TaskService:

@@ -29,9 +29,8 @@ from app.core.events import (
     build_tool_call_event,
     build_tool_result_event,
 )
-from app.services import LLMService
+from app.services import LLMService, ToolService
 from app.services.llm_service import StreamResult
-from app.tools import ToolRegistry
 
 from .base import AgentResult, BaseAgent
 
@@ -49,7 +48,7 @@ class ReActAgent(BaseAgent):
         3. 达到最大迭代次数 → 强制结束
     """
 
-    def __init__(self, llm: LLMService, tools: ToolRegistry) -> None:
+    def __init__(self, llm: LLMService, tools: ToolService) -> None:
         super().__init__(llm, tools)
         self._tool_call_records: list[dict[str, Any]] = []
 
@@ -163,7 +162,7 @@ class ReActAgent(BaseAgent):
         """
         并行执行工具调用列表，追加结果到 messages，记录到 _tool_call_records。
 
-        并发执行：asyncio.gather 并行执行所有工具（并发度由 ToolRegistry 的
+        并发执行：asyncio.gather 并行执行所有工具（并发度由 ToolService 的
         工具级信号量 agent_max_concurrent_tools 限制）。gather 保证结果顺序 =
         输入顺序，因此 tool_messages / _tool_call_records 的顺序与 tool_calls
         一致——OpenAI 兼容 API 要求 tool 消息与前置 assistant.tool_calls 的

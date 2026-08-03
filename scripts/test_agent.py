@@ -19,14 +19,14 @@ from app.config import settings
 from app.core.agent import AgentContext
 from app.core.agent.executor import ReActAgent
 from app.core.prompts.manager import PromptManager
+from app.services import ToolService
 from app.services.llm_service import LLMService
 from app.tools.builtin import ReadFileTool, SearchTool, WriteFileTool
-from app.tools.registry import ToolRegistry
 
 
 async def main():
     # 1. 准备依赖
-    tools = ToolRegistry()
+    tools = ToolService()
     for tool_cls in [SearchTool, ReadFileTool, WriteFileTool]:
         tools.register(tool_cls())
 

@@ -4,7 +4,7 @@ ReActAgent 单元测试
 覆盖：
     _execute_tool_calls 并行执行：tool_messages 顺序保持（= tool_calls 输入顺序）
     tool_call_id 配对：tool 消息与 assistant.tool_calls 一一对应
-    gather 并行：多工具同时执行（并发度由 ToolRegistry 信号量限制）
+    gather 并行：多工具同时执行（并发度由 ToolService 信号量限制）
 """
 
 import asyncio
@@ -15,8 +15,8 @@ import pytest
 
 from app.config import settings
 from app.core.agent import AgentContext, ReActAgent
+from app.services import ToolService
 from app.tools.base import BaseTool, ToolResult
-from app.tools.registry import ToolRegistry
 
 
 class _DelayTool(BaseTool):
@@ -61,7 +61,7 @@ class _NoopLLM:
 async def test_execute_tool_calls_parallel_preserves_order(monkeypatch):
     """并行执行工具：tool_messages 顺序保持 = tool_calls 输入顺序。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)
-    reg = ToolRegistry()
+    reg = ToolService()
     # 工具延迟故意交错：tool2 先完成，但结果顺序仍应 = 输入顺序
     t1 = _DelayTool("tool_a", delay=0.03)
     t2 = _DelayTool("tool_b", delay=0.01)
@@ -96,7 +96,7 @@ async def test_execute_tool_calls_parallel_preserves_order(monkeypatch):
 async def test_execute_tool_calls_parallel_actually_concurrent(monkeypatch):
     """并行执行：总耗时小于串行和（工具延迟交错）。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)
-    reg = ToolRegistry()
+    reg = ToolService()
     t1 = _DelayTool("tool_a", delay=0.05)
     t2 = _DelayTool("tool_b", delay=0.05)
     reg.register(t1)

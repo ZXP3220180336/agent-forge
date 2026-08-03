@@ -26,8 +26,7 @@ from typing import Any
 
 from app.config import settings
 from app.core.events import build_error_event, build_info_event
-from app.services import LLMService
-from app.tools import ToolRegistry
+from app.services import LLMService, ToolService
 
 
 class AgentState(Enum):
@@ -97,12 +96,12 @@ class BaseAgent(ABC):
     run() 是统一入口，负责 SSE 流式事件生成。
 
     用法：
-        agent = ReActAgent(llm=llm_service, tools=tool_registry)
+        agent = ReActAgent(llm=llm_service, tools=tool_service)
         async for event in agent.run("查询天气", context=ctx):
             yield event  # 转发 SSE 事件
     """
 
-    def __init__(self, llm: LLMService, tools: ToolRegistry) -> None:
+    def __init__(self, llm: LLMService, tools: ToolService) -> None:
         self._llm = llm
         self._tools = tools
         self._context: AgentContext | None = None

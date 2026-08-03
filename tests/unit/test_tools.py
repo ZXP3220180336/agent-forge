@@ -1,5 +1,5 @@
 """
-ToolRegistry 单元测试
+ToolService 单元测试
 
 覆盖：
     工具级并发信号量：并发执行工具数不超过 agent_max_concurrent_tools
@@ -12,8 +12,8 @@ import asyncio
 import pytest
 
 from app.config import settings
+from app.services import ToolService
 from app.tools.base import BaseTool, ToolResult
-from app.tools.registry import ToolRegistry
 
 
 class _SleepTool(BaseTool):
@@ -45,10 +45,10 @@ class _SleepTool(BaseTool):
 
 
 @pytest.mark.asyncio
-async def test_tool_registry_limits_concurrency(monkeypatch):
+async def test_tool_service_limits_concurrency(monkeypatch):
     """工具级并发不超过 agent_max_concurrent_tools。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 2)
-    reg = ToolRegistry()
+    reg = ToolService()
     tool = _SleepTool(delay=0.02)
     reg.register(tool)
 
@@ -60,10 +60,10 @@ async def test_tool_registry_limits_concurrency(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_registry_execute_basic(monkeypatch):
+async def test_tool_service_execute_basic(monkeypatch):
     """execute 基本流程：成功返回 + 统计记录。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 5)
-    reg = ToolRegistry()
+    reg = ToolService()
     tool = _SleepTool(delay=0)
     reg.register(tool)
 
@@ -77,10 +77,10 @@ async def test_tool_registry_execute_basic(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_registry_releases_semaphore_on_error(monkeypatch):
+async def test_tool_service_releases_semaphore_on_error(monkeypatch):
     """工具异常时信号量仍释放（async with 保证）。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 2)
-    reg = ToolRegistry()
+    reg = ToolService()
 
     class _FailTool(_SleepTool):
         async def execute(self, **kwargs) -> ToolResult:

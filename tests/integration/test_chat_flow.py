@@ -5,7 +5,7 @@ chat_router → ReActAgent 桥接集成测试
     用户输入 → LLM 思考 → 工具调用 → 工具执行 → LLM 总结 → 回复用户
 
 不依赖外部 API / 数据库：用 Fake LLM 编排"首轮调工具、次轮给最终答复"，
-真实 ToolRegistry + WriteFileTool 验证工具真实执行。
+真实 ToolService + WriteFileTool 验证工具真实执行。
 
 用法：直接调用 send_message()（手动传入依赖），消费 StreamingResponse.body_iterator。
 """
@@ -15,11 +15,11 @@ import json
 import pytest
 
 from app.api.routes.chat import SendMessageRequest, send_message
+from app.services import ToolService
 from app.services.context_manager import ContextManager
 from app.services.llm_service import StreamResult
 from app.services.task_service import TaskService
 from app.tools.builtin import WriteFileTool
-from app.tools.registry import ToolRegistry
 
 
 class FakeSessionManager:
@@ -136,7 +136,7 @@ async def test_chat_send_message_react_loop(tmp_path):
         ]
     )
 
-    registry = ToolRegistry()
+    registry = ToolService()
     registry.register(WriteFileTool())
 
     # 2. 调用 send_message（手动传入依赖）
@@ -147,7 +147,7 @@ async def test_chat_send_message_react_loop(tmp_path):
         session_manager=fake_sm,
         context_manager=context_manager,
         llm_service=fake_llm,
-        tool_registry=registry,
+        tool_service=registry,
         task_service=TaskService(),
     )
 
@@ -205,7 +205,7 @@ async def test_chat_send_message_no_tools_plain_answer():
     context_manager = ContextManager(session_manager=fake_sm)
 
     fake_llm = FakeLLM([{"type": "stop", "content": "直接回答"}])
-    registry = ToolRegistry()  # 空注册中心：无工具定义，LLM 只能直接回答
+    registry = ToolService()  # 空服务：无工具定义，LLM 只能直接回答
 
     request = SendMessageRequest(session_id="s2", message="你好", max_iterations=5)
     response = await send_message(
@@ -214,7 +214,7 @@ async def test_chat_send_message_no_tools_plain_answer():
         session_manager=fake_sm,
         context_manager=context_manager,
         llm_service=fake_llm,
-        tool_registry=registry,
+        tool_service=registry,
         task_service=TaskService(),
     )
 

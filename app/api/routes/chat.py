@@ -14,10 +14,15 @@ from app.dependencies import (
     get_llm_service,
     get_session_manager,
     get_task_service,
-    get_tool_registry,
+    get_tool_service,
 )
-from app.services import ContextManager, LLMService, SessionManager, TaskService
-from app.tools import ToolRegistry
+from app.services import (
+    ContextManager,
+    LLMService,
+    SessionManager,
+    TaskService,
+    ToolService,
+)
 
 router = APIRouter(prefix="/api", tags=["聊天"])
 
@@ -38,7 +43,7 @@ async def send_message(
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
     context_manager: ContextManager = Depends(get_context_manager),  # noqa: B008
     llm_service: LLMService = Depends(get_llm_service),  # noqa: B008
-    tool_registry: ToolRegistry = Depends(get_tool_registry),  # noqa: B008
+    tool_service: ToolService = Depends(get_tool_service),  # noqa: B008
     task_service: TaskService = Depends(get_task_service),  # noqa: B008
 ):
     """
@@ -81,7 +86,7 @@ async def send_message(
             user_id=user_id,
             max_iterations=request.max_iterations,
         )
-        agent = ReActAgent(llm=llm_service, tools=tool_registry)
+        agent = ReActAgent(llm=llm_service, tools=tool_service)
 
         try:
             # 4. ReAct 闭环：LLM 思考 → 工具调用 → LLM 总结
