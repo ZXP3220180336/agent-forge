@@ -53,7 +53,7 @@ API 层（FastAPI 路由）
 | 4       | 基础设施层（Database/Redis/VectorStore/MessageQueue）      | 🔶 有文件但未验证（asyncpg 驱动未安装，DB 恒降级）                          |
 | 5       | 服务层补全（ToolService / MemoryService / TaskService）    | 🔶 ToolService/TaskService 已实现（并发信号量）；Memory 空；Task 编排规划中 |
 | 6       | API 路由完善（Admin / Agent / Tool 路由）                  | 🔶 chat 已接入 ReActAgent；Admin/Agent/Tool 路由仍为空文件                  |
-| 7       | 测试 + 文档收尾                                            | 🔶 98 测试通过；task.md 已建；architecture/api/deployment 仍空              |
+| 7       | 测试 + 文档收尾                                            | 🔶 98 测试通过；文档体系已全量补全（含各层子模块文档）                      |
 
 ---
 
@@ -169,7 +169,7 @@ API 层（FastAPI 路由）
 ### 5.1 整体完成度
 
 - **Phase 1-3 已完成**：配置、工具、LLM 服务层、核心 Agent 层全部落地，「用户输入 → LLM 思考 → 工具调用 → LLM 总结 → 回复用户」完整闭环已用真实 API（DeepSeek + Tavily）验证打通。
-- **Phase 4-7 部分实现**：基础设施层与中间件为空文件；服务层（Session/Context/Tool/Task 已实现，Memory 空）、API 路由（chat/session 已实现，admin/agent/tool 空）部分落地；测试（98）与文档（含 task.md）部分完成。
+- **Phase 4-7 部分实现**：基础设施层与中间件为空文件；服务层（Session/Context/Tool/Task 已实现，Memory 空）、API 路由（chat/session 已实现，admin/agent/tool 空）部分落地；测试（98）通过、文档体系已全量补全（2026-08-03 轮）。
 
 ### 5.2 已完成轮次
 
@@ -196,9 +196,8 @@ API 层（FastAPI 路由）
 | 2   | **基础设施层空**     | `infrastructure/`（database/redis/vector_store/message_queue）全部为空文件；DB/Redis 由 `app_state.py` 直接管理         |
 | 3   | **服务层未补全**     | `MemoryService` 仍为空文件（TaskService 已实现并发信号量，编排规划见 [service_doc/task_doc/task.md](service_doc/task_doc/task.md)）                          |
 | 4   | **API 路由未补全**   | `admin.py` / `agent.py` / `tool.py` 为空文件（tool 路由可基于 ToolService 的 stats 实现；agent 路由可承接 TaskService） |
-| 5   | **文档未补全**       | `architecture.md` / `api.md` / `deployment.md` 为空                                                                     |
-| 6   | **中间件未实现**     | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                              |
-| 7   | **TaskService 编排** | 已实现并发闸门；队列/优先级/状态/多 Agent 编排待实现（顶层计划见 [service_doc/task_doc/task.md](service_doc/task_doc/task.md)）                              |
+| 5   | **中间件未实现**     | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                              |
+| 6   | **TaskService 编排** | 已实现并发闸门；队列/优先级/状态/多 Agent 编排待实现（顶层计划见 [service_doc/task_doc/task.md](service_doc/task_doc/task.md)）                              |
 
 > **LLM 层自身遗留**（`generate_structured` 重复实现待统一；`APIResponseValidationError` 已决策保持；流式迭代自动重试已决策整流）：见 [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)「当前进度与遗留」。
 
@@ -206,7 +205,7 @@ API 层（FastAPI 路由）
 
 - **优先 1**：TaskService 阶段 A —— 按 [service_doc/task_doc/task.md](service_doc/task_doc/task.md) 顶层计划实现队列/优先级/状态/worker 池
 - **优先 2**：验证基础设施 + 服务层 —— 补依赖 `asyncpg`，补全 `memory_service`
-- **优先 3**：补全缺失模块 —— `api/routes/admin.py` / `agent.py` / `tool.py`（空文件）；`docs/architecture.md` / `api.md` / `deployment.md`（空）
+- **优先 3**：补全缺失模块 —— `api/routes/admin.py` / `agent.py` / `tool.py`（空文件）；`api/middleware/`（auth/rate_limit/error_handler，均空文件）
 
 > **LLM 层内部下一步**（`generate_structured` 双入口统一、retry 层遗留微调）：见 [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)「当前进度与遗留」。
 
