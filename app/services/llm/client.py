@@ -19,7 +19,7 @@ ClientManager — 连接池复用与多 client 管理
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
 from openai import AsyncOpenAI
 
@@ -45,8 +45,8 @@ class ClientManager:
     key 约定："main" / "reasoning" / "fast" 对应配置中心三种模型。
     """
 
-    _instances: dict[str, AsyncOpenAI] = {}
-    _configs: dict[str, dict[str, Any]] = {}
+    _instances: ClassVar[dict[str, AsyncOpenAI]] = {}
+    _configs: ClassVar[dict[str, dict[str, Any]]] = {}
 
     @classmethod
     def register_config(
