@@ -22,11 +22,15 @@
 
 ## 组件详解
 
-### `TokenBucket` — 单桶算法（自包含）
+### `TokenBucket` — 单桶算法（纯 token 记账）
 
-与 rate_limiter.py 的 TokenBucket 算法一致（锁外 sleep 循环重检、refill_rate<=0 防御），额外提供 `refund()`：
+与 rate_limiter.py 的 TokenBucket 算法一致（锁外 sleep 循环重检、refill_rate<=0 防御），提供 `acquire()` 与 `refund()`：
 
 ```python
+async def acquire(self, tokens: float = 1.0) -> float:
+    """获取 Token，等待直到可用（返回等待秒数）。"""
+    # 锁内计算 → 锁外 sleep → 循环重检
+
 async def refund(self, tokens: float = 1.0) -> None:
     """退还 token（受 capacity 封顶，best-effort）。"""
     async with self._lock:
@@ -34,35 +38,48 @@ async def refund(self, tokens: float = 1.0) -> None:
         self._tokens = min(self.capacity, self._tokens + tokens)
 ```
 
-### `ReservationTokenBucket` — reserve 形态单桶
-
-继承 `TokenBucket`，复用 acquire（等待/扣减/禁用判定）逻辑，新增 `reserve(tokens)` 返回 `Reservation`。
+> 桶本身只做 token 记账，**不感知预留/结算语义**——预留由上层 `Reservation` 持有条目、经 `refund` 结算。早期 `ReservationTokenBucket` 子类与 `TokenBucket.reserve()` 均已移除，预留编排全部上移到 `ReservationLimiter.reserve()`。
 
 ### `Reservation` — 预留对象（终态幂等）
 
+**空对象构造**，由 `ReservationLimiter.reserve()` 逐桶 acquire 扣减后 `add()` 追加条目。以**条目列表**统一单桶 / 多桶组合：`entries: [(bucket, reserved), ...]`。语义约定：**首个条目为按次桶（RPM，settle 不退）**，其余条目为按量桶（TPM，settle 退差）。单桶 = 1 条目，双桶 = 2 条目。
+
 ```python
 class Reservation:
+    def __init__(self) -> None:                    # 空对象，条目由 add() 追加
+    def add(self, bucket, reserved) -> None:       # 追加桶到组合（按次之后追加按量）
     async def settle(self, actual: int | None) -> None:
-        # actual=None 保留全部预留（保守）但标记终态；actual>=0 退 max(0, reserved-actual)
+        # 仅对按量桶（非首条目）退 max(0, reserved-actual)
+        # actual=None 保留全部预留（保守）但标记终态
     async def cancel(self) -> None:
-        # 全额退还 reserved（请求未确认发出时用）
+        # 所有桶全额退还（请求未确认发出时用）
     @property
     def settled(self) -> bool: ...
 ```
 
 **语义**：
-- `settle(actual)`：请求完成后按实际消耗结算，退还 `max(0, reserved - actual)`
+
+- `settle(actual)`：请求完成后按实际消耗结算，对按量桶退 `max(0, reserved - actual)`；按次桶不退
 - `settle(None)`：无 usage 时的保守路径——保留全部预留，但**标记终态**（闭环不泄漏）
-- `cancel()`：请求未发出（create 失败/取消）时全额退还
+- `cancel()`：请求未发出（create 失败/取消）时**所有桶全额退还**
 - **终态幂等**：settle/cancel 任一调用后，再次调用为 no-op
+
+> 早期 `_CombinedReservation`（继承 Reservation 覆写 settle/cancel 处理双桶）已**合并进 `Reservation`**：改为空对象构造 + `add()` 追加条目表达组合，子类删除。
 
 ### `ReservationLimiter` — 组合限流器
 
 ```python
 class ReservationLimiter:
     async def reserve(self, estimated_tokens=0, retry_after=None) -> Reservation:
-        # RPM 预留 1 + TPM 预留 estimated → 返回组合 Reservation
+        res = Reservation()                                  # 空对象
+        await self._req_bucket.acquire(1.0)                  # RPM 扣 1
+        res.add(self._req_bucket, 1.0)                       # 首条目（按次桶，settle 不退）
+        await self._token_bucket.acquire(est)                # TPM 扣 est
+        res.add(self._token_bucket, est)                     # 按量条目
+        return res
 ```
+
+**组合实现**：空构造 `Reservation()`，RPM 桶 `acquire(1.0)` 扣减后 `res.add(req_bucket, 1.0)` 追加为首条目（按次桶），TPM 桶 `acquire(est)` 扣减后 `res.add(token_bucket, est)` 追加为按量条目。组合 Reservation 的 `settle` 只命中非首条目、`cancel` 命中全部条目。
 
 **组合 Reservation 语义（按「请求是否已发出」分界）**：
 

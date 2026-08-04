@@ -29,10 +29,16 @@ from app.config import settings
 
 class TokenBucket:
     """
-    Token Bucket 限流器（自包含实现）。
+    Token Bucket 限流器（纯 token 记账）。
 
     - capacity: 桶容量（最大突发请求数）
     - refill_rate: 每秒补充 Token 数
+
+    对外接口：
+        - acquire(tokens)    等待配额并扣减
+        - refund(tokens)     退还配额（受 capacity 封顶）
+
+    预留/结算语义由上层 Reservation 持有条目、经 refund 结算，桶本身不感知。
     """
 
     def __init__(self, capacity: float, refill_rate: float) -> None:
@@ -95,64 +101,56 @@ class TokenBucket:
         self._last_refill = now
 
 
-class ReservationTokenBucket(TokenBucket):
-    """
-    Token Bucket 限流器（reserve 形态）。
-
-    继承 TokenBucket，复用 acquire（等待/扣减/禁用判定）逻辑，
-    新增 reserve() 返回 Reservation，支持请求后结算退差（settle）
-    或全额退还（cancel）。
-    """
-
-    async def reserve(self, tokens: float = 1.0) -> Reservation:
-        """预留 token，返回 Reservation（请求前扣减，请求后结算/取消）。
-
-        复用 acquire 的等待/扣减循环（含禁用判定）：先按需等待配额，
-        扣减 tokens 后返回 Reservation 持有本次预留。
-        """
-        if self.refill_rate <= 0:
-            return Reservation(self, 0)
-        await self.acquire(tokens)
-        return Reservation(self, tokens)
-
-
 class Reservation:
     """
     预留的配额，支持事后结算（settle）或取消（cancel）。
 
-    请求前 reserve() 扣减配额得到 Reservation，请求完成后：
-        - settle(actual)    实际消耗 actual，退还 max(0, reserved - actual)
+    以条目列表统一单桶 / 多桶组合：每个条目 = (桶, 预留量)。
+    空对象构造，由 ReservationLimiter.reserve() 逐桶 acquire 扣减后 add() 追加条目。
+    语义约定：**首个条目为按次桶（RPM，settle 不退）**——请求已发出即真实消耗；
+    其余条目为按量桶（TPM，settle 退差）。单桶场景仅一个条目。
+
+    请求前预留后，请求完成后：
+        - settle(actual)    实际消耗 actual，按量桶退 max(0, reserved - actual)
         - settle(None)      保留全部预留（保守），但标记终态
-        - cancel()          全额退还 reserved（请求未确认发出时用）
+        - cancel()          所有桶全额退还（请求未确认发出时用）
 
     终态幂等：settle/cancel 任一调用后，再次调用为 no-op。
     """
 
-    __slots__ = ("_bucket", "_reserved", "_settled")
+    __slots__ = ("_entries", "_settled")
 
-    def __init__(self, bucket: ReservationTokenBucket, reserved: float) -> None:
-        self._bucket = bucket
-        self._reserved = reserved
+    def __init__(self) -> None:
+        self._entries: list[tuple[TokenBucket, float]] = []
         self._settled = False
+
+    def add(self, bucket: TokenBucket, reserved: float) -> None:
+        """追加一个桶到组合预留（按次桶之后追加按量桶）。"""
+        self._entries.append((bucket, reserved))
 
     async def settle(self, actual: int | None) -> None:
         """按实际消耗结算，退还未使用配额。
 
         Args:
             actual: 实际消耗的 token 数（None = 保留全部预留，保守语义）
+
+        仅对按量桶（非首个条目）退差；按次桶请求已发出即真实消耗，不退。
         """
         if self._settled:
             return
         self._settled = True
-        if actual is not None:
-            await self._bucket.refund(max(0, self._reserved - actual))
+        if actual is None:
+            return
+        for bucket, reserved in self._entries[1:]:
+            await bucket.refund(max(0.0, reserved - actual))
 
     async def cancel(self) -> None:
-        """全额退还预留配额（请求未确认发出时用）。幂等。"""
+        """全额退还所有桶的预留配额（请求未确认发出时用）。幂等。"""
         if self._settled:
             return
         self._settled = True
-        await self._bucket.refund(self._reserved)
+        for bucket, reserved in self._entries:
+            await bucket.refund(reserved)
 
     @property
     def settled(self) -> bool:
@@ -174,8 +172,8 @@ class ReservationLimiter:
         rpm: int = 60,
         tpm: int = 100_000,
     ) -> None:
-        self._req_bucket = ReservationTokenBucket(capacity=rpm, refill_rate=rpm / 60)
-        self._token_bucket = ReservationTokenBucket(capacity=tpm, refill_rate=tpm / 60)
+        self._req_bucket = TokenBucket(capacity=rpm, refill_rate=rpm / 60)
+        self._token_bucket = TokenBucket(capacity=tpm, refill_rate=tpm / 60)
 
     async def reserve(
         self,
@@ -194,58 +192,21 @@ class ReservationLimiter:
         if retry_after:
             await asyncio.sleep(retry_after)
 
-        # RPM 预留（固定 1）
-        req_res = await self._req_bucket.reserve(1.0)
+        est = max(estimated_tokens, 1.0)
+
+        res = Reservation()
+        # RPM 预留（固定 1）→ 组合预留的首个条目（按次桶，settle 不退）
+        await self._req_bucket.acquire(1.0)
+        res.add(self._req_bucket, 1.0)
         try:
-            # TPM 预留（按 estimated，防 0 造成桶不扣）
-            token_res = await self._token_bucket.reserve(
-                max(estimated_tokens, 1.0),
-            )
+            # TPM 预留（按 estimated，防 0 造成桶不扣）→ 追加按量条目
+            await self._token_bucket.acquire(est)
         except BaseException:
-            # 防 R5：reserve TPM 前被硬取消 → 回退已扣的 RPM
-            await req_res.cancel()
+            # 防 R5：TPM 预留前被硬取消 → 回退已扣的 RPM
+            await res.cancel()
             raise
-
-        return _CombinedReservation(
-            req_bucket=self._req_bucket,
-            token_res=token_res,
-            req_reserved=1.0,
-        )
-
-
-class _CombinedReservation(Reservation):
-    """
-    组合 Reservation：跨 RPM + TPM 双桶。
-
-    - settle(actual)    只退 TPM 差（RPM 不退——请求已发出，RPM 配额真实消耗）
-    - cancel()          退 RPM 1 + TPM 全额（请求未确认发出时用）
-    """
-
-    def __init__(
-        self,
-        req_bucket: ReservationTokenBucket,
-        token_res: Reservation,
-        req_reserved: float,
-    ) -> None:
-        super().__init__(bucket=token_res._bucket, reserved=token_res._reserved)
-        self._req_bucket = req_bucket
-        self._req_reserved = req_reserved
-        self._token_res = token_res
-
-    async def settle(self, actual: int | None) -> None:
-        """结算：退 TPM 差（RPM 不退，请求已真实发生）。幂等。"""
-        if self._settled:
-            return
-        self._settled = True
-        await self._token_res.settle(actual)
-
-    async def cancel(self) -> None:
-        """全额退还：退 RPM 1 + TPM 全额（请求未确认发出时用）。幂等。"""
-        if self._settled:
-            return
-        self._settled = True
-        await self._req_bucket.refund(self._req_reserved)
-        await self._token_res.cancel()
+        res.add(self._token_bucket, est)
+        return res
 
 
 # =====================================================================
