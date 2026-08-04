@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # =====================================================================
 # 模型定价表（$/1K tokens）
 # 来源：各模型官网，随模型发布更新
@@ -92,13 +91,16 @@ class CostTracker:
         """累计成本到会话级统计。"""
         return {
             "cost_usd": round(
-                stats.get("cost_usd", 0) + cost.get("cost_usd", 0), 6,
+                stats.get("cost_usd", 0) + cost.get("cost_usd", 0),
+                6,
             ),
             "input_cost": round(
-                stats.get("input_cost", 0) + cost.get("input_cost", 0), 6,
+                stats.get("input_cost", 0) + cost.get("input_cost", 0),
+                6,
             ),
             "output_cost": round(
-                stats.get("output_cost", 0) + cost.get("output_cost", 0), 6,
+                stats.get("output_cost", 0) + cost.get("output_cost", 0),
+                6,
             ),
         }
 

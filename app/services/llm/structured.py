@@ -98,7 +98,10 @@ class StructuredOutput:
         # 先用原生 JSON Schema
         response_format = StructuredOutput.build_json_schema_request(schema)
         result = await StructuredOutput._try_extract(
-            llm_service, messages, response_format, model_key,
+            llm_service,
+            messages,
+            response_format,
+            model_key,
         )
         if result is not None:
             return result
@@ -106,14 +109,19 @@ class StructuredOutput:
         # 降级：普通 JSON mode
         response_format = StructuredOutput.build_json_mode_request()
         result = await StructuredOutput._try_extract(
-            llm_service, messages, response_format, model_key,
+            llm_service,
+            messages,
+            response_format,
+            model_key,
         )
         if result is not None:
             return result
 
         # 最终降级：纯 prompt 约束 + 正则提取
         return await StructuredOutput._fallback_extract(
-            llm_service, messages, model_key,
+            llm_service,
+            messages,
+            model_key,
         )
 
     @staticmethod
@@ -160,7 +168,10 @@ class StructuredOutput:
             content = result.content.strip()
             # 移除 markdown 代码块标记
             content = re.sub(
-                r"^```(?:json)?\s*", "", content, flags=re.MULTILINE,
+                r"^```(?:json)?\s*",
+                "",
+                content,
+                flags=re.MULTILINE,
             )
             content = re.sub(r"\s*```$", "", content, flags=re.MULTILINE)
             return json.loads(content)

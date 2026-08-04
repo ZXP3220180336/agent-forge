@@ -87,7 +87,9 @@ class ReActAgent(BaseAgent):
             # 累计 token 用量
             if stream_result.usage:
                 for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    total_usage[k] = total_usage.get(k, 0) + stream_result.usage.get(k, 0)
+                    total_usage[k] = total_usage.get(k, 0) + stream_result.usage.get(
+                        k, 0
+                    )
 
             full_reasoning = stream_result.reasoning_content
             full_content = stream_result.content
@@ -129,7 +131,10 @@ class ReActAgent(BaseAgent):
                     iteration,
                     total_usage,
                 )
-                yield build_done_event(iterations=iteration, total_tokens=total_usage.get("total_tokens", 0))
+                yield build_done_event(
+                    iterations=iteration,
+                    total_tokens=total_usage.get("total_tokens", 0),
+                )
                 return
 
             # ----- （3）空输出 → 重试
@@ -151,7 +156,10 @@ class ReActAgent(BaseAgent):
                 iterations=ctx.max_iterations,
                 error="LLM 未返回任何结果",
             )
-        yield build_done_event(iterations=ctx.max_iterations, total_tokens=total_usage.get("total_tokens", 0))
+        yield build_done_event(
+            iterations=ctx.max_iterations,
+            total_tokens=total_usage.get("total_tokens", 0),
+        )
 
     async def _execute_tool_calls(
         self,

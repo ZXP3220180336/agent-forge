@@ -16,10 +16,11 @@ StreamParser — 流式/非流式响应解析
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import Any
 
 
+@dataclass
 class ParsedChunk:
     """
     单个 chunk 的解析结果。
@@ -28,22 +29,21 @@ class ParsedChunk:
     - finish_reason / usage → 元数据
     """
 
-    def __init__(self) -> None:
-        self.reasoning_token: str | None = None
-        self.message_token: str | None = None
-        self.finish_reason: str | None = None
-        self.usage: dict | None = None
-        self.tool_call_deltas: list[ToolCallDelta] | None = None
+    reasoning_token: str | None = None
+    message_token: str | None = None
+    finish_reason: str | None = None
+    usage: dict | None = None
+    tool_call_deltas: list[ToolCallDelta] | None = None
 
 
+@dataclass
 class ToolCallDelta:
     """工具调用的增量片段。"""
 
-    def __init__(self, index: int) -> None:
-        self.index: int = index
-        self.id: str = ""
-        self.function_name: str = ""
-        self.function_arguments: str = ""
+    index: int
+    id: str = ""
+    function_name: str = ""
+    function_arguments: str = ""
 
 
 class StreamParser:
@@ -155,14 +155,16 @@ class StreamParser:
         tool_calls = []
         if msg.tool_calls:
             for tc in msg.tool_calls:
-                tool_calls.append({
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                )
 
         return {
             "content": msg.content or "",
