@@ -903,24 +903,28 @@ await log_event_async("llm_call", **event_fields)
 
 ### 已实现
 
-- 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `llm_call` 业务事件）
+- 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / ReservationLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
 - retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针失败一律回 OPEN、流式迭代保护（详见 [retry.md](retry.md)）
 - **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。详见下文「流式整流重试」小节
+- **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
+- **配额缺口闭环（2026-08-02）**：acquire 移入 call_fn，重试计入配额、fallback 不参与（详见下文「配额缺口」）
 
 ### 遗留未定事项
 
-| 事项                                              | 当前状态           | 说明                                                                                                                                                                    |
-| ------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------                                                         |
-| **RateLimiter 未集成**                            | ✅ 已集成          | `async_generate()` / `generate()` create 前调用 `RateLimiter.acquire()`（RPM+TPM 双桶）；新增 `RateLimiterManager` 按 model_key 共享实例，TPM 用 tiktoken 实时数 prompt |
-| **流式迭代是否自动重试**                          | ✅ 已决策（整流）  | 首 token 前中断整流重试（复用 `classify_error`，新增 `llm_stream_max_retries` 配置）；已产出 token 后中断不整流                                                         |
-| **`APIResponseValidationError` 是否容忍网关故障** | 保持 NON_RETRYABLE | 决策：当前直连服务商场景下重试无效，保持现状不修改                                                                                                                      |
-| **`generate_structured` 重复实现**                | 两个入口           | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback）                                                         |
+| 事项                                              | 当前状态             | 说明                                                                                                                                                                                  |
+|---------------------------------------------------|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **`generate_structured` 重复实现**                | 🔶 两个入口待统一    | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback）。下一步计划明确「评估合并」                                           |
+| **熔断观察盲区**                                  | 🔶 未实现            | 流式迭代失败不计入熔断窗口（现状）。若下游「create 正常但流频繁中途断开」，熔断器不感知。可把「放弃时的 RETRYABLE 迭代失败」喂给 `cb.record_failure()`（见「流式整流重试·遗留微调」） |
+| **自适应预留（Fenic 模型）**                      | 🔶 暂未实现          | p95 自适应 × 1.15 预留（推理模型 p99），吞吐可提升约 23×。当前为「prompt + max_tokens」保守预留（见 [rate_limiter.md](rate_limiter.md)）                                              |
+| **`max_tokens` 过大仍空耗配额**                   | 🔶 已缓解未消除      | 结算退差在「实际消耗 > 预留」时无法补扣；「宁多勿少」保守取舍仍成立（见 [rate_limiter.md](rate_limiter.md)）                                                                          |
+| **`APIResponseValidationError` 是否容忍网关故障** | ✅ 已决策保持        | 决策：当前直连服务商场景下重试无效，保持 NON_RETRYABLE                                                                                                                                |
+| **流式迭代是否自动重试**                          | ✅ 已决策（整流）    | 首 token 前中断整流重试（复用 `classify_error`，新增 `llm_stream_max_retries` 配置）；已产出 token 后中断不整流                                                                       |
 
 ### 下一步计划
 
-1. ~~**集成 RateLimiter 到 LLMService**~~（已实施，见下）：`async_generate()` / `generate()` create 前 `RateLimiterManager.get(model_key).acquire(estimated_tokens)`；estimated_tokens 由 `_count_prompt_tokens` 用 tiktoken 实时数 messages
-2. **决策遗留事项**：~~流式迭代是否自动重试~~（已决策）——剩余 `APIResponseValidationError` 已决策保持；`generate_structured` 统一待评估
-3. **统一结构化输出入口**：评估 `LLMService.generate_structured` 与 `StructuredOutput.extract` 的合并
+1. **统一结构化输出入口**：评估 `LLMService.generate_structured`（简化版）与 `StructuredOutput.extract`（完整版：JSON mode 降级 + regex fallback）的合并，消除双入口
+2. **补熔断观察盲区**：流式迭代「放弃时的 RETRYABLE 失败」喂给 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」的下游故障
+3. **评估自适应预留**：Fenic 式 p95 自适应预留（吞吐提升约 23×），需平衡实现复杂度与收益
 
 ---
 
