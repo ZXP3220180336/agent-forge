@@ -11,7 +11,6 @@ LLMService.async_generate 流式整流重试单元测试
 """
 
 import asyncio
-import json
 import logging
 from types import SimpleNamespace
 
@@ -436,16 +435,17 @@ async def test_logging_records_rectified_attempts(monkeypatch, caplog):
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
-    with caplog.at_level(logging.INFO, logger="app.llm"):
+    with caplog.at_level(logging.INFO, logger="app.events"):
         await run()
 
-    records = [json.loads(m) for m in caplog.messages]
+    records = caplog.records
     assert len(records) == 2, f"整流成功应有 2 条日志，实际 {len(records)}: {records}"
-    assert records[0]["success"] is False, "第 1 条应为失败日志"
-    assert "流式读取中断" in records[0]["error"], f"失败原因: {records[0]['error']}"
-    assert records[1]["success"] is True, "第 2 条应为成功日志"
-    assert records[1]["error"] is None, "成功日志不应有错误"
-    assert all(r["duration"] >= 0 for r in records), "duration 应为非负"
+    assert all(r.getMessage() == "llm_call" for r in records), "事件名应为 llm_call"
+    assert records[0].success is False, "第 1 条应为失败日志"
+    assert "流式读取中断" in records[0].error, f"失败原因: {records[0].error}"
+    assert records[1].success is True, "第 2 条应为成功日志"
+    assert records[1].error is None, "成功日志不应有错误"
+    assert all(r.duration >= 0 for r in records), "duration 应为非负"
 
 
 @pytest.mark.asyncio

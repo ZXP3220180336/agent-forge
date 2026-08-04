@@ -23,7 +23,7 @@
 API 层（FastAPI 路由）
     ↓
 服务层（LLMService / SessionManager / ContextManager / MemoryService / TaskService / ToolService）
-    ├── LLM 子包（ClientManager / RetryHandler / StreamParser / RateLimiter / ReservationLimiter / CostTracker / LLMLogger / StructuredOutput）
+    ├── LLM 子包（ClientManager / RetryHandler / StreamParser / RateLimiter / ReservationLimiter / CostTracker / StructuredOutput）
     └── EmbeddingService
     ↓
 核心层（Agent / Reasoning / Memory / Prompts）
@@ -81,7 +81,7 @@ API 层（FastAPI 路由）
 
 - **作用**：系统的模型通信基础设施，统一封装与大语言模型的所有交互。
 - **需要实现**：连接池管理、重试与熔断、流式/非流式解析、结构化输出、请求日志、客户端限流、成本计算、文本向量化。
-- **已经实现**：`LLMService` Facade + `app/services/llm/` 子模块（ClientManager / RetryHandler / StreamParser / StructuredOutput / LLMLogger / RateLimiter / ReservationLimiter / CostTracker）+ `EmbeddingService`。限流双文件：`rate_limiter.py`（acquire 形态）+ `reservation_limiter.py`（reserve/settle 形态，独立实现，llm_service 实际使用）。
+- **已经实现**：`LLMService` Facade + `app/services/llm/` 子模块（ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / ReservationLimiter / CostTracker）+ `EmbeddingService`。限流双文件：`rate_limiter.py`（acquire 形态）+ `reservation_limiter.py`（reserve/settle 形态，独立实现，llm_service 实际使用）。**LLM 调用日志并入全局日志框架**（`app/utils/logger.py`，`log_event_async("llm_call")`，原 LLMLogger 已移除）。
 - **核心改造（2026-08-01，retry.py）**：
   - 熔断判定升级为**滑动窗口错误率模型**（Hystrix 参考），请求级粒度，429 分离
   - 错误分类**白名单映射**（`classify_error`），未知异常默认 NON_RETRYABLE，显式捕获 httpx 网络异常
@@ -174,6 +174,7 @@ API 层（FastAPI 路由）
 ### 5.2 已完成轮次
 
 **2026-08-01 轮：**
+
 1. **retry.py 三大改造**：滑动窗口熔断 / 错误分类白名单 / 半开探针失败一律回 OPEN（详见 [retry.md](service_doc/llm_doc/retry.md)）
 2. **流式迭代保护**：`llm_service.py` 流式 chunk 异常捕获
 3. **chat_router → ReActAgent 闭环打通**：`ContextManager.build_messages()` → `ReActAgent.run()` → SSE 事件流 → `agent.result` 保存回复；配套实现 `ToolService`、启动注册 5 个内置工具、新增 `get_tool_registry` 依赖注入
@@ -282,7 +283,7 @@ uv run python -c "
 from app.services.llm import (
     ClientManager, CircuitBreaker, RetryConfig, RetryHandler,
     StreamParser, StructuredOutput, CostTracker, RateLimiter,
-    ReservationLimiterManager, LLMLogger, LLMRequestRecord,
+    ReservationLimiterManager,
 )
 print('OK')
 "

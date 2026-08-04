@@ -6,7 +6,6 @@ LLM 子包 — 工业级 LLM 通信组件
     retry.py         RetryHandler      增强重试（jitter / circuit breaker / fallback）
     streaming.py     StreamParser      流式/非流式响应解析
     structured.py    StructuredOutput  结构化输出（JSON Schema）
-    logger.py             LLMLogger         请求/响应日志
     rate_limiter.py       RateLimiter       客户端限流（acquire 形态）
     reservation_limiter.py ReservationLimiter 客户端限流（reserve/settle 形态）
     cost_tracker.py       CostTracker       成本计算
@@ -14,7 +13,6 @@ LLM 子包 — 工业级 LLM 通信组件
 
 from .client import ClientManager
 from .cost_tracker import CostTracker
-from .logger import LLMLogger, LLMRequestRecord
 from .rate_limiter import RateLimiter, RateLimiterManager
 from .reservation_limiter import ReservationLimiterManager
 from .retry import CircuitBreaker, RetryConfig, RetryHandler
@@ -25,8 +23,6 @@ __all__ = [
     "CircuitBreaker",
     "ClientManager",
     "CostTracker",
-    "LLMLogger",
-    "LLMRequestRecord",
     "RateLimiter",
     "RateLimiterManager",
     "ReservationLimiterManager",

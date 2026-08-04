@@ -117,7 +117,7 @@ Pydantic 类型验证
 | 配置项            | 类型  | 默认值                      | 说明                 |
 | ----------------- | ----- | --------------------------- | -------------------- |
 | `LLM_API_KEY`     | str   | ""                          | LLM API 密钥（必填） |
-| `LLM_BASE_URL`    | str   | "https://api.openai.com/v1" | API 端点             |
+| `LLM_BASE_URL`    | str   | "<https://api.openai.com/v1>" | API 端点             |
 | `LLM_MODEL_ID`    | str   | "gpt-4"                     | 模型标识符           |
 | `LLM_TEMPERATURE` | float | 0.2                         | 生成温度（0-2）      |
 | `LLM_MAX_TOKENS`  | int   | 4096                        | 最大输出 Token 数    |
@@ -337,6 +337,8 @@ Pydantic 类型验证
 | `LOG_LEVEL`  | str  | "INFO"         | 日志级别              |
 | `LOG_FORMAT` | str  | "json"         | 日志格式（json/text） |
 | `LOG_FILE`   | str  | "logs/app.log" | 日志文件路径          |
+
+> `LOG_*` 由全局日志框架（`app/utils/logger.py` 的 `setup_logging()`）读取生效，见 [logging.md](logging.md)。
 
 ---
 
@@ -616,14 +618,15 @@ python main.py
 
 ### Q5: 如何调试配置加载？
 
-**A:** 启用 DEBUG 模式：
+**A:** 启用 DEBUG 模式（`LOG_LEVEL=DEBUG` + 全局日志框架的 `setup_logging()`）：
 
 ```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
+from app.utils.logger import setup_logging
 from app.config import settings
-# 会打印配置加载过程
+
+settings.log_level = "DEBUG"
+setup_logging()  # 双 handler 按 DEBUG 级别输出
+# 各模块日志（app.* 命名空间）全量打印
 ```
 
 ### Q6: 导入 `BaseSettings` 报错？

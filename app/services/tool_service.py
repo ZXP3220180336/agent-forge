@@ -23,6 +23,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from app.utils.logger import get_logger
+
+logger = get_logger("services.tool_service")
+
 from app.config import settings
 from app.tools import BaseTool, ToolResult
 from app.tools.builtin import __all__ as builtin_tool_names
@@ -385,7 +389,7 @@ class ToolService:
                     hook(tool_name, parameters, result)
             except Exception as e:
                 # 钩子失败不影响工具执行
-                print(f"钩子执行失败: {e}")
+                logger.warning("钩子执行失败: %s", e)
 
     # ===== 内置工具装配 =====
 

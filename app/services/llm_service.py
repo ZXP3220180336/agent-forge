@@ -3,7 +3,7 @@ LLM 服务 — 统一 Facade
 
 职责：
     1. 保持 async_generate() 签名向后兼容
-    2. 集成 ClientManager / RetryHandler / StreamParser / LLMLogger
+    2. 集成 ClientManager / RetryHandler / StreamParser / 业务事件日志
     3. 新增非流式 generate() 通道
 """
 
@@ -23,8 +23,6 @@ from app.core.events import (
 )
 from app.services.llm import (
     ClientManager,
-    LLMLogger,
-    LLMRequestRecord,
     ReservationLimiterManager,
     RetryConfig,
     RetryHandler,
@@ -32,6 +30,7 @@ from app.services.llm import (
 )
 from app.services.llm.cost_tracker import CostTracker
 from app.services.llm.retry import ErrorCategory, classify_error
+from app.utils.logger import log_event_async
 
 # =====================================================================
 # 辅助数据结构
@@ -127,22 +126,25 @@ def _build_fallback_fn(
     return fallback_fn
 
 
-def _build_log_record(
+def _build_event_fields(
     model_key: str,
     messages: list[dict],
     temperature: float,
     has_tools: bool,
     *,
     stream: bool,
-) -> LLMRequestRecord:
-    """构建 LLM 调用日志记录（敏感信息脱敏，只记元数据）。"""
-    return LLMRequestRecord(
-        model=ClientManager.get_model(model_key),
-        messages_count=len(messages),
-        temperature=temperature,
-        has_tools=has_tools,
-        stream=stream,
-    )
+) -> dict[str, Any]:
+    """构建 LLM 调用事件字段（敏感信息脱敏，只记元数据）。
+
+    返回可变 dict，调用点按结果逐步填充 success/error/duration/tokens。
+    """
+    return {
+        "model": ClientManager.get_model(model_key),
+        "messages_count": len(messages),
+        "temperature": temperature,
+        "has_tools": has_tools,
+        "stream": stream,
+    }
 
 
 def _should_rectify(
@@ -189,7 +191,7 @@ def _get_encoder(model: str) -> Any:
         import tiktoken
 
         encoder = tiktoken.encoding_for_model(model)
-    except (KeyError, ImportError):
+    except KeyError, ImportError:
         import tiktoken
 
         encoder = tiktoken.get_encoding("cl100k_base")
@@ -287,7 +289,7 @@ class LLMService:
         # 准备重试执行器 + fallback 函数 + 日志记录（辅助函数统一构建）
         retry = _build_retry_handler()
         fallback_fn = _build_fallback_fn(kwargs, model_key)
-        log_record = _build_log_record(
+        event_fields = _build_event_fields(
             model_key, messages, temperature, bool(tools), stream=True
         )
         # client 由 ClientManager 连接池按 key 缓存复用，与整流 attempt 无关，
@@ -344,10 +346,10 @@ class LLMService:
                     fallback_fn=fallback_fn,
                 )
             except Exception as e:
-                log_record.success = False
-                log_record.error = str(e)[:200]
-                log_record.duration = time.monotonic() - attempt_start
-                await LLMLogger.log_call(log_record)
+                event_fields["success"] = False
+                event_fields["error"] = str(e)[:200]
+                event_fields["duration"] = time.monotonic() - attempt_start
+                await log_event_async("llm_call", **event_fields)
                 yield build_error_event(f"LLM 调用失败: {e!s}")
                 return
 
@@ -366,14 +368,12 @@ class LLMService:
                         # 请求已发出（create 成功）→ settle（退 TPM 差），非 cancel
                         res = active.pop("res", None)
                         if res is not None:
-                            await res.settle(
-                                (result.usage or {}).get("total_tokens")
-                            )
+                            await res.settle((result.usage or {}).get("total_tokens"))
                         yield build_error_event("用户取消了请求")
-                        log_record.success = False
-                        log_record.error = "用户取消"
-                        log_record.duration = time.monotonic() - attempt_start
-                        await LLMLogger.log_call(log_record)
+                        event_fields["success"] = False
+                        event_fields["error"] = "用户取消"
+                        event_fields["duration"] = time.monotonic() - attempt_start
+                        await log_event_async("llm_call", **event_fields)
                         return
 
                     parsed = StreamParser.parse_chunk(chunk)
@@ -411,10 +411,10 @@ class LLMService:
                 if res is not None:
                     await res.settle((result.usage or {}).get("total_tokens"))
             except Exception as e:
-                log_record.success = False
-                log_record.error = f"流式读取中断: {e!s}"[:200]
-                log_record.duration = time.monotonic() - attempt_start
-                await LLMLogger.log_call(log_record)
+                event_fields["success"] = False
+                event_fields["error"] = f"流式读取中断: {e!s}"[:200]
+                event_fields["duration"] = time.monotonic() - attempt_start
+                await log_event_async("llm_call", **event_fields)
 
                 # 请求已发出（create 成功）→ settle，无论整流与否
                 # 死流可能已带回 usage（如 test_usage_only_interrupt_rectifies），
@@ -450,14 +450,14 @@ class LLMService:
                 if res is not None and not res.settled:
                     await res.cancel()
 
-            log_record.success = True
-            log_record.error = None  # 清掉整流失败尝试残留的 error（同一 record 复用）
-            log_record.prompt_tokens = (result.usage or {}).get("prompt_tokens")
-            log_record.completion_tokens = (result.usage or {}).get("completion_tokens")
-            log_record.total_tokens = (result.usage or {}).get("total_tokens")
-            log_record.finish_reason = result.finish_reason
-            log_record.duration = time.monotonic() - attempt_start
-            await LLMLogger.log_call(log_record)
+            event_fields["success"] = True
+            event_fields["error"] = None  # 清掉整流失败尝试残留的 error（同一 record 复用）
+            event_fields["prompt_tokens"] = (result.usage or {}).get("prompt_tokens")
+            event_fields["completion_tokens"] = (result.usage or {}).get("completion_tokens")
+            event_fields["total_tokens"] = (result.usage or {}).get("total_tokens")
+            event_fields["finish_reason"] = result.finish_reason
+            event_fields["duration"] = time.monotonic() - attempt_start
+            await log_event_async("llm_call", **event_fields)
             return
 
     async def generate(
@@ -490,7 +490,7 @@ class LLMService:
         )
 
         retry = _build_retry_handler()
-        log_record = _build_log_record(
+        event_fields = _build_event_fields(
             model_key, messages, temperature, bool(tools), stream=False
         )
         client = ClientManager.get_client(model_key)
@@ -521,10 +521,10 @@ class LLMService:
                 call_fn=_rate_limited_call,
             )
         except Exception as e:
-            log_record.success = False
-            log_record.error = str(e)[:200]
-            log_record.duration = time.monotonic() - start_time
-            await LLMLogger.log_call(log_record)
+            event_fields["success"] = False
+            event_fields["error"] = str(e)[:200]
+            event_fields["duration"] = time.monotonic() - start_time
+            await log_event_async("llm_call", **event_fields)
             return None
 
         # 解析非流式响应
@@ -540,12 +540,12 @@ class LLMService:
         if res is not None:
             await res.settle((sr.usage or {}).get("total_tokens"))
 
-        log_record.success = True
-        log_record.prompt_tokens = (sr.usage or {}).get("prompt_tokens")
-        log_record.completion_tokens = (sr.usage or {}).get("completion_tokens")
-        log_record.total_tokens = (sr.usage or {}).get("total_tokens")
-        log_record.duration = time.monotonic() - start_time
-        await LLMLogger.log_call(log_record)
+        event_fields["success"] = True
+        event_fields["prompt_tokens"] = (sr.usage or {}).get("prompt_tokens")
+        event_fields["completion_tokens"] = (sr.usage or {}).get("completion_tokens")
+        event_fields["total_tokens"] = (sr.usage or {}).get("total_tokens")
+        event_fields["duration"] = time.monotonic() - start_time
+        await log_event_async("llm_call", **event_fields)
 
         return sr
 

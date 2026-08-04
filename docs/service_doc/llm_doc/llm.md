@@ -10,7 +10,7 @@
   - [RetryHandler — 重试与熔断](#retryhandler--重试与熔断)
   - [StreamParser — 流式解析](#streamparser--流式解析)
   - [StructuredOutput — 结构化输出](#structuredoutput--结构化输出)
-  - [LLMLogger — 请求日志](#llmlogger--请求日志)
+  - [LLM 调用业务事件](#llm-调用业务事件llm_call)
   - [RateLimiter — 客户端限流（acquire 形态）](#ratelimiter--客户端限流acquire-形态)
   - [CostTracker — 成本计算](#costtracker--成本计算)
   - [EmbeddingService — 向量化](#embeddingservice--向量化)
@@ -74,7 +74,6 @@ app/services/
 │   ├── retry.py                   ← RetryHandler + CircuitBreaker
 │   ├── streaming.py               ← StreamParser 流式/非流式解析
 │   ├── structured.py              ← StructuredOutput 结构化输出
-│   ├── logger.py                  ← LLMLogger 请求日志
 │   ├── rate_limiter.py            ← RateLimiter 客户端限流（acquire 形态）
 │   ├── reservation_limiter.py     ← ReservationLimiter 客户端限流（reserve/settle 形态，独立实现）
 │   └── cost_tracker.py            ← CostTracker 成本计算
@@ -91,7 +90,7 @@ app/services/
 | 传输层   | 连接、代理、认证       | `ClientManager`                                               |
 | 可靠性层 | 重试、熔断、限流、降级 | `RetryHandler`, `ReservationLimiter`, `CircuitBreaker`        |
 | 数据层   | 流式/非流式解析        | `StreamParser`, `StructuredOutput`                            |
-| 治理层   | 日志、成本             | `LLMLogger`, `CostTracker`                                    |
+| 治理层   | 日志、成本             | `log_event("llm_call")`, `CostTracker`                        |
 | 服务层   | 统一对外接口           | `LLMService`（Facade）                                        |
 
 > 限流双文件：`rate_limiter.py`（acquire 形态，独立保留）与 `reservation_limiter.py`（reserve/settle 形态，llm_service 实际使用）。见 [rate_limiter.md](rate_limiter.md) / [reservation_limiter.md](reservation_limiter.md)。
@@ -109,7 +108,6 @@ app/services/
     │     └── CircuitBreaker
     ├── StreamParser
     ├── ReservationLimiter
-    ├── LLMLogger
     └── CostTracker
 
   EmbeddingService ─── AsyncOpenAI(GET /embeddings)
@@ -156,7 +154,7 @@ app/services/
   └─────────────────┬────────────────────────────┘
                      │
                      ▼
-  ┌───────── LLMLogger.log_call() ────────────────┐
+  ┌────── log_event_async("llm_call") ────────────┐
   │   记录 model, tokens, duration, success       │
   └─────────────────┬────────────────────────────┘
                      │
@@ -508,62 +506,68 @@ def parse_chunk(chunk) -> ParsedChunk:
 
 ---
 
-### LLMLogger — 请求日志
+### LLM 调用业务事件（llm_call）
 
-**文件**：`app/services/llm/logger.py`
+**来源**：`app/utils/logger.py` 全局日志框架的业务事件机制（`log_event_async`）；早期 `LLMLogger`（`app/services/llm/logger.py`）已移除，职责并入全局框架。详见 [logging.md](../../logging.md)。
 
 #### 功能
 
 1. 记录每次 LLM 调用的元数据（模型、Token、耗时、是否成功）
-2. 输出 JSON 格式的结构化日志
+2. 事件名为 `llm_call`，字段经 extra 注入进全局 JSON 结构化日志
 3. 不记录敏感信息（只记录 messages 数量，不记录内容）
 
-#### 记录字段
+#### 事件字段
 
-```python
-@dataclass
-class LLMRequestRecord:
-    timestamp: float            # 调用时间
-    model: str                  # 模型名
-    request_id: str             # 请求追踪 ID
-    messages_count: int         # 消息条数
-    prompt_tokens: int | None   # 输入 Token
-    completion_tokens: int | None  # 输出 Token
-    total_tokens: int | None    # 总计 Token
-    temperature: float          # 温度
-    has_tools: bool             # 是否携带工具
-    stream: bool                # 是否流式
-    duration: float             # 耗时（秒）
-    success: bool               # 是否成功
-    error: str | None           # 错误信息
-    finish_reason: str | None   # 停止原因
-```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `model` | str | 模型名 |
+| `messages_count` | int | 消息条数 |
+| `temperature` | float | 温度 |
+| `has_tools` | bool | 是否携带工具 |
+| `stream` | bool | 是否流式 |
+| `success` | bool | 是否成功 |
+| `error` | str\|None | 错误信息（成功为 None） |
+| `duration` | float | 耗时（秒） |
+| `prompt_tokens` | int\|None | 输入 Token |
+| `completion_tokens` | int\|None | 输出 Token |
+| `total_tokens` | int\|None | 总计 Token |
+| `finish_reason` | str\|None | 停止原因 |
 
-#### 为什么选择「JSON 结构化日志」
+#### 为什么选「全局框架 + 业务事件」
 
-| 维度     | 当前做法                          | 替代方案           |
-| -------- | --------------------------------- | ------------------ |
-| 格式     | JSON                              | 纯文本、CSV        |
-| 记录方式 | logging 异步（asyncio.to_thread） | 同步写入、异步队列 |
+| 维度     | 当前做法                                        | 替代方案           |
+| -------- | ----------------------------------------------- | ------------------ |
+| 格式     | 全局框架 JSON（文件）/ 人类可读（控制台）       | 纯文本、CSV        |
+| 记录方式 | `log_event_async` → `asyncio.to_thread`         | 同步写入、异步队列 |
+| 归属     | 全局日志框架（横切关注点，各模块统一）          | LLM 层私有         |
 
 **选择理由**：
 
-- **JSON 格式**可以直接被日志收集系统（ELK、Datadog、Graylog）消费，无需额外解析
-- **异步写入**不阻塞 LLM 调用的主流程 —— 日志延迟不应影响用户体验
-- **单例模式**避免重复配置 logger
+- **全局统一**：日志是横切关注点，所有模块（LLM/服务/Agent/API）走同一双 handler，消费端（ELK/Datadog/Graylog）无需分模块解析
+- **异步写入**：`asyncio.to_thread` 不阻塞 LLM 调用主流程
+- **结构化可检索**：事件名即 `message`，字段进 JSON，可按事件/字段查询
 
-#### 输出示例
+#### 输出示例（文件 JSON）
 
 ```json
-{
-  "timestamp": 1745923456.789,
-  "model": "gpt-4o",
-  "messages_count": 5,
-  "total_tokens": 1234,
-  "duration": 2.34,
-  "success": true,
-  "finish_reason": "stop"
+{"timestamp": "2026-08-04T18:42:08+0800", "level": "INFO", "logger": "app.events", "message": "llm_call", "model": "gpt-4o", "messages_count": 5, "success": true, "total_tokens": 1234, "duration": 2.34, "finish_reason": "stop"}
+```
+
+#### 使用方式
+
+```python
+from app.utils.logger import log_event_async
+
+event_fields = {
+    "model": "gpt-4o",
+    "messages_count": 5,
+    "temperature": 0,
+    "has_tools": False,
+    "stream": True,
 }
+event_fields["success"] = True
+event_fields["duration"] = 2.34
+await log_event_async("llm_call", **event_fields)
 ```
 
 ---
@@ -883,11 +887,12 @@ except Exception as e:
 ### 6. 日志利用
 
 ```python
-# 控制台友好格式
-from app.services.llm import LLMLogger, LLMRequestRecord
-record = LLMRequestRecord(...)
-print(LLMLogger.format_for_console(record))
-# 输出：[LLM] ✓ gpt-4o 1234 tokens 2.34s msgs=5
+# 业务事件：LLM 调用记录（全局日志框架）
+from app.utils.logger import log_event_async
+event_fields = {"model": "gpt-4o", "messages_count": 5, "success": True}
+event_fields["duration"] = 2.34
+await log_event_async("llm_call", **event_fields)
+# 文件 JSON：{"message": "llm_call", "model": "gpt-4o", ...}
 ```
 
 ---
@@ -898,7 +903,7 @@ print(LLMLogger.format_for_console(record))
 
 ### 已实现
 
-- 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / LLMLogger / RateLimiter / CostTracker + `EmbeddingService`
+- 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `llm_call` 业务事件）
 - retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针失败一律回 OPEN、流式迭代保护（详见 [retry.md](retry.md)）
 - **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。详见下文「流式整流重试」小节
 

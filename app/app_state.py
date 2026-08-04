@@ -21,6 +21,9 @@ from .services import (
     TaskService,
     ToolService,
 )
+from .utils.logger import get_logger
+
+logger = get_logger("app_state")
 
 
 class AppState:
@@ -65,10 +68,10 @@ class AppState:
                 socket_timeout=3,
             )
             await self.redis.ping()
-            print("  [OK] Redis 连接成功")
+            logger.info("Redis 连接成功")
         except Exception as e:
             self._errors.append(f"Redis 连接失败: {e}")
-            print(f"  [WARN] Redis 不可用（服务降级）: {e}")
+            logger.warning("Redis 不可用（服务降级）: %s", e)
             self.redis = None
 
         # 2. 创建数据库连接池
@@ -85,10 +88,10 @@ class AppState:
                 engine,
                 expire_on_commit=False,
             )
-            print("  [OK] 数据库引擎创建成功")
+            logger.info("数据库引擎创建成功")
         except Exception as e:
             self._errors.append(f"数据库初始化失败: {e}")
-            print(f"  [WARN] 数据库不可用（服务降级）: {e}")
+            logger.warning("数据库不可用（服务降级）: %s", e)
             self._engine = None
             self.db_session_factory = None
 
@@ -139,10 +142,10 @@ class AppState:
         self.tool_service = ToolService()
         try:
             registered = self.tool_service.init_default_tools()
-            print(f"  [OK] 已注册工具: {registered}")
+            logger.info("已注册工具: %s", registered)
         except Exception as e:
             self._errors.append(f"工具初始化失败: {e}")
-            print(f"  [WARN] 工具初始化失败（服务降级）: {e}")
+            logger.warning("工具初始化失败（服务降级）: %s", e)
 
         # 5. 任务调度服务（并发 Agent 任务信号量）
         self.task_service = TaskService()
@@ -155,7 +158,7 @@ class AppState:
         )
 
         self.initialized = True
-        print("  应用初始化完成")
+        logger.info("应用初始化完成")
 
     async def shutdown(self):
         """
@@ -173,7 +176,7 @@ class AppState:
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
         self.initialized = False
-        print("  应用已关闭")
+        logger.info("应用已关闭")
 
 
 # 模块级单例

@@ -47,7 +47,7 @@ app/services/
 ├── task_service.py             ← TaskService 任务级并发信号量
 ├── embedding_service.py        ← EmbeddingService 文本向量化
 ├── llm_service.py              ← LLMService + StreamResult（统一 Facade）
-├── llm/                        ← LLM 内部实现子包（ClientManager / RetryHandler / StreamParser / ReservationLimiter / LLMLogger / CostTracker 等，详见 llm_doc）
+├── llm/                        ← LLM 内部实现子包（ClientManager / RetryHandler / StreamParser / ReservationLimiter / CostTracker 等，详见 llm_doc）
 └── memory_service.py           ← MemoryService（❌ 预留，空文件）
 ```
 
@@ -396,7 +396,7 @@ vectors = await app_state.embedding_service.embed_batch(
 2. **非流式生成**（`generate`）：适合简单任务的低延迟通道（默认 `fast` 模型）
 3. **结构化输出**（`generate_structured`）：JSON Schema 模式生成结构化 dict
 4. **成本计算**（`calculate_cost`）：按模型用量估算费用，代理 `CostTracker`
-5. **可靠性集成**：组合 `RetryHandler`（重试 / 熔断 / fallback）、`ReservationLimiter`（客户端限流）、`StreamParser`（流式解析）、`LLMLogger`（请求日志）
+5. **可靠性集成**：组合 `RetryHandler`（重试 / 熔断 / fallback）、`ReservationLimiter`（客户端限流）、`StreamParser`（流式解析）、`log_event_async("llm_call")`（请求日志，全局框架）
 
 ### 关键数据结构
 
@@ -437,7 +437,7 @@ async_generate()
          · cancel_event 置位 → settle 退差 + 优雅终止
   4. 整流判定（首 token 前中断 + 可恢复异常 + 未超上限 + 未取消）
      → 退避后重新 create + 迭代
-  5. 结算：settle(actual) 退 TPM 差额；LLMLogger.log_call 记录
+  5. 结算：settle(actual) 退 TPM 差额；log_event_async("llm_call") 记录
 ```
 
 **关键语义**：

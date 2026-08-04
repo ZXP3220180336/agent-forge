@@ -24,7 +24,7 @@ for _stream in (sys.stdout, sys.stderr):
         continue
     try:
         _reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError, OSError):
+    except AttributeError, ValueError, OSError:
         pass
 
 from fastapi import FastAPI
@@ -34,6 +34,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import chat_router, session_router
 from app.app_state import app_state
+from app.utils.logger import get_logger, setup_logging
+
+# 配置全局日志框架（在 lifespan 与静态目录检查前，确保所有模块日志生效）
+setup_logging()
+logger = get_logger("main")
 
 
 @asynccontextmanager
@@ -45,16 +50,16 @@ async def lifespan(app: FastAPI):
     - 关闭时：清理所有资源
     """
     # ===== 启动阶段 =====
-    print("正在初始化应用服务...")
+    logger.info("正在初始化应用服务...")
     await app_state.initialize()
-    print("应用初始化完成")
+    logger.info("应用初始化完成")
 
     yield  # 应用运行中
 
     # ===== 关闭阶段 =====
-    print("正在关闭应用服务...")
+    logger.info("正在关闭应用服务...")
     await app_state.shutdown()
-    print("应用已关闭")
+    logger.info("应用已关闭")
 
 
 # 创建 FastAPI 应用，注册生命周期
@@ -92,7 +97,7 @@ STATIC_DIR = os.path.join(_root, "static")
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 else:
-    print(f"警告：静态文件目录 {STATIC_DIR} 不存在，前端页面不可用")
+    logger.warning("静态文件目录 %s 不存在，前端页面不可用", STATIC_DIR)
 
 
 # ===== SPA 回退中间件（解决刷新 404） =====

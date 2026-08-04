@@ -7,11 +7,16 @@
 
 ## 📋 目录
 
-- [架构分层](#架构分层)
-- [核心调用链路](#核心调用链路)
-- [设计原则](#设计原则)
-- [模块实现状态总览](#模块实现状态总览)
-- [相关文档](#相关文档)
+- [架构设计文档](#架构设计文档)
+  - [📋 目录](#-目录)
+  - [架构分层](#架构分层)
+    - [各层职责](#各层职责)
+  - [核心调用链路](#核心调用链路)
+    - [完整链路（HTTP → 回复）](#完整链路http--回复)
+    - [Agent 引擎链路（零外部依赖）](#agent-引擎链路零外部依赖)
+  - [设计原则](#设计原则)
+  - [模块实现状态总览](#模块实现状态总览)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -129,6 +134,7 @@ POST /api/chat/send
 - [agent 模块](core_doc/agent_doc/agent.md)
 - [api 模块](api_doc/api.md)
 - [config 模块](config.md)
+- [logging 模块](logging.md)（全局日志框架）
 - [LLM 层](service_doc/llm_doc/llm.md)
 - [task 模块](service_doc/task_doc/task.md)
 - [tool 模块](tool_doc/tools.md)

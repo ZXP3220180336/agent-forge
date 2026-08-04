@@ -16,6 +16,10 @@ import uuid
 from datetime import UTC, datetime
 
 import redis.asyncio as redis
+
+from app.utils.logger import get_logger
+
+logger = get_logger("services.session_manager")
 from sqlalchemy import (
     delete,
     func,
@@ -40,7 +44,7 @@ class SessionManager:
         self.session_ttl = 3600 * 24 * 7  # 7天过期
 
         if self.redis is None:
-            print("  [WARN] SessionManager: Redis 不可用，缓存降级")
+            logger.warning("Redis 不可用，缓存降级")
 
     async def create_session(
         self,
