@@ -4,32 +4,16 @@
 
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 
 from app.dependencies import (
     get_current_user,
     get_session_manager,
 )
+from app.models.schemas.request import CreateSessionRequest
+from app.models.schemas.response import CreateSessionResponse
 from app.services import SessionManager
 
 router = APIRouter(prefix="/api", tags=["会话管理"])
-
-
-# ===== 请求/响应模型 =====
-
-
-class CreateSessionRequest(BaseModel):
-    system_prompt: str | None = None
-    title: str | None = None
-
-
-class CreateSessionResponse(BaseModel):
-    session_id: str
-    title: str
-    created_at: str
-
-
-# ===== 接口实现 =====
 
 
 @router.post("/session/create", response_model=CreateSessionResponse)

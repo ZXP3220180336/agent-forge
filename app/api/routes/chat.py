@@ -4,7 +4,6 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from app.core.agent import AgentContext, ReActAgent
 from app.core.events import build_error_event
@@ -16,6 +15,7 @@ from app.dependencies import (
     get_task_service,
     get_tool_service,
 )
+from app.models.schemas.request import SendMessageRequest
 from app.services import (
     ContextManager,
     LLMService,
@@ -25,15 +25,6 @@ from app.services import (
 )
 
 router = APIRouter(prefix="/api", tags=["聊天"])
-
-# ===== 请求/响应模型 =====
-
-
-class SendMessageRequest(BaseModel):
-    session_id: str
-    message: str
-    max_iterations: int = 10
-    stream: bool = True  # 是否流式返回
 
 
 @router.post("/chat/send")
