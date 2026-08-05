@@ -85,7 +85,7 @@ API 层（FastAPI 路由）
 - **核心改造（2026-08-01，retry.py）**：
   - 熔断判定升级为**滑动窗口错误率模型**（Hystrix 参考），请求级粒度，429 分离
   - 错误分类**白名单映射**（`classify_error`），未知异常默认 NON_RETRYABLE，显式捕获 httpx 网络异常
-  - 半开探针**失败一律回 OPEN**（429/超时/5xx 回 OPEN 冷却；4xx 回 OPEN + 抛上层）
+  - 半开探针**按异常类别判定**（429/超时/5xx 回 OPEN 冷却；4xx 不改变状态 + 归还槽位 + 抛上层，2026-08-05 修正）
   - 流式迭代保护（`llm_service.py` chunk 异常捕获）
 - **核心改造（2026-08-02，限流）**：
   - RateLimiter 集成 + **结算退差**（reserve/settle）+ 6 个审核问题修复
@@ -175,7 +175,7 @@ API 层（FastAPI 路由）
 
 **2026-08-01 轮：**
 
-1. **retry.py 三大改造**：滑动窗口熔断 / 错误分类白名单 / 半开探针失败一律回 OPEN（详见 [retry.md](service_doc/llm_doc/retry.md)）
+1. **retry.py 三大改造**：滑动窗口熔断 / 错误分类白名单 / 半开探针按异常类别判定（4xx 不改变状态，2026-08-05 修正，详见 [retry.md](service_doc/llm_doc/retry.md)）
 2. **流式迭代保护**：`llm_service.py` 流式 chunk 异常捕获
 3. **chat_router → ReActAgent 闭环打通**：`ContextManager.build_messages()` → `ReActAgent.run()` → SSE 事件流 → `agent.result` 保存回复；配套实现 `ToolService`、启动注册 5 个内置工具、新增 `get_tool_registry` 依赖注入
 

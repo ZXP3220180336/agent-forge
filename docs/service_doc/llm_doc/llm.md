@@ -904,7 +904,7 @@ await log_event_async("llm_call", **event_fields)
 ### 已实现
 
 - 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / ReservationLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
-- retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针失败一律回 OPEN、流式迭代保护（详见 [retry.md](retry.md)）
+- retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针按异常类别判定、流式迭代保护；**2026-08-05 修正**：4xx 探针不再回 OPEN，改为不改变状态 + 归还槽位 + 抛上层（详见 [retry.md](retry.md)）
 - **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。详见下文「流式整流重试」小节
 - **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
 - **配额缺口闭环（2026-08-02）**：acquire 移入 call_fn，重试计入配额、fallback 不参与（详见下文「配额缺口」）
@@ -1061,7 +1061,8 @@ response = await retry.execute(
 熔断器有一个 `recovery_timeout`（默认 30 秒）。超时后进入半开状态，放行探针请求：
 
 - 探针成功 → 熔断器关闭，恢复正常
-- 探针失败 → 熔断器继续保持开启，重置超时计时
+- 探针收到 429 / 超时 / 5xx → 下游仍过载/故障，熔断器回 OPEN，重置超时计时
+- 探针收到 4xx / 未知（客户端问题）→ 不改变状态、归还探针名额、异常抛给上层修复（不算健康探测，等待正常请求探测真实状态）
 
 ### Q: 如何切换不同模型（GPT-4 → DeepSeek）？
 
