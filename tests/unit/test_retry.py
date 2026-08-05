@@ -304,12 +304,15 @@ async def test_half_open_probe_429_resets_recovery():
 
 
 @pytest.mark.asyncio
-async def test_half_open_probe_non_retryable_opens_and_raises():
-    """探针收到 4xx：熔断器回 OPEN，且异常直接抛给上层（客户端问题）。
+async def test_half_open_probe_non_retryable_does_not_trip_and_releases_slot():
+    """探针收到 4xx：不改变熔断状态（保持 HALF_OPEN）、不记录失败、归还槽位、异常抛上层。
 
-    4xx 是客户端配置/参数/权限错误：熔断器回 OPEN（下游不可用状态），
-    且异常直接抛出——上层必须修复请求后才能重试，避免带病请求在
-    恢复探测阶段反复打下游。
+    4xx 是客户端配置/参数/权限错误，不代表下游健康状态：
+    - 不得 record_failure()（否则半开阶段客户端错误把熔断器反复打回 OPEN，
+      下游恢复后永远无法完成健康探测）
+    - 不得 record_success()（4xx 不算健康探测）
+    - release_probe() 归还槽位 → 后续正常请求可重新探测真实状态
+    - 异常直接抛给上层修复请求（避免带病请求反复打下游）
     """
     cb = _quick_cb(half_open_max_requests=3)
     _force_half_open_fresh(cb)
@@ -324,8 +327,122 @@ async def test_half_open_probe_non_retryable_opens_and_raises():
     with pytest.raises(_BadRequest):
         await handler.execute(bad_fn)
 
-    assert cb.state.value == "open", "4xx 探针应把熔断器打回 OPEN"
+    assert cb.state.value == "half_open", "4xx 探针不得改变熔断状态（应保持 HALF_OPEN）"
     assert cb._consecutive_successes == 0, "4xx 不得计入连续成功"
+    assert cb._half_open_requests == 0, "4xx 探针应归还探针槽位"
+    assert cb.allow_request() is True, "槽位归还后应可再次放行探测真实状态"
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_probe_then_success_closes_breaker():
+    """4xx 探针后，后续正常探针能继续完成健康探测（连续成功关闭熔断器）。
+
+    修复前：4xx 探针 record_failure() 回 OPEN + 冷却重置 → 每次探测都被
+    客户端错误打断，熔断器永远无法关闭。
+    修复后：4xx 探针保持 HALF_OPEN、归还槽位；后续正常请求补足成功数即可关闭。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    class _BadRequest(Exception):
+        status_code = 400
+
+    async def bad_fn():
+        raise _BadRequest()
+
+    async def ok_fn():
+        return "ok"
+
+    with pytest.raises(_BadRequest):
+        await handler.execute(bad_fn)
+    assert cb.state.value == "half_open"
+
+    assert await handler.execute(ok_fn) == "ok"
+    assert await handler.execute(ok_fn) == "ok"
+    assert cb.state.value == "half_open", "2 次成功未达阈值（half_open_max_requests=3）"
+    assert cb._consecutive_successes == 2
+
+    assert await handler.execute(ok_fn) == "ok"
+    assert cb.state.value == "closed", "3 次连续真实成功应关闭熔断器"
+    assert cb._consecutive_successes == 0
+    assert cb._half_open_requests == 0
+
+
+@pytest.mark.asyncio
+async def test_consecutive_non_retryable_probes_stay_half_open():
+    """连续 4xx 探针：熔断器保持 HALF_OPEN（不切 OPEN），槽位 0→1→0 循环。
+
+    修复前：每个 4xx 探针都 record_failure() 回 OPEN → HALF_OPEN→OPEN 反复
+    横跳，下游恢复后永远无法完成健康探测。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    class _BadRequest(Exception):
+        status_code = 400
+
+    async def bad_fn():
+        raise _BadRequest()
+
+    for _ in range(5):
+        with pytest.raises(_BadRequest):
+            await handler.execute(bad_fn)
+        assert cb.state.value == "half_open", (
+            f"4xx 探针应保持 HALF_OPEN（当前 {cb.state.value}）"
+        )
+        assert cb._half_open_requests == 0, "4xx 探针应归还槽位（0→1→0 循环）"
+
+    assert cb._consecutive_successes == 0
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_probe_preserves_prior_successes():
+    """4xx 探针不改变状态、不清除之前成功的健康探测计数。"""
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    async def ok_fn():
+        return "ok"
+
+    class _BadRequest(Exception):
+        status_code = 400
+
+    async def bad_fn():
+        raise _BadRequest()
+
+    assert await handler.execute(ok_fn) == "ok"
+    assert await handler.execute(ok_fn) == "ok"
+    assert cb._consecutive_successes == 2
+
+    with pytest.raises(_BadRequest):
+        await handler.execute(bad_fn)
+
+    assert cb.state.value == "half_open", "4xx 探针不得回 OPEN"
+    assert cb._consecutive_successes == 2, "4xx 探针不得清除之前的成功探测计数"
+    assert cb._half_open_requests == 2, "4xx 探针应归还自身槽位（放行后 3 → 归还 2）"
+
+    assert await handler.execute(ok_fn) == "ok"
+    assert cb.state.value == "closed", "补足 3 次真实成功应关闭熔断器"
+
+
+def test_release_probe_is_safe_in_open_and_never_negative():
+    """release_probe 边界：OPEN 下安全 no-op，且 _half_open_requests 永不为负。"""
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_open(cb)
+    cb._half_open_requests = 0
+
+    cb.release_probe()  # OPEN 下：no-op，不改变状态、不抛异常
+
+    assert cb.state.value == "open", "OPEN 下 release_probe 不得改变状态"
+    assert cb._half_open_requests == 0, "release_probe 不得把 _half_open_requests 减成负数"
+
+    # HALF_OPEN 下槽位为 0 时同样防负
+    cb._state = CircuitState.HALF_OPEN
+    cb.release_probe()
+    assert cb._half_open_requests == 0, "槽位为 0 时 release_probe 不得减成负数"
 
 
 def test_open_record_success_does_not_close_breaker():

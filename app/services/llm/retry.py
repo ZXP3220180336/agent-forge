@@ -179,6 +179,23 @@ class CircuitBreaker:
             return True
         return False
 
+    def release_probe(self) -> None:
+        """半开探针归还槽位：本次探测不计入健康判定时调用。
+
+        探针收到 NON_RETRYABLE（4xx/参数/权限/未知）是客户端问题，不代表下游状态：
+        既不应 record_success（4xx 不算健康探测），也不应 record_failure（否则半开
+        阶段客户端错误把熔断器反复打回 OPEN，下游即使恢复也无法完成健康探测）。
+        释放槽位让后续正常请求探测真实状态。
+
+        只在 HALF_OPEN 下有效：若状态已变（如并发探针已回 OPEN），槽位记账已冻结，
+        无需递减——下次 OPEN→HALF_OPEN 时由 allow_request() 重置。
+        _consecutive_successes 保持不变（此前成功的健康探测仍有效）。
+        """
+        if self._state != CircuitState.HALF_OPEN:
+            return
+        if self._half_open_requests > 0:
+            self._half_open_requests -= 1
+
     # ------------------------------------------------------------------
     # 滑动窗口统计
     # ------------------------------------------------------------------
@@ -244,6 +261,8 @@ class CircuitBreaker:
         调用方（RetryHandler）在**整个请求触及过 RETRYABLE 故障**（任一次
         尝试是超时/5xx）时才调用本方法；纯 429（限流）/ 不可恢复错误不调用
         本方法——限流只退避、后者是调用方问题，均非下游故障证据。
+        （例外：HALF_OPEN 探针路径对 429 也调用本方法——半开语境下 429 是
+        下游过载信号；NON_RETRYABLE 探针改走 release_probe()，不调用本方法。）
 
         Returns:
             True 表示本次失败将熔断器切换到 OPEN——调用方可据此感知
@@ -367,8 +386,9 @@ class RetryHandler:
             )
 
         # --- 半开探针：单次调用主链路，不做重试 ---
-        # 恢复探测只放行一次请求：探针失败即确认未恢复、回到 OPEN，
-        # 若探针也能重试，一次探测失败会被放大成多次调用（甚至误判恢复）。
+        # 恢复探测只放行一次请求：探针失败（429/超时/5xx）即确认未恢复、回到
+        # OPEN，若探针也能重试，一次探测失败会被放大成多次调用（甚至误判恢复）。
+        # 4xx 探针不改变状态（见 _probe_attempt），归还槽位等待正常请求。
         if cb.state == CircuitState.HALF_OPEN:
             return await self._probe_attempt(call_fn, fallback_fn=fallback_fn)
 
@@ -437,9 +457,11 @@ class RetryHandler:
             - 429（RATE_LIMITED）→ 下游仍过载，熔断器回 OPEN（新一轮冷却，
               停止探测让下游喘息）
             - 超时/5xx（RETRYABLE）→ 下游仍故障，熔断器回 OPEN（新一轮冷却）
-            - 4xx / 未知异常（NON_RETRYABLE）→ 熔断器回 OPEN，且**异常直接抛给
-              上层**——这是客户端问题（配置/参数/权限），上层必须修复请求后
-              才能重试，不能让带病请求反复打下游
+            - 4xx / 未知异常（NON_RETRYABLE）→ **不改变熔断状态、不记录失败**，
+              归还探针槽位（release_probe）后异常直接抛给上层——这是客户端问题
+              （配置/参数/权限），不代表下游健康状态；本次探测无效不算健康探测，
+              释放名额让后续正常请求探测真实状态，熔断器保持在 HALF_OPEN，
+              不会因客户端错误在 HALF_OPEN→OPEN 间反复横跳
         fallback 纯兜底返回给用户，不触碰熔断器。
         """
         cb = self.circuit_breaker
@@ -452,12 +474,15 @@ class RetryHandler:
         except Exception as e:
             last_exc = e
             category = classify_error(e)
-            # 任何探针失败都确认"下游不可用"（过载/故障/拒绝），熔断器回 OPEN
-            cb.record_failure()
             if category == ErrorCategory.NON_RETRYABLE:
-                # 客户端问题（4xx/未知）：直接抛出，上层修复请求后再发起，
-                # 避免带病请求在恢复探测阶段反复打下游
+                # 客户端问题（4xx/参数/权限/未知）：不代表下游状态。
+                # 不 record_failure（避免 HALF_OPEN→OPEN 反复横跳）、不 record_success
+                # （4xx 不算健康探测），归还探针槽位让后续正常请求探测真实状态；
+                # 异常直接抛给上层修复请求。
+                cb.release_probe()
                 raise
+            # 429 / 超时 / 5xx：下游故障（过载/无响应）证据，熔断器回 OPEN
+            cb.record_failure()
 
         # 探针失败（429/超时/5xx）：尝试 fallback 兜底（不记录熔断）
         if fallback_fn is not None:
