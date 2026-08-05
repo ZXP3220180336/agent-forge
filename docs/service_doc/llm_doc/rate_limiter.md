@@ -377,7 +377,7 @@ async_generate() / generate()
 
 ## 已知边界与设计取舍
 
-1. **等待期间锁外 sleep**（[TokenBucket.acquire](app/services/llm/rate_limiter.py#L55-L70)）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见附录问题 2（✅ 已修复）。
+1. **等待期间锁外 sleep**（`TokenBucket.acquire` 的 `while True` 循环）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见附录问题 2（✅ 已修复）。
 2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见附录问题 3（✅ 已修复）。
 3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见附录问题 4（✅ 已修复）。
 4. **配置 0 = 禁用限流**：`RateLimiterManager.get` 用 `getattr(settings, field, 0)`；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见附录问题 1（✅ 已修复）。
@@ -478,7 +478,7 @@ async_generate() / generate()
 
 ### 问题 1（严重）：配置为 0 时除零崩溃 ✅
 
-**位置**：[rate_limiter.py:59](app/services/llm/rate_limiter.py#L59) + [rate_limiter.py:167-168](app/services/llm/rate_limiter.py#L167-L168)
+**位置**：`TokenBucket.acquire`（`refill_rate <= 0` 防御处）+ `RateLimiterManager.get`（`getattr(settings, field, 0)` 兜底处）
 
 **触发**：RPM/TPM 配置为 0（或缺失）→ `TokenBucket(capacity=0, refill_rate=0)` → 桶空时 `wait_time = needed / 0` → `ZeroDivisionError`。
 
@@ -488,7 +488,7 @@ async_generate() / generate()
 
 ### 问题 2（中）：持锁 sleep ✅
 
-**位置**：[rate_limiter.py:50-63](app/services/llm/rate_limiter.py#L50-L63)
+**位置**：`TokenBucket.acquire`（`while True` 循环内）
 
 **影响**：等待期间锁被持有，其他排队请求无法并行计算等待时间；长 sleep 阻塞短等待请求；sleep 期间无法响应取消。
 
@@ -506,7 +506,7 @@ async_generate() / generate()
 
 ### 问题 4（低）：`acquire` 返回值表述不准确 ✅
 
-**位置**：[rate_limiter.py:102](app/services/llm/rate_limiter.py#L102) docstring「总等待时间」
+**位置**：`RateLimiter.acquire` 的 docstring「总等待时间」
 
 **问题**：实际返回 `wait1 + wait2`（桶内等待），**不含** `retry_after` 的 sleep。docstring 措辞「总等待时间」与实现不符；调用方集成点也忽略了返回值。
 
@@ -514,7 +514,7 @@ async_generate() / generate()
 
 ### 问题 5（低）：`async with` 用法误导 ✅
 
-**位置**：[rate_limiter.py:113-118](app/services/llm/rate_limiter.py#L113-L118) + 顶部 docstring
+**位置**：`RateLimiter` 顶部 docstring + 原 `__aenter__`/`__aexit__`（已移除）
 
 **问题**：docstring 主推 `async with limiter:`，但 `__aenter__` 调 `acquire()` 无参（estimated_tokens=0，TPM 桶退化）；`__aexit__` 空操作无释放语义。实际集成点都直接 `await acquire(estimated_tokens=...)`，docstring 与实际脱节。
 
@@ -522,7 +522,7 @@ async_generate() / generate()
 
 ### 问题 6（低）：`_tokens` 可轻微为负 ✅
 
-**位置**：[rate_limiter.py:62](app/services/llm/rate_limiter.py#L62)
+**位置**：`TokenBucket.acquire`（扣减 token 处）
 
 **问题**：sleep 后直接 `-= tokens`，浮点时序可能产生负零点几。当前无害，可加 `max(0, ...)` 加固。
 

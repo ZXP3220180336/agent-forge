@@ -71,15 +71,20 @@ class Reservation:
 ```python
 class ReservationLimiter:
     async def reserve(self, estimated_tokens=0, retry_after=None) -> Reservation:
+        est = max(estimated_tokens, 1.0)
         res = Reservation()                                  # 空对象
         await self._req_bucket.acquire(1.0)                  # RPM 扣 1
         res.add(self._req_bucket, 1.0)                       # 首条目（按次桶，settle 不退）
-        await self._token_bucket.acquire(est)                # TPM 扣 est
+        try:
+            await self._token_bucket.acquire(est)            # TPM 扣 est
+        except BaseException:
+            await res.cancel()                               # 防 R5：TPM 预留前取消 → 回退 RPM
+            raise
         res.add(self._token_bucket, est)                     # 按量条目
         return res
 ```
 
-**组合实现**：空构造 `Reservation()`，RPM 桶 `acquire(1.0)` 扣减后 `res.add(req_bucket, 1.0)` 追加为首条目（按次桶），TPM 桶 `acquire(est)` 扣减后 `res.add(token_bucket, est)` 追加为按量条目。组合 Reservation 的 `settle` 只命中非首条目、`cancel` 命中全部条目。
+**组合实现**：空构造 `Reservation()`，RPM 桶 `acquire(1.0)` 扣减后 `res.add(req_bucket, 1.0)` 追加为首条目（按次桶），TPM 桶 `acquire(est)` 扣减后 `res.add(token_bucket, est)` 追加为按量条目。组合 Reservation 的 `settle` 只命中非首条目、`cancel` 命中全部条目。**防 R5（组合两步间硬取消）**：TPM 预留被取消时，`except BaseException` 回退已扣的 RPM（见下方「防 R5」）。
 
 **组合 Reservation 语义（按「请求是否已发出」分界）**：
 
