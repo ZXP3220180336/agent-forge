@@ -166,11 +166,14 @@ class CircuitBreaker:
 **状态机细节**：
 
 - `OPEN→HALF_OPEN` 切换时，当前请求作为第一个探针（`half_open_requests=1`），所以 `half_open_max_requests=3` 时共放行 3 个探针，第 4 个拒绝
-- HALF_OPEN 下需要**全部探针连续成功**（`_consecutive_successes ≥ half_open_max_requests`）才关闭；任一失败（429/超时/5xx）回 OPEN 并清空成功计数
-- **4xx/未知（NON_RETRYABLE）探针不改变状态**：不 record_failure、不 record_success，`release_probe()` 归还槽位（成功计数保留），等待正常请求探测真实状态
-- CLOSED 下的 `record_success()` 向滑动窗口追加成功记录，不直接改变状态——错误率随窗口滑动自然回落
+- HALF_OPEN 下
+  - **全部探针连续成功**（`_consecutive_successes ≥ half_open_max_requests`）：关闭熔断器
+  - **429/超时/5xx（RETRYABLE）失败**：回 OPEN 并清空成功计数
+  - **4xx/未知（NON_RETRYABLE）失败**：探针不改变状态，`release_probe()` 归还槽位（成功计数保留），等待正常请求探测真实状态
+- CLOSED 下
+  - `record_success()` 向滑动窗口追加成功记录，不直接改变状态——错误率随窗口滑动自然回落
+  - `record_failure()` 向滑动窗口追加失败记录并评估：错误率达标（且请求量达门槛）或全部失败（且达样本下限）→ OPEN。返回 `True` 表示本次失败**触发了 OPEN**
 - **OPEN 下 `record_success()`/`record_failure()` 均为 no-op**：不关闭熔断器、不追加窗口、不改写冷却计时
-- CLOSED 下的 `record_failure()` 向窗口追加失败记录并评估：错误率达标（且请求量达门槛）或全部失败（且达样本下限）→ OPEN。返回 `True` 表示本次失败**触发了 OPEN**
 - **请求级粒度**：一次 `execute()` 的多次重试失败只调用一次 `record_failure()`（重试耗尽后统一记录），避免单请求的重试放大窗口统计。429 / 不可恢复错误不记录
 - **`_last_failure_time` 记录冷却起点**：仅在进入 OPEN 时更新；探针失败（HALF_OPEN→OPEN，新一轮故障）时重置
 
@@ -196,10 +199,18 @@ class RetryHandler:
 **设计要点**：
 
 - `call_fn` / `fallback_fn` 都是 `Callable[[], Awaitable[Any]]`——零参数可等待函数，通过闭包捕获上下文
-- **熔断检查在重试循环之前**：CLOSED 放行进重试循环；HALF_OPEN 走单次探针（`_probe_attempt`）；OPEN（或半开占满）拒绝主调用——有 fallback 走纯兜底，无则抛 `CircuitBreakerOpenError`
-- 重试循环**仅 CLOSED 下执行**：失败按类别处理——`NON_RETRYABLE` 直接抛出，`RATE_LIMITED`/`RETRYABLE` 退避重试（尊重 `Retry-After`）
-- **请求级熔断记录**：重试耗尽后，若本次请求**任一次尝试**出现过 `RETRYABLE` 失败（超时/5xx），统一调用一次 `cb.record_failure()`（可能触发 OPEN）；纯 429 / 不可恢复错误不记录。判定看"整个请求是否触及下游故障"，而非最后一次异常——混合 429 与超时时，只要出现过超时就计入窗口
-- fallback 是**纯兜底**：成功/失败都不触碰熔断器（熔断器只观察主链路 `call_fn` 的成败）
+- **熔断检查在重试循环之前**
+  - CLOSED 放行进重试循环；
+  - HALF_OPEN 走单次探针（`_probe_attempt`）；
+  - OPEN（或半开占满）拒绝主调用——有 fallback 走纯兜底，无则抛 `CircuitBreakerOpenError`
+- **重试循环仅 CLOSED 下执行**，失败按类别处理
+  - `NON_RETRYABLE` 直接抛出
+  - `RATE_LIMITED`/`RETRYABLE` 退避重试（尊重 `Retry-After`）
+- **请求级熔断记录**：重试耗尽后，
+  - 本次请求**任一次尝试**出现过 `RETRYABLE` 失败（超时/5xx），统一调用一次 `cb.record_failure()`（可能触发 OPEN）
+  - 纯 429 / 不可恢复错误不记录
+  - 判定看"整个请求是否触及下游故障"，而非最后一次异常——混合 429 与超时的情况下，只要出现过超时就计入窗口
+- **fallback 是纯兜底**：成功/失败都不触碰熔断器（熔断器只观察主链路 `call_fn` 的成败）
 
 ### classify_error — 错误分类
 
@@ -503,12 +514,22 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ## 边界情况
 
-1. **熔断 OPEN 时的请求**：不执行 `call_fn`。有 `fallback_fn` 时走纯兜底（单次、不重试、不触碰熔断器），保证服务不中断；无 fallback 时抛 `CircuitBreakerOpenError`，调用方应捕获并返回降级响应或错误消息
-2. **请求级熔断记录**：一次 `execute()` 的多次重试失败只调用一次 `record_failure()`（重试耗尽后统一记录），返回 `True` 表示本次失败把熔断器切到 OPEN（影响后续请求放行）。429 / 不可恢复错误不记录
-3. **半开探针耗尽**：拒绝主调用（有 fallback 走纯兜底）但不改变熔断状态，直到现有探针完成。**每个被放行的探针必然推进状态机**（成功→连续成功，失败→回 OPEN），不存在"放行后不记录"的路径，因此无 HALF_OPEN 死锁
+1. **熔断 OPEN 时的请求**：
+   - 不执行 `call_fn`
+   - 有 `fallback_fn` 时走纯兜底（单次、不重试、不触碰熔断器），保证服务不中断
+   - 无 fallback 时抛 `CircuitBreakerOpenError`，调用方应捕获并返回降级响应或错误消息
+2. **请求级熔断记录**：
+   - 一次 `execute()` 的多次重试失败只调用一次 `record_failure()`（重试耗尽后统一记录），返回 `True` 表示本次失败把熔断器切到 OPEN（影响后续请求放行）。
+   - 429 / 不可恢复错误不记录
+3. **半开探针耗尽**：拒绝主调用（有 fallback 走纯兜底）但不改变熔断状态，直到现有探针完成。**每个被放行的探针必然推进状态机**（成功→连续成功，失败→回 OPEN 或归还探针槽位），不存在"放行后不记录"的路径，因此无 HALF_OPEN 死锁
 4. **fallback 也失败**：抛出最后异常（可能是 fallback 的异常或主模型的异常，取决于哪个是 last_exc）；fallback 的成败不进入熔断状态机
-5. **429 探针回 OPEN、4xx 探针不改变状态**：CLOSED 下 429 只退避重试（尊重服务端 `Retry-After`），不进入窗口统计；HALF_OPEN 下探针收到 429 / 超时 / 5xx → 回 OPEN（停止探测让下游喘息），收到 4xx / 未知 → 不改变状态、`release_probe()` 归还槽位 + 异常直接抛给上层（客户端问题，修复请求后再重试）
-6. **OPEN 下 no-op 与统计冻结**：OPEN 时 `allow_request()` 拒绝主调用，`call_fn` 从不执行，窗口统计保持不变；即便外部误调用 `record_success()`/`record_failure()` 也是 no-op（不关闭熔断器、不追加窗口、不改写冷却计时），直到熔断关闭时窗口清空
+5. **429 探针回 OPEN、4xx 探针不改变状态**：
+   - CLOSED 下 429 只退避重试（尊重服务端 `Retry-After`），不进入窗口统计；
+   - HALF_OPEN 下探针收到 429 / 超时 / 5xx → 回 OPEN（停止探测让下游喘息）；
+   - 收到 4xx / 未知 → 不改变状态、`release_probe()` 归还槽位 + 异常直接抛给上层（客户端问题，修复请求后再重试）
+6. **OPEN 下 no-op 与统计冻结**：
+   - `allow_request()` 拒绝主调用，`call_fn` 从不执行，窗口统计保持不变；
+   - 即便外部误调用 `record_success()`/`record_failure()` 也是 no-op（不关闭熔断器、不追加窗口、不改写冷却计时），直到熔断关闭时窗口清空
 7. **并发熔断状态竞争**：`CircuitBreaker` 不是线程安全的，但 `RetryHandler` 在 asyncio 单线程事件循环中运行，无并发问题
 8. **`max_retries=0`**：不重试，但熔断器仍然生效。首次失败后 `record_failure()` 被调用（请求级 1 次），窗口累积
 
@@ -595,7 +616,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ### 半开探针成功/失败判定（工业实践调查）
 
-**为什么需要专门设计**：半开探针每次被放行都占用一个探针槽位（`_half_open_requests`），其结果必须推进状态机——成功→连续成功计数，失败→回 OPEN。若探针收到某类错误后既不记录成败、也不推进状态机，槽位会被永久占用，`allow_request()` 永远返回 False，熔断器卡死在 HALF_OPEN（本项目曾遇到并修复的死锁问题）。
+**为什么需要专门设计**：半开探针每次被放行都占用一个探针槽位（`_half_open_requests`），其结果必须推进状态机——成功→连续成功计数，失败→回 OPEN 或归还探针槽位。若探针收到某类错误后既不记录成败、也不推进状态机，槽位会被永久占用，`allow_request()` 永远返回 False，熔断器卡死在 HALF_OPEN（本项目曾遇到并修复的死锁问题）。
 
 因此"什么情况归为成功、什么归为失败"直接决定：① **正确性**（429 误记为成功会误关熔断器，流量涌入过载下游）；② **不死锁**（任何探针结果必须推进状态机）；③ **下游压力**（429 探针若只归还槽位不冷却，每个请求都变探针持续压过载下游——回 OPEN 停止探测才能给下游喘息）。
 
