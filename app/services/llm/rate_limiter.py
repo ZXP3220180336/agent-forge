@@ -125,6 +125,283 @@ class RateLimiter:
 
 
 # =====================================================================
+# 其他限流算法组件（参考实现，不接入调用链）
+# =====================================================================
+# 以下为 Token Bucket 之外的主流限流算法（漏桶 / 固定窗口 / 滑动窗口日志 /
+# 滑动窗口计数 / GCRA），作为组件提供，供对比与按需选用。接口统一：
+#   async acquire(tokens=1.0) -> float   等待型（配额不足时 sleep 等待，返回等待秒数）
+#   async refund(tokens=1.0) -> None     退还配额（best-effort，受容量封顶）
+# 与 TokenBucket 对齐，可互换使用；未接入 llm_service 调用链。
+
+from collections import deque as _deque  # noqa: E402
+from typing import Deque as _Deque  # noqa: E402
+
+
+class LeakyBucket:
+    """
+    漏桶（Leaky Bucket）：恒定速率流出，请求入队排队。
+
+    - capacity: 桶容量（最大排队请求数）
+    - refill_rate: 每秒流出速率（出队速率，恒定）
+
+    与 Token Bucket 的区别：**输出速率严格恒定**——即使桶空，新请求也按
+    恒定速率流出；空闲期积攒的能力无法用于短时高峰（无突发容忍）。
+    桶满时拒绝新请求（本实现为等待型，桶满则等待空位而非拒绝）。
+
+    适用：需要严格平滑输出速率的场景（流量整形），如视频流、队列背压。
+    """
+
+    def __init__(self, capacity: float, refill_rate: float) -> None:
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+        self._next_ready = 0.0  # 下一次可放行的时刻（单调时钟）
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: float = 1.0) -> float:
+        if self.refill_rate <= 0:
+            return 0.0
+        async with self._lock:
+            now = time.monotonic()
+            # 桶满检查：等待中的请求数 × 每请求时间槽 ≥ 容量
+            if self._next_ready > now and (
+                (self._next_ready - now) * self.refill_rate >= self.capacity
+            ):
+                # 桶满：等待第一个时间槽空出
+                wait_for_slot = (self._next_ready - now) - (
+                    self.capacity / self.refill_rate
+                )
+                await asyncio.sleep(max(wait_for_slot, 0.0))
+                now = time.monotonic()
+            # 恒定速率：每 tokens 个请求占用 tokens/refill_rate 秒时间槽
+            wait = max(self._next_ready - now, 0.0)
+            self._next_ready = max(now, self._next_ready) + tokens / self.refill_rate
+            if wait > 0:
+                await asyncio.sleep(wait)
+            return wait
+
+    async def refund(self, tokens: float = 1.0) -> None:
+        """退还配额：回退时间槽（best-effort，不低于 now）。"""
+        async with self._lock:
+            self._next_ready = max(
+                time.monotonic(), self._next_ready - tokens / self.refill_rate
+            )
+
+
+class FixedWindowLimiter:
+    """
+    固定窗口（Fixed Window）：按固定时间窗计数，窗口内达到上限即拒绝。
+
+    - rate: 每窗口最大请求数
+    - window_seconds: 窗口长度（秒）
+
+    最简单：一个计数器 + 窗口边界判断，内存常数。
+    缺点：**窗口边界双倍请求**——窗口末尾用满配额、下一窗口又用满配额，
+    两个窗口交界瞬间实际发出两倍请求（跨窗口交界突发无防护）。
+
+    适用：对瞬时峰值不敏感、实现优先的场景。
+    """
+
+    def __init__(self, rate: float, window_seconds: float) -> None:
+        self.rate = rate
+        self.window_seconds = window_seconds
+        self._window_start = 0.0
+        self._count = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: float = 1.0) -> float:
+        async with self._lock:
+            now = time.monotonic()
+            if now - self._window_start >= self.window_seconds:
+                self._window_start = now
+                self._count = 0.0
+            if self._count + tokens <= self.rate:
+                self._count += tokens
+                return 0.0
+            # 窗口内已满：等待窗口翻转
+            wait = self.window_seconds - (now - self._window_start)
+            await asyncio.sleep(wait)
+            self._window_start = time.monotonic()
+            self._count = tokens
+            return wait
+
+    async def refund(self, tokens: float = 1.0) -> None:
+        """退还配额：递减当前窗口计数（best-effort，不低于 0）。"""
+        async with self._lock:
+            self._count = max(0.0, self._count - tokens)
+
+
+class SlidingWindowLogLimiter:
+    """
+    滑动窗口日志（Sliding Window Log）：记录窗口内每次请求时间戳，精确计数。
+
+    - rate: 窗口内最大请求数
+    - window_seconds: 窗口长度（秒）
+
+    最精确：任意时刻窗口内的请求数真实反映，无边界双倍问题。
+    缺点：**内存随窗口内请求量增长**（每请求一个时间戳），高吞吐下开销大。
+
+    适用：低 QPS 但要求精确的场景。
+    """
+
+    def __init__(self, rate: float, window_seconds: float) -> None:
+        self.rate = rate
+        self.window_seconds = window_seconds
+        self._timestamps: _Deque[float] = _deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: float = 1.0) -> float:
+        async with self._lock:
+            now = time.monotonic()
+            cutoff = now - self.window_seconds
+            while self._timestamps and self._timestamps[0] < cutoff:
+                self._timestamps.popleft()
+            if len(self._timestamps) + tokens <= self.rate:
+                # 记录 tokens 个时间戳（近似：为按量支持，重复记录）
+                for _ in range(int(tokens)):
+                    self._timestamps.append(now)
+                return 0.0
+            # 窗口已满：等待最早的时间戳过期
+            if self._timestamps:
+                wait = self._timestamps[0] + self.window_seconds - now
+                await asyncio.sleep(wait)
+                cutoff = time.monotonic() - self.window_seconds
+                while self._timestamps and self._timestamps[0] < cutoff:
+                    self._timestamps.popleft()
+                for _ in range(int(tokens)):
+                    self._timestamps.append(time.monotonic())
+                return wait
+            return 0.0
+
+    async def refund(self, tokens: float = 1.0) -> None:
+        """退还配额：移除最早的时间戳（best-effort）。"""
+        async with self._lock:
+            for _ in range(int(tokens)):
+                if self._timestamps:
+                    self._timestamps.popleft()
+
+
+class SlidingWindowCounterLimiter:
+    """
+    滑动窗口计数（Sliding Window Counter）：固定窗口 + 分桶加权折中。
+
+    - rate: 每窗口最大请求数
+    - window_seconds: 窗口长度（秒）
+    - buckets: 分桶数（默认 4）
+
+    把窗口切成 N 个小桶，滑动时按剩余比例加权上一桶计数——比固定窗口平滑
+    （无边界双倍），比滑动窗口日志省内存（常数桶数）。
+
+    近似公式：current_count + previous_count × (1 - elapsed/total) ≤ rate
+    缺点：分桶粒度内仍不精确（边界内的小幅突刺）。
+
+    适用：Redis 分桶实现（INCR + EXPIRE）、生产网关的常见选择。
+    """
+
+    def __init__(
+        self, rate: float, window_seconds: float, buckets: int = 4
+    ) -> None:
+        self.rate = rate
+        self.window_seconds = window_seconds
+        self.buckets = max(buckets, 1)
+        self._bucket_size = window_seconds / self.buckets
+        self._counts: _Deque[tuple[float, float]] = _deque()  # (bucket_start, count)
+        self._lock = asyncio.Lock()
+
+    def _current_bucket(self, now: float) -> tuple[float, float]:
+        """返回 (当前桶起始时刻, 当前桶计数)；过期桶清理。"""
+        cutoff = now - self.window_seconds
+        while self._counts and self._counts[0][0] < cutoff:
+            self._counts.popleft()
+        current_start = now - (now % self._bucket_size)
+        if self._counts and self._counts[-1][0] == current_start:
+            return self._counts[-1]
+        self._counts.append((current_start, 0.0))
+        return self._counts[-1]
+
+    def _window_count(self, now: float) -> float:
+        """滑动窗口近似计数：当前桶 + 上一桶 × 剩余比例。"""
+        current_start = now - (now % self._bucket_size)
+        current = 0.0
+        prev = 0.0
+        for start, count in self._counts:
+            if start == current_start:
+                current = count
+            else:
+                prev += count
+        elapsed_in_bucket = now - current_start
+        weight = 1.0 - elapsed_in_bucket / self.window_seconds
+        return current + prev * weight
+
+    async def acquire(self, tokens: float = 1.0) -> float:
+        async with self._lock:
+            now = time.monotonic()
+            self._current_bucket(now)
+            if self._window_count(now) + tokens <= self.rate:
+                self._counts[-1] = (self._counts[-1][0], self._counts[-1][1] + tokens)
+                return 0.0
+            # 窗口已满：等待最老的桶滑出窗口
+            if self._counts:
+                oldest = self._counts[0][0]
+                wait = oldest + self.window_seconds - now
+                await asyncio.sleep(wait)
+                self._current_bucket(time.monotonic())
+                return wait
+            return 0.0
+
+    async def refund(self, tokens: float = 1.0) -> None:
+        """退还配额：递减当前桶计数（best-effort，不低于 0）。"""
+        async with self._lock:
+            now = time.monotonic()
+            bucket = self._current_bucket(now)
+            self._counts[-1] = (bucket[0], max(0.0, bucket[1] - tokens))
+
+
+class GCRALimiter:
+    """
+    GCRA（Generic Cell Rate Algorithm）：以「理论到达时间 TAT」为核心的精确节流。
+
+    - rate: 每秒速率（个/秒）
+    - burst: 突发容忍量（可连续放行的最大数）
+
+    只存一个 TAT，内存常数 + 精确节流（无边界双倍）。常被视为 Token Bucket
+    的精确等价形式：TAT 相当于"桶满时刻"，burst 相当于"容量"。
+
+    TAT = 上次请求的理论到达时间
+    新请求 → TAT' = max(now, TAT) + 1/rate
+      若 TAT' - now > burst/rate → 拒绝（超出突发容忍）
+      否则 → 接受，TAT = TAT'
+
+    适用：需要精确节流 + 常数内存的场景；很多实现（如 x/time/rate 的
+    advance）本质等价于 GCRA。
+    """
+
+    def __init__(self, rate: float, burst: float) -> None:
+        self.rate = rate
+        self.burst = burst
+        self._tat = 0.0  # 理论到达时间（单调时钟）
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: float = 1.0) -> float:
+        if self.rate <= 0:
+            return 0.0
+        async with self._lock:
+            now = time.monotonic()
+            # 等待时间 = max(0, 前一个 TAT - now)；首个请求 TAT=0 → 立即放行
+            wait = max(self._tat - now, 0.0)
+            if wait > 0:
+                await asyncio.sleep(wait)
+                now = time.monotonic()
+            # 新 TAT：max(now, TAT) + tokens/rate（每 token 间隔 1/rate 秒）
+            self._tat = max(now, self._tat) + tokens / self.rate
+            return wait
+
+    async def refund(self, tokens: float = 1.0) -> None:
+        """退还配额：回退 TAT（best-effort，不低于 now）。"""
+        async with self._lock:
+            self._tat = max(time.monotonic(), self._tat - tokens / self.rate)
+
+
+# =====================================================================
 # 限流器管理
 # =====================================================================
 

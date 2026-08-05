@@ -22,6 +22,7 @@
   - [TokenBucket — 单桶算法](#tokenbucket--单桶算法)
   - [RateLimiter — 双桶组合](#ratelimiter--双桶组合)
   - [RateLimiterManager — 实例管理](#ratelimitermanager--实例管理)
+  - [其他限流算法组件（参考实现）](#其他限流算法组件参考实现)
 - [调用流程](#调用流程)
 - [与重试/熔断的分层配合](#与重试熔断的分层配合)
 - [配置项清单](#配置项清单)
@@ -313,6 +314,121 @@ class RateLimiterManager:
 - **懒加载**：首次 `get()` 才创建，读取 `settings` 的 RPM/TPM 配置
 - **同步无竞态**：`get` 无 await，GIL 下天然原子，不会双实例
 - **`reset()`**：配置变更或测试时清空缓存
+
+### 其他限流算法组件（参考实现）
+
+> 以下为 Token Bucket 之外的主流限流算法组件（`app/services/llm/rate_limiter.py`），接口与 `TokenBucket` 对齐（`acquire(tokens) -> float` 等待型 + `refund(tokens)` 退还），**未接入调用链**，供对比与按需选用。
+
+#### LeakyBucket — 漏桶
+
+**恒定速率流出**：请求入队，按固定速率出队执行；桶满拒绝。
+
+```python
+class LeakyBucket:
+    def __init__(self, capacity: float, refill_rate: float): ...
+    # capacity: 桶容量（最大排队请求数）
+    # refill_rate: 每秒流出速率（恒定）
+    # _next_ready: 下一次可放行的时刻（单调时钟）
+```
+
+**核心思想**：维护 `_next_ready`（下一次可放行时刻）。每次请求占 `tokens/refill_rate` 秒时间槽，`_next_ready` 向后推；请求到来时若未到 `_next_ready` 则等待。
+
+**与 Token Bucket 的区别**：
+
+| 维度 | Token Bucket | 漏桶 |
+| --- | --- | --- |
+| 突发 | ✅ 允许（桶满可一次发 capacity 个） | ❌ 无（输出严格恒定） |
+| 空闲期 | 攒 token，可应对高峰 | 攒不住，空闲期能力浪费 |
+| 整形 | 长期平滑 | **严格整形**（恒定速率） |
+| 适用 | Agent 突发调用 | 流量整形、视频流、队列背压 |
+
+**实现要点**：桶满等待用「队首时间槽 - 容量时间」计算；`refund` 回退 `_next_ready`（不低于 now）。
+
+#### FixedWindowLimiter — 固定窗口
+
+**按固定时间窗计数**：窗口内达到上限即拒绝/等待。
+
+```python
+class FixedWindowLimiter:
+    def __init__(self, rate: float, window_seconds: float): ...
+    # rate: 每窗口最大请求数
+    # window_seconds: 窗口长度（秒）
+    # _window_start/_count: 当前窗口起始时刻 + 计数
+```
+
+**核心思想**：窗口内 `_count + tokens ≤ rate` 放行；超限等待窗口翻转后重置计数。
+
+**缺点——窗口边界双倍**：
+
+```
+窗口 [0,60) 计数 55 → 剩余 5
+窗口 [60,120) 计数 40 → 剩余 20   ← 窗口切换，计数清零
+
+若 59s 用了 55 个、61s 又用 55 个：两秒内实际发出 110 个（两倍配额）
+```
+
+跨窗口交界瞬间无防护。**适用**：对瞬时峰值不敏感、实现优先的场景。
+
+#### SlidingWindowLogLimiter — 滑动窗口日志
+
+**记录窗口内每次请求时间戳**，精确计数。
+
+```python
+class SlidingWindowLogLimiter:
+    def __init__(self, rate: float, window_seconds: float): ...
+    # rate: 窗口内最大请求数
+    # window_seconds: 窗口长度（秒）
+    # _timestamps: deque[float]，窗口内请求时间戳
+```
+
+**核心思想**：`deque` 存时间戳，查询时剔除过期（`< now - window_seconds`），`len ≤ rate` 放行；满则等待最早时间戳过期。
+
+**优点**：**最精确**——无边界双倍问题。**缺点**：**内存随窗口内请求量增长**（每请求一个时间戳），高吞吐下淘汰开销大。**适用**：低 QPS 但要求精确的场景。
+
+#### SlidingWindowCounterLimiter — 滑动窗口计数
+
+**固定窗口 + 分桶加权折中**。
+
+```python
+class SlidingWindowCounterLimiter:
+    def __init__(self, rate: float, window_seconds: float, buckets: int = 4): ...
+    # buckets: 分桶数，窗口切成 N 个时间片
+    # _counts: deque[(bucket_start, count)]
+```
+
+**核心思想**：窗口切成 N 个桶，滑动时按**剩余比例加权**上一桶计数：
+
+```
+窗口 = 4 个 15s 小桶（window_seconds=60, buckets=4）
+当前桶计数 + 上一桶 × (剩余比例) = 近似窗口计数
+```
+
+**优点**：内存常数（N 桶），比固定窗口平滑（无边界双倍），比滑窗日志省内存。**缺点**：分桶粒度内不精确（边界内小幅突刺）。**适用**：Redis 分桶（`INCR + EXPIRE`）、生产网关常见选择。
+
+#### GCRALimiter — GCRA（Generic Cell Rate Algorithm）
+
+**以「理论到达时间 TAT」为核心的精确节流**，Token Bucket 的精确等价形式。
+
+```python
+class GCRALimiter:
+    def __init__(self, rate: float, burst: float): ...
+    # rate: 每秒速率（个/秒）
+    # burst: 突发容忍量（可连续放行的最大数）
+    # _tat: 理论到达时间（单调时钟）
+```
+
+**核心思想**：
+
+```
+TAT = 上次请求的理论到达时间
+新请求 → 等待 max(0, TAT - now)；TAT' = max(now, TAT) + 1/rate
+  若 TAT' - now > burst/rate → 超出突发容忍（保守等待）
+  否则 → 接受，TAT = TAT'
+```
+
+**优点**：**内存常数**（只存一个 TAT）+ **精确节流**（无边界双倍）；单桶即可同时表达速率与突发上限。**缺点**：概念较抽象。**适用**：Ruby `rack/rate-limit`、部分 API Gateway；`x/time/rate` 的 `advance` 本质等价。
+
+**接口统一说明**：以上 5 类组件接口与 `TokenBucket` 对齐（`acquire(tokens)` 返回等待秒数 + `refund(tokens)` 退还），可互换使用。**未接入 `llm_service` 调用链**——当前生产链路仍走 `TokenBucket`（acquire 形态）与 `reservation_limiter.py`（reserve/settle 形态）。
 
 ---
 
