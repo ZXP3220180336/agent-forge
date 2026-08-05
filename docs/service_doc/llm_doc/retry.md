@@ -73,7 +73,7 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 
 - **CLOSED**：正常状态，所有请求放行。熔断判定基于**滑动时间窗口**内的错误率（参考 Hystrix）：窗口内总请求达最小请求量且错误率 ≥ 阈值 → 熔断；或窗口内**全部失败**且失败数 ≥ 样本下限（低流量纯失败保护）→ 熔断
 - **OPEN**：熔断状态，请求快速拒绝（有 fallback 则走纯兜底，无则抛 `CircuitBreakerOpenError`），不调用 API
-- **HALF_OPEN**：恢复探测状态，放行 `half_open_max_requests` 个探针请求，要求**全部连续成功**才恢复，任何一个失败则回到 OPEN
+- **HALF_OPEN**：恢复探测状态，放行 `half_open_max_requests` 个探针请求，要求**全部连续成功**才恢复；任一失败（429/超时/5xx）则回到 OPEN（4xx/未知不改变状态，归还槽位）
 
 ### 半开探针（Half-Open Probe）
 
@@ -264,7 +264,7 @@ flowchart TB
         P_FAIL --> P_FB
         P_CALL -- "❌ 4xx / 未知" --> P_NR["release_probe()<br>归还槽位 + raise（不改变状态）"]
         P_NR --> P_RAISE(["❌ 异常抛给上层修复"])
-        P_CALL -- "❌ 其他异常" --> P_FB["fallback_fn()<br>（纯兜底）"]
+        P_FAIL --> P_FB["fallback_fn()<br>（纯兜底，429/超时/5xx 探针失败时兜底）"]
         P_FB --> P_RET
     end
 
@@ -547,7 +547,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | **问题 1：无时间维度，连续失败永久累计** | 失败计数从 CLOSED 起只增不减，5 次失败分布在 1 秒或 10 分钟同样熔断 | **滑动时间窗口**（默认 10s）：窗口内统计请求数与错误率，过期记录惰性剔除，错误率随窗口自然回落 |
 | **问题 1：429 混入熔断判据** | `RATE_LIMITED` 计入 `_failure_count`，限流期误熔断 | **429 分离**：不计入窗口，只退避（尊重服务端 `Retry-After`） |
 | **问题 2：熔断触发后仍继续剩余重试** | `record_failure()` 触发 OPEN 后重试循环照常跑完剩余 attempt，浪费配额、延迟放大 | `record_failure()` 返回 `bool`，触发 OPEN 时立即 `break` |
-| **问题 4a：半开探针进入重试循环** | 探针失败 → OPEN → 继续重试，把一次探测放大成多次调用，干扰恢复判断 | 半开状态走 `_probe_attempt`：单次调用，失败即确认未恢复 |
+| **问题 4a：半开探针进入重试循环** | 探针失败 → OPEN → 继续重试，把一次探测放大成多次调用，干扰恢复判断 | 半开状态走 `_probe_attempt`：单次调用，失败（429/超时/5xx）即确认未恢复 |
 | **问题 4b：OPEN 下 `record_success()` 误关熔断** | OPEN 下收到成功（重试泄漏 / fallback）走"重置为 CLOSED"兜底分支，熔断器被误关 | OPEN 下 `record_success()` 为 no-op |
 | **修复补充：`_last_failure_time` 被延续失败反复刷新** | 任何失败都刷新 `_last_failure_time`，OPEN 下 fallback 兜底失败把冷却期无限推迟，熔断器永远无法进入 HALF_OPEN | `_last_failure_time` 仅在熔断器进入 OPEN 时更新（冷却期起点）；OPEN 下延续失败不改写，探针失败（新一轮故障）重置 |
 | **问题 4 深化：fallback 成败不进入熔断状态机** | fallback 成功清零熔断计数（主链路持续故障永不熔断）；fallback 失败累计熔断计数；熔断 OPEN 期 fallback 被当作主链路传入单次调用路径 | fallback 纯兜底：成功直接返回、失败自然抛出，不调用 `record_success`/`record_failure`，熔断器只观察主链路 `call_fn` |
@@ -558,7 +558,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | **错误分类：未知/未覆盖异常默认 RETRYABLE，盲目重试** | 只显式分类 400/401/403/422/429/5xx/超时，其余（404/405/413 等 4xx、非 HTTP 异常、裸 httpx 网络异常）落入 RETRYABLE 兜底 → 重试无效的错误白打下游 N 次并计入熔断窗口 | 白名单映射：4xx 全部 NON_RETRYABLE；显式捕获 openai 网络异常 + 裸 httpx 异常 → RETRYABLE；`APIResponseValidationError`/`LengthFinishReasonError`/`ContentFilterFinishReasonError` → NON_RETRYABLE；**未知异常默认 NON_RETRYABLE** |
 | **流式迭代异常无保护** | `llm_service.py` 的 `async for chunk` 不在任何 try/except 内 → 流中断/解析失败时异常泄漏到调用方，不重试不熔断不记录日志 | 流式迭代包进 try/except：失败时记录日志 + 产出错误事件（不重试，符合流式语义） |
 
-对应测试：`tests/unit/test_retry.py`（24 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）。
+对应测试：`tests/unit/test_retry.py`（29 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）。
 
 > **坑：测试构造 openai 异常** —— 构造 `openai.APIStatusError` 子类（如 `BadRequestError`/`InternalServerError`/`RateLimitError`）需要 `message` + `response` 两个参数（`InternalServerError` 无字面量 status_code，值来自传入的 `httpx.Response`）。`LengthFinishReasonError` 需要真实 `ChatCompletion` 对象（访问 `.usage`），不能传 None。**构造测试异常统一用 `httpx.Response(status_code, request=...)` 传参。**
 

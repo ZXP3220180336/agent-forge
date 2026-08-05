@@ -445,6 +445,39 @@ def test_release_probe_is_safe_in_open_and_never_negative():
     assert cb._half_open_requests == 0, "槽位为 0 时 release_probe 不得减成负数"
 
 
+@pytest.mark.asyncio
+async def test_non_retryable_probe_does_not_use_fallback():
+    """4xx 探针不走 fallback：客户端问题备用模型同样失败，直接抛给上层。
+
+    4xx 是客户端配置/参数/权限错误：即使配置了 fallback 也不尝试——备用模型
+    会因相同的参数/key 错误而失败，fallback 无意义。且熔断状态不变、槽位归还。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    fallback_called = [False]
+
+    class _BadRequest(Exception):
+        status_code = 400
+
+    async def bad_fn():
+        raise _BadRequest()
+
+    async def fallback_fn():
+        fallback_called[0] = True
+        return "fallback-ok"
+
+    with pytest.raises(_BadRequest):
+        await handler.execute(bad_fn, fallback_fn=fallback_fn)
+
+    assert fallback_called[0] is False, (
+        "4xx 探针不应走 fallback（客户端问题，备用模型同样失败）"
+    )
+    assert cb.state.value == "half_open", "4xx 探针不改变熔断状态"
+    assert cb._half_open_requests == 0, "4xx 探针应归还槽位"
+
+
 def test_open_record_success_does_not_close_breaker():
     """OPEN 状态下的 record_success 必须 no-op，不得把熔断器误关为 CLOSED。
 
