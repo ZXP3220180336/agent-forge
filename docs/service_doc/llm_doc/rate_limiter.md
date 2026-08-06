@@ -957,6 +957,53 @@ async_generate() / generate()
   1. **结算退差 ✅ 已实现**（2026-08-02）：新增 `reservation_limiter.py` 的 `ReservationLimiter.reserve() → Reservation`（独立文件），请求完成后 `settle(actual)` 退 TPM 差（`max(0, est-actual)`），`llm_service` 已迁移到 reserve/settle 统一闭环。`max_tokens` 是上限、实际输出远小于它导致的 TPM 偏保守问题已缓解。详见 [reservation_limiter.md](reservation_limiter.md)。
   2. **`max_tokens` 设得过大仍会空耗配额（已缓解但未消除）**——结算退差在「实际消耗 > 预留」时无法补扣，`max_tokens` 若远大于实际输出，预留阶段仍按上限扣、只是结算时退回。**「宁多勿少」的保守取舍仍成立**；要更精确需引入 Fenic 式的自适应分布预留（p95 自适应 × 1.15），暂未实现。
 
+#### 「已缓解但未消除」的具体情形
+
+**预留公式**（[llm_service.py](app/services/llm_service.py) 的 `_count_prompt_tokens`）：`estimated = prompt_tokens + max_tokens`（输出上限的保守估算），TPM 桶按此扣减。**这个数是「上限」而非「实际」**——实际输出往往远小于 max_tokens。
+
+**「已缓解」——退差解决了什么**（单请求长期不耗空桶）：
+
+```
+预留 = prompt + max_tokens = 100 + 4096 = 4196 tokens  ← 按上限扣
+实际 = prompt + 实际输出  = 100 + 200   = 300 tokens
+退差 = 4196 - 300 = 3896 tokens 退回桶
+```
+
+单个请求视角：扣 4196、退回 3896、最终实际只占 300。长期看桶不会被「高估」慢慢耗空——这就是「缓解」。
+
+**「未消除」——问题出在「预留期间」**（退差发生在请求完成后）：
+
+```
+假设 TPM 桶容量 = 20,000，max_tokens = 4096，实际输出大多 200 tokens：
+
+时刻       事件                         桶剩余
+t0         请求 A 预留 4196             15,804
+t0+ε       请求 B 预留 4196             11,608
+t0+2ε      请求 C 预留 4196             7,412
+t0+3ε      请求 D 预留 4196             3,216
+t0+4ε      请求 E 预留 4196 → 不足！等待   0
+```
+
+**请求 E 实际只需 300 tokens**，但桶被 A~D 的「高估预留」占满，必须等 A~D 完成并退差后才能放行。**这就是「空耗」**：桶的「真实消耗」只有 4×300 = 1200，却因 4×4196 = 16,784 的高估预留被占住，第 5 个只需 300 tokens 的请求被不必要阻塞。退差只能事后释放，无法避免预留期间的占桶。
+
+| 维度 | 退差能解决 | 退差解决不了 |
+| --- | --- | --- |
+| 时间 | 请求**完成后**释放 | 请求**进行中**的占桶 |
+| 并发 | 单请求长期不耗空桶 | 多个高估预留**瞬时占满桶**，阻塞后续请求 |
+| 方向 | 只退（actual < reserved） | 无法补扣（actual > reserved，超额部分无客户端限流保护） |
+
+**一句话**：退差是「事后补救」，但「预留期间按上限占桶」导致的瞬时并发阻塞，退差来不及救。
+
+**根治方向（Fenic 自适应预留）**：不用固定 `max_tokens` 预留，而是统计历史实际输出的分布，取 p95 值（推理模型 p99）× 1.15 作为预留量：
+
+```
+预留 = prompt + p95(历史实际输出) × 1.15
+```
+
+- 预留量贴近「真实可能消耗」而非「理论上限」
+- 预留期间占桶大幅减少 → 并发空耗阻塞显著缓解
+- 吞吐提升约 23×（Fenic 实测）
+
 **来源**：[OpenAI Rate limits 文档](https://developers.openai.com/api/docs/guides/rate-limits) · [LiteLLM ITPM/OTPM 限流](https://docs.litellm.ai/docs/proxy/io_token_rate_limits) · [Fenic 自适应 token 估算设计](https://github.com/typedef-ai/fenic/blob/main/specs/adaptive_token_estimation_design.md) · [LangChain rate_limiters（仅时间限制）](https://reference.langchain.com/python/langchain-core/rate_limiters)
 
 ### 对比 4：限流器 API 形态（对应问题 5，`async with` 语义误导）
