@@ -397,11 +397,8 @@ class ReservationLimiterManager:
             raise ValueError(f"未知限流 key: {model_key!r}")
         rpm_field, tpm_field = fields
 
-        quantile_field = _QUANTILE_FIELD_BY_KEY.get(
-            model_key
-        )  # 普通模型 p95、推理模型 p99
-        if quantile_field is None:
-            raise ValueError(f"未知限流 key: {model_key!r}")
+        # 普通模型 p95、推理模型 p99（_RATE_LIMIT_FIELDS 已校验 key 合法，此处必有值）
+        quantile_field = _QUANTILE_FIELD_BY_KEY[model_key]
 
         limiter = ReservationLimiter(
             rpm=getattr(settings, rpm_field, 0),

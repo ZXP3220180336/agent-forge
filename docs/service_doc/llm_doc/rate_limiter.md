@@ -394,24 +394,35 @@ class LeakyBucket:
     async def acquire(self, tokens: float = 1.0) -> float:
         if self.refill_rate <= 0:
             return 0.0
-        async with self._lock:
-            now = time.monotonic()
-            # 桶满检查：等待中的请求数 × 每请求时间槽 ≥ 容量
-            if self._next_ready > now and (
-                (self._next_ready - now) * self.refill_rate >= self.capacity
-            ):
-                # 桶满：等待第一个时间槽空出
-                wait_for_slot = (self._next_ready - now) - (
-                    self.capacity / self.refill_rate
-                )
-                await asyncio.sleep(max(wait_for_slot, 0.0))
+        total_wait = 0.0
+        while True:
+            async with self._lock:
                 now = time.monotonic()
-            # 恒定速率：每 tokens 个请求占用 tokens/refill_rate 秒时间槽
-            wait = max(self._next_ready - now, 0.0)
-            self._next_ready = max(now, self._next_ready) + tokens / self.refill_rate
-            if wait > 0:
-                await asyncio.sleep(wait)
-            return wait
+                # 桶满检查：等待中的请求数 × 每请求时间槽 ≥ 容量
+                if self._next_ready > now and (
+                    (self._next_ready - now) * self.refill_rate >= self.capacity
+                ):
+                    # 桶满：计算等第一个时间槽空出的时间（锁外 sleep）
+                    wait_for_slot = max(
+                        (self._next_ready - now) - (self.capacity / self.refill_rate),
+                        0.0,
+                    )
+                else:
+                    wait_for_slot = 0.0
+                # 恒定速率：每 tokens 个请求占用 tokens/refill_rate 秒时间槽
+                wait = max(self._next_ready - now, 0.0)
+                if wait == 0.0 and wait_for_slot == 0.0:
+                    # 无等待：锁内直接推进时间槽并返回
+                    self._next_ready = (
+                        max(now, self._next_ready) + tokens / self.refill_rate
+                    )
+                    return total_wait
+
+            # 锁外 sleep：桶满等待 + 恒定速率等待，期间锁不被持有
+            sleep_for = max(wait_for_slot, wait)
+            await asyncio.sleep(sleep_for)
+            total_wait += sleep_for
+            # 回到循环顶部重检：sleep 期间可能被其他请求抢时间槽
 
     async def refund(self, tokens: float = 1.0) -> None:
         """退还配额：回退时间槽（best-effort，不低于 now）。"""
@@ -503,20 +514,23 @@ class FixedWindowLimiter:
         self._lock = asyncio.Lock()
 
     async def acquire(self, tokens: float = 1.0) -> float:
-        async with self._lock:
-            now = time.monotonic()
-            if now - self._window_start >= self.window_seconds:
-                self._window_start = now
-                self._count = 0.0
-            if self._count + tokens <= self.rate:
-                self._count += tokens
-                return 0.0
-            # 窗口内已满：等待窗口翻转
-            wait = self.window_seconds - (now - self._window_start)
+        total_wait = 0.0
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                if now - self._window_start >= self.window_seconds:
+                    self._window_start = now
+                    self._count = 0.0
+                if self._count + tokens <= self.rate:
+                    self._count += tokens
+                    return total_wait
+                # 窗口内已满：计算窗口翻转剩余时间，锁外 sleep
+                wait = self.window_seconds - (now - self._window_start)
+
+            # 锁外 sleep：等待窗口翻转，期间锁不被持有
             await asyncio.sleep(wait)
-            self._window_start = time.monotonic()
-            self._count = tokens
-            return wait
+            total_wait += wait
+            # 回到循环顶部重检：窗口已翻转则扣减放行
 
     async def refund(self, tokens: float = 1.0) -> None:
         """退还配额：递减当前窗口计数（best-effort，不低于 0）。"""
@@ -576,30 +590,33 @@ class SlidingWindowLogLimiter:
     def __init__(self, rate: float, window_seconds: float) -> None:
         self.rate = rate
         self.window_seconds = window_seconds
-        self._timestamps: _Deque[float] = _deque()
+        self._timestamps: _deque[float] = _deque()
         self._lock = asyncio.Lock()
 
     async def acquire(self, tokens: float = 1.0) -> float:
-        async with self._lock:
-            now = time.monotonic()
-            cutoff = now - self.window_seconds
-            while self._timestamps and self._timestamps[0] < cutoff:
-                self._timestamps.popleft()
-            if len(self._timestamps) + tokens <= self.rate:
-                for _ in range(int(tokens)):
-                    self._timestamps.append(now)
-                return 0.0
-            # 窗口已满：等待最早的时间戳过期
-            if self._timestamps:
-                wait = self._timestamps[0] + self.window_seconds - now
-                await asyncio.sleep(wait)
-                cutoff = time.monotonic() - self.window_seconds
+        total_wait = 0.0
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                cutoff = now - self.window_seconds
                 while self._timestamps and self._timestamps[0] < cutoff:
                     self._timestamps.popleft()
-                for _ in range(int(tokens)):
-                    self._timestamps.append(time.monotonic())
-                return wait
-            return 0.0
+                if len(self._timestamps) + tokens <= self.rate:
+                    # 记录 tokens 个时间戳（近似：为按量支持，重复记录）
+                    for _ in range(int(tokens)):
+                        self._timestamps.append(now)
+                    return total_wait
+                # 窗口已满：计算最早时间戳过期剩余时间，锁外 sleep
+                if self._timestamps:
+                    wait = self._timestamps[0] + self.window_seconds - now
+                else:
+                    wait = 0.0
+
+            # 锁外 sleep：等待最早时间戳过期，期间锁不被持有
+            if wait > 0:
+                await asyncio.sleep(wait)
+                total_wait += wait
+            # 回到循环顶部重检：过期时间戳已剔除则放行
 
     async def refund(self, tokens: float = 1.0) -> None:
         """退还配额：移除最早的时间戳（best-effort）。"""
@@ -691,20 +708,26 @@ class SlidingWindowCounterLimiter:
         return current + prev * weight
 
     async def acquire(self, tokens: float = 1.0) -> float:
-        async with self._lock:
-            now = time.monotonic()
-            self._current_bucket(now)
-            if self._window_count(now) + tokens <= self.rate:
-                self._counts[-1] = (self._counts[-1][0], self._counts[-1][1] + tokens)
-                return 0.0
-            # 窗口已满：等待最老的桶滑出窗口
-            if self._counts:
-                oldest = self._counts[0][0]
-                wait = oldest + self.window_seconds - now
+        total_wait = 0.0
+        while True:
+            async with self._lock:
+                now = time.monotonic()
+                self._current_bucket(now)
+                if self._window_count(now) + tokens <= self.rate:
+                    self._counts[-1] = (self._counts[-1][0], self._counts[-1][1] + tokens)
+                    return total_wait
+                # 窗口已满：计算最老的桶滑出窗口剩余时间，锁外 sleep
+                if self._counts:
+                    oldest = self._counts[0][0]
+                    wait = oldest + self.window_seconds - now
+                else:
+                    wait = 0.0
+
+            # 锁外 sleep：等待最老的桶滑出窗口，期间锁不被持有
+            if wait > 0:
                 await asyncio.sleep(wait)
-                self._current_bucket(time.monotonic())
-                return wait
-            return 0.0
+                total_wait += wait
+            # 回到循环顶部重检：过期桶已清理则放行
 
     async def refund(self, tokens: float = 1.0) -> None:
         """退还配额：递减当前桶计数（best-effort，不低于 0）。"""
@@ -770,16 +793,22 @@ class GCRALimiter:
     async def acquire(self, tokens: float = 1.0) -> float:
         if self.rate <= 0:
             return 0.0
-        async with self._lock:
-            now = time.monotonic()
-            # 等待时间 = max(0, 前一个 TAT - now)；首个请求 TAT=0 → 立即放行
-            wait = max(self._tat - now, 0.0)
-            if wait > 0:
-                await asyncio.sleep(wait)
+        total_wait = 0.0
+        while True:
+            async with self._lock:
                 now = time.monotonic()
-            # 新 TAT：max(now, TAT) + tokens/rate（每 token 间隔 1/rate 秒）
-            self._tat = max(now, self._tat) + tokens / self.rate
-            return wait
+                # 等待时间 = max(0, 前一个 TAT - now)；首个请求 TAT=0 → 立即放行
+                wait = max(self._tat - now, 0.0)
+                if wait == 0.0:
+                    # 无等待：锁内直接更新 TAT 并返回
+                    self._tat = max(now, self._tat) + tokens / self.rate
+                    return total_wait
+
+            # 锁外 sleep：等待 TAT 到达，期间锁不被持有
+            await asyncio.sleep(wait)
+            total_wait += wait
+            # 回到循环顶部重检：TAT 已到则更新并放行
+            # （sleep 期间可能被其他请求推进 TAT）
 
     async def refund(self, tokens: float = 1.0) -> None:
         """退还配额：回退 TAT（best-effort，不低于 now）。"""

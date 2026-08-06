@@ -5,6 +5,7 @@ RateLimiter / RateLimiterManager 单元测试
     TokenBucket      桶容量 / 补充速率 / 等待耗尽后放行
     RateLimiter      双桶（RPM + TPM）各自扣减，Retry-After 优先等待
     RateLimiterManager  按 model_key 懒创建 + 同 key 共享实例 + reset 清空
+    参考算法         漏桶/固定窗口/滑窗日志/滑窗计数/GCRA 基础行为 + 持锁 sleep 回归
 
 reserve/settle 形态测试见 test_reservation_limiter.py。
 
@@ -18,8 +19,13 @@ import pytest
 
 from app.config import settings
 from app.services.llm.rate_limiter import (
+    FixedWindowLimiter,
+    GCRALimiter,
+    LeakyBucket,
     RateLimiter,
     RateLimiterManager,
+    SlidingWindowCounterLimiter,
+    SlidingWindowLogLimiter,
     TokenBucket,
 )
 
@@ -198,3 +204,131 @@ def test_manager_unknown_key_raises():
     RateLimiterManager.reset()
     with pytest.raises(ValueError):
         RateLimiterManager.get("unknown_key")
+
+
+# =====================================================================
+# 参考限流算法组件（漏桶/固定窗口/滑窗日志/滑窗计数/GCRA）
+# =====================================================================
+
+
+def _close(a, b, tol=0.05):
+    return abs(a - b) < tol
+
+
+@pytest.mark.asyncio
+async def test_leaky_bucket_constant_rate():
+    """漏桶：恒定速率流出，间隔 = tokens/refill_rate。"""
+    lb = LeakyBucket(capacity=5, refill_rate=10)
+    assert await lb.acquire(1) == 0.0, "首个应立即放行"
+    assert _close(await lb.acquire(1), 0.1), "漏桶间隔应 0.1s"
+    await lb.refund(1)
+
+
+@pytest.mark.asyncio
+async def test_fixed_window_resets_after_flip():
+    """固定窗口：窗口内放行，超限等待窗口翻转。"""
+    fw = FixedWindowLimiter(rate=2, window_seconds=1)
+    assert await fw.acquire() == 0.0
+    assert await fw.acquire() == 0.0
+    wait = await fw.acquire()
+    assert wait > 0.5, f"固定窗口超限应等待窗口翻转，实际 {wait}"
+
+
+@pytest.mark.asyncio
+async def test_sliding_window_log_exact_count():
+    """滑窗日志：窗口内精确计数，满则等待最早时间戳过期。"""
+    swl = SlidingWindowLogLimiter(rate=3, window_seconds=1)
+    assert await swl.acquire() == 0.0
+    assert await swl.acquire() == 0.0
+    assert await swl.acquire() == 0.0
+    wait = await swl.acquire()
+    assert wait > 0, f"满窗口应等待，实际 {wait}"
+
+
+@pytest.mark.asyncio
+async def test_sliding_window_counter_weighted():
+    """滑窗计数：分桶加权近似，满则等待最老桶滑出。"""
+    swc = SlidingWindowCounterLimiter(rate=4, window_seconds=4, buckets=4)
+    for _ in range(4):
+        assert await swc.acquire() == 0.0
+    wait = await swc.acquire()
+    assert wait > 0, f"满窗口应等待，实际 {wait}"
+
+
+@pytest.mark.asyncio
+async def test_gcra_interval_and_burst():
+    """GCRA：首个立即放行，后续按 1/rate 间隔节流。"""
+    g = GCRALimiter(rate=10, burst=5)
+    assert await g.acquire(1) == 0.0, "GCRA 首个应立即放行"
+    assert _close(await g.acquire(1), 0.1), "GCRA 间隔应 0.1s"
+
+
+@pytest.mark.asyncio
+async def test_gcra_wait_does_not_block_others():
+    """GCRA 等待不阻塞锁：等待期间其他请求能进入临界区排队。
+
+    GCRA 是精确节流——两个并发请求按间隔节流（0.1s + 0.1s = 0.2s）。
+    锁外 sleep 保证的是「等待期间锁不被持有」，而非缩短总节流时长。
+    验证总时长 ≈ 两次间隔（0.2s），且无死锁。
+    """
+    g = GCRALimiter(rate=10, burst=5)
+    await g.acquire(1)  # TAT 推到 now+0.1
+    start = time.monotonic()
+
+    async def acquire_one():
+        await g.acquire(1)
+
+    # 两个并发请求：按 GCRA 节流，总时长 ≈ 0.2s（无死锁即证明锁外 sleep 生效）
+    await asyncio.gather(acquire_one(), acquire_one())
+    elapsed = time.monotonic() - start
+    assert 0.1 <= elapsed < 0.3, (
+        f"GCRA 并发应≈两次间隔（elapsed={elapsed:.3f}，应 0.1~0.3s）"
+    )
+
+
+# =====================================================================
+# 持锁 sleep 回归（锁内计算 → 锁外 sleep，等待不阻塞其他请求）
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_leaky_bucket_wait_does_not_block_others():
+    """漏桶等待不阻塞锁：两个并发请求的等待不因锁串行叠加。
+
+    漏桶本身是恒定速率排队（后续请求等待前面时间槽），但锁不应被 sleep 持有——
+    否则并发请求会因锁竞争比纯排队更慢。此测试验证并发下总时长 ≈ 排队长。
+    """
+    lb = LeakyBucket(capacity=10, refill_rate=10)
+    # 并发发起 2 个请求：各占 1 时间槽（0.1s）
+    start = time.monotonic()
+
+    async def acquire_one():
+        await lb.acquire(1)
+
+    await asyncio.gather(acquire_one(), acquire_one())
+    elapsed = time.monotonic() - start
+    # 漏桶排队：2 个请求总时长 ≈ 0.1s（第2个等第1个的槽）。若持锁串行会≈0.2s
+    assert elapsed < 0.2, (
+        f"漏桶并发应≈排队时长（elapsed={elapsed:.3f}，应 <0.2s）"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fixed_window_wait_does_not_block_others():
+    """固定窗口等待不阻塞：窗口翻转等待期间，新请求在翻转后立即放行。"""
+    fw = FixedWindowLimiter(rate=2, window_seconds=1)
+    await fw.acquire()
+    await fw.acquire()  # 填满窗口
+    # 启动等待窗口翻转的任务
+    wait_task = asyncio.create_task(fw.acquire())
+    await asyncio.sleep(0.1)
+
+    async def check_not_blocked():
+        start = time.monotonic()
+        await fw.acquire()  # 仍在满窗口，也会等待
+        return time.monotonic() - start
+
+    # 两次等待应可并行推进（都等窗口翻转，总时长 ≈ 1 次翻转而非叠加）
+    elapsed = await check_not_blocked()
+    assert elapsed < 1.8, f"固定窗口等待不应串行阻塞（elapsed={elapsed:.2f}）"
+    await wait_task
