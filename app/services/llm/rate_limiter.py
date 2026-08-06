@@ -133,8 +133,7 @@ class RateLimiter:
 #   async refund(tokens=1.0) -> None     退还配额（best-effort，受容量封顶）
 # 与 TokenBucket 对齐，可互换使用；未接入 llm_service 调用链。
 
-from collections import deque as _deque  # noqa: E402
-from typing import Deque as _Deque  # noqa: E402
+from collections import deque as _deque
 
 
 class LeakyBucket:
@@ -246,7 +245,7 @@ class SlidingWindowLogLimiter:
     def __init__(self, rate: float, window_seconds: float) -> None:
         self.rate = rate
         self.window_seconds = window_seconds
-        self._timestamps: _Deque[float] = _deque()
+        self._timestamps: _deque[float] = _deque()
         self._lock = asyncio.Lock()
 
     async def acquire(self, tokens: float = 1.0) -> float:
@@ -297,14 +296,12 @@ class SlidingWindowCounterLimiter:
     适用：Redis 分桶实现（INCR + EXPIRE）、生产网关的常见选择。
     """
 
-    def __init__(
-        self, rate: float, window_seconds: float, buckets: int = 4
-    ) -> None:
+    def __init__(self, rate: float, window_seconds: float, buckets: int = 4) -> None:
         self.rate = rate
         self.window_seconds = window_seconds
         self.buckets = max(buckets, 1)
         self._bucket_size = window_seconds / self.buckets
-        self._counts: _Deque[tuple[float, float]] = _deque()  # (bucket_start, count)
+        self._counts: _deque[tuple[float, float]] = _deque()  # (bucket_start, count)
         self._lock = asyncio.Lock()
 
     def _current_bucket(self, now: float) -> tuple[float, float]:
