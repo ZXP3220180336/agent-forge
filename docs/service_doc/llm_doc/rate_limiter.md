@@ -33,7 +33,8 @@
   - [工业级对比：修复方案 vs 主流实现](#工业级对比修复方案-vs-主流实现)
     - [对比 1：「禁用限流」的表达（对应问题 1，配置 0 除零崩溃）](#对比-1禁用限流的表达对应问题-1配置-0-除零崩溃)
     - [对比 2：等待是否持锁（对应问题 2，持锁 sleep 阻塞其他请求）](#对比-2等待是否持锁对应问题-2持锁-sleep-阻塞其他请求)
-    - [对比 3：TPM 消耗估算（对应问题 3，只算 prompt 低估输出）](#对比-3tpm-消耗估算对应问题-3只算-prompt-低估输出)
+    - [对比 3.1：TPM 消耗估算（对应问题 3，只算 prompt 低估输出）](#对比-31tpm-消耗估算对应问题-3只算-prompt-低估输出)
+    - [对比 3.2：自适应预留（Fenic 式，2026-08-06 实现）](#对比-32自适应预留fenic-式2026-08-06-实现)
     - [对比 4：限流器 API 形态（对应问题 5，`async with` 语义误导）](#对比-4限流器-api-形态对应问题-5async-with-语义误导)
     - [速查表](#速查表)
   - [附录：2026-08-01 代码审核记录](#附录2026-08-01-代码审核记录)
@@ -940,7 +941,7 @@ async_generate() / generate()
 
 **来源**：[x/time/rate 源码（reserveN/WaitN/CancelAt）](https://go.googlesource.com/time/+/refs/tags/v0.10.0/rate/rate.go) · [Guava RateLimiter 源码（acquire/reserve 两段式）](https://guava.dev/releases/17.0/api/docs/src-html/com/google/common/util/concurrent/RateLimiter.html#line.274) · [Bucket4j SynchronizationStrategy](https://javadoc.io/static/com.bucket4j/bucket4j_jdk8-core/8.10.1/io/github/bucket4j/local/SynchronizationStrategy.html)
 
-### 对比 3：TPM 消耗估算（对应问题 3，只算 prompt 低估输出）
+### 对比 3.1：TPM 消耗估算（对应问题 3，只算 prompt 低估输出）
 
 **工业级共识：TPM 官方口径 = 输入 + 输出都计入；单次调用预估值 = prompt + max_tokens（输出上限），请求完成后按实际 usage 结算。** 只算 prompt 是已知的严重低估。
 
@@ -955,7 +956,7 @@ async_generate() / generate()
 - 我们采用「prompt（tiktoken 精确）+ `max_tokens` 输出余量」——**与 OpenAI 官方估算公式、LiteLLM 的预留上限一致**，方向正确。
 - **差异提醒（可改进点，部分已落地）**：
   1. **结算退差 ✅ 已实现**（2026-08-02）：新增 `reservation_limiter.py` 的 `ReservationLimiter.reserve() → Reservation`（独立文件），请求完成后 `settle(actual)` 退 TPM 差（`max(0, est-actual)`），`llm_service` 已迁移到 reserve/settle 统一闭环。`max_tokens` 是上限、实际输出远小于它导致的 TPM 偏保守问题已缓解。详见 [reservation_limiter.md](reservation_limiter.md)。
-  2. **`max_tokens` 设得过大仍会空耗配额（已缓解但未消除）**——结算退差在「实际消耗 > 预留」时无法补扣，`max_tokens` 若远大于实际输出，预留阶段仍按上限扣、只是结算时退回。**「宁多勿少」的保守取舍仍成立**；要更精确需引入 Fenic 式的自适应分布预留（p95 自适应 × 1.15），暂未实现。
+  2. **`max_tokens` 设得过大仍会空耗配额（已缓解但未消除）**——结算退差在「实际消耗 > 预留」时无法补扣，`max_tokens` 若远大于实际输出，预留阶段仍按上限扣、只是结算时退回。**「宁多勿少」的保守取舍仍成立**；要更精确需引入 Fenic 式的自适应分布预留（p95 自适应 × 1.15）。**已实现（2026-08-06）**：见 [对比 3.2](#对比-32自适应预留fenic-式2026-08-06-实现)。
 
 #### 「已缓解但未消除」的具体情形
 
@@ -1006,6 +1007,40 @@ t0+4ε      请求 E 预留 4196 → 不足！等待   0
 
 **来源**：[OpenAI Rate limits 文档](https://developers.openai.com/api/docs/guides/rate-limits) · [LiteLLM ITPM/OTPM 限流](https://docs.litellm.ai/docs/proxy/io_token_rate_limits) · [Fenic 自适应 token 估算设计](https://github.com/typedef-ai/fenic/blob/main/specs/adaptive_token_estimation_design.md) · [LangChain rate_limiters（仅时间限制）](https://reference.langchain.com/python/langchain-core/rate_limiters)
 
+### 对比 3.2：自适应预留（Fenic 式，2026-08-06 实现）
+
+**问题延续对比 3.1**：`max_tokens` 设得过大仍会空耗配额——预留期间按上限占桶导致并发空耗（多个高估预留瞬时占满 TPM 桶，阻塞只需少量 token 的请求），退差只能事后释放。**根治方向 = 自适应预留**：用「历史实际输出的高分位 × 安全系数」替代固定 `max_tokens` 预留。
+
+**工业级实现对比**（调研 2026-08-06）：
+
+| 实现 | 预测方式 | 分位数 | 键控 | 特殊点 |
+| --- | --- | --- | --- | --- |
+| **Fenic** | 滚动分布（deque 上限 256） | p95 普通 / **p99 推理** | (profile, max_tokens) | 安全系数 1.15、min_samples 30、clamp 只减不加、结构性解耦 |
+| **Valyu** | 滚动分布 + EMA 误差修正 | **P80 经验最优** | (任务模式, 阶段, 模型) | 阶段边界是难点；P50 欠预留，P95 省不了多少 |
+| **Qwen-code** | 非分位：「低默认 + 截断升级」 | — | 模型 | 8K 默认，截断则升到模型上限；<1% 请求截断，平均槽位预留降 ~4x |
+| **liteLLM** | pre-call 预留 input + output cap | — | 模型 | ITPM/OTPM 分桶，post-call 结算 |
+
+**工业共识（三层结构）**：
+
+1. **结算（settle）是确定性基础**——每次响应后 `reserved − actual` 退差，可靠回收吞吐
+2. **自适应估算是机会加速器**——用「滚动分布高分位 × 安全系数」缩小预留量，减少在途请求占桶
+3. **clamp 到静态上限**——预留量只减不加（≤ `prompt + max_tokens`），429 风险有界
+
+**我们的选型**（已实现，开关 `llm_adaptive_reserve` 默认关）：
+
+- **`OutputTokenEstimator`**（`reservation_limiter.py`）：滚动样本 deque（上限 256），分位数排序取索引（nearest-rank，无 numpy），普通模型 p95、推理模型 p99（`_QUANTILE_FIELD_BY_KEY` 按 model_key 区分）
+- **安全系数** `llm_reserve_safety_margin`（默认 1.15，校验 [1.0, 4.0]）
+- **冷启动回退**：样本 < `llm_reserve_min_samples`（默认 30）返回 0 → 调用方回退静态 `max_tokens`
+- **clamp 只减不加**：`min(estimate, max_tokens)`
+- **结构性解耦**：`llm_service` 的 provider `max_tokens` 保持宽裕不截断（`_build_chat_kwargs` 不动），只有限流器预留下降
+- **settle 回调喂样本**：`Reservation` 挂回调，`settle(actual)` 成功时把 `actual_total − prompt` 喂给对应 max_tokens 的估算器池；`settle(None)`/`cancel()` 不记录（无真实 usage 不污染分布）
+- **按 max_tokens 分池**：`_estimators: dict[int, OutputTokenEstimator]`，不同输出上限独立建模
+- **429 风险兜底**：高分位 × 安全系数 + clamp + 现有 retry 退避/重试
+
+**配置项**（`app/config/settings.py`）：`llm_adaptive_reserve`(False) / `llm_reserve_quantile`(0.95) / `llm_reserve_reasoning_quantile`(0.99) / `llm_reserve_safety_margin`(1.15) / `llm_reserve_min_samples`(30) / `llm_reserve_window`(256)。
+
+> **启用方式**：`.env` 设 `LLM_ADAPTIVE_RESERVE=true`。开关为进程级静态（与 RPM/TPM 配置一致，运行时不可翻转）。开启后经 `reserve_adaptive(prompt_tokens, max_tokens)` 走自适应路径，`reserve(estimated)` 保留兼容。
+
 ### 对比 4：限流器 API 形态（对应问题 5，`async with` 语义误导）
 
 **工业级结论：RPM 按请求计数的桶可用 `async with`；TPM 按量计费的桶应用显式 `reserve/settle` 方法。** `async with`（无参）在按量场景有先天局限——硬编码消耗 1，且无法表达「先预留、后结算」。
@@ -1030,7 +1065,7 @@ t0+4ε      请求 E 预留 4196 → 不足！等待   0
 | --- | --- | --- | --- | --- |
 | 配置 0 除零崩溃 | 显式 `enabled` 开关或 `Inf`/极大值；0 = 拒绝一切 | `refill_rate <= 0` 直接放行 | x/time/rate `rate.Inf`、Bucket4j `enabled=false` | ✅ 本项目语境下安全；未来需独立开关则演进 |
 | 持锁 sleep 阻塞其他请求 | 锁内记账、锁外等待；等待让出事件循环、支持取消 | 锁内计算 → 锁外 sleep → 循环重检 | Guava `acquire()` 两段式、x/time/rate `Wait(ctx)` | ✅ 与工业级同构 |
-| 只算 prompt 低估输出 | 预留 = prompt + max_tokens，完成后按实际结算退差 | prompt + max_tokens 输出余量 + **reserve/settle 结算退差** | OpenAI 估算公式、LiteLLM、Fenic | ✅ 已实现结算退差；自适应预留未实现 |
+| 只算 prompt 低估输出 | 预留 = prompt + max_tokens，完成后按实际结算退差 | prompt + max_tokens 输出余量 + **reserve/settle 结算退差** + **自适应预留（高分位×安全系数）** | OpenAI 估算公式、LiteLLM、Fenic | ✅ 已实现结算退差 + 自适应预留（开关默认关，见对比 3.2） |
 | `async with` 语义误导 | TPM 桶用显式 reserve/settle；RPM 桶可 `async with` | 移除上下文管理器；`acquire` 保留 + **新增 reserve/settle** | aiolimiter `acquire(amount)`、limits `hit()`、Go Reservation | ✅ 更简洁；reserve/settle 已落地 |
 
 ---

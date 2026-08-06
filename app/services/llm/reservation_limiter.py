@@ -21,7 +21,10 @@ ReservationLimiterManager 负责按 model_key 提供共享限流器实例
 from __future__ import annotations
 
 import asyncio
+import math
 import time
+from collections import deque
+from collections.abc import Callable
 from typing import ClassVar
 
 from app.config import settings
@@ -101,6 +104,54 @@ class TokenBucket:
         self._last_refill = now
 
 
+class OutputTokenEstimator:
+    """
+    输出 token 自适应估算器（Fenic 式）。
+
+    维护历史实际输出的滚动样本，用「高分位 × 安全系数」预测下一次预留的输出量，
+    替代固定 max_tokens 上限——减少预留期间占桶（并发空耗）。
+
+    - quantile: 分位数（普通模型 p95，推理模型 p99——推理输出有相关性突发尖峰）
+    - safety_margin: 安全系数（默认 1.15，越高越保守、429 风险越低、吞吐越低）
+    - min_samples: 冷启动阈值——样本不足返回 0，调用方回退静态上限
+    - window: 滚动样本窗口（deque 上限，超限淘汰最旧）
+
+    线程/异步安全：record/estimate 均无 await 点，asyncio 单线程下天然原子，
+    无需锁（与 TokenBucket 因 acquire 内 sleep 才需锁不同）。
+    """
+
+    def __init__(
+        self,
+        quantile: float = 0.95,
+        safety_margin: float = 1.15,
+        min_samples: int = 30,
+        window: int = 256,
+    ) -> None:
+        self.quantile = quantile
+        self.safety_margin = safety_margin
+        self.min_samples = min_samples
+        self._samples: deque[int] = deque(maxlen=window)
+
+    def record(self, actual_output_tokens: int) -> None:
+        """记录一次实际输出 token（settle 成功后喂入）。"""
+        self._samples.append(max(0, int(actual_output_tokens)))
+
+    def estimate(self) -> int:
+        """返回高分位 × 安全系数的预测输出量；冷启动（样本不足）返回 0。
+
+        返回 0 时调用方应回退静态上限（max_tokens）。
+        """
+        if len(self._samples) < self.min_samples:
+            return 0
+        ordered = sorted(self._samples)
+        idx = min(int(self.quantile * (len(ordered) - 1)), len(ordered) - 1)
+        return math.ceil(ordered[idx] * self.safety_margin)
+
+    def reset(self) -> None:
+        """清空所有样本（配置变更或测试时调用）。"""
+        self._samples.clear()
+
+
 class Reservation:
     """
     预留的配额，支持事后结算（settle）或取消（cancel）。
@@ -118,11 +169,14 @@ class Reservation:
     终态幂等：settle/cancel 任一调用后，再次调用为 no-op。
     """
 
-    __slots__ = ("_entries", "_settled")
+    __slots__ = ("_entries", "_settle_callback", "_settled")
 
-    def __init__(self) -> None:
+    def __init__(self, settle_callback: Callable[[int], None] | None = None) -> None:
         self._entries: list[tuple[TokenBucket, float]] = []
         self._settled = False
+        # settle(actual) 成功路径的回调：喂实际消耗给自适应估算器（可选）。
+        # 仅当 actual 非 None（有真实 usage）时触发；settle(None)/cancel 不触发。
+        self._settle_callback = settle_callback
 
     def add(self, bucket: TokenBucket, reserved: float) -> None:
         """追加一个桶到组合预留（按次桶之后追加按量桶）。"""
@@ -143,6 +197,8 @@ class Reservation:
             return
         for bucket, reserved in self._entries[1:]:
             await bucket.refund(max(0.0, reserved - actual))
+        if self._settle_callback is not None:
+            self._settle_callback(actual)
 
     async def cancel(self) -> None:
         """全额退还所有桶的预留配额（请求未确认发出时用）。幂等。"""
@@ -171,30 +227,34 @@ class ReservationLimiter:
         self,
         rpm: int = 60,
         tpm: int = 100_000,
+        *,
+        quantile: float = 0.95,
+        safety_margin: float = 1.15,
+        min_samples: int = 30,
+        window: int = 256,
     ) -> None:
         self._req_bucket = TokenBucket(capacity=rpm, refill_rate=rpm / 60)
         self._token_bucket = TokenBucket(capacity=tpm, refill_rate=tpm / 60)
+        # 自适应预留：按 max_tokens 键控的输出估算器池（懒创建）
+        self._quantile = quantile
+        self._safety_margin = safety_margin
+        self._min_samples = min_samples
+        self._window = window
+        self._estimators: dict[int, OutputTokenEstimator] = {}
 
-    async def reserve(
+    async def _acquire(
         self,
-        estimated_tokens: int = 0,
-        retry_after: float | None = None,
+        estimated_tokens: float,
+        retry_after: float | None,
+        settle_callback: Callable[[int], None] | None = None,
     ) -> Reservation:
-        """预留配额，返回组合 Reservation。
-
-        Args:
-            estimated_tokens: 预估的 Token 消耗（TPM 桶按此预留）
-            retry_after: 服务端返回的 Retry-After 时间（秒）
-
-        Returns:
-            组合 Reservation：settle 退 TPM 差、cancel 退 RPM+TPM
-        """
+        """预留配额的核心逻辑（RPM + TPM 双桶 + 防 R5）。"""
         if retry_after:
             await asyncio.sleep(retry_after)
 
         est = max(estimated_tokens, 1.0)
 
-        res = Reservation()
+        res = Reservation(settle_callback=settle_callback)
         # RPM 预留（固定 1）→ 组合预留的首个条目（按次桶，settle 不退）
         await self._req_bucket.acquire(1.0)
         res.add(self._req_bucket, 1.0)
@@ -208,6 +268,82 @@ class ReservationLimiter:
         res.add(self._token_bucket, est)
         return res
 
+    async def reserve(
+        self,
+        estimated_tokens: int = 0,
+        retry_after: float | None = None,
+    ) -> Reservation:
+        """预留配额（固定形态），返回组合 Reservation。
+
+        Args:
+            estimated_tokens: 预估的 Token 消耗（TPM 桶按此预留）
+            retry_after: 服务端返回的 Retry-After 时间（秒）
+
+        Returns:
+            组合 Reservation：settle 退 TPM 差、cancel 退 RPM+TPM
+        """
+        return await self._acquire(estimated_tokens, retry_after)
+
+    async def reserve_adaptive(
+        self,
+        prompt_tokens: int,
+        max_tokens: int,
+        retry_after: float | None = None,
+    ) -> Reservation:
+        """预留配额（自适应形态）：用高分位估算输出，减少预留期间占桶。
+
+        Args:
+            prompt_tokens: 本次请求的 prompt token 数
+            max_tokens: 输出上限（预留 clamp 上限，provider 仍收到此值不截断）
+            retry_after: 服务端返回的 Retry-After 时间（秒）
+
+        Returns:
+            组合 Reservation；settle 时把实际输出喂给对应 max_tokens 的估算器池。
+        """
+        completion_est = self._estimate_completion(max_tokens)
+        est = prompt_tokens + completion_est  # 恒 ≤ prompt + max_tokens（clamp）
+        return await self._acquire(
+            est,
+            retry_after,
+            settle_callback=lambda actual_total: self._record_actual(
+                prompt_tokens, max_tokens, actual_total
+            ),
+        )
+
+    def _estimate_completion(self, max_tokens: int) -> int:
+        """估算本次请求的输出 token 量（高分位 × 安全系数，clamp 到 max_tokens）。
+
+        冷启动（样本 < min_samples）返回 0 → 调用方回退静态上限（max_tokens）。
+        """
+        est = self._estimator_for(max_tokens).estimate()
+        if est <= 0:
+            return max_tokens  # 冷启动回退静态上限
+        return min(est, max_tokens)  # clamp：只减不加（Fenic 关键原则）
+
+    def _record_actual(
+        self, prompt_tokens: int, max_tokens: int, actual_total: int
+    ) -> None:
+        """settle 回调：把实际输出 token 喂给估算器池。
+
+        actual_total 是 usage.total_tokens（prompt + completion），
+        实际输出 = total - prompt（与预留时的 prompt 口径一致）。
+        """
+        completion = max(0, actual_total - prompt_tokens)
+        self._estimator_for(max_tokens).record(completion)
+
+    def _estimator_for(self, max_tokens: int) -> OutputTokenEstimator:
+        """按 max_tokens 懒创建/复用输出估算器池。"""
+        est = self._estimators.get(max_tokens)
+        if est is None:
+            est = OutputTokenEstimator(
+                quantile=self._quantile,
+                safety_margin=self._safety_margin,
+                min_samples=self._min_samples,
+                window=self._window,
+            )
+            self._estimators[max_tokens] = est
+        return est
+
 
 # =====================================================================
 # 限流器管理
@@ -219,6 +355,13 @@ _RATE_LIMIT_FIELDS: dict[str, tuple[str, str]] = {
     "main": ("llm_main_rpm", "llm_main_tpm"),
     "reasoning": ("llm_reasoning_rpm", "llm_reasoning_tpm"),
     "fast": ("llm_fast_rpm", "llm_fast_tpm"),
+}
+
+# model_key → 自适应预留分位数配置字段名（推理模型 p99，其余 p95）
+_QUANTILE_FIELD_BY_KEY: dict[str, str] = {
+    "main": "llm_reserve_quantile",
+    "reasoning": "llm_reserve_reasoning_quantile",
+    "fast": "llm_reserve_quantile",
 }
 
 
@@ -252,11 +395,21 @@ class ReservationLimiterManager:
         fields = _RATE_LIMIT_FIELDS.get(model_key)
         if fields is None:
             raise ValueError(f"未知限流 key: {model_key!r}")
-
         rpm_field, tpm_field = fields
+
+        quantile_field = _QUANTILE_FIELD_BY_KEY.get(
+            model_key
+        )  # 普通模型 p95、推理模型 p99
+        if quantile_field is None:
+            raise ValueError(f"未知限流 key: {model_key!r}")
+
         limiter = ReservationLimiter(
             rpm=getattr(settings, rpm_field, 0),
             tpm=getattr(settings, tpm_field, 0),
+            quantile=getattr(settings, quantile_field, 0.95),
+            safety_margin=getattr(settings, "llm_reserve_safety_margin", 1.15),
+            min_samples=getattr(settings, "llm_reserve_min_samples", 30),
+            window=getattr(settings, "llm_reserve_window", 256),
         )
         cls._instances[model_key] = limiter
         return limiter

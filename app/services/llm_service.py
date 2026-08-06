@@ -303,7 +303,14 @@ class LLMService:
         # 闭环语义（按"请求是否已发出"分界）：
         #   - create 失败/取消 → cancel() 全额退（请求未确认发出）
         #   - create 成功后一切出口 → settle(actual)，有 usage 退差、无 usage 保守保留
-        estimated = _count_prompt_tokens(model_key, messages, max_tokens)
+        # 限流预留量：默认固定形态（prompt + max_tokens）；
+        # 开启 llm_adaptive_reserve 时用自适应形态（高分位估算输出，减少占桶）。
+        # 结构性解耦：provider 仍收宽裕 max_tokens（不截断输出），只有限流器预留下降。
+        adaptive = settings.llm_adaptive_reserve
+        if adaptive:
+            prompt_tokens = _count_prompt_tokens(model_key, messages)  # max_tokens=0 → prompt+2
+        else:
+            estimated = _count_prompt_tokens(model_key, messages, max_tokens)
         limiter = ReservationLimiterManager.get(model_key)
 
         # 当前活跃 reservation，跨 create 与迭代传递。定义在整流循环外：
@@ -317,7 +324,12 @@ class LLMService:
             捕获最终抛出的异常，不关心 call_fn 内部是否 catch 过，重试/fallback
             判定不受影响。
             """
-            res = await limiter.reserve(estimated_tokens=estimated)
+            if adaptive:
+                res = await limiter.reserve_adaptive(
+                    prompt_tokens=prompt_tokens, max_tokens=max_tokens
+                )
+            else:
+                res = await limiter.reserve(estimated_tokens=estimated)
             active["res"] = res
             try:
                 return await client.chat.completions.create(**kwargs)
@@ -498,7 +510,12 @@ class LLMService:
 
         # 客户端限流：reserve/settle 统一闭环（与 async_generate 一致）。
         # 每次真实请求（含 retry 内部重试）都重新 reserve，create 失败全额退。
-        estimated = _count_prompt_tokens(model_key, messages, max_tokens)
+        # 自适应预留：开启 llm_adaptive_reserve 时用高分位估算输出（结构性解耦）。
+        adaptive = settings.llm_adaptive_reserve
+        if adaptive:
+            prompt_tokens = _count_prompt_tokens(model_key, messages)  # max_tokens=0 → prompt+2
+        else:
+            estimated = _count_prompt_tokens(model_key, messages, max_tokens)
         limiter = ReservationLimiterManager.get(model_key)
 
         # 当前活跃 reservation（跨 create 与结算传递）。generate 无整流循环，
@@ -507,7 +524,12 @@ class LLMService:
 
         async def _rate_limited_call() -> Any:
             """每次真实调用前先预留配额，再发起请求。create 失败全额退再 re-raise。"""
-            res = await limiter.reserve(estimated_tokens=estimated)
+            if adaptive:
+                res = await limiter.reserve_adaptive(
+                    prompt_tokens=prompt_tokens, max_tokens=max_tokens
+                )
+            else:
+                res = await limiter.reserve(estimated_tokens=estimated)
             active["res"] = res
             try:
                 return await client.chat.completions.create(**kwargs)

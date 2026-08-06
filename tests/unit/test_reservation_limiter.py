@@ -6,6 +6,8 @@ ReservationLimiter / ReservationLimiterManager 单元测试（reserve/settle 形
     Reservation               settle 退差 / settle(None) 保守 / cancel 全额 / 幂等
     ReservationLimiter        双桶组合：reserve 扣减 / settle 只退 TPM / cancel 退 RPM+TPM
     ReservationLimiterManager  按 model_key 懒创建 + 同 key 共享实例 + reset 清空
+    OutputTokenEstimator      冷启动 / 分位数 / 安全系数 / 窗口封顶 / reset
+    reserve_adaptive          冷启动回退静态 / 有样本用估算 / clamp / 分池 / settle 喂样本
 
 不依赖真实 API：直接用内置 TimeoutError 或短等待断言，不走网络。
 """
@@ -17,6 +19,7 @@ import pytest
 
 from app.config import settings
 from app.services.llm.reservation_limiter import (
+    OutputTokenEstimator,
     Reservation,
     ReservationLimiter,
     ReservationLimiterManager,
@@ -211,3 +214,150 @@ def test_manager_unknown_key_raises():
     ReservationLimiterManager.reset()
     with pytest.raises(ValueError):
         ReservationLimiterManager.get("unknown_key")
+
+
+# =====================================================================
+# OutputTokenEstimator（自适应预留估算器）
+# =====================================================================
+
+
+def test_estimator_cold_start_returns_zero():
+    """冷启动（样本 < min_samples）返回 0，调用方回退静态上限。"""
+    est = OutputTokenEstimator(min_samples=3)
+    assert est.estimate() == 0
+    est.record(10)
+    est.record(20)
+    assert est.estimate() == 0, "样本不足 min_samples 应返回 0"
+    est.record(30)  # 达到 min_samples
+    assert est.estimate() > 0
+
+
+def test_estimator_quantile_value():
+    """分位数确定性：range(100) 的 p50 = 49。"""
+    est = OutputTokenEstimator(quantile=0.5, safety_margin=1.0, min_samples=1)
+    for i in range(100):
+        est.record(i)
+    assert est.estimate() == 49
+
+
+def test_estimator_safety_margin_applied():
+    """安全系数应用：p95 × 2.0。"""
+    est = OutputTokenEstimator(quantile=0.95, safety_margin=2.0, min_samples=1)
+    for i in range(100):
+        est.record(i)
+    # p95 of 0..99 = 94；ceil(94 × 2.0) = 188
+    assert est.estimate() == 188
+
+
+def test_estimator_window_caps_samples():
+    """滚动窗口封顶：record 超过 window 条只保留最新 window 条。"""
+    est = OutputTokenEstimator(min_samples=1, window=256)
+    for i in range(300):
+        est.record(i)
+    assert len(est._samples) == 256
+
+
+def test_estimator_reset_clears():
+    """reset 清空样本，回到冷启动。"""
+    est = OutputTokenEstimator(min_samples=1)
+    est.record(100)
+    assert est.estimate() > 0
+    est.reset()
+    assert est.estimate() == 0
+
+
+# =====================================================================
+# reserve_adaptive（自适应预留）
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_adaptive_reserve_cold_start_falls_back_to_static():
+    """冷启动：无样本时预留 = prompt + max_tokens（静态上限）。"""
+    limiter = ReservationLimiter(rpm=1000, tpm=100_000, min_samples=3)
+    res = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
+    assert res._entries[-1][1] == 100 + 4096, (
+        f"冷启动应回退静态上限，实际 {res._entries[-1][1]}"
+    )
+    await res.cancel()
+
+
+@pytest.mark.asyncio
+async def test_adaptive_reserve_uses_estimate_after_samples():
+    """有样本后：预留 = prompt + 高分位估算，远小于静态上限。"""
+    limiter = ReservationLimiter(rpm=1000, tpm=100_000, min_samples=1, safety_margin=1.0)
+    # 喂 5 次实际输出 200 → 池内样本 200
+    for _ in range(5):
+        r = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
+        await r.settle(100 + 200)  # total=300 → completion=200
+    r2 = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
+    reserved = r2._entries[-1][1]
+    assert reserved == 100 + 200, f"有样本后预留应≈prompt+200，实际 {reserved}"
+    assert reserved < 100 + 4096, "预留应远小于静态上限"
+    await r2.cancel()
+
+
+@pytest.mark.asyncio
+async def test_adaptive_reserve_clamps_to_max_tokens():
+    """clamp：样本估算超过 max_tokens 时预留封顶到 max_tokens（只减不加）。"""
+    limiter = ReservationLimiter(rpm=1000, tpm=100_000, min_samples=1, safety_margin=1.0)
+    for _ in range(5):
+        r = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=512)
+        await r.settle(100 + 100_000)  # 实际输出超大
+    r2 = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=512)
+    reserved = r2._entries[-1][1]
+    assert reserved == 100 + 512, f"clamp 到 max_tokens，实际 {reserved}"
+    await r2.cancel()
+
+
+@pytest.mark.asyncio
+async def test_adaptive_reserve_pools_by_max_tokens():
+    """按 max_tokens 分池：4096 池有样本、512 池冷启动 → 512 回退静态。"""
+    limiter = ReservationLimiter(rpm=1000, tpm=100_000, min_samples=1, safety_margin=1.0)
+    # 4096 池喂样本
+    for _ in range(5):
+        r = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
+        await r.settle(100 + 200)
+    # 512 池冷启动 → 回退静态
+    r2 = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=512)
+    assert r2._entries[-1][1] == 100 + 512, "512 池冷启动应回退静态"
+    # 4096 池有样本 → 用估算
+    r3 = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
+    assert r3._entries[-1][1] == 100 + 200, "4096 池应用估算"
+    await r2.cancel()
+    await r3.cancel()
+
+
+@pytest.mark.asyncio
+async def test_adaptive_settle_feeds_estimator():
+    """settle(actual) 喂估算器：total - prompt = completion；settle(None) 不喂。"""
+    limiter = ReservationLimiter(rpm=1000, tpm=100_000, min_samples=1, safety_margin=1.0)
+    r = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
+    await r.settle(300)  # total=300 → completion=200
+    est = limiter._estimator_for(4096)
+    assert list(est._samples) == [200], f"应记录 completion=200，实际 {list(est._samples)}"
+    # settle(None) 不喂样本
+    r2 = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
+    await r2.settle(None)
+    assert len(est._samples) == 1, "settle(None) 不应喂样本"
+
+
+@pytest.mark.asyncio
+async def test_reserve_backward_compat():
+    """reserve 向后兼容：固定形态仍扣 estimated（开关关路径回归）。"""
+    limiter = ReservationLimiter(rpm=1000, tpm=100_000)
+    res = await limiter.reserve(estimated_tokens=50)
+    assert res._entries[-1][1] == 50, "固定形态仍按 estimated 扣"
+    await res.cancel()
+
+
+@pytest.mark.asyncio
+async def test_manager_reasoning_gets_p99(monkeypatch):
+    """Manager：reasoning 模型用 p99 分位，main 用 p95。"""
+    monkeypatch.setattr(settings, "llm_reserve_quantile", 0.95)
+    monkeypatch.setattr(settings, "llm_reserve_reasoning_quantile", 0.99)
+    ReservationLimiterManager.reset()
+    main_limiter = ReservationLimiterManager.get("main")
+    reasoning_limiter = ReservationLimiterManager.get("reasoning")
+    assert main_limiter._quantile == 0.95
+    assert reasoning_limiter._quantile == 0.99

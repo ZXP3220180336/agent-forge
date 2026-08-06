@@ -112,6 +112,16 @@ class Settings(BaseSettings):
     llm_reasoning_tpm: int = 2_000_000
     llm_fast_tpm: int = 2_000_000
 
+    # ===== LLM 自适应预留（Fenic 式 OutputTokenEstimator，默认关闭） =====
+    # 开启后用「历史实际输出的高分位 × 安全系数」替代固定 max_tokens 预留，
+    # 减少预留期间占桶（并发空耗）。详见 rate_limiter.md「对比 3.2」。
+    llm_adaptive_reserve: bool = False
+    llm_reserve_quantile: float = 0.95  # 普通模型输出分位数（p95）
+    llm_reserve_reasoning_quantile: float = 0.99  # 推理模型 p99（推理输出有相关性突发尖峰）
+    llm_reserve_safety_margin: float = 1.15  # 安全系数（1.0~4.0）
+    llm_reserve_min_samples: int = 30  # 冷启动阈值：样本不足用静态上限
+    llm_reserve_window: int = 256  # 滚动样本窗口（deque 上限）
+
     # ===== 上下文配置 =====
     max_context_tokens: int = 128000
     max_output_tokens: int = 4096
@@ -228,6 +238,30 @@ class Settings(BaseSettings):
         """验证 JWT 过期时间（1-10080 分钟，即 1分钟-7天）"""
         if v < 1 or v > 10080:
             raise ValueError(f"JWT 过期时间必须在 1-10080 分钟之间，当前值: {v}")
+        return v
+
+    @field_validator("llm_reserve_safety_margin")
+    @classmethod
+    def validate_reserve_safety_margin(cls, v: float) -> float:
+        """验证自适应预留安全系数（1.0~4.0，Fenic 默认 1.15）。"""
+        if not 1.0 <= v <= 4.0:
+            raise ValueError(f"安全系数必须在 1.0~4.0 之间，当前值: {v}")
+        return v
+
+    @field_validator("llm_reserve_quantile", "llm_reserve_reasoning_quantile")
+    @classmethod
+    def validate_reserve_quantile(cls, v: float) -> float:
+        """验证分位数（0~1 开区间）。"""
+        if not 0 < v < 1:
+            raise ValueError(f"分位数必须在 0~1 之间，当前值: {v}")
+        return v
+
+    @field_validator("llm_reserve_min_samples", "llm_reserve_window")
+    @classmethod
+    def validate_reserve_positive_int(cls, v: int) -> int:
+        """验证自适应预留正整数参数（min_samples/window）。"""
+        if v < 1:
+            raise ValueError(f"自适应预留参数必须 ≥ 1，当前值: {v}")
         return v
 
     @property
