@@ -114,7 +114,7 @@ class Settings(BaseSettings):
 
     # ===== LLM 自适应预留（Fenic 式 OutputTokenEstimator，默认关闭） =====
     # 开启后用「历史实际输出的高分位 × 安全系数」替代固定 max_tokens 预留，
-    # 减少预留期间占桶（并发空耗）。详见 rate_limiter.md「对比 3.2」。
+    # 减少预留期间占桶（并发空耗）。详见 limiter.md「对比 3.2」。
     llm_adaptive_reserve: bool = False
     llm_reserve_quantile: float = 0.95  # 普通模型输出分位数（p95）
     llm_reserve_reasoning_quantile: float = 0.99  # 推理模型 p99（推理输出有相关性突发尖峰）
