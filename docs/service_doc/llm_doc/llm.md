@@ -74,8 +74,8 @@ app/services/
 │   ├── retry.py                   ← RetryHandler + CircuitBreaker
 │   ├── streaming.py               ← StreamParser 流式/非流式解析
 │   ├── structured.py              ← StructuredOutput 结构化输出
-│   ├── rate_limiter.py            ← RateLimiter 客户端限流（acquire 形态）
-│   ├── reservation_limiter.py     ← ReservationLimiter 客户端限流（reserve/settle 形态，独立实现）
+│   ├── rate_limiter.py            ← RateLimiter 客户端限流（acquire 形态）+ 5 种参考算法组件
+│   ├── reservation_limiter.py     ← ReservationLimiter 客户端限流（reserve/settle + 自适应预留，独立实现）
 │   └── cost_tracker.py            ← CostTracker 成本计算
 ```
 
@@ -107,7 +107,7 @@ app/services/
     │     ├── RetryConfig
     │     └── CircuitBreaker
     ├── StreamParser
-    ├── ReservationLimiter
+    ├── ReservationLimiter ───────→ reserve/settle + 自适应预留（Fenic 式）
     └── CostTracker
 
   EmbeddingService ─── AsyncOpenAI(GET /embeddings)
@@ -130,10 +130,11 @@ app/services/
   └─────────────────┬────────────────────────────┘
                      │
                      ▼
-  ┌───────── RateLimiter.acquire() ───────────────┐
-  │   1. RPM Token Bucket 查询                    │
-  │   2. TPM Token Bucket 查询                    │
-  │   3. 配额不足则阻塞等待                       │
+  ┌───────── ReservationLimiter.reserve() ────────┐
+  │   1. RPM 桶预留（固定 1）                     │
+  │   2. TPM 桶预留（估算 token，自适应时高分位） │
+  │   3. 配额不足则阻塞等待（锁外 sleep）          │
+  │   4. 请求后 settle() 退差 / cancel() 全额退    │
   └─────────────────┬────────────────────────────┘
                      │
                      ▼
@@ -589,18 +590,28 @@ await log_event_async("llm_call", **event_fields)
 
 ```python
 class TokenBucket:
-    def __init__(self, capacity: float, refill_rate: float):
+    def __init__(self, capacity, refill_rate):
         self.capacity = capacity          # 桶容量（最大突发）
-        self.refill_rate = refill_rate    # 每秒补充速率
+        self.refill_rate = refill_rate    # 每秒补充速率（<=0 = 禁用限流）
         self._tokens = capacity           # 当前 Token 数
+        self._lock = asyncio.Lock()
 
-    async def acquire(self, tokens=1.0):
-        # 等待直到 Token 足够
-        if self._tokens < tokens:
-            wait = (tokens - self._tokens) / self.refill_rate
-            await asyncio.sleep(wait)
-        self._tokens -= tokens
+    async def acquire(self, tokens=1.0) -> float:
+        if self.refill_rate <= 0:
+            return 0.0                     # 配置 0 = 禁用限流，避免除零
+        total_wait = 0.0
+        while True:
+            async with self._lock:         # 锁内只做计算（不 sleep）
+                self._refill()
+                if self._tokens >= tokens:
+                    self._tokens -= tokens
+                    return total_wait
+                wait_time = (tokens - self._tokens) / self.refill_rate
+            await asyncio.sleep(wait_time) # 锁外 sleep：等待不阻塞其他请求
+            total_wait += wait_time        # 循环重检：期间可能被抢，不过等不饿死
 ```
+
+> **并发要点**：等待期间**不持锁**（锁内计算 → 锁外 sleep → 循环重检）——若在 `async with` 内 sleep，等待中的请求会阻塞其他排队的短等待请求。完整的 5 种参考算法详解、可视化与等待/拒绝语义对比见 [rate_limiter.md](rate_limiter.md)。
 
 #### 为什么选择「Token Bucket」
 
@@ -610,6 +621,8 @@ class TokenBucket:
 | 漏桶（Leaky Bucket）     | 请求以恒定速率流出，无法应对突发                    |
 | 固定窗口计数器           | 窗口边界处可能出现双倍请求                          |
 | 滑动窗口日志             | 精确但内存消耗大                                    |
+
+> `rate_limiter.py` 另含 **5 种主流限流算法参考组件**（漏桶 / 固定窗口 / 滑动窗口日志 / 滑动窗口计数 / GCRA），接口与 TokenBucket 统一（`async acquire(tokens)` 等待型 + `async refund()` 退还），可互换选用，未接入调用链。各算法特点、可视化、等待 vs 拒绝语义对比见 [rate_limiter.md](rate_limiter.md)。
 
 **选择理由**：
 
@@ -822,6 +835,12 @@ LLM 层所有配置项集中在 `app/config/settings.py`：
 | `llm_main_tpm`                         | int   | `2000000` | 主模型 TPM 限流（默认参考 DeepSeek 限额）           |
 | `llm_reasoning_tpm`                    | int   | `2000000` | 推理模型 TPM 限流（默认参考 DeepSeek 限额）         |
 | `llm_fast_tpm`                         | int   | `2000000` | 快速模型 TPM 限流（默认参考 DeepSeek 限额）         |
+| `llm_adaptive_reserve`                 | bool  | `false`   | 自适应预留开关（开启用高分位估算输出，减少占桶）     |
+| `llm_reserve_quantile`                 | float | `0.95`    | 普通模型输出分位数（p95）                            |
+| `llm_reserve_reasoning_quantile`       | float | `0.99`    | 推理模型分位数（p99，推理输出有相关性突发尖峰）      |
+| `llm_reserve_safety_margin`            | float | `1.15`    | 安全系数（1.0~4.0，越高越保守）                      |
+| `llm_reserve_min_samples`              | int   | `30`      | 冷启动阈值（样本不足回退静态上限）                   |
+| `llm_reserve_window`                   | int   | `256`     | 滚动样本窗口（deque 上限）                           |
 
 ---
 
@@ -908,6 +927,7 @@ await log_event_async("llm_call", **event_fields)
 - **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。详见下文「流式整流重试」小节
 - **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
 - **配额缺口闭环（2026-08-02）**：acquire 移入 call_fn，重试计入配额、fallback 不参与（详见下文「配额缺口」）
+- **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [rate_limiter.md](rate_limiter.md)「对比 3.2」
 
 ### 遗留未定事项
 
@@ -915,8 +935,8 @@ await log_event_async("llm_call", **event_fields)
 |---------------------------------------------------|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **`generate_structured` 重复实现**                | 🔶 两个入口待统一    | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback）。下一步计划明确「评估合并」                                           |
 | **熔断观察盲区**                                  | 🔶 未实现            | 流式迭代失败不计入熔断窗口（现状）。若下游「create 正常但流频繁中途断开」，熔断器不感知。可把「放弃时的 RETRYABLE 迭代失败」喂给 `cb.record_failure()`（见「流式整流重试·遗留微调」） |
-| **自适应预留（Fenic 模型）**                      | 🔶 暂未实现          | p95 自适应 × 1.15 预留（推理模型 p99），吞吐可提升约 23×。当前为「prompt + max_tokens」保守预留（见 [rate_limiter.md](rate_limiter.md)）                                              |
-| **`max_tokens` 过大仍空耗配额**                   | 🔶 已缓解未消除      | 结算退差在「实际消耗 > 预留」时无法补扣；「宁多勿少」保守取舍仍成立（见 [rate_limiter.md](rate_limiter.md)）                                                                          |
+| **自适应预留（Fenic 模型）**                      | ✅ 已实现（开关默认关） | `reserve_adaptive()` + `OutputTokenEstimator`：高分位 × 安全系数估算输出，减少预留占桶（2026-08-06，见 [rate_limiter.md](rate_limiter.md)「对比 3.2」）                                                                  |
+| **`max_tokens` 过大仍空耗配额**                   | 🔶 已缓解未消除      | 自适应预留已用高分位估算替代静态上限（进一步缓解）；但「实际消耗 > 预留」时仍无法补扣，「宁多勿少」保守取舍仍成立（见 [rate_limiter.md](rate_limiter.md)）                                                          |
 | **`APIResponseValidationError` 是否容忍网关故障** | ✅ 已决策保持        | 决策：当前直连服务商场景下重试无效，保持 NON_RETRYABLE                                                                                                                                |
 | **流式迭代是否自动重试**                          | ✅ 已决策（整流）    | 首 token 前中断整流重试（复用 `classify_error`，新增 `llm_stream_max_retries` 配置）；已产出 token 后中断不整流                                                                       |
 
@@ -924,7 +944,6 @@ await log_event_async("llm_call", **event_fields)
 
 1. **统一结构化输出入口**：评估 `LLMService.generate_structured`（简化版）与 `StructuredOutput.extract`（完整版：JSON mode 降级 + regex fallback）的合并，消除双入口
 2. **补熔断观察盲区**：流式迭代「放弃时的 RETRYABLE 失败」喂给 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」的下游故障
-3. **评估自适应预留**：Fenic 式 p95 自适应预留（吞吐提升约 23×），需平衡实现复杂度与收益
 
 ---
 
