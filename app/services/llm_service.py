@@ -438,6 +438,9 @@ class LLMService:
                     # emitted_any=False 本就为空，整流幂等安全）
                     result.finish_reason = None
                     result.usage = None
+                    # 防御性清空：当前 tool_deltas 每 attempt 重新初始化必为空，
+                    # 但显式清空避免未来重构将初始化移到循环外时携带脏数据
+                    tool_deltas.clear()
                     continue
 
                 if classify_error(e) == ErrorCategory.RETRYABLE:

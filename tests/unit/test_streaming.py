@@ -304,3 +304,73 @@ def test_parse_non_stream_content_none():
     resp = _non_stream_response(content=None)
     r = StreamParser.parse_non_stream(resp)
     assert r["content"] == ""
+
+
+# =====================================================================
+# 漏洞回归：finish_reason 独立于 delta / usage 共存 / 混合 chunk
+# =====================================================================
+
+
+def test_parse_finish_chunk_with_none_delta():
+    """回归：delta 为 None 但带 finish_reason 的 chunk，finish_reason 不丢失。
+
+    修复前：`not chunk.choices[0].delta` 守卫提前 return，丢失 finish_reason。
+    真实 SDK 的 finish chunk 可能出现 delta=None 形态。
+    """
+    chunk = SimpleNamespace(
+        choices=[SimpleNamespace(delta=None, finish_reason="length")],
+        usage=None,
+    )
+    p = StreamParser.parse_chunk(chunk)
+    assert p.finish_reason == "length"
+    assert p.message_token is None
+    assert p.usage is None
+
+
+def test_parse_usage_with_empty_delta():
+    """回归：带空 delta 与 usage 共存的 chunk，usage 不静默丢弃。
+
+    修复前：`not chunk.choices[0].delta` 守卫在空 delta 时提前 return，usage 只在
+    choices 为空时提取——代理/适配层违规在带 delta 的 chunk 上附 usage 时丢失。
+    """
+    usage = SimpleNamespace(model_dump=lambda: {"total_tokens": 5})
+    chunk = SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason="stop")],
+        usage=usage,
+    )
+    p = StreamParser.parse_chunk(chunk)
+    assert p.usage == {"total_tokens": 5}
+    assert p.finish_reason == "stop"
+
+
+def test_parse_mixed_content_and_tool_calls():
+    """混合 chunk：同一 chunk 同时含 content 与 tool_calls，各自独立提取。"""
+    tc = SimpleNamespace(
+        index=0, id="call_1", function=SimpleNamespace(name="search", arguments='{"q":"x"}')
+    )
+    chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    reasoning_content=None, content="回复", tool_calls=[tc]
+                ),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+    )
+    p = StreamParser.parse_chunk(chunk)
+    assert p.message_token == "回复"
+    assert p.tool_call_deltas is not None
+    assert p.tool_call_deltas[0].function_name == "search"
+
+
+def test_merge_id_override_preserves_first_non_empty():
+    """merge：id 覆盖策略——首个非空 id 保留，后续空 id 不覆盖。"""
+    deltas = [
+        ToolCallDelta(0, id="call_1", function_name="a", function_arguments="{}"),
+        ToolCallDelta(0, function_arguments="more"),  # 无 id，不覆盖
+    ]
+    result = StreamParser.merge_tool_calls(deltas)
+    assert result[0]["id"] == "call_1"
+    assert result[0]["function"]["arguments"] == "{}more"

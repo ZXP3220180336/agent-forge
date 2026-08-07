@@ -175,13 +175,15 @@ OpenAI 流式响应的 usage 只在**最后一个 chunk** 返回（需请求 `st
 
 ## 测试状态
 
-`tests/unit/test_streaming.py`（16 用例）：覆盖
+`tests/unit/test_streaming.py`（20 用例）：覆盖
 
-- **parse_chunk**：content / reasoning / finish_reason / usage（仅末 chunk）/ tool_call 提取 / 字段缺失兜底 / 空 chunk
-- **merge_tool_calls**：单工具增量拼接 / 多工具交错 / 输出按 index 排序 / 缺 id 按 index 兜底 / 空列表
+- **parse_chunk**：content / reasoning / finish_reason / usage / tool_call 提取 / 字段缺失兜底 / 空 chunk / 混合 chunk（content + tool_calls）/ 漏洞回归（delta=None 丢 finish_reason、usage 与空 delta 共存）
+- **merge_tool_calls**：单工具增量拼接 / 多工具交错 / 输出按 index 排序 / 缺 id 按 index 兜底 / id 覆盖策略 / 空列表
 - **parse_non_stream**：content / tool_calls / usage / content 为 None 兜底
 
 另被 `test_stream_rectify.py` 间接使用（通过 `async_generate` 走真实解析路径）。
+
+> **2026-08-07 审核修复**：① `parse_chunk` 原守卫 `not chunk.choices[0].delta` 在 delta=None 的 finish chunk 上提前 return 丢失 finish_reason——重构为 finish_reason 独立提取；② usage 提取不再依赖 choices 为空（代理层违规共存时不再静默丢弃）；③ 整流 `continue` 前显式清空 `tool_deltas`（防御性，防未来重构携带脏数据）。
 
 ---
 

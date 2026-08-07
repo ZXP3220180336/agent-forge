@@ -67,16 +67,21 @@ class StreamParser:
         """
         result = ParsedChunk()
 
+        # usage：独立于 choices/delta 提取——usage-only chunk 的 choices 通常为空，
+        # 但某些代理/适配层可能在带 delta 的 chunk 上也附带 usage，不应静默丢弃。
+        if chunk.usage:
+            result.usage = chunk.usage.model_dump()
+
+        # finish_reason：提取独立于 delta 是否为空——finish chunk 的 delta 可能为 None
+        # 或空对象，但 finish_reason 在 choices[0] 上，不能因 delta 为空而丢失。
+        if chunk.choices and chunk.choices[0].finish_reason is not None:
+            result.finish_reason = chunk.choices[0].finish_reason
+
+        # 无内容增量（usage-only / finish-only chunk）→ 到此为止
         if not chunk.choices or not chunk.choices[0].delta:
-            if chunk.usage:
-                result.usage = chunk.usage.model_dump()
             return result
 
         delta = chunk.choices[0].delta
-
-        # finish_reason
-        if chunk.choices[0].finish_reason is not None:
-            result.finish_reason = chunk.choices[0].finish_reason
 
         # reasoning_content
         if hasattr(delta, "reasoning_content") and delta.reasoning_content:
