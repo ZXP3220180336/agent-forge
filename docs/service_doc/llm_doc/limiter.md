@@ -36,20 +36,19 @@
   - [与重试/熔断的分层配合](#与重试熔断的分层配合)
   - [配置项清单](#配置项清单)
   - [已知边界与设计取舍](#已知边界与设计取舍)
-  - [工业级对比：修复方案 vs 主流实现](#工业级对比修复方案-vs-主流实现)
-    - [对比 1：「禁用限流」的表达（对应问题 1，配置 0 除零崩溃）](#对比-1禁用限流的表达对应问题-1配置-0-除零崩溃)
-    - [对比 2：等待是否持锁（对应问题 2，持锁 sleep 阻塞其他请求）](#对比-2等待是否持锁对应问题-2持锁-sleep-阻塞其他请求)
-    - [对比 3.1：TPM 消耗估算（对应问题 3，只算 prompt 低估输出）](#对比-31tpm-消耗估算对应问题-3只算-prompt-低估输出)
-    - [对比 3.2：自适应预留（Fenic 式，2026-08-06 实现）](#对比-32自适应预留fenic-式2026-08-06-实现)
-    - [对比 4：限流器 API 形态（对应问题 5，`async with` 语义误导）](#对比-4限流器-api-形态对应问题-5async-with-语义误导)
-    - [速查表](#速查表)
-  - [附录：2026-08-01 代码审核记录](#附录2026-08-01-代码审核记录)
+  - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题-修复-工业对照)
     - [问题 1（严重）：配置为 0 时除零崩溃 ✅](#问题-1严重配置为-0-时除零崩溃-)
+      - [工业级对照：「禁用限流」的表达](#工业级对照禁用限流的表达)
     - [问题 2（中）：持锁 sleep ✅](#问题-2中持锁-sleep-)
+      - [工业级对照：等待是否持锁](#工业级对照等待是否持锁)
     - [问题 3（中）：TPM 桶只算 prompt token ✅](#问题-3中tpm-桶只算-prompt-token-)
+      - [工业级对照：TPM 消耗估算](#工业级对照tpm-消耗估算)
+      - [对比 3.2：自适应预留（Fenic 式，2026-08-06 实现）](#对比-32自适应预留fenic-式2026-08-06-实现)
     - [问题 4（低）：`acquire` 返回值表述不准确 ✅](#问题-4低acquire-返回值表述不准确-)
     - [问题 5（低）：`async with` 用法误导 ✅](#问题-5低async-with-用法误导-)
+      - [工业级对照：限流器 API 形态](#工业级对照限流器-api-形态)
     - [问题 6（低）：`_tokens` 可轻微为负 ✅](#问题-6低_tokens-可轻微为负-)
+    - [速查表](#速查表)
 
 ---
 
@@ -1099,20 +1098,30 @@ async_generate() / generate()
 
 ## 已知边界与设计取舍
 
-1. **等待期间锁外 sleep**（`TokenBucket.acquire` 的 `while True` 循环）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见附录问题 2（✅ 已修复）。
-2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见附录问题 3（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
-3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见附录问题 4（✅ 已修复）。`reserve` 形态无返回值（返回 Reservation，等待发生在内部）。
-4. **配置 0 = 禁用限流**：`Manager.get` 用 `getattr(settings, field, 0)`；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见附录问题 1（✅ 已修复）。
+1. **等待期间锁外 sleep**（`TokenBucket.acquire` 的 `while True` 循环）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见下文问题 2（✅ 已修复）。
+2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文问题 3（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
+3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见下文问题 4（✅ 已修复）。`reserve` 形态无返回值（返回 Reservation，等待发生在内部）。
+4. **配置 0 = 禁用限流**：`Manager.get` 用 `getattr(settings, field, 0)`；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文问题 1（✅ 已修复）。
 5. **reserve/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。
 6. **防 R5（组合两步间硬取消）**：`reserve` 先扣 RPM 再扣 TPM，若 TPM 预留前被硬取消（`CancelledError`），`except BaseException` 回退已扣的 RPM。
 
 ---
 
-## 工业级对比：修复方案 vs 主流实现
+## 代码审核与工业级对比（问题 → 修复 → 工业对照）
 
-> 本节对照工业级限流实现（Go `x/time/rate`、Guava、Bucket4j、resilience4j、LiteLLM、aiolimiter、Fenic 等），检视我们针对附录 4 个缺陷的修复方案。调研日期 2026-08-02，来源见各节。
+> 本节以 2026-08-01 代码审核发现的 6 个问题为主线，逐条记录**问题 → 修复 → 工业级对照**（对照 Go `x/time/rate`、Guava、Bucket4j、resilience4j、LiteLLM、aiolimiter、Fenic 等主流实现，调研日期 2026-08-02，来源见各节）。修复状态逐条标注（✅ 已修复）。完整速览见文末[速查表](#速查表)。
 
-### 对比 1：「禁用限流」的表达（对应问题 1，配置 0 除零崩溃）
+### 问题 1（严重）：配置为 0 时除零崩溃 ✅
+
+**位置**：`TokenBucket.acquire`（`refill_rate <= 0` 防御处）+ `RateLimiterManager.get`（`getattr(settings, field, 0)` 兜底处）
+
+**触发**：RPM/TPM 配置为 0（或缺失）→ `TokenBucket(capacity=0, refill_rate=0)` → 桶空时 `wait_time = needed / 0` → `ZeroDivisionError`。
+
+**已实测**：`rpm=0` 时 `acquire` 直接崩溃。而「配置 0 表示禁用限流」是用户最自然的表达。
+
+**修复（2026-08-02）**：采用建议方案二——`TokenBucket.acquire` 开头对 `refill_rate <= 0` 防御，直接放行返回 `0.0`。`capacity` 与 `refill_rate` 同源（`rpm/tpm` 配置为 0 时两者均为 0），一个 guard 覆盖所有路径，`RateLimiterManager.get` 无需改动。新增测试 `test_bucket_zero_refill_disabled`（断言立即放行、无等待、不崩溃）。
+
+#### 工业级对照：「禁用限流」的表达
 
 **工业级语义：`0` 不是「禁用」，而是「不允许任何事件」。** 禁用必须用显式开关或极大值表达。
 
@@ -1131,7 +1140,17 @@ async_generate() / generate()
 
 **来源**：[x/time/rate 文档](https://pkg.go.dev/golang.org/x/time/rate) · [x/time/rate 源码](https://go.googlesource.com/time/+/refs/tags/v0.10.0/rate/rate.go) · [Traefik PR #9621](https://github.com/traefik/traefik/pull/9621) · [Bucket4j 动态启用/禁用](https://stackoverflow.com/questions/76016472/bucket4j-enable-or-disable-dynamically/76036679#76036679)
 
-### 对比 2：等待是否持锁（对应问题 2，持锁 sleep 阻塞其他请求）
+### 问题 2（中）：持锁 sleep ✅
+
+**位置**：`TokenBucket.acquire`（`while True` 循环内）
+
+**影响**：等待期间锁被持有，其他排队请求无法并行计算等待时间；长 sleep 阻塞短等待请求；sleep 期间无法响应取消。
+
+**实测边界**：单桶总耗时由 refill_rate 支配，10 并发各 0.1s 总 1.0s，未出现放大。属理论缺陷，非紧急。
+
+**修复（2026-08-02）**：按改进方向实施——`TokenBucket.acquire` 重构为「锁内计算 → 锁外 sleep → 循环重检」：锁内仅计算 `wait_time`，`asyncio.sleep` 移到锁外，醒来回到循环顶部重新检查（sleep 期间 token 可能被其他请求抢走，重检保证公平且不过等）。等待期间锁不被持有，其他请求可并行计算；sleep 期间可响应取消（`CancelledError` 正常传播）。**连带解决问题 6**：新实现只在 `_tokens >= tokens` 时才扣减，不再出现负 token。新增测试 `test_bucket_wait_does_not_block_others`（短等待不被长等待阻塞）+ `test_bucket_cancel_does_not_corrupt_state`（取消不破坏桶状态）。
+
+#### 工业级对照：等待是否持锁
 
 **工业级共识：锁内只做记账（reserve），锁外等待。** 没有任何主流实现会在持锁状态下 sleep。
 
@@ -1148,7 +1167,15 @@ async_generate() / generate()
 
 **来源**：[x/time/rate 源码（reserveN/WaitN/CancelAt）](https://go.googlesource.com/time/+/refs/tags/v0.10.0/rate/rate.go) · [Guava RateLimiter 源码（acquire/reserve 两段式）](https://guava.dev/releases/17.0/api/docs/src-html/com/google/common/util/concurrent/RateLimiter.html#line.274) · [Bucket4j SynchronizationStrategy](https://javadoc.io/static/com.bucket4j/bucket4j_jdk8-core/8.10.1/io/github/bucket4j/local/SynchronizationStrategy.html)
 
-### 对比 3.1：TPM 消耗估算（对应问题 3，只算 prompt 低估输出）
+### 问题 3（中）：TPM 桶只算 prompt token ✅
+
+**位置**：`_count_prompt_tokens`（llm_service.py）
+
+**影响**：`estimated_tokens` 不含输出 token（completion），输出大时 TPM 桶低估实际消耗。
+
+**修复（2026-08-02）**：采纳「加 max_tokens 余量」方案——`_count_prompt_tokens(model_key, messages, max_tokens)` 新增第三参，估算 = prompt tokens + `max_tokens`（输出上限的保守余量）。TPM 桶按"请求可能消耗的最大 token"扣减，宁可高估不错放。`async_generate()` / `generate()` 两处调用点传入各自的实际 `max_tokens`；签名向后兼容（默认 0 = 退化为旧口径）。
+
+#### 工业级对照：TPM 消耗估算
 
 **工业级共识：TPM 官方口径 = 输入 + 输出都计入；单次调用预估值 = prompt + max_tokens（输出上限），请求完成后按实际 usage 结算。** 只算 prompt 是已知的严重低估。
 
@@ -1163,9 +1190,9 @@ async_generate() / generate()
 - 我们采用「prompt（tiktoken 精确）+ `max_tokens` 输出余量」——**与 OpenAI 官方估算公式、LiteLLM 的预留上限一致**，方向正确。
 - **差异提醒（可改进点，部分已落地）**：
   1. **结算退差 ✅ 已实现**（2026-08-02）：`ReservationLimiter.reserve() → Reservation`，请求完成后 `settle(actual)` 退 TPM 差（`max(0, est-actual)`），`llm_service` 已迁移到 reserve/settle 统一闭环。`max_tokens` 是上限、实际输出远小于它导致的 TPM 偏保守问题已缓解。详见「组件详解」Reservation 节。
-  2. **`max_tokens` 设得过大仍会空耗配额（已缓解但未消除）**——结算退差在「实际消耗 > 预留」时无法补扣，`max_tokens` 若远大于实际输出，预留阶段仍按上限扣、只是结算时退回。**「宁多勿少」的保守取舍仍成立**；要更精确需引入 Fenic 式的自适应分布预留（p95 自适应 × 1.15）。**已实现（2026-08-06）**：见 [对比 3.2](#对比-32自适应预留fenic-式2026-08-06-实现)。
+  2. **`max_tokens` 设得过大仍会空耗配额（已缓解但未消除）**——结算退差在「实际消耗 > 预留」时无法补扣，`max_tokens` 若远大于实际输出，预留阶段仍按上限扣、只是结算时退回。**「宁多勿少」的保守取舍仍成立**；要更精确需引入 Fenic 式的自适应分布预留（p95 自适应 × 1.15）。**已实现（2026-08-06）**：见下文 [对比 3.2](#对比-32自适应预留fenic-式2026-08-06-实现)。
 
-#### 「已缓解但未消除」的具体情形
+##### 「已缓解但未消除」的具体情形
 
 **预留公式**（[llm_service.py](app/services/llm_service.py) 的 `_count_prompt_tokens`）：`estimated = prompt_tokens + max_tokens`（输出上限的保守估算），TPM 桶按此扣减。**这个数是「上限」而非「实际」**——实际输出往往远小于 max_tokens。
 
@@ -1214,9 +1241,9 @@ t0+4ε      请求 E 预留 4196 → 不足！等待   0
 
 **来源**：[OpenAI Rate limits 文档](https://developers.openai.com/api/docs/guides/rate-limits) · [LiteLLM ITPM/OTPM 限流](https://docs.litellm.ai/docs/proxy/io_token_rate_limits) · [Fenic 自适应 token 估算设计](https://github.com/typedef-ai/fenic/blob/main/specs/adaptive_token_estimation_design.md) · [LangChain rate_limiters（仅时间限制）](https://reference.langchain.com/python/langchain-core/rate_limiters)
 
-### 对比 3.2：自适应预留（Fenic 式，2026-08-06 实现）
+#### 对比 3.2：自适应预留（Fenic 式，2026-08-06 实现）
 
-**问题延续对比 3.1**：`max_tokens` 设得过大仍会空耗配额——预留期间按上限占桶导致并发空耗（多个高估预留瞬时占满 TPM 桶，阻塞只需少量 token 的请求），退差只能事后释放。**根治方向 = 自适应预留**：用「历史实际输出的高分位 × 安全系数」替代固定 `max_tokens` 预留。
+**问题延续上文**：`max_tokens` 设得过大仍会空耗配额——预留期间按上限占桶导致并发空耗（多个高估预留瞬时占满 TPM 桶，阻塞只需少量 token 的请求），退差只能事后释放。**根治方向 = 自适应预留**：用「历史实际输出的高分位 × 安全系数」替代固定 `max_tokens` 预留。
 
 **工业级实现对比**（调研 2026-08-06）：
 
@@ -1248,7 +1275,23 @@ t0+4ε      请求 E 预留 4196 → 不足！等待   0
 
 > **启用方式**：`.env` 设 `LLM_ADAPTIVE_RESERVE=true`。开关为进程级静态（与 RPM/TPM 配置一致，运行时不可翻转）。开启后经 `reserve_adaptive(prompt_tokens, max_tokens)` 走自适应路径，`reserve(estimated)` 保留兼容。
 
-### 对比 4：限流器 API 形态（对应问题 5，`async with` 语义误导）
+### 问题 4（低）：`acquire` 返回值表述不准确 ✅
+
+**位置**：`RateLimiter.acquire` 的 docstring「总等待时间」
+
+**问题**：实际返回 `wait1 + wait2`（桶内等待），**不含** `retry_after` 的 sleep。docstring 措辞「总等待时间」与实现不符；调用方集成点也忽略了返回值。
+
+**修复（2026-08-02）**：采纳「docstring 改为桶内等待时间」——明确标注返回 `wait1 + wait2`、不含 `retry_after` 的 sleep，并提示调用方如需完整墙钟等待应自行计时。同步补充 `estimated_tokens` 的语义（RPM 桶固定扣 1、TPM 桶按此值扣）。
+
+### 问题 5（低）：`async with` 用法误导 ✅
+
+**位置**：`RateLimiter` 顶部 docstring + 原 `__aenter__`/`__aexit__`（已移除）
+
+**问题**：docstring 主推 `async with limiter:`，但 `__aenter__` 调 `acquire()` 无参（estimated_tokens=0，TPM 桶退化）；`__aexit__` 空操作无释放语义。实际集成点都直接 `await acquire(estimated_tokens=...)`，docstring 与实际脱节。
+
+**修复（2026-08-02）**：采用更彻底的方案——**移除 `__aenter__` / `__aexit__` 死代码**（已确认全项目无 `async with limiter:` 使用方，仅 docstring 与类自身）。`await acquire()` 成为唯一用法，模块 docstring 同步改为直接用法示例，消除「TPM 桶退化」的误导路径。
+
+#### 工业级对照：限流器 API 形态
 
 **工业级结论：RPM 按请求计数的桶可用 `async with`；TPM 按量计费的桶应用显式 `reserve/settle` 方法。** `async with`（无参）在按量场景有先天局限——硬编码消耗 1，且无法表达「先预留、后结算」。
 
@@ -1266,6 +1309,14 @@ t0+4ε      请求 E 预留 4196 → 不足！等待   0
 
 **来源**：[aiolimiter GitHub](https://github.com/mjpieters/aiolimiter) · [aiolimiter Discussion #181（按 payload 限流）](https://github.com/mjpieters/aiolimiter/discussions/181) · [limits 文档](https://limits.readthedocs.io/) · [aiometer GitHub](https://github.com/florimondmanca/aiometer)
 
+### 问题 6（低）：`_tokens` 可轻微为负 ✅
+
+**位置**：`TokenBucket.acquire`（扣减 token 处）
+
+**问题**：sleep 后直接 `-= tokens`，浮点时序可能产生负零点几。当前无害，可加 `max(0, ...)` 加固。
+
+**修复（2026-08-02）**：由问题 2 的重构**连带解决**——新实现只在 `_tokens >= tokens` 的分支内扣减，等待中的请求在 sleep 后回到循环顶部重检（不足则继续等、不会扣），不存在"先扣为负"的路径。新增测试 `test_bucket_cancel_does_not_corrupt_state` 覆盖取消路径下的桶状态完整性。
+
 ### 速查表
 
 | 我们的缺陷 | 工业级正确做法 | 我们的方案 | 参照实现 | 结论 |
@@ -1274,61 +1325,3 @@ t0+4ε      请求 E 预留 4196 → 不足！等待   0
 | 持锁 sleep 阻塞其他请求 | 锁内记账、锁外等待；等待让出事件循环、支持取消 | 锁内计算 → 锁外 sleep → 循环重检 | Guava `acquire()` 两段式、x/time/rate `Wait(ctx)` | ✅ 与工业级同构 |
 | 只算 prompt 低估输出 | 预留 = prompt + max_tokens，完成后按实际结算退差 | prompt + max_tokens 输出余量 + **reserve/settle 结算退差** + **自适应预留（高分位×安全系数）** | OpenAI 估算公式、LiteLLM、Fenic | ✅ 已实现结算退差 + 自适应预留（开关默认关，见对比 3.2） |
 | `async with` 语义误导 | TPM 桶用显式 reserve/settle；RPM 桶可 `async with` | 移除上下文管理器；`acquire` 保留 + **新增 reserve/settle** | aiolimiter `acquire(amount)`、limits `hit()`、Go Reservation | ✅ 更简洁；reserve/settle 已落地 |
-
----
-
-## 附录：2026-08-01 代码审核记录
-
-> 本次审核（初始版本）发现的遗留问题，先记录待办；修复状态逐条标注（✅ 已修复）。
-
-### 问题 1（严重）：配置为 0 时除零崩溃 ✅
-
-**位置**：`TokenBucket.acquire`（`refill_rate <= 0` 防御处）+ `RateLimiterManager.get`（`getattr(settings, field, 0)` 兜底处）
-
-**触发**：RPM/TPM 配置为 0（或缺失）→ `TokenBucket(capacity=0, refill_rate=0)` → 桶空时 `wait_time = needed / 0` → `ZeroDivisionError`。
-
-**已实测**：`rpm=0` 时 `acquire` 直接崩溃。而「配置 0 表示禁用限流」是用户最自然的表达。
-
-**修复（2026-08-02）**：采用建议方案二——`TokenBucket.acquire` 开头对 `refill_rate <= 0` 防御，直接放行返回 `0.0`。`capacity` 与 `refill_rate` 同源（`rpm/tpm` 配置为 0 时两者均为 0），一个 guard 覆盖所有路径，`RateLimiterManager.get` 无需改动。新增测试 `test_bucket_zero_refill_disabled`（断言立即放行、无等待、不崩溃）。
-
-### 问题 2（中）：持锁 sleep ✅
-
-**位置**：`TokenBucket.acquire`（`while True` 循环内）
-
-**影响**：等待期间锁被持有，其他排队请求无法并行计算等待时间；长 sleep 阻塞短等待请求；sleep 期间无法响应取消。
-
-**实测边界**：单桶总耗时由 refill_rate 支配，10 并发各 0.1s 总 1.0s，未出现放大。属理论缺陷，非紧急。
-
-**修复（2026-08-02）**：按改进方向实施——`TokenBucket.acquire` 重构为「锁内计算 → 锁外 sleep → 循环重检」：锁内仅计算 `wait_time`，`asyncio.sleep` 移到锁外，醒来回到循环顶部重新检查（sleep 期间 token 可能被其他请求抢走，重检保证公平且不过等）。等待期间锁不被持有，其他请求可并行计算；sleep 期间可响应取消（`CancelledError` 正常传播）。**连带解决问题 6**：新实现只在 `_tokens >= tokens` 时才扣减，不再出现负 token。新增测试 `test_bucket_wait_does_not_block_others`（短等待不被长等待阻塞）+ `test_bucket_cancel_does_not_corrupt_state`（取消不破坏桶状态）。
-
-### 问题 3（中）：TPM 桶只算 prompt token ✅
-
-**位置**：`_count_prompt_tokens`（llm_service.py）
-
-**影响**：`estimated_tokens` 不含输出 token（completion），输出大时 TPM 桶低估实际消耗。
-
-**修复（2026-08-02）**：采纳「加 max_tokens 余量」方案——`_count_prompt_tokens(model_key, messages, max_tokens)` 新增第三参，估算 = prompt tokens + `max_tokens`（输出上限的保守余量）。TPM 桶按"请求可能消耗的最大 token"扣减，宁可高估不错放。`async_generate()` / `generate()` 两处调用点传入各自的实际 `max_tokens`；签名向后兼容（默认 0 = 退化为旧口径）。
-
-### 问题 4（低）：`acquire` 返回值表述不准确 ✅
-
-**位置**：`RateLimiter.acquire` 的 docstring「总等待时间」
-
-**问题**：实际返回 `wait1 + wait2`（桶内等待），**不含** `retry_after` 的 sleep。docstring 措辞「总等待时间」与实现不符；调用方集成点也忽略了返回值。
-
-**修复（2026-08-02）**：采纳「docstring 改为桶内等待时间」——明确标注返回 `wait1 + wait2`、不含 `retry_after` 的 sleep，并提示调用方如需完整墙钟等待应自行计时。同步补充 `estimated_tokens` 的语义（RPM 桶固定扣 1、TPM 桶按此值扣）。
-
-### 问题 5（低）：`async with` 用法误导 ✅
-
-**位置**：`RateLimiter` 顶部 docstring + 原 `__aenter__`/`__aexit__`（已移除）
-
-**问题**：docstring 主推 `async with limiter:`，但 `__aenter__` 调 `acquire()` 无参（estimated_tokens=0，TPM 桶退化）；`__aexit__` 空操作无释放语义。实际集成点都直接 `await acquire(estimated_tokens=...)`，docstring 与实际脱节。
-
-**修复（2026-08-02）**：采用更彻底的方案——**移除 `__aenter__` / `__aexit__` 死代码**（已确认全项目无 `async with limiter:` 使用方，仅 docstring 与类自身）。`await acquire()` 成为唯一用法，模块 docstring 同步改为直接用法示例，消除「TPM 桶退化」的误导路径。
-
-### 问题 6（低）：`_tokens` 可轻微为负 ✅
-
-**位置**：`TokenBucket.acquire`（扣减 token 处）
-
-**问题**：sleep 后直接 `-= tokens`，浮点时序可能产生负零点几。当前无害，可加 `max(0, ...)` 加固。
-
-**修复（2026-08-02）**：由问题 2 的重构**连带解决**——新实现只在 `_tokens >= tokens` 的分支内扣减，等待中的请求在 sleep 后回到循环顶部重检（不足则继续等、不会扣），不存在"先扣为负"的路径。新增测试 `test_bucket_cancel_does_not_corrupt_state` 覆盖取消路径下的桶状态完整性。
