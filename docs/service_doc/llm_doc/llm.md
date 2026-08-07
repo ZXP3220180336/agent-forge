@@ -423,7 +423,7 @@ call_fn（主模型）→ 重试 3 次 → 全部失败
 
 ### StreamParser — 流式解析
 
-**文件**：`app/services/llm/streaming.py`
+**文件**：`app/services/llm/streaming.py`（设计文档见 [streaming.md](streaming.md)）
 
 #### 功能
 

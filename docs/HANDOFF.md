@@ -91,7 +91,7 @@ API 层（FastAPI 路由）
   - RateLimiter 集成 + **结算退差**（reserve/settle）+ 6 个审核问题修复
   - 限流模块**拆分为双文件**：`rate_limiter.py`（acquire）+ `reservation_limiter.py`（reserve/settle，零共享代码）
 
-**详见** [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)（层总览）· [client.md](service_doc/llm_doc/client.md)（ClientManager）· [retry.md](service_doc/llm_doc/retry.md)（熔断/错误分类/探针设计 + 修复记录 + 场景推演）
+**详见** [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)（层总览）· [client.md](service_doc/llm_doc/client.md)（ClientManager）· [streaming.md](service_doc/llm_doc/streaming.md)（StreamParser 流式/非流式解析）· [retry.md](service_doc/llm_doc/retry.md)（熔断/错误分类/探针设计 + 修复记录 + 场景推演）
 
 ### 3.4 核心 Agent 层（Phase 3）✅
 
@@ -262,6 +262,7 @@ API 层（FastAPI 路由）
 | [api_doc/middleware_doc/middleware.md](api_doc/middleware_doc/middleware.md) | ✅ 中间件说明（auth/rate_limit/error_handler，均为预留） |
 | [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md) | ✅ LLM 层总览 |
 | [service_doc/llm_doc/client.md](service_doc/llm_doc/client.md) | ✅ ClientManager 设计 |
+| [service_doc/llm_doc/streaming.md](service_doc/llm_doc/streaming.md) | ✅ StreamParser 设计（流式/非流式解析 + 工业级对照） |
 | [service_doc/llm_doc/retry.md](service_doc/llm_doc/retry.md) | ✅ RetryHandler 设计（滑动窗口/错误分类/半开探针/修复记录） |
 | [deployment.md](deployment.md) | ✅ 部署说明（运行方式/环境/依赖基础设施） |
 

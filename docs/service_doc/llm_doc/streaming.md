@@ -1,0 +1,191 @@
+# StreamParser 设计文档
+
+> **模块**：`app/services/llm/streaming.py`
+> **职责**：流式 / 非流式 LLM 响应解析（逐 chunk 提取 reasoning / message / tool_calls / usage）
+> **工业级对照**：增量累积 + 完成后解析（见「讨论与决策·Q1/Q2」）
+
+---
+
+## 设计目标
+
+1. **纯函数无状态**：`parse_chunk` 每次返回独立的 `ParsedChunk`，不维护内部缓冲——调用方决定如何累积、何时消费
+2. **与事件层解耦**：解析器不知道 `build_message_event()` 等事件构造函数的存在，只产出数据对象
+3. **流式 / 非流式统一**：`parse_non_stream()` 复用同一套数据结构，两通道产出一致
+4. **中途容忍非法 JSON**：tool_call 参数增量是 JSON 碎片，解析器只存增量字符串，不尝试解析中间态（完成后才组装）
+
+---
+
+## 核心设计
+
+### 数据结构
+
+```python
+@dataclass
+class ParsedChunk:
+    """单个 chunk 的解析结果。"""
+    reasoning_token: str | None = None   # 推理过程片段（如 DeepSeek-R1）
+    message_token: str | None = None     # 回复文本片段
+    finish_reason: str | None = None     # 停止原因（stop / length / tool_calls）
+    usage: dict | None = None            # Token 用量（最后一个 chunk）
+    tool_call_deltas: list[ToolCallDelta] | None = None  # 工具调用增量
+
+@dataclass
+class ToolCallDelta:
+    """工具调用的增量片段。"""
+    index: int            # 工具索引（多工具时区分）
+    id: str = ""          # 工具 call ID
+    function_name: str = ""
+    function_arguments: str = ""   # 参数 JSON 增量
+```
+
+### 解析流程
+
+```
+chunk → parse_chunk(chunk)
+    ├─ 无 choices / 无 delta → 检查 usage（最后一个 chunk）→ ParsedChunk(usage=...)
+    └─ 有 delta → 提取
+        ├─ finish_reason（choices[0].finish_reason）
+        ├─ reasoning_content（推理模型，delta.reasoning_content）
+        ├─ content（回复文本，delta.content）
+        └─ tool_calls（delta.tool_calls → ToolCallDelta 列表）
+```
+
+### tool_call 增量累积（调用方职责）
+
+`parse_chunk` 只产出 `ToolCallDelta` 增量，**累积与合并由调用方完成**：
+
+```python
+# 调用方（如 async_generate）：
+tool_deltas: list[ToolCallDelta] = []
+async for chunk in response:
+    parsed = StreamParser.parse_chunk(chunk)
+    if parsed.tool_call_deltas:
+        tool_deltas.extend(parsed.tool_call_deltas)
+# 流结束（finish_reason）后合并为完整 tool_calls
+result.tool_calls = StreamParser.merge_tool_calls(tool_deltas)
+```
+
+### 非流式解析
+
+`parse_non_stream(response)` 直接读取完整响应对象，产出与流式合并后一致的 dict：
+
+```python
+{
+    "content": str,
+    "finish_reason": str | None,
+    "tool_calls": list[dict],   # OpenAI 格式：[{"id", "type", "function": {"name", "arguments"}}]
+    "usage": dict | None,
+}
+```
+
+---
+
+## 讨论与决策
+
+### Q1: 为什么 tool_call 增量不立即解析 JSON？
+
+**因为中途的 JSON 碎片几乎永远不是合法 JSON。**
+
+`delta.tool_calls[i].function.arguments` 按 token 流式到达，前几个片段如 `{"na` 无法 `json.loads`。若解析器尝试立即解析，会抛出 `JSONDecodeError` 或在 UI 上展示残缺结构。
+
+工业级语义（参考 [go-ai openAICompatStream](https://raw.githubusercontent.com/digitallysavvy/go-ai/refs/tags/v0.4.0/pkg/providerutils/streaming/openai_compat_stream.go)、[DataDog dd-trace-js #8227](https://github.com/DataDog/dd-trace-js/pull/8227)）：
+
+- **tool_call 参数增量静默累积**（concat 到字符串），**不解析**
+- **直到 `finish_reason` 到达才 flush** 为完整 JSON——这同时是安全考量：不基于中途 JSON 可解析性做提前判定
+
+本项目 `merge_tool_calls` 按 index 分组 concat `function.arguments`，正是「累积 → 完成后组装」的工业语义。解析器本身不做 `json.loads`，天然避免了流式参数当完整 JSON 解析的坑。
+
+### Q2: 为什么用「纯函数 + 调用方累积」而非「有状态解析器」？
+
+| 维度 | 纯函数（当前） | 有状态类 |
+| --- | --- | --- |
+| 测试 | 输入 chunk → 输出 ParsedChunk，无副作用 | 需要 reset 状态 |
+| 并发安全 | 天然安全（无共享缓冲） | 需注意状态清理 |
+| 使用方式 | `parse_chunk(chunk)` 返回增量 | `parser.feed(chunk)` → `parser.result()` |
+| 灵活性 | 高（调用方控制累积时机） | 中（内部缓冲） |
+
+选择理由：
+
+- **测试友好**：直接 mock 一个 chunk，断言输出；有状态解析器每次测试要 reset
+- **与整流重试契合**：`async_generate` 的整流重试会重新迭代，每次迭代的增量是独立的——无状态解析器天然幂等，有状态解析器需在整流前清空缓冲
+- **与事件层解耦**：调用方决定何时把增量转成 SSE 事件、何时合并 tool_call
+
+**代价**：调用方需要自己写 `tool_deltas.extend(...)` 循环——这是「纯函数」设计的显式化，换来灵活性与可测试性。
+
+### Q3: `merge_tool_calls` 如何按 index 合并多个工具调用？
+
+一个响应可能包含**多个**工具调用，增量交错到达：
+
+```
+index=0: {"na                    index=1: {"query
+index=0: me": "张三"}             index=1: "ery": "天气"}
+```
+
+`merge_tool_calls` 用 `acc: dict[int, dict]` 按 `ToolCallDelta.index` 分组累积，`id`/`function_name`/`function_arguments` 各字段跨增量 concat；最后按 index 排序输出。这样：
+
+- **多工具独立累积**：每个 index 一个累加条目，互不干扰
+- **按 index 排序**：输出 `[acc[0], acc[1], ...]`，保持稳定顺序
+- **兼容缺失 ID**：`id` 为空字符串时仍按 index 兜底——与工业实现「缺失 tool id 时按 index 合成稳定 ID」一致（参考 [llm-stream-assemble](https://github.com/01laky/llm-stream-assemble)）
+
+### Q4: usage 为什么只在「无 choices」的 chunk 读？
+
+OpenAI 流式响应的 usage 只在**最后一个 chunk** 返回（需请求 `stream_options: {include_usage: true}`）。该 chunk 通常 `choices` 为空、只有 `usage` 字段。
+
+`parse_chunk` 的入口判断 `if not chunk.choices or not chunk.choices[0].delta` 精确命中这一形态：无内容增量时只读 usage。这与工业级「usage 只信最终 chunk，不期待每个 delta 都有」一致。
+
+### Q5: 与工业级「状态机解析引擎」的差距？
+
+工业界（[vLLM #44873](https://github.com/vllm-project/vllm/issues/44873)）对超大规模场景提出 **TokenIDScanner → IncrementalLexer → StreamingParserEngine** 的状态机引擎，解决：
+
+- **O(n) 复杂度**：每个 token 只处理一次（部分 naive 解析器对多 token chunk 退化为 O(n²)）
+- **chunk-size 无关**：speculative decoding 下 chunk 可能含多个 token，很多解析器假设"一 chunk 一 token"会出错
+- **统一 reasoning/tool 解析**：避免两遍解析（先 reasoning 后 tool）的脆弱性
+
+**本项目为何不需要**：
+
+- **单一 provider**（OpenAI 兼容端点），无多 provider 适配需求
+- **逐个 chunk 处理**，天然 chunk-size 无关（不假设一 chunk 一 token）
+- 单个 `parse_chunk` 同时提取 reasoning/content/tool_calls，已是「单状态机统一处理」
+
+若未来支持 Anthropic / Gemini / Responses API 等多 provider，才需引入适配器层（归一化为 `text.delta` / `tool_call.args.delta` 等通用事件）与严格/宽松解析模式。
+
+---
+
+## 对外接口
+
+| 方法 | 同步/异步 | 说明 |
+| --- | --- | --- |
+| `parse_chunk(chunk) -> ParsedChunk` | 同步静态 | 解析单个流式 chunk，产出增量数据 |
+| `merge_tool_calls(deltas) -> list[dict]` | 同步静态 | 将 ToolCallDelta 列表合并为完整 tool_calls |
+| `parse_non_stream(response) -> dict` | 同步静态 | 解析非流式完整响应，产出统一 dict |
+
+---
+
+## 边界情况
+
+1. **无 choices 的 chunk**：只有 usage（最后一个 chunk）→ 返回 `ParsedChunk(usage=...)`
+2. **delta 为空**：`not chunk.choices[0].delta` → 检查 usage，无则空 ParsedChunk
+3. **字段缺失**：`hasattr(delta, "content")` 守卫——不同 provider/模型的 delta 字段集不同，缺失不崩溃
+4. **tool_call 片段无 id / name**：`if tc.id` / `if tc.function.name` 守卫，缺失时保持空字符串，合并时按 index 兜底
+5. **多工具调用交错**：`merge_tool_calls` 按 index 分组，交错增量正确合并
+6. **空 tool_calls**：`merge_tool_calls([])` 返回空列表
+7. **非流式无 usage**：`parse_non_stream` 对 `response.usage` 为 None 时返回 `usage: None`
+
+---
+
+## 测试状态
+
+`tests/unit/test_streaming.py`（16 用例）：覆盖
+
+- **parse_chunk**：content / reasoning / finish_reason / usage（仅末 chunk）/ tool_call 提取 / 字段缺失兜底 / 空 chunk
+- **merge_tool_calls**：单工具增量拼接 / 多工具交错 / 输出按 index 排序 / 缺 id 按 index 兜底 / 空列表
+- **parse_non_stream**：content / tool_calls / usage / content 为 None 兜底
+
+另被 `test_stream_rectify.py` 间接使用（通过 `async_generate` 走真实解析路径）。
+
+---
+
+## 相关文档
+
+- [llm.md](llm.md)（LLM 层总览，含「流式解析：纯函数 vs 有状态类」对比）
+- [client.md](client.md)（ClientManager，流式响应来源的连接管理）
