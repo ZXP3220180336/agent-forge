@@ -24,8 +24,7 @@ from app.core.events import (
 from app.services.llm import (
     ClientManager,
     ReservationLimiterManager,
-    RetryConfig,
-    RetryHandler,
+    RetryHandlerManager,
     StreamParser,
     StructuredOutput,
 )
@@ -90,18 +89,6 @@ def _build_chat_kwargs(
     if stream:
         kwargs["stream_options"] = {"include_usage": True}
     return kwargs
-
-
-def _build_retry_handler() -> RetryHandler:
-    """构建重试执行器（读配置中心，与 create 阶段的重试语义一致）。"""
-    return RetryHandler(
-        config=RetryConfig(
-            max_retries=settings.llm_max_retries,
-            base_delay=settings.llm_base_delay,
-            max_delay=settings.llm_max_delay,
-            use_jitter=settings.llm_use_jitter,
-        ),
-    )
 
 
 def _build_fallback_fn(
@@ -288,7 +275,7 @@ class LLMService:
             result = StreamResult()
 
         # 准备重试执行器 + fallback 函数 + 日志记录（辅助函数统一构建）
-        retry = _build_retry_handler()
+        retry = RetryHandlerManager.get(model_key)
         fallback_fn = _build_fallback_fn(kwargs, model_key)
         event_fields = _build_event_fields(
             model_key, messages, temperature, bool(tools), stream=True
@@ -309,7 +296,9 @@ class LLMService:
         # 结构性解耦：provider 仍收宽裕 max_tokens（不截断输出），只有限流器预留下降。
         adaptive = settings.llm_adaptive_reserve
         if adaptive:
-            prompt_tokens = _count_prompt_tokens(model_key, messages)  # max_tokens=0 → prompt+2
+            prompt_tokens = _count_prompt_tokens(
+                model_key, messages
+            )  # max_tokens=0 → prompt+2
         else:
             estimated = _count_prompt_tokens(model_key, messages, max_tokens)
         limiter = ReservationLimiterManager.get(model_key)
@@ -451,6 +440,8 @@ class LLMService:
                     result.usage = None
                     continue
 
+                if classify_error(e) == ErrorCategory.RETRYABLE:
+                    retry.circuit_breaker.record_failure()
                 yield build_error_event(f"流式响应中断: {e!s}")
                 return
 
@@ -464,9 +455,13 @@ class LLMService:
                     await res.cancel()
 
             event_fields["success"] = True
-            event_fields["error"] = None  # 清掉整流失败尝试残留的 error（同一 record 复用）
+            event_fields["error"] = (
+                None  # 清掉整流失败尝试残留的 error（同一 record 复用）
+            )
             event_fields["prompt_tokens"] = (result.usage or {}).get("prompt_tokens")
-            event_fields["completion_tokens"] = (result.usage or {}).get("completion_tokens")
+            event_fields["completion_tokens"] = (result.usage or {}).get(
+                "completion_tokens"
+            )
             event_fields["total_tokens"] = (result.usage or {}).get("total_tokens")
             event_fields["finish_reason"] = result.finish_reason
             event_fields["duration"] = time.monotonic() - attempt_start
@@ -502,7 +497,7 @@ class LLMService:
             response_format=response_format,
         )
 
-        retry = _build_retry_handler()
+        retry = RetryHandlerManager.get(model_key)
         event_fields = _build_event_fields(
             model_key, messages, temperature, bool(tools), stream=False
         )
@@ -514,7 +509,9 @@ class LLMService:
         # 自适应预留：开启 llm_adaptive_reserve 时用高分位估算输出（结构性解耦）。
         adaptive = settings.llm_adaptive_reserve
         if adaptive:
-            prompt_tokens = _count_prompt_tokens(model_key, messages)  # max_tokens=0 → prompt+2
+            prompt_tokens = _count_prompt_tokens(
+                model_key, messages
+            )  # max_tokens=0 → prompt+2
         else:
             estimated = _count_prompt_tokens(model_key, messages, max_tokens)
         limiter = ReservationLimiterManager.get(model_key)

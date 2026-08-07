@@ -16,10 +16,10 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APIResponseValidationError, BadRequestError
+from openai import APIResponseValidationError, BadRequestError, RateLimitError
 
 from app.config import settings
-from app.services.llm import ClientManager
+from app.services.llm import ClientManager, RetryHandlerManager
 from app.services.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
 from app.services.llm_service import LLMService, StreamResult
 
@@ -166,6 +166,9 @@ class FakeClient:
 
 def _setup(monkeypatch, script, stream_max_retries=1):
     """mock ClientManager + 极简退避，返回 (llm_service, fake_completions, run)。"""
+    # RetryHandlerManager 是跨请求共享缓存的熔断器：每个测试前 reset，
+    # 避免前一个测试的熔断窗口污染后续测试（测试隔离）。
+    RetryHandlerManager.reset()
     fake_client = FakeClient(script)  # 共享实例，calls 计数一致
     monkeypatch.setattr(
         ClientManager, "get_client", staticmethod(lambda key: fake_client)
@@ -533,3 +536,135 @@ async def test_rate_limiter_cancel_on_create_failure(monkeypatch):
     assert calls["cancel"] == 1, f"create 失败应 cancel，实际 {calls['cancel']} 次"
     assert calls["settle"] == 0, "create 失败不应 settle"
     assert any("error" in e for e in events), "应产出 error 事件"
+
+
+# =====================================================================
+# 补熔断观察盲区：流式迭代「放弃时」喂 record_failure
+# =====================================================================
+# 背景：流式迭代异常不受 retry.execute 保护（响应创建后重试循环已退出），
+# 若 create 正常但流频繁中途断开，熔断器此前不感知。修复后，最终放弃
+# （不整流）且异常为 RETRYABLE 时喂 record_failure()。
+# 各测试通过 RetryHandlerManager 的共享熔断器断言 failure_count。
+
+
+def _cb_failure_count() -> int:
+    """获取 main 模型共享熔断器的窗口失败数（_setup 已 reset，各测试独立）。"""
+    return RetryHandlerManager.get("main").circuit_breaker.failure_count
+
+
+@pytest.mark.asyncio
+async def test_iter_interrupt_after_token_feeds_breaker(monkeypatch):
+    """已产出 token 后中断（放弃，RETRYABLE）→ 喂 record_failure。"""
+    script = [
+        FakeStream(
+            [_content_chunk("部分"), _finish_chunk("stop")],
+            fail_at=1,  # 消费 1 个 content chunk 后中断
+            exc=httpx.ReadError("connection reset"),
+        ),
+    ]
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
+
+    await run()
+
+    assert completions.calls == 1, "已产出 token 后中断不整流，仅 1 次调用"
+    assert _cb_failure_count() == 1, "放弃的 RETRYABLE 迭代中断应计入熔断窗口"
+
+
+@pytest.mark.asyncio
+async def test_rectified_then_success_not_feeds_breaker(monkeypatch):
+    """首 token 前中断→整流→成功：整流成功不喂失败（下游自愈）。"""
+    script = [
+        FakeStream([], fail_at=0, exc=httpx.ReadError("connection reset")),  # 死流
+        FakeStream([_content_chunk("ok"), _finish_chunk("stop")]),  # 整流成功
+    ]
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
+
+    sr, events = await run()
+
+    assert completions.calls == 2, "整流后成功应 2 次调用"
+    assert sr.content == "ok"
+    assert not any("error" in e for e in events), "整流成功不应产出 error"
+    assert _cb_failure_count() == 0, "整流后成功不应计入熔断窗口"
+
+
+@pytest.mark.asyncio
+async def test_rectify_exhausted_then_abandon_feeds_once(monkeypatch):
+    """连续死流耗尽整流上限后放弃：仅最终放弃记一次失败，不重复记每次中断。"""
+    script = [
+        FakeStream([], fail_at=0, exc=httpx.ReadError("connection reset")),  # 第 1 轮死流
+        FakeStream([], fail_at=0, exc=httpx.ReadError("connection reset")),  # 第 2 轮死流
+    ]
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
+
+    sr, events = await run()
+
+    assert completions.calls == 2, "连续死流耗尽整流上限（2 次调用）"
+    assert any("error" in e for e in events), "放弃应产出 error"
+    # 只有最终放弃喂一次失败（整流过程的中断不算——整流是重新尝试，未放弃）
+    assert _cb_failure_count() == 1, "应仅最终放弃记一次失败"
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_iter_exception_not_feeds_breaker(monkeypatch):
+    """NON_RETRYABLE 迭代异常（客户端问题）→ 不喂 record_failure。"""
+    resp = httpx.Response(200, request=httpx.Request("POST", "http://x"))
+    exc = APIResponseValidationError(
+        response=resp, body=None, message="schema mismatch"
+    )
+    script = [
+        FakeStream([], fail_at=0, exc=exc),
+    ]
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
+
+    await run()
+
+    assert completions.calls == 1, "NON_RETRYABLE 不整流，仅 1 次调用"
+    assert _cb_failure_count() == 0, "NON_RETRYABLE（客户端问题）不应计入熔断窗口"
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_iter_exception_not_feeds_breaker(monkeypatch):
+    """RATE_LIMITED 迭代异常（429 限流）→ 不喂 record_failure。"""
+    resp = httpx.Response(429, request=httpx.Request("POST", "http://x"))
+    exc = RateLimitError("rate limited", response=resp, body=None)
+    script = [
+        FakeStream([], fail_at=0, exc=exc),
+    ]
+    # stream_max_retries=0 禁用整流 → 429 迭代异常直接走放弃分支
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=0)
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
+
+    await run()
+
+    assert completions.calls == 1, "禁整流下 429 仅 1 次调用"
+    assert _cb_failure_count() == 0, "429（限流）不应计入熔断窗口"
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_not_feeds_breaker(monkeypatch):
+    """cancel_event 置位（用户取消，非下游故障）→ 不喂 record_failure。"""
+    script = [
+        FakeStream([_content_chunk("ok")], fail_at=None),
+    ]
+    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
+
+    cancel_event = asyncio.Event()
+    cancel_event.set()  # 置位 → 迭代内取消检查触发
+
+    sr = StreamResult()
+    events = []
+    llm = LLMService()
+    async for ev in llm.async_generate(
+        messages=[{"role": "user", "content": "hi"}],
+        result=sr,
+        cancel_event=cancel_event,
+    ):
+        events.append(ev)
+
+    assert any("error" in e for e in events), "取消应产出 error 事件"
+    assert _cb_failure_count() == 0, "用户取消（非下游故障）不应计入熔断窗口"

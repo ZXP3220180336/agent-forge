@@ -34,7 +34,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 from openai import (
@@ -519,5 +519,69 @@ class RetryHandler:
             return None
         try:
             return float(value)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None  # 可能是 HTTP-date 形式，简化忽略，回退到指数退避
+
+
+# =====================================================================
+# 重试执行器管理（按 model_key 跨请求共享）
+# =====================================================================
+
+
+# 已知模型 key（与 ClientManager / 限流器 Manager 的 key 约定对齐）
+_KNOWN_MODEL_KEYS: frozenset[str] = frozenset(("main", "reasoning", "fast"))
+
+
+class RetryHandlerManager:
+    """
+    按 model_key 提供共享 RetryHandler 实例（内含跨请求共享的 CircuitBreaker）。
+
+    与 ClientManager / RateLimiterManager 同款缓存模式：同一 model_key 复用
+    同一个 RetryHandler——熔断窗口（滑动窗口错误率）需跨请求积累，每次 new
+    会清空窗口、等于熔断永不触发（create 阶段熔断失效的隐性缺陷根源）。
+    main / reasoning / fast 是不同模型/端点，独立熔断（reasoning 故障不熔断 fast）。
+    配置（重试/熔断）从 settings 懒加载，修改配置后 reset() 重建。
+    """
+
+    _instances: ClassVar[dict[str, RetryHandler]] = {}
+
+    @classmethod
+    def get(cls, model_key: str = "main") -> RetryHandler:
+        """获取指定 key 的 RetryHandler（懒创建 + 缓存复用）。
+
+        Args:
+            model_key: 模型标识（main / reasoning / fast）
+
+        Returns:
+            共享 RetryHandler 实例（含共享 CircuitBreaker）
+
+        Raises:
+            ValueError: model_key 未在已知模型 key 中
+        """
+        if model_key not in _KNOWN_MODEL_KEYS:
+            raise ValueError(f"未知模型 key: {model_key!r}")
+        if model_key not in cls._instances:
+            cls._instances[model_key] = cls._build()
+        return cls._instances[model_key]
+
+    @classmethod
+    def reset(cls) -> None:
+        """清空所有缓存实例（配置变更或测试时调用）。"""
+        cls._instances.clear()
+
+    @classmethod
+    def _build(cls) -> RetryHandler:
+        """按 settings 构建 RetryHandler（重试配置从配置中心读取）。
+
+        与 create 阶段的重试语义一致；熔断阈值亦从 settings 默认值读取
+        （RetryHandler 未显式传 circuit_breaker 时内部创建默认 CircuitBreaker）。
+        当前重试/熔断配置为进程级全局一致，不按 model_key 差异化。
+        """
+        return RetryHandler(
+            config=RetryConfig(
+                max_retries=settings.llm_max_retries,
+                base_delay=settings.llm_base_delay,
+                max_delay=settings.llm_max_delay,
+                use_jitter=settings.llm_use_jitter,
+            ),
+        )

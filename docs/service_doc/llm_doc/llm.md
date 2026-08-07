@@ -1018,11 +1018,11 @@ data = await llm.generate_structured(..., model_key="fast")
 
 #### 测试
 
-`tests/unit/test_stream_rectify.py`（11 用例）：首 token 前中断整流成功 / 已产出后不整流 / 连续中断超上限 / cancel 不整流 / create 失败不整流 / 整流尝试中 create 失败 / tool_call 增量算已产出 / 仅 usage/finish 后中断整流 / 成功路径回归 / NON_RETRYABLE 迭代异常不整流 / 日志正确性。
+`tests/unit/test_stream_rectify.py`（21 用例）：首 token 前中断整流成功 / 已产出后不整流 / 连续中断超上限 / cancel 不整流 / create 失败不整流 / 整流尝试中 create 失败 / tool_call 增量算已产出 / 仅 usage/finish 后中断整流 / 成功路径回归 / NON_RETRYABLE 迭代异常不整流 / 日志正确性 / 限流闭环（reserve/settle/cancel）/ **熔断观察盲区（放弃喂 record_failure、整流成功不喂、NON_RETRYABLE/RATE_LIMITED/cancel 不喂）**。
 
-#### 遗留微调（可后续评估）
+#### 遗留微调（已解决）
 
-- **熔断观察盲区**：流式迭代失败不计入熔断窗口（现状）。若下游"create 正常但流频繁中途断开"，熔断器不感知。可后续把"放弃时的 RETRYABLE 迭代失败"喂给 `cb.record_failure()`
+- **熔断观察盲区 ✅ 已解决（2026-08-07）**：流式迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中途断开」的下游故障。配套：新增 `RetryHandlerManager`（按 model_key 跨请求共享熔断器，修复熔断窗口无法跨请求积累的隐性缺陷）
 
 ---
 
@@ -1114,14 +1114,14 @@ response = await retry.execute(
 - **配额缺口闭环（2026-08-02）**：acquire 移入 call_fn，重试计入配额、fallback 不参与（见 [设计决策记录·配额缺口](#配额缺口重试降级不计入限流申请)）
 - **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」
 - **统一结构化输出入口（2026-08-07）**：`generate_structured` 委托 `StructuredOutput.extract` 三级降级（JSON Schema → JSON Mode → 正则提取），消除双入口；`extract` 签名改为接收完整 messages
+- **补熔断观察盲区 + 熔断器生命周期修复（2026-08-07）**：流式迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，熔断器感知「create 正常但流频繁中断」；新增 `RetryHandlerManager`（按 model_key 跨请求共享熔断器），修复熔断窗口无法跨请求积累的隐性缺陷（create 阶段熔断此前实际失效）
 
 ### 遗留未定事项
 
 | 事项                                              | 当前状态             | 说明                                                                                                                                                                                  |
 |---------------------------------------------------|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **熔断观察盲区**                                  | 🔶 未实现            | 流式迭代失败不计入熔断窗口（现状）。若下游「create 正常但流频繁中途断开」，熔断器不感知。可把「放弃时的 RETRYABLE 迭代失败」喂给 `cb.record_failure()`（见「设计决策记录·流式整流重试·遗留微调」） |
 | **`max_tokens` 过大仍空耗配额**                   | 🔶 已缓解未消除      | 自适应预留已用高分位估算替代静态上限（进一步缓解）；但「实际消耗 > 预留」时仍无法补扣，「宁多勿少」保守取舍仍成立（见 [limiter.md](limiter.md)）                                                          |
 
 ### 下一步计划
 
-1. **补熔断观察盲区**：流式迭代「放弃时的 RETRYABLE 失败」喂给 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」的下游故障
+（无待办 —— LLM 层遗留未定事项已全部解决/决策保持）

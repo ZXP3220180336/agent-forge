@@ -15,7 +15,7 @@ from .client import ClientManager
 from .cost_tracker import CostTracker
 from .rate_limiter import RateLimiter, RateLimiterManager
 from .reservation_limiter import ReservationLimiterManager
-from .retry import CircuitBreaker, RetryConfig, RetryHandler
+from .retry import CircuitBreaker, RetryConfig, RetryHandler, RetryHandlerManager
 from .streaming import StreamParser
 from .structured import StructuredOutput
 
@@ -28,6 +28,7 @@ __all__ = [
     "ReservationLimiterManager",
     "RetryConfig",
     "RetryHandler",
+    "RetryHandlerManager",
     "StreamParser",
     "StructuredOutput",
 ]

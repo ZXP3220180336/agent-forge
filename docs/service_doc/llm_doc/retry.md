@@ -14,6 +14,7 @@
   - [RetryConfig — 重试配置](#retryconfig--重试配置)
   - [CircuitBreaker — 熔断器](#circuitbreaker--熔断器)
   - [RetryHandler — 重试执行器](#retryhandler--重试执行器)
+  - [RetryHandlerManager — 重试执行器管理](#retryhandlermanager--重试执行器管理)
   - [classify_error — 错误分类](#classify_error--错误分类)
 - [执行流程](#执行流程)
 - [设计决策](#设计决策)
@@ -105,6 +106,9 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 ## 架构总览
 
 ```
+            RetryHandlerManager（按 model_key 缓存共享）
+                     │
+                     ▼
                  RetryHandler
                      │
         ┌────────────┼────────────┐
@@ -119,6 +123,7 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 
 | 层 | 组件 | 职责 |
 | --- | --- | --- |
+| 管理 | `RetryHandlerManager` | 按 model_key 缓存共享 RetryHandler（熔断窗口跨请求积累） |
 | 配置层 | `RetryConfig` | 重试参数（次数、退避、抖动） |
 | 保护层 | `CircuitBreaker` | 熔断状态机（关闭/开启/半开） |
 | 判定层 | `classify_error()` | 异常分类（可重试/致命/限流） |
@@ -211,6 +216,36 @@ class RetryHandler:
   - 纯 429 / 不可恢复错误不记录
   - 判定看"整个请求是否触及下游故障"，而非最后一次异常——混合 429 与超时的情况下，只要出现过超时就计入窗口
 - **fallback 是纯兜底**：成功/失败都不触碰熔断器（熔断器只观察主链路 `call_fn` 的成败）
+
+### RetryHandlerManager — 重试执行器管理
+
+```python
+class RetryHandlerManager:
+    """按 model_key 提供共享 RetryHandler 实例（内含跨请求共享的 CircuitBreaker）。"""
+
+    _instances: ClassVar[dict[str, RetryHandler]] = {}
+
+    @classmethod
+    def get(cls, model_key="main") -> RetryHandler:
+        # 缓存命中 → 返回；未命中 → 按 settings 懒创建 + 缓存
+        # 未知 key → ValueError
+    @classmethod
+    def reset(cls) -> None:
+        cls._instances.clear()
+```
+
+**为什么需要按 model_key 共享**（修复熔断失效的隐性缺陷）：
+
+- **熔断窗口必须跨请求积累**：`CircuitBreaker` 的熔断判定（错误率 / 低流量纯失败保护）依赖**跨请求**的滑动窗口统计（`request_volume_threshold=20` 需要多个请求的样本）。若每次调用新建 `RetryHandler` + `CircuitBreaker`，窗口每次请求清空，`request_volume_threshold` 永远达不到 → **熔断实际永不触发**
+- **按 model_key 隔离**：main / reasoning / fast 是不同模型/端点，应独立熔断（reasoning 故障不应熔断 fast）——与 `ClientManager`（按 key 缓存 client）、限流器 Manager（按 key 缓存桶）架构一致
+
+**要点**：
+
+- **共享实例**：同一 model_key 复用同一个 `RetryHandler`——熔断窗口跨请求记账，每次 new 等于没熔断
+- **懒加载**：首次 `get()` 才创建，读取 `settings` 的重试/熔断配置
+- **同步无竞态**：`get` 无 await，GIL 下天然原子，不会双实例
+- **`reset()`**：配置变更或测试时清空缓存
+- **配置全局一致**：当前重试/熔断配置为进程级全局（不按 model_key 差异化），仅熔断状态按 key 隔离；未来若需按模型差异化重试参数，在 `_build` 中按 key 读配置即可
 
 ### classify_error — 错误分类
 
@@ -487,7 +522,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 ### Q5: 为什么不引入 `tenacity` 等第三方重试库？
 
 - 本项目需要熔断器 + fallback + 错误分类的紧耦合编排，`tenacity` 的重试装饰器模式不适合这种控制流
-- 熔断器需要跨请求共享状态（类级别），装饰器模式难以表达
+- 熔断器需要跨请求共享状态（类级别），装饰器模式难以表达——本项目通过 `RetryHandlerManager`（按 model_key 缓存共享实例）实现该语义
 - 重试逻辑本身不到 100 行，自实现更透明、易调试
 
 ---
@@ -532,6 +567,8 @@ T3 + 30s 后 → 请求 H（探针 #1）
    - 即便外部误调用 `record_success()`/`record_failure()` 也是 no-op（不关闭熔断器、不追加窗口、不改写冷却计时），直到熔断关闭时窗口清空
 7. **并发熔断状态竞争**：`CircuitBreaker` 不是线程安全的，但 `RetryHandler` 在 asyncio 单线程事件循环中运行，无并发问题
 8. **`max_retries=0`**：不重试，但熔断器仍然生效。首次失败后 `record_failure()` 被调用（请求级 1 次），窗口累积
+9. **流式迭代「放弃时」计入熔断窗口**：流式迭代异常不受 `retry.execute` 保护（响应对象创建后重试循环已退出）。`LLMService.async_generate` 在**最终放弃**（不整流）且异常为 RETRYABLE 时，直接调 `retry.circuit_breaker.record_failure()`——让熔断器感知「create 正常但流频繁中断」的下游故障。整流重试（未放弃）、NON_RETRYABLE / RATE_LIMITED / 用户取消不计入
+10. **熔断状态按 model_key 隔离**：`RetryHandlerManager` 为每个 model_key（main/reasoning/fast）维护独立实例。`reasoning` 的故障只累计 `reasoning` 熔断器窗口，不会熔断 `fast` / `main`
 
 ---
 
@@ -556,9 +593,10 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | **半开语义深化：429 不应计为探针成功，也不应持续探测** | 曾尝试将 429 计为成功（可达性）→ 误关闭熔断器流量涌入过载下游；后改为中性归还槽位 → 每个请求都变探针持续压过载下游 | 429 探针→回 OPEN + 冷却（停止探测让下游喘息）；关闭熔断器必须凑齐 `half_open_max_requests` 次**真实成功** |
 | **半开探针 4xx 误回 OPEN（2026-08-05）** | 4xx/未知探针一律 `record_failure()` 回 OPEN + 冷却重置 → 半开阶段客户端错误把熔断器反复打回 OPEN，下游即使恢复也永远无法完成健康探测（`HALF_OPEN→OPEN` 反复横跳） | 4xx/未知探针不 record_failure、不改变状态，`release_probe()` 归还槽位 + 抛上层；熔断器保持 HALF_OPEN 等待正常请求探测真实状态 |
 | **错误分类：未知/未覆盖异常默认 RETRYABLE，盲目重试** | 只显式分类 400/401/403/422/429/5xx/超时，其余（404/405/413 等 4xx、非 HTTP 异常、裸 httpx 网络异常）落入 RETRYABLE 兜底 → 重试无效的错误白打下游 N 次并计入熔断窗口 | 白名单映射：4xx 全部 NON_RETRYABLE；显式捕获 openai 网络异常 + 裸 httpx 异常 → RETRYABLE；`APIResponseValidationError`/`LengthFinishReasonError`/`ContentFilterFinishReasonError` → NON_RETRYABLE；**未知异常默认 NON_RETRYABLE** |
-| **流式迭代异常无保护** | `llm_service.py` 的 `async for chunk` 不在任何 try/except 内 → 流中断/解析失败时异常泄漏到调用方，不重试不熔断不记录日志 | 流式迭代包进 try/except：失败时记录日志 + 产出错误事件（不重试，符合流式语义） |
+| **流式迭代异常无保护** | `llm_service.py` 的 `async for chunk` 不在任何 try/except 内 → 流中断/解析失败时异常泄漏到调用方，不重试不熔断不记录日志 | 流式迭代包进 try/except：失败时记录日志 + 产出错误事件（不重试，符合流式语义）；**2026-08-07 补熔断观察盲区**：迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」 |
+| **熔断器生命周期：每次调用新建导致窗口无法跨请求积累（2026-08-07）** | `_build_retry_handler()` 在每次 `async_generate`/`generate` 新建 `RetryHandler` + `CircuitBreaker` → 熔断窗口每次请求清空，`request_volume_threshold=20` 永远达不到 → **create 阶段熔断实际失效**（与「熔断器需要跨请求共享状态」设计意图矛盾） | 新增 `RetryHandlerManager`：按 model_key 缓存共享 RetryHandler（内含跨请求共享 CircuitBreaker），main/reasoning/fast 独立熔断；`LLMService` 改用 `RetryHandlerManager.get(model_key)` |
 
-对应测试：`tests/unit/test_retry.py`（29 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）。
+对应测试：`tests/unit/test_retry.py`（29 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）+ `tests/unit/test_retry_handler_manager.py`（6 个用例）。
 
 > **坑：测试构造 openai 异常** —— 构造 `openai.APIStatusError` 子类（如 `BadRequestError`/`InternalServerError`/`RateLimitError`）需要 `message` + `response` 两个参数（`InternalServerError` 无字面量 status_code，值来自传入的 `httpx.Response`）。`LengthFinishReasonError` 需要真实 `ChatCompletion` 对象（访问 `.usage`），不能传 None。**构造测试异常统一用 `httpx.Response(status_code, request=...)` 传参。**
 
