@@ -1112,15 +1112,13 @@ response = await retry.execute(
 - **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。见 [设计决策记录·流式整流重试](#流式整流重试)
 - **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
 - **配额缺口闭环（2026-08-02）**：acquire 移入 call_fn，重试计入配额、fallback 不参与（见 [设计决策记录·配额缺口](#配额缺口重试降级不计入限流申请)）
-- **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」
+- **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」。「实际消耗 > 预留」仍无法补扣（预留-结算模型结构性限制，「宁多勿少」保守取舍，已缓解未消除），详述见 [limiter.md](limiter.md)「对比 3.1·已缓解但未消除」
 - **统一结构化输出入口（2026-08-07）**：`generate_structured` 委托 `StructuredOutput.extract` 三级降级（JSON Schema → JSON Mode → 正则提取），消除双入口；`extract` 签名改为接收完整 messages
 - **补熔断观察盲区 + 熔断器生命周期修复（2026-08-07）**：流式迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，熔断器感知「create 正常但流频繁中断」；新增 `RetryHandlerManager`（按 model_key 跨请求共享熔断器），修复熔断窗口无法跨请求积累的隐性缺陷（create 阶段熔断此前实际失效）
 
 ### 遗留未定事项
 
-| 事项                                              | 当前状态             | 说明                                                                                                                                                                                  |
-|---------------------------------------------------|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **`max_tokens` 过大仍空耗配额**                   | 🔶 已缓解未消除      | 自适应预留已用高分位估算替代静态上限（进一步缓解）；但「实际消耗 > 预留」时仍无法补扣，「宁多勿少」保守取舍仍成立（见 [limiter.md](limiter.md)）                                                          |
+（无 —— LLM 层遗留未定事项已全部解决/决策保持/归入模块文档）
 
 ### 下一步计划
 
