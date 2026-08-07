@@ -3,15 +3,15 @@
 ## 📋 目录
 
 - [模块概述](#模块概述)
-- [架构设计](#架构设计)
 - [快速开始](#快速开始)
+- [架构设计](#架构设计)
 - [核心模块详解](#核心模块详解)
   - [ClientManager — 连接池管理](#clientmanager--连接池管理)
   - [RetryHandler — 重试与熔断](#retryhandler--重试与熔断)
   - [StreamParser — 流式解析](#streamparser--流式解析)
   - [StructuredOutput — 结构化输出](#structuredoutput--结构化输出)
   - [LLM 调用业务事件](#llm-调用业务事件llm_call)
-  - [RateLimiter — 客户端限流（acquire 形态）](#ratelimiter--客户端限流acquire-形态)
+  - [限流：acquire 与 reserve/settle 双形态](#限流acquire-与-reservesettle-双形态)
   - [CostTracker — 成本计算](#costtracker--成本计算)
   - [EmbeddingService — 向量化](#embeddingservice--向量化)
 - [设计选型对比](#设计选型对比)
@@ -24,25 +24,14 @@
   - [日志：JSON 结构化 vs 文本](#日志json-结构化-vs-文本)
 - [配置参考](#配置参考)
 - [最佳实践](#最佳实践)
+- [常见问题](#常见问题)
+- [设计决策记录](#设计决策记录)
+  - [流式整流重试](#流式整流重试)
+  - [配额缺口：重试/降级不计入限流申请](#配额缺口重试降级不计入限流申请)
 - [当前进度与遗留](#当前进度与遗留)
   - [已实现](#已实现)
   - [遗留未定事项](#遗留未定事项)
   - [下一步计划](#下一步计划)
-- [流式整流重试](#流式整流重试)
-  - [问题背景](#问题背景)
-  - [工业调研结论（决策依据）](#工业调研结论决策依据)
-  - [决策（用户确认）](#决策用户确认)
-  - [实现要点](#实现要点)
-  - [测试](#测试)
-  - [遗留微调（可后续评估）](#遗留微调可后续评估)
-- [配额缺口：重试/降级不计入限流申请](#配额缺口重试降级不计入限流申请)
-  - [配额缺口：问题背景](#配额缺口问题背景)
-  - [配额缺口：问题原因](#配额缺口问题原因)
-  - [配额缺口：工业调研结论（决策依据）](#配额缺口工业调研结论决策依据)
-  - [配额缺口：决策（用户确认）](#配额缺口决策用户确认)
-  - [配额缺口：实现要点](#配额缺口实现要点)
-  - [配额缺口：测试](#配额缺口测试)
-- [常见问题](#常见问题)
 
 ---
 
@@ -111,74 +100,6 @@ app/services/
     └── CostTracker
 
   EmbeddingService ─── AsyncOpenAI(GET /embeddings)
-```
-
----
-
-## 架构设计
-
-### 调用流程
-
-```
-                     start
-                       │
-                       ▼
-  ┌───────── ClientManager.get_client() ─────────┐
-  │   1. 查缓存 → 有则返回                       │
-  │   2. 无缓存 → 创建 AsyncOpenAI + 缓存        │
-  │   3. 可选 HTTP 代理                           │
-  └─────────────────┬────────────────────────────┘
-                     │
-                     ▼
-  ┌───────── ReservationLimiter.reserve() ────────┐
-  │   1. RPM 桶预留（固定 1）                     │
-  │   2. TPM 桶预留（估算 token，自适应时高分位） │
-  │   3. 配额不足则阻塞等待（锁外 sleep）          │
-  │   4. 请求后 settle() 退差 / cancel() 全额退    │
-  └─────────────────┬────────────────────────────┘
-                     │
-                     ▼
-  ┌───────── RetryHandler.execute() ──────────────┐
-  │   1. CircuitBreaker.allow_request()           │
-  │   2. 重试循环（指数退避 + 抖动）              │
-  │   3. 全部失败 → fallback_fn（降级模型）       │
-  │   4. 成功 → CircuitBreaker.record_success()   │
-  └─────────────────┬────────────────────────────┘
-                     │
-                     ▼
-  ┌───────── StreamParser ────────────────────────┐
-  │   逐 chunk 解析：                              │
-  │   - reasoning_token → build_reasoning_event() │
-  │   - message_token   → build_message_event()   │
-  │   - tool_call_deltas → accumulate → merge     │
-  │   - usage           → StreamResult.usage      │
-  └─────────────────┬────────────────────────────┘
-                     │
-                     ▼
-  ┌────── log_event_async("llm_call") ────────────┐
-  │   记录 model, tokens, duration, success       │
-  └─────────────────┬────────────────────────────┘
-                     │
-                     ▼
-                    end
-```
-
-### 数据流
-
-```
-  请求流                  响应流（流式）
-  ┌─────┐               ┌─────────────────┐
-  │用户输入│ → messages  │ chunk 1: reasoning│ → yield reasoning_event
-  └─────┘               │ chunk 2: message  │ → yield message_event
-                         │ chunk 3: tool_call│ → accumulate delta
-                         │ chunk 4: message  │ → yield message_event
-                         │ chunk N: usage    │ → StreamResult.usage
-                         └─────────────────┘
-
-  响应流（非流式）
-  ┌─────────────────┐
-  │ response 完整对象 │ → StreamParser.parse_non_stream() → StreamResult
-  └─────────────────┘
 ```
 
 ---
@@ -258,6 +179,74 @@ cost = LLMService.calculate_cost(
     model="gpt-4",
 )
 # → {"cost_usd": 0.027, "input_cost": 0.015, "output_cost": 0.012}
+```
+
+---
+
+## 架构设计
+
+### 调用流程
+
+```
+                     start
+                       │
+                       ▼
+  ┌───────── ClientManager.get_client() ─────────┐
+  │   1. 查缓存 → 有则返回                       │
+  │   2. 无缓存 → 创建 AsyncOpenAI + 缓存        │
+  │   3. 可选 HTTP 代理                           │
+  └─────────────────┬────────────────────────────┘
+                     │
+                     ▼
+  ┌───────── ReservationLimiter.reserve() ────────┐
+  │   1. RPM 桶预留（固定 1）                     │
+  │   2. TPM 桶预留（估算 token，自适应时高分位） │
+  │   3. 配额不足则阻塞等待（锁外 sleep）          │
+  │   4. 请求后 settle() 退差 / cancel() 全额退    │
+  └─────────────────┬────────────────────────────┘
+                     │
+                     ▼
+  ┌───────── RetryHandler.execute() ──────────────┐
+  │   1. CircuitBreaker.allow_request()           │
+  │   2. 重试循环（指数退避 + 抖动）              │
+  │   3. 全部失败 → fallback_fn（降级模型）       │
+  │   4. 成功 → CircuitBreaker.record_success()   │
+  └─────────────────┬────────────────────────────┘
+                     │
+                     ▼
+  ┌───────── StreamParser ────────────────────────┐
+  │   逐 chunk 解析：                              │
+  │   - reasoning_token → build_reasoning_event() │
+  │   - message_token   → build_message_event()   │
+  │   - tool_call_deltas → accumulate → merge     │
+  │   - usage           → StreamResult.usage      │
+  └─────────────────┬────────────────────────────┘
+                     │
+                     ▼
+  ┌────── log_event_async("llm_call") ────────────┐
+  │   记录 model, tokens, duration, success       │
+  └─────────────────┬────────────────────────────┘
+                     │
+                     ▼
+                    end
+```
+
+### 数据流
+
+```
+  请求流                  响应流（流式）
+  ┌─────┐               ┌─────────────────┐
+  │用户输入│ → messages  │ chunk 1: reasoning│ → yield reasoning_event
+  └─────┘               │ chunk 2: message  │ → yield message_event
+                         │ chunk 3: tool_call│ → accumulate delta
+                         │ chunk 4: message  │ → yield message_event
+                         │ chunk N: usage    │ → StreamResult.usage
+                         └─────────────────┘
+
+  响应流（非流式）
+  ┌─────────────────┐
+  │ response 完整对象 │ → StreamParser.parse_non_stream() → StreamResult
+  └─────────────────┘
 ```
 
 ---
@@ -573,68 +562,18 @@ await log_event_async("llm_call", **event_fields)
 
 ---
 
-### RateLimiter — 客户端限流（acquire 形态）
+### 限流：acquire 与 reserve/settle 双形态
 
-**文件**：`app/services/llm/rate_limiter.py`
+**文件**：`app/services/llm/rate_limiter.py` + `app/services/llm/reservation_limiter.py`
 
-> **说明**：本模块为 acquire 形态（一次性扣减，不退款），独立保留用于对比/兼容。llm_service.py 实际使用的是 reserve/settle 形态的 `reservation_limiter.py`（见 [limiter.md](limiter.md)）。
+使用双 Token Bucket 算法，同时限制 **RPM**（每分钟请求数）与 **TPM**（每分钟 Token 消耗量）。限流完整设计（算法代码、5 种参考算法可视化、等待 vs 拒绝、自适应预留、工业级对比）见 **[limiter.md](limiter.md)**。
 
-#### 功能
+**双形态**：
 
-使用双 Token Bucket 算法，同时限制：
-
-- **RPM**（Requests Per Minute）—— 每分钟请求数
-- **TPM**（Tokens Per Minute）—— 每分钟 Token 消耗量
-
-#### Token Bucket 算法
-
-```python
-class TokenBucket:
-    def __init__(self, capacity, refill_rate):
-        self.capacity = capacity          # 桶容量（最大突发）
-        self.refill_rate = refill_rate    # 每秒补充速率（<=0 = 禁用限流）
-        self._tokens = capacity           # 当前 Token 数
-        self._lock = asyncio.Lock()
-
-    async def acquire(self, tokens=1.0) -> float:
-        if self.refill_rate <= 0:
-            return 0.0                     # 配置 0 = 禁用限流，避免除零
-        total_wait = 0.0
-        while True:
-            async with self._lock:         # 锁内只做计算（不 sleep）
-                self._refill()
-                if self._tokens >= tokens:
-                    self._tokens -= tokens
-                    return total_wait
-                wait_time = (tokens - self._tokens) / self.refill_rate
-            await asyncio.sleep(wait_time) # 锁外 sleep：等待不阻塞其他请求
-            total_wait += wait_time        # 循环重检：期间可能被抢，不过等不饿死
-```
-
-> **并发要点**：等待期间**不持锁**（锁内计算 → 锁外 sleep → 循环重检）——若在 `async with` 内 sleep，等待中的请求会阻塞其他排队的短等待请求。完整的 5 种参考算法详解、可视化与等待/拒绝语义对比见 [limiter.md](limiter.md)。
-
-#### 为什么选择「Token Bucket」
-
-| 算法                     | 特点                                                |
-| ------------------------ | --------------------------------------------------- |
-| **Token Bucket**（当前） | 允许突发 + 长期限流，桶容量积攒时能处理短时流量高峰 |
-| 漏桶（Leaky Bucket）     | 请求以恒定速率流出，无法应对突发                    |
-| 固定窗口计数器           | 窗口边界处可能出现双倍请求                          |
-| 滑动窗口日志             | 精确但内存消耗大                                    |
-
-> `rate_limiter.py` 另含 **5 种主流限流算法参考组件**（漏桶 / 固定窗口 / 滑动窗口日志 / 滑动窗口计数 / GCRA），接口与 TokenBucket 统一（`async acquire(tokens)` 等待型 + `async refund()` 退还），可互换选用，未接入调用链。各算法特点、可视化、等待 vs 拒绝语义对比见 [limiter.md](limiter.md)。
-
-**选择理由**：
-
-- Token Bucket 在**允许突发**和**长期平滑**之间取得平衡 —— LLM 调用有时集中在一小段时间（Agent 并行工具调用），需要能处理突发
-- 双桶设计（RPM + TPM）同时限制请求频率和 Token 消耗量
-- 支持 `Retry-After` 响应头的处理：当 API 返回 429 + Retry-After 时，等待指定时间再重试
-
-#### 其他可选的方法
-
-1. **漏桶算法**：流量整形严格，适合对延迟敏感的场景，但不适合 Agent 的突发调用模式
-2. **信号量 + 计数器**：通过 `asyncio.Semaphore` 限制并发数 + 计时器重置，实现简单但精度低
-3. **滑动窗口**：精确记录过去 N 秒的请求数，内存消耗与窗口精度成正比
+| 形态 | 文件 | 特点 | 生产使用者 |
+| --- | --- | --- | --- |
+| acquire | `rate_limiter.py` | 一次性扣减，不退款；独立保留供对比/兼容 | 无 |
+| reserve/settle | `reservation_limiter.py` | 先预留、请求后 `settle(actual)` 退差 / `cancel()` 全额退；含自适应预留（`reserve_adaptive`，开关默认关） | ✅ `llm_service.py` |
 
 ---
 
@@ -916,154 +855,6 @@ await log_event_async("llm_call", **event_fields)
 
 ---
 
-## 当前进度与遗留
-
-> 本节记录 LLM 层自身的进度、遗留工作与下一步计划（项目整体进度见 [HANDOFF.md](../../HANDOFF.md)）。
-
-### 已实现
-
-- 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / ReservationLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
-- retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针按异常类别判定、流式迭代保护；**2026-08-05 修正**：4xx 探针不再回 OPEN，改为不改变状态 + 归还槽位 + 抛上层（详见 [retry.md](retry.md)）
-- **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。详见下文「流式整流重试」小节
-- **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
-- **配额缺口闭环（2026-08-02）**：acquire 移入 call_fn，重试计入配额、fallback 不参与（详见下文「配额缺口」）
-- **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」
-
-### 遗留未定事项
-
-| 事项                                              | 当前状态             | 说明                                                                                                                                                                                  |
-|---------------------------------------------------|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **`generate_structured` 重复实现**                | 🔶 两个入口待统一    | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback）。下一步计划明确「评估合并」                                           |
-| **熔断观察盲区**                                  | 🔶 未实现            | 流式迭代失败不计入熔断窗口（现状）。若下游「create 正常但流频繁中途断开」，熔断器不感知。可把「放弃时的 RETRYABLE 迭代失败」喂给 `cb.record_failure()`（见「流式整流重试·遗留微调」） |
-| **自适应预留（Fenic 模型）**                      | ✅ 已实现（开关默认关） | `reserve_adaptive()` + `OutputTokenEstimator`：高分位 × 安全系数估算输出，减少预留占桶（2026-08-06，见 [limiter.md](limiter.md)「对比 3.2」）                                                                  |
-| **`max_tokens` 过大仍空耗配额**                   | 🔶 已缓解未消除      | 自适应预留已用高分位估算替代静态上限（进一步缓解）；但「实际消耗 > 预留」时仍无法补扣，「宁多勿少」保守取舍仍成立（见 [limiter.md](limiter.md)）                                                          |
-| **`APIResponseValidationError` 是否容忍网关故障** | ✅ 已决策保持        | 决策：当前直连服务商场景下重试无效，保持 NON_RETRYABLE                                                                                                                                |
-| **流式迭代是否自动重试**                          | ✅ 已决策（整流）    | 首 token 前中断整流重试（复用 `classify_error`，新增 `llm_stream_max_retries` 配置）；已产出 token 后中断不整流                                                                       |
-
-### 下一步计划
-
-1. **统一结构化输出入口**：评估 `LLMService.generate_structured`（简化版）与 `StructuredOutput.extract`（完整版：JSON mode 降级 + regex fallback）的合并，消除双入口
-2. **补熔断观察盲区**：流式迭代「放弃时的 RETRYABLE 失败」喂给 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」的下游故障
-
----
-
-## 流式整流重试
-
-> 本节记录 `async_generate()` 流式迭代整流重试的前因后果（2026-08-01 实施）。
-
-### 问题背景
-
-`retry.execute()` 只保护 `client.chat.completions.create()`（创建响应对象），真正的 `async for chunk in response:` 迭代在重试范围外。流中途断掉（读超时 / 连接重置 / 解析失败）时，旧实现只捕获报错（记日志 + 错误事件），不重试。
-
-### 工业调研结论（决策依据）
-
-- **OpenAI Python SDK**：`max_retries` 只覆盖初始 HTTP 请求，不重试 mid-stream。官方维护者明确"用户已消费部分输出，mid-stream 重试语义不清晰"
-- **LangChain `langchain-failover`**：只在主模型**产出第一个 token 前**死亡时 failover——"你永远不会得到重复的、半流输出"
-- **awaken 运行时**：4 级恢复（ContinueText / SynthesizeToolUse / TruncateBeforeTool / WholeRestart），WholeRestart（整流重试）只在无文本、无完整工具调用时用
-
-### 决策（用户确认）
-
-1. **首 token 前中断 → 整流重试**（重新 create + 重新迭代）：用户没看到任何输出，整流不会产生重复内容
-2. **已产出 token 后中断 → 不整流**：避免重复输出 / token 双倍计费 / tool_calls 残缺
-3. **新增独立配置 `llm_stream_max_retries`**（默认 1），不复用 `llm_max_retries`——create 重试（HTTP 请求级）与整流重试（已开始流式后重启）属不同故障阶段，需独立调优；设为 `0` 即禁用整流，行为退化为旧版
-4. **整流条件复用 `classify_error`**：只有 RETRYABLE / RATE_LIMITED 的迭代异常才整流；NON_RETRYABLE（4xx/校验错误/token 截断/未知）不整流——重试大概率无效，避免白打下游
-5. **create 阶段异常绝不整流**：`retry.execute` 已决定重试/熔断/fallback；400 / `CircuitBreakerOpenError` / fallback 失败走既有错误路径
-6. **cancel_event 置位永不整流**：迭代内取消检查 + 整流分支退避前后各一道守卫
-
-### 实现要点
-
-- `async_generate` 重构为显式 `for attempt in range(llm_stream_max_retries + 1)` 循环（async generator 无法用 `retry.execute` 直接包，因其 `call_fn` 返回 Awaitable 而非 AsyncGenerator）
-- **`emitted_any` 标志**：`reasoning_token` / `message_token` / `tool_call_deltas` 任一非空即置位；`finish_reason` / `usage` 不算"首 token"（纯 usage/finish 死流仍可整流）
-- **result 复用**：整流写同一 `result` 对象；`emitted_any=False` 保证 content/reasoning/tool_calls 未写，重试幂等安全。整流前清空死流的 `result.finish_reason` / `result.usage` 残留
-- **退避**：复用 `llm_base_delay` / `llm_max_delay` / `llm_use_jitter`（`_stream_backoff` 辅助，公式与 create 阶段一致），不新增退避配置
-- **日志**：每次尝试独立计时，失败走 `success=False` + error，成功清 `error=None`（整流成功 = 1 条失败 + 1 条成功日志）
-- **fallback**：仍只绑定 create 阶段（`retry.execute` 内部），流式中断不触发额外 fallback
-
-### 测试
-
-`tests/unit/test_stream_rectify.py`（11 用例）：首 token 前中断整流成功 / 已产出后不整流 / 连续中断超上限 / cancel 不整流 / create 失败不整流 / 整流尝试中 create 失败 / tool_call 增量算已产出 / 仅 usage/finish 后中断整流 / 成功路径回归 / NON_RETRYABLE 迭代异常不整流 / 日志正确性。
-
-### 遗留微调（可后续评估）
-
-- **熔断观察盲区**：流式迭代失败不计入熔断窗口（现状）。若下游"create 正常但流频繁中途断开"，熔断器不感知。可后续把"放弃时的 RETRYABLE 迭代失败"喂给 `cb.record_failure()`
-
----
-
-## 配额缺口：重试/降级不计入限流申请
-
-> 本节记录「限流申请量 vs 实际请求量」不一致的问题（2026-08-02 调研并实施）。跨模块：涉及限流（RateLimiter）与重试（RetryHandler）的配合。
-
-### 配额缺口：问题背景
-
-当前集成中，`async_generate()` / `generate()` 在**进入** `retry.execute()` 前 `acquire` 一次限流（RPM 桶 1 个 + TPM 桶 estimated_tokens 个）。放行后进入重试/熔断/降级阶段——若调用失败会重试、多次失败会降级到备用模型。**这些后续真实发出的 API 请求，都发生在限流申请之后**。
-
-用户的疑问（原文概括）：
-> 我们在限流器处设定为获取 1 个请求和固定 token，限流器放行后进入重试/熔断阶段。一次调用不成功会重试，多次重试失败后降级调用——这期间产生的 token 和向底层接口请求的次数，是不是超过了向限流器申请的量？
-
-**结论：是。** 实际请求数可能远超限流器放行的量。
-
-### 配额缺口：问题原因
-
-以默认配置（`llm_max_retries=2`，retry 循环最多 3 次 call_fn）为例：
-
-| 路径 | 是否重新 acquire | 真实请求数 |
-| --- | --- | --- |
-| 原始调用 | ✅ acquire 了 | 1 |
-| retry 内部重试（×2） | ❌ **不 acquire** | +2 |
-| fallback 降级（备用模型） | ❌ **不 acquire** | +1 |
-
-**一次 `async_generate` 最多可发 4 次真实请求，但只申请了 1 次限流**。
-
-具体影响：
-
-- **RPM 桶低估**：实际放行速率 = `rpm × (1 + 重试率 + 降级率)`。下游越不稳定，放大越严重（失败率 50% 时实际请求约是 RPM 的 2 倍）。
-- **TPM 桶低估**：重试时同样的 prompt 重新发送，token 消耗翻倍，但 TPM 桶只在第一次 acquire 扣过一次。
-- **fallback 零限流保护**：备用模型（`llm_fallback_model_id`）有自己的配额，当前 fallback 完全不 acquire，**无任何限流**。
-- **整流重试是例外**：首 token 前中断的整流每轮都重新 acquire，此路径无缺口。
-
-### 配额缺口：工业调研结论（决策依据）
-
-1. **中间件链布局决定答案**：工业界把限流器和重试做成中间件链，**限流器在重试外层**——每次真实请求（含重试）都重新穿过限流器、消耗 token（如 Go 的 `tgcp`：`"Each request consumes 1 token"`，重试也计）。这是主流做法——**重试天然计入配额**。参考：[Rethinking HTTP API Rate Limiting（IEEE/arXiv）](https://ieeexplore.ieee.org/document/11366354)、[tgcp 中间件链](https://pkg.go.dev/github.com/yogirk/tgcp@v0.4.0/internal/core)
-2. **IETF 留白**：RateLimit Header Fields 草案明确「规范不规定非 2xx 响应是否消耗配额」，留给服务端/客户端设计决策。无唯一正确答案，但工业实现主流倾向是**外层包裹**。[IETF 草案](https://datatracker.ietf.org/meeting/109/agenda/httpapi-drafts.pdf)
-3. **重要澄清**：客户端限流的第一目的是**防突发**（别瞬间打爆服务端），不是精确记账到每一分服务端配额。服务端还有第二道闸（429 + `Retry-After`），重试请求即使客户端没 acquire，服务端可能再 429 兜底。**但当重试原因是 5xx/超时（下游故障）时，重试请求会真实打到服务端并消耗 token——客户端不 acquire 就是超额**。
-4. **LLM 生态实践**：客户端 Token Bucket 限流器（如 [plsno429](https://github.com/appleparan/plsno429)）作为 **proactive** 手段在请求前限流；重试（**reactive**）走指数退避 + jitter + 尊重 `Retry-After`。两者是互补的两层，不是同一件事。参考：[OpenAI 429 官方指南](https://help.openai.com/en/articles/5955604-how-can-i-solve-429-too-many-requests-errors)
-
-### 配额缺口：决策（用户确认）
-
-**acquire 移入 call_fn，但 fallback 不参与 acquire。**
-
-- **重试计入配额**：retry.execute 内部每次重试都重新 acquire（重试=新请求，扣配额合理）。
-- **fallback 不参与 acquire**：客户端限流防的是**主模型**的突发，备用模型（降级路径）无需限流保护，且独立于主模型配额。
-
-### 配额缺口：实现要点
-
-- `_rate_limited_call` 闭包捕获 `limiter` / `estimated` / `client` / `kwargs`，在整流循环外定义（依赖变量均不随 attempt 变化）。
-- `estimated` 在循环外计算一次（messages 在一次 `async_generate` 内不变），避免每次重试重复 tiktoken 计数。
-- **整流重试**：整流循环每轮重新 `execute`，call_fn 内部再次 acquire——「新请求」语义正确。
-- **代价**：重试前会先 acquire，等待与退避叠加，延迟可能增大；但语义正确（重试=新请求，扣配额合理）。
-
-```python
-async def _rate_limited_call():
-    await limiter.acquire(estimated_tokens=estimated)   # 每次真实请求前都 acquire
-    return await client.chat.completions.create(**kwargs)
-
-response = await retry.execute(
-    call_fn=_rate_limited_call,        # 原始 + retry 内部重试都重新 acquire
-    fallback_fn=fallback_fn,           # fallback 不参与 acquire
-)
-```
-
-### 配额缺口：测试
-
-`tests/unit/test_stream_rectify.py`：
-
-- `test_rate_limiter_acquire_before_each_attempt`：整流 2 轮，每轮 call_fn 都 acquire（`calls == 2`）。
-- `test_rate_limiter_acquire_on_retry_inside_execute`：retry.execute 内部重试也 acquire（create 第 1 次抛 RETRYABLE → 重试第 2 次，`calls == 2`）。
-
-> **状态**：✅ 已实施（2026-08-02）。
-
----
-
 ## 常见问题
 
 ### Q: `LLMService` 和 `ClientManager` 的关系是什么？
@@ -1153,3 +944,155 @@ data = await llm.generate_structured(..., model_key="fast")
 ```
 
 历史上曾因方法签名用 `model`、调用时用 `model_key=` 导致运行时 TypeError。
+
+---
+
+## 设计决策记录
+
+> 本节收录 LLM 层的设计决策（问题 → 工业调研 → 决策 → 实现），前因后果完整记录。
+
+### 流式整流重试
+
+> 本节记录 `async_generate()` 流式迭代整流重试的前因后果（2026-08-01 实施）。
+
+#### 问题背景
+
+`retry.execute()` 只保护 `client.chat.completions.create()`（创建响应对象），真正的 `async for chunk in response:` 迭代在重试范围外。流中途断掉（读超时 / 连接重置 / 解析失败）时，旧实现只捕获报错（记日志 + 错误事件），不重试。
+
+#### 工业调研结论（决策依据）
+
+- **OpenAI Python SDK**：`max_retries` 只覆盖初始 HTTP 请求，不重试 mid-stream。官方维护者明确"用户已消费部分输出，mid-stream 重试语义不清晰"
+- **LangChain `langchain-failover`**：只在主模型**产出第一个 token 前**死亡时 failover——"你永远不会得到重复的、半流输出"
+- **awaken 运行时**：4 级恢复（ContinueText / SynthesizeToolUse / TruncateBeforeTool / WholeRestart），WholeRestart（整流重试）只在无文本、无完整工具调用时用
+
+#### 决策（用户确认）
+
+1. **首 token 前中断 → 整流重试**（重新 create + 重新迭代）：用户没看到任何输出，整流不会产生重复内容
+2. **已产出 token 后中断 → 不整流**：避免重复输出 / token 双倍计费 / tool_calls 残缺
+3. **新增独立配置 `llm_stream_max_retries`**（默认 1），不复用 `llm_max_retries`——create 重试（HTTP 请求级）与整流重试（已开始流式后重启）属不同故障阶段，需独立调优；设为 `0` 即禁用整流，行为退化为旧版
+4. **整流条件复用 `classify_error`**：只有 RETRYABLE / RATE_LIMITED 的迭代异常才整流；NON_RETRYABLE（4xx/校验错误/token 截断/未知）不整流——重试大概率无效，避免白打下游
+5. **create 阶段异常绝不整流**：`retry.execute` 已决定重试/熔断/fallback；400 / `CircuitBreakerOpenError` / fallback 失败走既有错误路径
+6. **cancel_event 置位永不整流**：迭代内取消检查 + 整流分支退避前后各一道守卫
+
+#### 实现要点
+
+- `async_generate` 重构为显式 `for attempt in range(llm_stream_max_retries + 1)` 循环（async generator 无法用 `retry.execute` 直接包，因其 `call_fn` 返回 Awaitable 而非 AsyncGenerator）
+- **`emitted_any` 标志**：`reasoning_token` / `message_token` / `tool_call_deltas` 任一非空即置位；`finish_reason` / `usage` 不算"首 token"（纯 usage/finish 死流仍可整流）
+- **result 复用**：整流写同一 `result` 对象；`emitted_any=False` 保证 content/reasoning/tool_calls 未写，重试幂等安全。整流前清空死流的 `result.finish_reason` / `result.usage` 残留
+- **退避**：复用 `llm_base_delay` / `llm_max_delay` / `llm_use_jitter`（`_stream_backoff` 辅助，公式与 create 阶段一致），不新增退避配置
+- **日志**：每次尝试独立计时，失败走 `success=False` + error，成功清 `error=None`（整流成功 = 1 条失败 + 1 条成功日志）
+- **fallback**：仍只绑定 create 阶段（`retry.execute` 内部），流式中断不触发额外 fallback
+
+#### 测试
+
+`tests/unit/test_stream_rectify.py`（11 用例）：首 token 前中断整流成功 / 已产出后不整流 / 连续中断超上限 / cancel 不整流 / create 失败不整流 / 整流尝试中 create 失败 / tool_call 增量算已产出 / 仅 usage/finish 后中断整流 / 成功路径回归 / NON_RETRYABLE 迭代异常不整流 / 日志正确性。
+
+#### 遗留微调（可后续评估）
+
+- **熔断观察盲区**：流式迭代失败不计入熔断窗口（现状）。若下游"create 正常但流频繁中途断开"，熔断器不感知。可后续把"放弃时的 RETRYABLE 迭代失败"喂给 `cb.record_failure()`
+
+---
+
+### 配额缺口：重试/降级不计入限流申请
+
+> 本节记录「限流申请量 vs 实际请求量」不一致的问题（2026-08-02 调研并实施）。跨模块：涉及限流（RateLimiter）与重试（RetryHandler）的配合。
+
+#### 配额缺口：问题背景
+
+当前集成中，`async_generate()` / `generate()` 在**进入** `retry.execute()` 前 `acquire` 一次限流（RPM 桶 1 个 + TPM 桶 estimated_tokens 个）。放行后进入重试/熔断/降级阶段——若调用失败会重试、多次失败会降级到备用模型。**这些后续真实发出的 API 请求，都发生在限流申请之后**。
+
+用户的疑问（原文概括）：
+> 我们在限流器处设定为获取 1 个请求和固定 token，限流器放行后进入重试/熔断阶段。一次调用不成功会重试，多次重试失败后降级调用——这期间产生的 token 和向底层接口请求的次数，是不是超过了向限流器申请的量？
+
+**结论：是。** 实际请求数可能远超限流器放行的量。
+
+#### 配额缺口：问题原因
+
+以默认配置（`llm_max_retries=2`，retry 循环最多 3 次 call_fn）为例：
+
+| 路径 | 是否重新 acquire | 真实请求数 |
+| --- | --- | --- |
+| 原始调用 | ✅ acquire 了 | 1 |
+| retry 内部重试（×2） | ❌ **不 acquire** | +2 |
+| fallback 降级（备用模型） | ❌ **不 acquire** | +1 |
+
+**一次 `async_generate` 最多可发 4 次真实请求，但只申请了 1 次限流**。
+
+具体影响：
+
+- **RPM 桶低估**：实际放行速率 = `rpm × (1 + 重试率 + 降级率)`。下游越不稳定，放大越严重（失败率 50% 时实际请求约是 RPM 的 2 倍）。
+- **TPM 桶低估**：重试时同样的 prompt 重新发送，token 消耗翻倍，但 TPM 桶只在第一次 acquire 扣过一次。
+- **fallback 零限流保护**：备用模型（`llm_fallback_model_id`）有自己的配额，当前 fallback 完全不 acquire，**无任何限流**。
+- **整流重试是例外**：首 token 前中断的整流每轮都重新 acquire，此路径无缺口。
+
+#### 配额缺口：工业调研结论（决策依据）
+
+1. **中间件链布局决定答案**：工业界把限流器和重试做成中间件链，**限流器在重试外层**——每次真实请求（含重试）都重新穿过限流器、消耗 token（如 Go 的 `tgcp`：`"Each request consumes 1 token"`，重试也计）。这是主流做法——**重试天然计入配额**。参考：[Rethinking HTTP API Rate Limiting（IEEE/arXiv）](https://ieeexplore.ieee.org/document/11366354)、[tgcp 中间件链](https://pkg.go.dev/github.com/yogirk/tgcp@v0.4.0/internal/core)
+2. **IETF 留白**：RateLimit Header Fields 草案明确「规范不规定非 2xx 响应是否消耗配额」，留给服务端/客户端设计决策。无唯一正确答案，但工业实现主流倾向是**外层包裹**。[IETF 草案](https://datatracker.ietf.org/meeting/109/agenda/httpapi-drafts.pdf)
+3. **重要澄清**：客户端限流的第一目的是**防突发**（别瞬间打爆服务端），不是精确记账到每一分服务端配额。服务端还有第二道闸（429 + `Retry-After`），重试请求即使客户端没 acquire，服务端可能再 429 兜底。**但当重试原因是 5xx/超时（下游故障）时，重试请求会真实打到服务端并消耗 token——客户端不 acquire 就是超额**。
+4. **LLM 生态实践**：客户端 Token Bucket 限流器（如 [plsno429](https://github.com/appleparan/plsno429)）作为 **proactive** 手段在请求前限流；重试（**reactive**）走指数退避 + jitter + 尊重 `Retry-After`。两者是互补的两层，不是同一件事。参考：[OpenAI 429 官方指南](https://help.openai.com/en/articles/5955604-how-can-i-solve-429-too-many-requests-errors)
+
+#### 配额缺口：决策（用户确认）
+
+**acquire 移入 call_fn，但 fallback 不参与 acquire。**
+
+- **重试计入配额**：retry.execute 内部每次重试都重新 acquire（重试=新请求，扣配额合理）。
+- **fallback 不参与 acquire**：客户端限流防的是**主模型**的突发，备用模型（降级路径）无需限流保护，且独立于主模型配额。
+
+#### 配额缺口：实现要点
+
+- `_rate_limited_call` 闭包捕获 `limiter` / `estimated` / `client` / `kwargs`，在整流循环外定义（依赖变量均不随 attempt 变化）。
+- `estimated` 在循环外计算一次（messages 在一次 `async_generate` 内不变），避免每次重试重复 tiktoken 计数。
+- **整流重试**：整流循环每轮重新 `execute`，call_fn 内部再次 acquire——「新请求」语义正确。
+- **代价**：重试前会先 acquire，等待与退避叠加，延迟可能增大；但语义正确（重试=新请求，扣配额合理）。
+
+```python
+async def _rate_limited_call():
+    await limiter.acquire(estimated_tokens=estimated)   # 每次真实请求前都 acquire
+    return await client.chat.completions.create(**kwargs)
+
+response = await retry.execute(
+    call_fn=_rate_limited_call,        # 原始 + retry 内部重试都重新 acquire
+    fallback_fn=fallback_fn,           # fallback 不参与 acquire
+)
+```
+
+#### 配额缺口：测试
+
+`tests/unit/test_stream_rectify.py`：
+
+- `test_rate_limiter_acquire_before_each_attempt`：整流 2 轮，每轮 call_fn 都 acquire（`calls == 2`）。
+- `test_rate_limiter_acquire_on_retry_inside_execute`：retry.execute 内部重试也 acquire（create 第 1 次抛 RETRYABLE → 重试第 2 次，`calls == 2`）。
+
+> **状态**：✅ 已实施（2026-08-02）。
+
+---
+
+## 当前进度与遗留
+
+> 本节记录 LLM 层自身的进度、遗留工作与下一步计划（项目整体进度见 [HANDOFF.md](../../HANDOFF.md)）。
+
+### 已实现
+
+- 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / ReservationLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
+- retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针按异常类别判定、流式迭代保护；**2026-08-05 修正**：4xx 探针不再回 OPEN，改为不改变状态 + 归还槽位 + 抛上层（详见 [retry.md](retry.md)）
+- **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。见 [设计决策记录·流式整流重试](#流式整流重试)
+- **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
+- **配额缺口闭环（2026-08-02）**：acquire 移入 call_fn，重试计入配额、fallback 不参与（见 [设计决策记录·配额缺口](#配额缺口重试降级不计入限流申请)）
+- **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」
+
+### 遗留未定事项
+
+| 事项                                              | 当前状态             | 说明                                                                                                                                                                                  |
+|---------------------------------------------------|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **`generate_structured` 重复实现**                | 🔶 两个入口待统一    | `LLMService.generate_structured` 是简化版，`StructuredOutput.extract` 更完整（JSON mode 降级 + regex fallback）。下一步计划明确「评估合并」                                           |
+| **熔断观察盲区**                                  | 🔶 未实现            | 流式迭代失败不计入熔断窗口（现状）。若下游「create 正常但流频繁中途断开」，熔断器不感知。可把「放弃时的 RETRYABLE 迭代失败」喂给 `cb.record_failure()`（见「设计决策记录·流式整流重试·遗留微调」） |
+| **自适应预留（Fenic 模型）**                      | ✅ 已实现（开关默认关） | `reserve_adaptive()` + `OutputTokenEstimator`：高分位 × 安全系数估算输出，减少预留占桶（2026-08-06，见 [limiter.md](limiter.md)「对比 3.2」）                                                                  |
+| **`max_tokens` 过大仍空耗配额**                   | 🔶 已缓解未消除      | 自适应预留已用高分位估算替代静态上限（进一步缓解）；但「实际消耗 > 预留」时仍无法补扣，「宁多勿少」保守取舍仍成立（见 [limiter.md](limiter.md)）                                                          |
+| **`APIResponseValidationError` 是否容忍网关故障** | ✅ 已决策保持        | 决策：当前直连服务商场景下重试无效，保持 NON_RETRYABLE                                                                                                                                |
+| **流式迭代是否自动重试**                          | ✅ 已决策（整流）    | 首 token 前中断整流重试（复用 `classify_error`，新增 `llm_stream_max_retries` 配置）；已产出 token 后中断不整流                                                                       |
+
+### 下一步计划
+
+1. **统一结构化输出入口**：评估 `LLMService.generate_structured`（简化版）与 `StructuredOutput.extract`（完整版：JSON mode 降级 + regex fallback）的合并，消除双入口
+2. **补熔断观察盲区**：流式迭代「放弃时的 RETRYABLE 失败」喂给 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」的下游故障
