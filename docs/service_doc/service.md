@@ -394,7 +394,7 @@ vectors = await app_state.embedding_service.embed_batch(
 
 1. **流式生成**（`async_generate`）：Agent 专用单轮流式生成，yield SSE 事件（reasoning / message / error）
 2. **非流式生成**（`generate`）：适合简单任务的低延迟通道（默认 `fast` 模型）
-3. **结构化输出**（`generate_structured`）：JSON Schema 模式生成结构化 dict
+3. **结构化输出**（`generate_structured`）：三级降级生成结构化 dict（JSON Schema → JSON Mode → 正则提取）
 4. **成本计算**（`calculate_cost`）：按模型用量估算费用，代理 `CostTracker`
 5. **可靠性集成**：组合 `RetryHandler`（重试 / 熔断 / fallback）、`ReservationLimiter`（客户端限流）、`StreamParser`（流式解析）、`log_event_async("llm_call")`（请求日志，全局框架）
 
@@ -415,7 +415,7 @@ class StreamResult:
 | --- | --- | --- |
 | `async_generate` | `(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None) -> AsyncGenerator[str]` | 流式生成，yield SSE 事件 |
 | `generate` | `(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast") -> StreamResult \| None` | 非流式生成，失败返回 `None` |
-| `generate_structured` | `(messages, schema, model_key="fast") -> dict \| None` | JSON Schema 结构化输出 |
+| `generate_structured` | `(messages, schema, model_key="fast") -> dict \| None` | 结构化输出，三级降级（JSON Schema → JSON Mode → 正则） |
 | `calculate_cost` | `(usage, model="") -> dict` | 静态方法，代理 `CostTracker.calculate` |
 
 ### 流式生成的可靠性编排
