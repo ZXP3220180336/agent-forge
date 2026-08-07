@@ -6,12 +6,11 @@ StructuredOutput — 结构化输出支持
     2. 优先使用原生 response_format（JSON Schema）
     3. 降级：模型不支持时使用 prompt 约束
 
-使用方式：
+使用方式（统一入口为 LLMService.generate_structured，委托本类）：
     result = await StructuredOutput.extract(
-        llm=llm_service,
+        llm_service=llm_service,
+        messages=[{"role": "user", "content": "张三去了北京"}],
         schema={"type": "object", "properties": {"name": {"type": "string"}}},
-        prompt="从以下内容中提取人名",
-        content="张三去了北京",
     )
     # → {"name": "张三"}
 """
@@ -25,10 +24,11 @@ from typing import Any
 
 class StructuredOutput:
     """
-    结构化输出提取器。
+    结构化输出提取器（三级降级实现载体）。
 
     优先使用 OpenAI 原生 JSON Schema（response_format），
-    兜底使用 prompt 约束 + 正则提取。
+    兜底使用 JSON Mode、prompt 约束 + 正则提取。
+    统一对外入口：LLMService.generate_structured()（本类为内部实现）。
     """
 
     @staticmethod
@@ -64,37 +64,22 @@ class StructuredOutput:
     @staticmethod
     async def extract(
         llm_service: Any,
+        messages: list[dict],
         schema: dict[str, Any],
-        prompt: str,
-        content: str,
         model_key: str = "fast",
     ) -> dict[str, Any] | None:
         """
-        根据 JSON Schema 从内容中提取结构化数据。
+        根据 JSON Schema 从消息中提取结构化数据（三级降级）。
 
         Args:
-            llm_service: LLMService 实例
+            llm_service: LLMService 实例（generate 代理）
+            messages: 完整消息列表（调用方构建）
             schema: JSON Schema 定义
-            prompt: 提取指令 prompt
-            content: 待提取的源内容
             model_key: 使用的模型标识（默认 fast，低延迟低成本）
 
         Returns:
-            解析后的 dict，失败返回 None
+            解析后的 dict，三级均失败返回 None
         """
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    f"{prompt}\n\n"
-                    f"请严格按照以下 JSON Schema 返回数据：\n"
-                    f"{json.dumps(schema, ensure_ascii=False, indent=2)}\n"
-                    f"只返回 JSON，不要包含 Markdown 代码块或其他说明。"
-                ),
-            },
-            {"role": "user", "content": content},
-        ]
-
         # 先用原生 JSON Schema
         response_format = StructuredOutput.build_json_schema_request(schema)
         result = await StructuredOutput._try_extract(
@@ -144,7 +129,7 @@ class StructuredOutput:
                 parsed = json.loads(result.content)
                 if isinstance(parsed, dict):
                     return parsed
-        except (json.JSONDecodeError, Exception):
+        except Exception:
             pass
         return None
 
@@ -174,6 +159,8 @@ class StructuredOutput:
                 flags=re.MULTILINE,
             )
             content = re.sub(r"\s*```$", "", content, flags=re.MULTILINE)
-            return json.loads(content)
-        except (json.JSONDecodeError, Exception):
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
             return None

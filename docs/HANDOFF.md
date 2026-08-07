@@ -200,7 +200,7 @@ API 层（FastAPI 路由）
 | 5   | **中间件未实现**     | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                              |
 | 6   | **TaskService 编排** | 已实现并发闸门；队列/优先级/状态/多 Agent 编排待实现（顶层计划见 [service_doc/task_doc/task.md](service_doc/task_doc/task.md)）                              |
 
-> **LLM 层自身遗留**（`generate_structured` 重复实现待统一；`APIResponseValidationError` 已决策保持；流式迭代自动重试已决策整流）：见 [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)「当前进度与遗留」。
+> **LLM 层自身遗留**（`generate_structured` 已统一为委托 `StructuredOutput` 三级降级；`APIResponseValidationError` 已决策保持；流式迭代自动重试已决策整流）：见 [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)「当前进度与遗留」。
 
 ### 5.4 下一步方向（项目级）
 
@@ -208,7 +208,7 @@ API 层（FastAPI 路由）
 - **优先 2**：验证基础设施 + 服务层 —— 补依赖 `asyncpg`，补全 `memory_service`
 - **优先 3**：补全缺失模块 —— `api/routes/admin.py` / `agent.py` / `tool.py`（空文件）；`api/middleware/`（auth/rate_limit/error_handler，均空文件）
 
-> **LLM 层内部下一步**（`generate_structured` 双入口统一、retry 层遗留微调）：见 [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)「当前进度与遗留」。
+> **LLM 层内部下一步**（retry 层遗留微调）：见 [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)「当前进度与遗留」。
 
 ---
 

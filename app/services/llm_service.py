@@ -27,6 +27,7 @@ from app.services.llm import (
     RetryConfig,
     RetryHandler,
     StreamParser,
+    StructuredOutput,
 )
 from app.services.llm.cost_tracker import CostTracker
 from app.services.llm.retry import ErrorCategory, classify_error
@@ -578,7 +579,9 @@ class LLMService:
         model_key: str = "fast",
     ) -> dict | None:
         """
-        生成结构化输出（JSON Schema 模式）。
+        生成结构化输出（委托 StructuredOutput.extract 三级降级）。
+
+        能力：JSON Schema(strict) → JSON Mode → 正则提取，逐级降级。
 
         Args:
             messages: 消息列表
@@ -588,30 +591,12 @@ class LLMService:
         Returns:
             解析后的 dict，失败返回 None
         """
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "structured_output",
-                "strict": True,
-                "schema": schema,
-            },
-        }
-
-        result = await self.generate(
+        return await StructuredOutput.extract(
+            llm_service=self,
             messages=messages,
-            temperature=0,
-            max_tokens=4096,
-            response_format=response_format,
+            schema=schema,
             model_key=model_key,
         )
-        if result and result.content:
-            import json as json_mod
-
-            try:
-                return json_mod.loads(result.content)
-            except json_mod.JSONDecodeError:
-                return None
-        return None
 
     # ==================================================================
     # 开销查询
