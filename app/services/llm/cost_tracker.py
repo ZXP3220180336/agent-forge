@@ -11,7 +11,7 @@ CostTracker — LLM 调用成本计算
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 # =====================================================================
 # 模型定价表（$/1K tokens）
@@ -44,7 +44,10 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
 class CostTracker:
     """成本计算器。"""
 
-    DEFAULT_PRICE = {"input": 0.002, "output": 0.008}  # 默认均价
+    DEFAULT_PRICE: ClassVar[dict[str, float]] = {
+        "input": 0.002,
+        "output": 0.008,
+    }  # 默认均价
 
     @staticmethod
     def calculate(
