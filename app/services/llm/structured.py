@@ -21,6 +21,12 @@ import json
 import re
 from typing import Any
 
+from jsonschema import ValidationError, validate
+
+from app.utils.logger import get_logger
+
+logger = get_logger("llm.structured")
+
 
 class StructuredOutput:
     """
@@ -87,6 +93,7 @@ class StructuredOutput:
             messages,
             response_format,
             model_key,
+            schema=schema,
         )
         if result is not None:
             return result
@@ -98,6 +105,7 @@ class StructuredOutput:
             messages,
             response_format,
             model_key,
+            schema=schema,
         )
         if result is not None:
             return result
@@ -107,7 +115,33 @@ class StructuredOutput:
             llm_service,
             messages,
             model_key,
+            schema=schema,
         )
+
+    @staticmethod
+    def _validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> bool:
+        """按 JSON Schema 校验解析结果。
+
+        返回 False 时校验失败原因已记录日志，调用方应触发降级。
+        这是「模型返回不能直接进业务」的本地校验一环——strict 只锁结构，
+        minimum/maximum/pattern 等值约束与 refusal/截断绕过，都靠这层兜底。
+        """
+        try:
+            validate(instance=parsed, schema=schema)
+            return True
+        except ValidationError as e:
+            logger.warning(
+                "结构化输出 Schema 校验失败: %s (schema=%s, parsed=%s)",
+                e.message,
+                json.dumps(schema, ensure_ascii=False),
+                json.dumps(parsed, ensure_ascii=False),
+            )
+            return False
+        except Exception as e:  # schema 本身非法（非标准关键字等）
+            logger.error(
+                "Schema 校验器异常（schema 可能非法）: %s", e,
+            )
+            return False
 
     @staticmethod
     async def _try_extract(
@@ -115,8 +149,13 @@ class StructuredOutput:
         messages: list[dict],
         response_format: dict,
         model_key: str,
+        schema: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """尝试用指定 response_format 提取。"""
+        """尝试用指定 response_format 提取。
+
+        Args:
+            schema: 传入则对解析结果做 Schema 校验（校验失败返回 None 触发降级）
+        """
         try:
             result = await llm_service.generate(
                 messages=messages,
@@ -128,6 +167,10 @@ class StructuredOutput:
             if result and result.content:
                 parsed = json.loads(result.content)
                 if isinstance(parsed, dict):
+                    if schema is not None and not StructuredOutput._validate_schema(
+                        parsed, schema
+                    ):
+                        return None
                     return parsed
         except Exception:
             pass
@@ -138,6 +181,7 @@ class StructuredOutput:
         llm_service: Any,
         messages: list[dict],
         model_key: str,
+        schema: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """纯 prompt 约束降级方案。"""
         try:
@@ -161,6 +205,10 @@ class StructuredOutput:
             content = re.sub(r"\s*```$", "", content, flags=re.MULTILINE)
             parsed = json.loads(content)
             if isinstance(parsed, dict):
+                if schema is not None and not StructuredOutput._validate_schema(
+                    parsed, schema
+                ):
+                    return None
                 return parsed
         except Exception:
             return None

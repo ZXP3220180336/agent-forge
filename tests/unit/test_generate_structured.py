@@ -205,3 +205,86 @@ async def test_model_key_forwarded():
     llm.generate = fake_generate
     await llm.generate_structured(MESSAGES, SCHEMA, model_key="reasoning")
     assert seen["model_key"] == "reasoning"
+
+
+# =====================================================================
+# Schema 校验（问题 1 修复：解析后按 schema 校验）
+# 结构合法但不合 schema（类型/枚举/范围/必填）→ 校验失败 → 降级 / None
+# =====================================================================
+
+SCHEMA_RANGE = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["name", "confidence"],
+}
+
+
+@pytest.mark.asyncio
+async def test_schema_validation_pass_no_extra_call():
+    """第一级直接返回符合 schema → 校验通过、不降级。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr(json.dumps({"name": "张三", "confidence": 0.5}))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
+    assert result == {"name": "张三", "confidence": 0.5}
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_schema_validation_range_failure_falls_back():
+    """第一级结构合法但 confidence 超范围（strict 不保证值约束）→ 校验失败 → 降级第二级成功。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) == 1:
+            return _sr(json.dumps({"name": "张三", "confidence": 5}))
+        return _sr(json.dumps({"name": "张三", "confidence": 0.9}))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
+    assert result == {"name": "张三", "confidence": 0.9}
+    assert calls[0]["type"] == "json_schema"
+    assert calls[1]["type"] == "json_object"
+
+
+@pytest.mark.asyncio
+async def test_schema_validation_missing_required_falls_back():
+    """第一级缺必填字段 confidence → 校验失败 → 降级。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) == 1:
+            return _sr(json.dumps({"name": "张三"}))
+        return _sr(json.dumps({"name": "张三", "confidence": 0.8}))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
+    assert result == {"name": "张三", "confidence": 0.8}
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_schema_validation_all_levels_fail_returns_none():
+    """三级均返回结构合法但不合 schema → 全部校验失败 → None（含第三级正则路径也校验）。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr(json.dumps({"name": "张三", "confidence": "很高"}))
+
+    llm.generate = fake_generate
+    assert await llm.generate_structured(MESSAGES, SCHEMA_RANGE) is None
+    assert len(calls) == 3

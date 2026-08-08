@@ -12,39 +12,35 @@
 - [StructuredOutput 结构化输出设计文档](#structuredoutput-结构化输出设计文档)
   - [目录](#目录)
   - [设计目标](#设计目标)
-    - [统一入口决策：generate_structured 委托 extract（2026-08-07）](#统一入口决策generate_structured-委托-extract2026-08-07)
+    - [统一入口决策：generate\_structured 委托 extract（2026-08-07）](#统一入口决策generate_structured-委托-extract2026-08-07)
   - [核心概念解释](#核心概念解释)
     - [结构化输出（Structured Outputs）](#结构化输出structured-outputs)
     - [什么时候该使用结构化输出？](#什么时候该使用结构化输出)
     - [JSON Schema](#json-schema)
     - [JSON mode vs Structured Outputs](#json-mode-vs-structured-outputs)
     - [strict mode](#strict-mode)
-    - [finish_reason / refusal](#finish_reason--refusal)
+    - [finish\_reason / refusal](#finish_reason--refusal)
     - [正则提取 / constrained decoding](#正则提取--constrained-decoding)
     - [三级降级](#三级降级)
   - [架构总览](#架构总览)
   - [组件详解](#组件详解)
-    - [build_json_schema_request — 原生 JSON Schema 请求](#build_json_schema_request--原生-json-schema-请求)
-    - [build_json_mode_request — JSON mode 请求](#build_json_mode_request--json-mode-请求)
+    - [build\_json\_schema\_request — 原生 JSON Schema 请求](#build_json_schema_request--原生-json-schema-请求)
+    - [build\_json\_mode\_request — JSON mode 请求](#build_json_mode_request--json-mode-请求)
     - [extract — 三级降级编排](#extract--三级降级编排)
-    - [_try_extract — 单级提取（response_format 形态）](#_try_extract--单级提取response_format-形态)
-    - [_fallback_extract — 正则兜底提取（无 response_format）](#_fallback_extract--正则兜底提取无-response_format)
-  - [调用流程（generate_structured 三级降级）](#调用流程generate_structured-三级降级)
+    - [\_try\_extract — 单级提取（response\_format 形态）](#_try_extract--单级提取response_format-形态)
+    - [\_fallback\_extract — 正则兜底提取（无 response\_format）](#_fallback_extract--正则兜底提取无-response_format)
+  - [调用流程（generate\_structured 三级降级）](#调用流程generate_structured-三级降级)
   - [与重试/限流的分层配合](#与重试限流的分层配合)
   - [配置项清单（隐含参数）](#配置项清单隐含参数)
   - [已知边界与设计取舍](#已知边界与设计取舍)
   - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题--修复--工业对照)
-    - [问题 1（严重）：解析后无 Schema 校验 ⚠️ 未修复](#问题-1严重解析后无-schema-校验️-未修复)
-      - [工业级对照：程序校验是必需品](#工业级对照程序校验是必需品)
-      - [工业级调研记录（2026-08-08）](#工业级调研记录2026-08-08)
-    - [问题 2（中）：不检查 finish_reason / refusal ⚠️ 未修复](#问题-2中不检查-finish_reason--refusal️-未修复)
-      - [工业级对照：失败处理要覆盖 API 边界](#工业级对照失败处理要覆盖-api-边界)
-    - [问题 3（中）：降级而非「错误感知重试」 ⚠️ 未修复](#问题-3中降级而非错误感知重试️-未修复)
-      - [工业级对照：把具体校验错误回喂给模型](#工业级对照把具体校验错误回喂给模型)
-    - [问题 4（低）：额外字段不拒绝 ⚠️ 未修复](#问题-4低额外字段不拒绝️-未修复)
-      - [工业级对照：禁止额外字段](#工业级对照禁止额外字段)
+    - [问题 1（严重）：解析后无 Schema 校验 ✅ 已修复](#问题-1严重解析后无-schema-校验--已修复)
+    - [问题 2（中）：不检查 finish\_reason / refusal ⚠️ 未修复](#问题-2中不检查-finish_reason--refusal-️-未修复)
+    - [问题 3（中）：降级而非「错误感知重试」 ⚠️ 未修复](#问题-3中降级而非错误感知重试-️-未修复)
+    - [问题 4（低）：额外字段不拒绝 ⚠️ 未修复](#问题-4低额外字段不拒绝-️-未修复)
     - [已覆盖的工业级实践](#已覆盖的工业级实践)
     - [速查表](#速查表)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -251,7 +247,7 @@ async def extract(llm_service, messages, schema, model_key="fast"):
 **要点**：
 
 - **顺序固定**：高约束 → 低约束，每级成功即返回，不再下探
-- **级间判定是「解析成功」**：`_try_extract` 返回非 None dict 即视为成功——**当前不含 Schema 校验**（见「代码审核」问题 1）
+- **级间判定是「解析成功 + Schema 校验通过」**：`_try_extract` 返回非 None dict 且通过 `_validate_schema` 才视为成功（见「代码审核」问题 1，已修复）
 - **透明**：调用方不知道命中了哪级
 
 ### _try_extract — 单级提取（response_format 形态）
@@ -379,7 +375,7 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 
 ## 已知边界与设计取舍
 
-1. **成功判定 = 可解析 dict，不含 Schema 校验**：`_try_extract` 只做 `json.loads` + `isinstance(dict)`。字段缺失、类型错误、枚举非法全部直接通过，上层可能拿到「结构合法但语义/字段错误」的结果。这是当前最严重的边界（见问题 1）。
+1. **成功判定 = 可解析 dict + Schema 校验通过**：`_try_extract` / `_fallback_extract` 在 `json.loads` + `isinstance(dict)` 后，经 `_validate_schema`（jsonschema）校验字段类型/枚举/必填/范围，失败记日志并返回 `None` 触发降级。已修复（2026-08-08，见问题 1）。**残留边界**：校验失败直接降级，未做「错误回喂重试」（见问题 3）。
 2. **不检查 finish_reason / refusal**：`length` 截断（半个 JSON → 解析失败 → 静默降级）与模型拒答（content 为空 → 静默降级）无区分、无日志。截断事实不进入任何观测（见问题 2）。
 3. **降级而非「错误感知重试」**：第一级失败后直接换更弱的约束方式，**不把校验错误回喂给模型重试**。对 cheap 模型，回喂错误往往是唯一有效纠错手段（见问题 3）。
 4. **多级降级 = 多次模型调用**：三级全失败 = 3 组调用（含各组的重试），token 消耗放大。这是「兼容所有模型」的显式代价——换取廉价模型可用性，而非默认接受解析失败。
@@ -393,11 +389,19 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 
 > 本节以 2026-08-07 结构化输出模块审核发现的问题为主线，逐条记录**问题 → 现状 → 工业级对照**（对照《大模型稳定输出 JSON 的生产级方案：从结构化输出到验收闭环》zhuwei.fun，调研日期 2026-08-07）。修复状态逐条标注（⚠️ 未修复 / ✅ 已覆盖）。完整速览见文末[速查表](#速查表)。
 
-### 问题 1（严重）：解析后无 Schema 校验 ⚠️ 未修复
+### 问题 1（严重）：解析后无 Schema 校验 ✅ 已修复
 
-**位置**：`_try_extract`（`json.loads` 后仅 `isinstance(parsed, dict)`）
+**位置**：`_try_extract` / `_fallback_extract`（`json.loads` 后加 `_validate_schema` 校验）
 
-**现状**：Schema 上要求 `intent` 枚举、`confidence` 0~1，模型返回 `{"intent": "我要退款", "confidence": "很高"}` 也会当成功返回，上层信以为真。**系统不知道自己不稳定**。
+**已修复（2026-08-08）**：新增 `_validate_schema`（基于 `jsonschema` 库 `validate()`），`_try_extract` / `_fallback_extract` 在解析出 dict 后按 schema 校验；校验失败记 `logger.warning`（含 schema 与解析结果）→ 返回 `None` → 触发降级。三级降级每一级都带校验兜底，不再返回「结构合法但值非法」的坏数据。修复前：Schema 上要求 `confidence` 0~1，模型返回 `{"confidence": "很高"}` 也会当成功返回，上层信以为真，**系统不知道自己不稳定**。
+
+**修复要点**：
+
+- **jsonschema 选型**：schema 是 JSON Schema dict（非 Pydantic model），`jsonschema` 零转换直接校验，与调研结论一致（Pydantic 作者官方定位：JSON Schema 实例校验归 jsonschema）
+- **strict 只锁结构，本地校验锁值**：`confidence` 0~1 这类 `minimum`/`maximum` 值约束 strict 不保证，`_validate_schema` 兜底（服务端 strict 锁结构 + 本地 jsonschema 锁值，双保险）
+- **校验失败触发降级**：与现有三级降级链衔接——校验失败 = 该级无效 → 降级下一级，而非返回坏数据
+- **非法 schema 有防护**：`validate()` 抛非 `ValidationError` 异常（schema 本身非法）也记日志返回 False，不静默穿透
+- **遗留（不属于问题 1）**：校验失败直接降级，未做「错误回喂重试」（见问题 3）
 
 **工业级原则**：模型返回之后不能直接进业务逻辑，生产链路必须有 Schema 校验一环：
 
@@ -425,7 +429,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 
 **改进方向**（建议）：`extract` 增加可选 `validator`（或内置 JSON Schema 校验器）。解析后校验字段类型/枚举/必填；校验失败 → 记日志 + 返回 `None`（触发降级），而非返回坏数据。这会让降级链真正有意义——**当前第一级的 strict 约束一旦降级到 JSON mode/正则，Schema 保证就丢了，而后续级别恰好没有校验兜底**。
 
-### 工业级调研记录（2026-08-08）
+#### 工业级调研记录（2026-08-08）
 
 > 调研目的：修复问题 1（解析后无 Schema 校验）前，先查证工业级项目如何解决「模型返回 JSON 后的 Schema 校验」。调研对象：OpenAI/Anthropic 官方 Structured Outputs、Instructor、LangChain、Guardrails AI、Outlines/JSONFormer、Vellum 及 jsonschema vs Pydantic 选型讨论。
 
@@ -538,7 +542,7 @@ Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(
 | API 边界失败（超时/429/5xx） | ✅ 可靠性层（retry/限流/熔断）透明覆盖 |
 | 审计日志 | ✅ `llm_call` 业务事件（请求/用量/耗时，generate 内部） |
 | 模型输出当不可信输入 | ✅ 三级降级 + 重试 + 熔断的整体设计意图 |
-| **程序校验（Schema）** | ⚠️ 缺失（问题 1） |
+| **程序校验（Schema）** | ✅ `_validate_schema`（jsonschema）本地校验，三级降级全覆盖（问题 1） |
 | **API 边界检查（refusal/截断）** | ⚠️ 缺失（问题 2） |
 | **错误感知重试** | ⚠️ 缺失（问题 3） |
 | **禁额外字段** | ⚠️ 未强制（问题 4） |
@@ -549,7 +553,7 @@ Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(
 
 | 我们的缺陷 | 工业级正确做法 | 我们的现状 | 参照实现 | 结论 |
 | --- | --- | --- | --- | --- |
-| 解析后无 Schema 校验 | 程序校验是必需品（Pydantic `model_validate_json` + `extra="forbid"`） | 仅 `json.loads` + `isinstance(dict)` | zhuwei.fun 生产级方案 · Pydantic | ⚠️ 严重，建议 `extract` 加 validator |
+| 解析后无 Schema 校验 | 程序校验是必需品（本地 jsonschema/Pydantic 校验） | ✅ `_validate_schema`（jsonschema）三级全覆盖，校验失败→记日志→降级 | zhuwei.fun 生产级方案 · jsonschema 库 | ✅ 已修复（2026-08-08），回喂重试留待问题 3 |
 | 不检查 finish_reason/refusal | API 边界检查：截断扩 token 重试、拒答走安全兜底 | 只看 content 非空，截断/拒答静默降级 | OpenAI 文档 · zhuwei.fun 失败处理表 | ⚠️ 中，建议区分日志 |
 | 降级而非错误感知重试 | 带具体校验错误回喂模型，`max_retries=2~3` 后进降级路径 | 只换约束方式，不回喂错误 | zhuwei.fun 错误感知 retry | ⚠️ 中，范围大留待后续 |
 | 额外字段不拒绝 | `additionalProperties:false` + Pydantic `extra="forbid"` | schema 原样透传 | JSON Schema 规范 | ⚠️ 低，建议文档引导 |
