@@ -36,7 +36,7 @@
   - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题--修复--工业对照)
     - [问题 1（严重）：解析后无 Schema 校验 ✅ 已修复](#问题-1严重解析后无-schema-校验--已修复)
       - [工业级调研记录（2026-08-08 问题1）](#工业级调研记录2026-08-08-问题1)
-    - [问题 2（中）：不检查 finish\_reason / refusal ⚠️ 未修复](#问题-2中不检查-finish_reason--refusal-️-未修复)
+    - [问题 2（中）：不检查 finish\_reason / refusal ✅ 已修复](#问题-2中不检查-finish_reason--refusal-️-已修复)
       - [工业级调研记录（2026-08-08 问题2）](#工业级调研记录2026-08-08-问题2)
     - [问题 3（中）：降级而非「错误感知重试」 ⚠️ 未修复](#问题-3中降级而非错误感知重试-️-未修复)
     - [问题 4（低）：额外字段不拒绝 ⚠️ 未修复](#问题-4低额外字段不拒绝-️-未修复)
@@ -135,7 +135,7 @@
 - `finish_reason`：模型停止原因（`stop` / `length` / `tool_calls`）。`length` = 输出被 max_tokens 截断，可能只剩半个 JSON 对象
 - `refusal`：模型拒答字段（内容安全策略触发），此时 `content` 可能为空或含拒绝说明
 
-**生产语义**：这两个字段是「API 边界检查」的一部分——截断、拒答与「正常返回但解析失败」是三类不同失败，处理方式不同（截断可扩大 token 重试，拒答不应强行 repair）。当前模块**未检查**（见「代码审核」问题 2）。
+**生产语义**：这两个字段是「API 边界检查」的一部分——截断、拒答与「正常返回但解析失败」是三类不同失败，处理方式不同（截断可扩大 token 重试，拒答不应强行 repair）。当前模块**已检查**（`_classify_result` 三态分类，见「代码审核」问题 2）。
 
 ### 正则提取 / constrained decoding
 
@@ -275,9 +275,9 @@ async def _try_extract(llm_service, messages, response_format, model_key):
 **要点**：
 
 - **temperature=0**：结构化输出要确定性，禁用采样随机
-- **max_tokens=2048**：硬编码输出上限（可能截断，见「代码审核」问题 2）
+- **max_tokens=2048**：硬编码输出上限（截断时本层扩 4096 重试 1 次，见「代码审核」问题 2）
 - **`isinstance(parsed, dict)`**：拒绝顶层是数组/标量的 JSON（列表穿不过，测试 `test_non_dict_content_returns_none` 覆盖）
-- **静默吞异常**：任何异常（解析失败、下游失败）→ 返回 None → 触发下一级。**不区分失败类型**（见问题 2/3）
+- **解析前三态检查**：`_classify_result` 区分截断/拒答/正常（见问题 2）——截断扩 token 重试、拒答短路，均不进入降级链
 
 ### _fallback_extract — 正则兜底提取（无 response_format）
 
@@ -378,10 +378,10 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 ## 已知边界与设计取舍
 
 1. **成功判定 = 可解析 dict + Schema 校验通过**：`_try_extract` / `_fallback_extract` 在 `json.loads` + `isinstance(dict)` 后，经 `_validate_schema`（jsonschema）校验字段类型/枚举/必填/范围，失败记日志并返回 `None` 触发降级。已修复（2026-08-08，见问题 1）。**残留边界**：校验失败直接降级，未做「错误回喂重试」（见问题 3）。
-2. **不检查 finish_reason / refusal**：`length` 截断（半个 JSON → 解析失败 → 静默降级）与模型拒答（content 为空 → 静默降级）无区分、无日志。截断事实不进入任何观测（见问题 2）。
+2. **finish_reason / refusal 已检查**：`_classify_result` 解析前三态分类，截断扩 token 重试 1 次、拒答短路（均不进降级链），记区分日志。已修复（2026-08-08，见问题 2）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（不降级）；拒答直接短路返回 None，调用方需自行转安全兜底。
 3. **降级而非「错误感知重试」**：第一级失败后直接换更弱的约束方式，**不把校验错误回喂给模型重试**。对 cheap 模型，回喂错误往往是唯一有效纠错手段（见问题 3）。
 4. **多级降级 = 多次模型调用**：三级全失败 = 3 组调用（含各组的重试），token 消耗放大。这是「兼容所有模型」的显式代价——换取廉价模型可用性，而非默认接受解析失败。
-5. **每级调用 `max_tokens=2048` 硬编码**：结构化输出通常较短，2048 是合理默认；但长字段（如大段抽取）可能截断且不感知（见边界 2）。
+5. **每级调用 `max_tokens=2048` 硬编码**：结构化输出通常较短，2048 是合理默认；长字段截断时本层扩 4096 重试 1 次（见问题 2），超限后放弃。
 6. **额外字段不拒绝**：`extract` 接收任意 schema 原样透传，不强制 `additionalProperties:false`。调用方 schema 若未写死，模型可能扩展字段混入（见问题 4）。
 7. **吞异常无区分**：`_try_extract` 的 `except Exception: pass` 不区分失败类型——API 故障、解析失败、下游异常都归为「降级」。与可靠性层（重试/熔断/限流在 generate 内部）职责边界清晰，但**结构化层自身的失败原因不可观测**。
 
@@ -477,14 +477,19 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 - Outlines 约束解码：<https://deepwiki.com/dottxt-ai/outlines/3-structured-generation>
 - jsonschema vs Pydantic 选型：<https://www.glukhov.org/llm-performance/benchmarks/llm-structured-output-validation-python>、Pydantic 官方讨论：<https://github.com/pydantic/pydantic/discussions/5135>
 
-### 问题 2（中）：不检查 finish_reason / refusal ⚠️ 未修复
+### 问题 2（中）：不检查 finish_reason / refusal ✅ 已修复
 
-**位置**：`_try_extract` / `_fallback_extract`（只看 `result.content` 非空）
+**位置**：`structured.py`（`_classify_result` + `_try_extract` / `_fallback_extract`）；`streaming.py`（refusal 透传）
 
-**现状**：
+**已修复（2026-08-08）**：解析前做三态检查，截断与拒答显式区分、可观测、分别处理：
 
-- `finish_reason="length"`（max_tokens=2048 截断出半个 JSON）→ `json.loads` 失败 → **静默降级**，截断事实不进任何日志
-- 模型拒答（`refusal` 字段）→ content 为空 → **静默降级**，拒答被当成「普通失败」
+- **截断**（`finish_reason` ∈ `length`/`max_tokens`/`insufficient_system_resource`）：`_try_extract` 本层扩 max_tokens（2048→4096）重试 1 次；重试后仍截断抛 `StructuredTruncationError`（短路返回 None，不降级）。`_fallback_extract`（第三级到头无降级可走）直接短路。
+- **拒答/过滤**（`refusal` 字段非空 / `finish_reason=content_filter` / content 空且正常结束）：抛 `StructuredRefusalError`（短路，不强行 repair），记 `logger.warning` 含 refusal 文本与 finish_reason。
+- **正常**：走解析 + Schema 校验，普通失败返回 None 触发降级。
+- **数据透传**：`StreamResult` 增加 `refusal` 字段；`parse_non_stream` / `parse_chunk` 提取 `refusal`（保留 None 与空串区分，不用 `or ""`）；`llm_service.py` 非流式/流式路径填入。
+- **短路语义**：截断/拒答均不进入三级降级链——`extract` 捕获 `StructuredExtractionError` 直接返回 None（截断与降级正交、拒答是策略信号，降级无益）。
+
+修复前：`finish_reason="length"` 截断出半个 JSON → `json.loads` 失败 → **静默降级**；模型拒答 → content 为空 → **静默降级**，两类失败无区分、无日志。
 
 #### 工业级对照：失败处理要覆盖 API 边界
 
@@ -612,7 +617,7 @@ Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(
 | 审计日志 | ✅ `llm_call` 业务事件（请求/用量/耗时，generate 内部） |
 | 模型输出当不可信输入 | ✅ 三级降级 + 重试 + 熔断的整体设计意图 |
 | **程序校验（Schema）** | ✅ `_validate_schema`（jsonschema）本地校验，三级降级全覆盖（问题 1） |
-| **API 边界检查（refusal/截断）** | ⚠️ 缺失（问题 2） |
+| **API 边界检查（refusal/截断）** | ✅ `_classify_result` 三态分类，截断扩 token 重试 1 次、拒答短路（问题 2） |
 | **错误感知重试** | ⚠️ 缺失（问题 3） |
 | **禁额外字段** | ⚠️ 未强制（问题 4） |
 
@@ -623,11 +628,11 @@ Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(
 | 我们的缺陷 | 工业级正确做法 | 我们的现状 | 参照实现 | 结论 |
 | --- | --- | --- | --- | --- |
 | 解析后无 Schema 校验 | 程序校验是必需品（本地 jsonschema/Pydantic 校验） | ✅ `_validate_schema`（jsonschema）三级全覆盖，校验失败→记日志→降级 | zhuwei.fun 生产级方案 · jsonschema 库 | ✅ 已修复（2026-08-08），回喂重试留待问题 3 |
-| 不检查 finish_reason/refusal | API 边界检查：截断扩 token 重试、拒答走安全兜底 | 只看 content 非空，截断/拒答静默降级 | OpenAI 文档 · zhuwei.fun 失败处理表 | ⚠️ 中，建议区分日志 |
+| 不检查 finish_reason/refusal | API 边界检查：截断扩 token 重试、拒答走安全兜底 | ✅ `_classify_result` 三态分类：截断扩 token 重试 1 次、拒答短路（均不进降级链），记区分日志 | OpenAI 文档 · zhuwei.fun 失败处理表 | ✅ 已修复（2026-08-08） |
 | 降级而非错误感知重试 | 带具体校验错误回喂模型，`max_retries=2~3` 后进降级路径 | 只换约束方式，不回喂错误 | zhuwei.fun 错误感知 retry | ⚠️ 中，范围大留待后续 |
 | 额外字段不拒绝 | `additionalProperties:false` + Pydantic `extra="forbid"` | schema 原样透传 | JSON Schema 规范 | ⚠️ 低，建议文档引导 |
 | 多级降级 = 多次调用 | 降级路径是兜底不是默认路径 | 三级全失败 3 组调用 | — | ✅ 设计取舍，文档记录 |
-| 吞异常无区分 | 失败类型可观测、分别处理 | `except Exception: pass` | zhuwei.fun 失败分类表 | ⚠️ 低，配合问题 2 改善 |
+| 吞异常无区分 | 失败类型可观测、分别处理 | 截断/拒答已区分（问题 2）；解析失败/下游失败仍静默降级 | zhuwei.fun 失败分类表 | ⚠️ 低，解析失败细分日志留待问题 3 |
 
 ---
 

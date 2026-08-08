@@ -50,6 +50,7 @@ class StreamResult:
         self.finish_reason: str | None = None
         self.tool_calls: list[dict] = []
         self.usage: dict | None = None
+        self.refusal: str | None = None
 
 
 def _stream_backoff(attempt: int) -> float:
@@ -396,6 +397,10 @@ class LLMService:
                     if parsed.finish_reason:
                         result.finish_reason = parsed.finish_reason
 
+                    # refusal（OpenAI 流式拒答形态）
+                    if parsed.refusal:
+                        result.refusal = parsed.refusal
+
                     # tool_calls deltas
                     if parsed.tool_call_deltas:
                         emitted_any = True
@@ -557,6 +562,7 @@ class LLMService:
         sr.finish_reason = parsed.get("finish_reason")
         sr.tool_calls = parsed.get("tool_calls", [])
         sr.usage = parsed.get("usage")
+        sr.refusal = parsed.get("refusal")
 
         # 结算退差：实际消耗 = usage.total_tokens，退还预估多余部分
         res = active.pop("res", None)

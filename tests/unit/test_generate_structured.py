@@ -24,10 +24,16 @@ SCHEMA = {
 MESSAGES = [{"role": "user", "content": "张三去了北京"}]
 
 
-def _sr(content: str | None) -> StreamResult:
-    """构造带指定 content 的 StreamResult。"""
+def _sr(
+    content: str | None,
+    finish_reason: str | None = None,
+    refusal: str | None = None,
+) -> StreamResult:
+    """构造带指定 content / finish_reason / refusal 的 StreamResult。"""
     sr = StreamResult()
     sr.content = content or ""
+    sr.finish_reason = finish_reason
+    sr.refusal = refusal
     return sr
 
 
@@ -288,3 +294,135 @@ async def test_schema_validation_all_levels_fail_returns_none():
     llm.generate = fake_generate
     assert await llm.generate_structured(MESSAGES, SCHEMA_RANGE) is None
     assert len(calls) == 3
+
+
+# =====================================================================
+# 问题 2：API 边界检查（finish_reason / refusal）
+# 截断 → 本层扩 token 重试 1 次；拒答 → 短路不降级；正常 → 解析
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_truncation_retries_with_larger_max_tokens():
+    """第一级截断（length）→ 本层扩 max_tokens 重试 1 次 → 成功。"""
+    llm = LLMService()
+    seen = {}
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        if not seen.get("first"):
+            seen["first"] = True
+            return _sr('{"name": "张', finish_reason="length")  # 截断的半 JSON
+        seen["retry_max_tokens"] = max_tokens
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA)
+    assert result == {"name": "张三"}
+    assert seen["retry_max_tokens"] == 4096  # 扩 token 重试
+
+
+@pytest.mark.asyncio
+async def test_truncation_retry_still_truncated_returns_none():
+    """第一级截断 → 扩 token 重试仍截断 → 短路返回 None（不降级）。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(max_tokens)
+        return _sr('{"name": "张', finish_reason="length")
+
+    llm.generate = fake_generate
+    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    assert calls == [2048, 4096]  # 只本层重试 1 次，不再走降级链
+
+
+@pytest.mark.asyncio
+async def test_refusal_short_circuits_no_retry():
+    """拒答（refusal 字段）→ 短路不 repair、不降级，只调用一次。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr("", refusal="抱歉，我无法处理这个请求。")
+
+    llm.generate = fake_generate
+    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    assert len(calls) == 1  # 拒答短路，无降级重试
+
+
+@pytest.mark.asyncio
+async def test_content_filter_short_circuits():
+    """finish_reason=content_filter → 短路不 repair、不降级。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr("", finish_reason="content_filter")
+
+    llm.generate = fake_generate
+    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_refusal_from_third_level_short_circuits():
+    """第三级 fallback 也做拒答短路（第三级无降级可走，直接 None）。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) <= 2:
+            return _sr("bad json")  # 前两级解析失败
+        return _sr("", refusal="无法提供结构化数据")
+
+    llm.generate = fake_generate
+    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_fallback_truncation_short_circuits():
+    """第三级 fallback 截断 → 短路 None（不扩 token 重试，无降级可走）。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) <= 2:
+            return _sr("bad json")
+        return _sr('{"name": "张', finish_reason="length")
+
+    llm.generate = fake_generate
+    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_empty_content_normal_finish_treated_as_refusal():
+    """content 空 + finish_reason=stop（DeepSeek 无 refusal 字段形态）→ 当拒答短路。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr("", finish_reason="stop")
+
+    llm.generate = fake_generate
+    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_normal_path_unaffected_by_classification():
+    """正常响应（stop + 完整 JSON）→ 校验通过直接返回，不误判。"""
+    llm = LLMService()
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False), finish_reason="stop")
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA)
+    assert result == {"name": "张三"}

@@ -26,13 +26,14 @@ class ParsedChunk:
     单个 chunk 的解析结果。
 
     - reasoning / message → 单 token
-    - finish_reason / usage → 元数据
+    - finish_reason / usage / refusal → 元数据
     """
 
     reasoning_token: str | None = None
     message_token: str | None = None
     finish_reason: str | None = None
     usage: dict | None = None
+    refusal: str | None = None
     tool_call_deltas: list[ToolCallDelta] | None = None
 
 
@@ -90,6 +91,10 @@ class StreamParser:
         # content
         if hasattr(delta, "content") and delta.content:
             result.message_token = delta.content
+
+        # refusal（OpenAI 流式拒答形态，delta.refusal 到达）
+        if hasattr(delta, "refusal") and delta.refusal:
+            result.refusal = delta.refusal
 
         # tool_calls
         if hasattr(delta, "tool_calls") and delta.tool_calls:
@@ -152,6 +157,7 @@ class StreamParser:
                 "finish_reason": str | None,
                 "tool_calls": list[dict],
                 "usage": dict | None,
+                "refusal": str | None,
             }
         """
         choice = response.choices[0]
@@ -176,4 +182,7 @@ class StreamParser:
             "finish_reason": choice.finish_reason,
             "tool_calls": tool_calls,
             "usage": response.usage.model_dump() if response.usage else None,
+            # refusal 必须保留 None 与空串的区分：`or ""` 会把拒答的 None 抹成空串，
+            # 下游无法判断「未拒答」与「拒答但文本为空」——直接透传原值。
+            "refusal": getattr(msg, "refusal", None),
         }
