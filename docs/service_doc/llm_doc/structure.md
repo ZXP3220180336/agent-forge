@@ -35,7 +35,9 @@
   - [已知边界与设计取舍](#已知边界与设计取舍)
   - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题--修复--工业对照)
     - [问题 1（严重）：解析后无 Schema 校验 ✅ 已修复](#问题-1严重解析后无-schema-校验--已修复)
+      - [工业级调研记录（2026-08-08 问题1）](#工业级调研记录2026-08-08-问题1)
     - [问题 2（中）：不检查 finish\_reason / refusal ⚠️ 未修复](#问题-2中不检查-finish_reason--refusal-️-未修复)
+      - [工业级调研记录（2026-08-08 问题2）](#工业级调研记录2026-08-08-问题2)
     - [问题 3（中）：降级而非「错误感知重试」 ⚠️ 未修复](#问题-3中降级而非错误感知重试-️-未修复)
     - [问题 4（低）：额外字段不拒绝 ⚠️ 未修复](#问题-4低额外字段不拒绝-️-未修复)
     - [已覆盖的工业级实践](#已覆盖的工业级实践)
@@ -429,7 +431,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 
 **改进方向**（建议）：`extract` 增加可选 `validator`（或内置 JSON Schema 校验器）。解析后校验字段类型/枚举/必填；校验失败 → 记日志 + 返回 `None`（触发降级），而非返回坏数据。这会让降级链真正有意义——**当前第一级的 strict 约束一旦降级到 JSON mode/正则，Schema 保证就丢了，而后续级别恰好没有校验兜底**。
 
-#### 工业级调研记录（2026-08-08）
+#### 工业级调研记录（2026-08-08 问题1）
 
 > 调研目的：修复问题 1（解析后无 Schema 校验）前，先查证工业级项目如何解决「模型返回 JSON 后的 Schema 校验」。调研对象：OpenAI/Anthropic 官方 Structured Outputs、Instructor、LangChain、Guardrails AI、Outlines/JSONFormer、Vellum 及 jsonschema vs Pydantic 选型讨论。
 
@@ -497,6 +499,73 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 | 业务校验失败 | 订单不可退、权限不足 | 返回业务原因，不让模型裁决 |
 
 **改进方向**（建议）：`_try_extract` 里检查 `finish_reason == "length"` 或 `refusal` 非空 → 视为失败并区分日志（截断 vs 拒答），不进错误结果。截断与拒答是不同性质失败，应可观测、可分别处理。
+
+#### 工业级调研记录（2026-08-08 问题2）
+
+> 调研目的：修复问题 2（不检查 finish_reason / refusal）前，先查证工业级项目如何处理「输出截断」与「模型拒答」两类 API 边界失败。调研对象：OpenAI / Anthropic / DeepSeek 官方语义、instructor、LiteLLM 网关归一化、openclaw、pi-refusal-guard 等。
+
+**结论先行**：
+
+1. **截断与拒答是两种必须显式区分的失败**，业界检查顺序固定为：`finish_reason` → `refusal` → `content` 存在性 → 解析 → schema 校验 → 业务校验。**任何解析动作之前必须先查 `finish_reason`**。
+2. **截断（`length`/`max_tokens`）**：盲重试是反模式——instructor PR #2232 记录真实事故（截断输出拼回 prompt 重试，Gemini 烧掉约 150 万 token），**绝不把截断输出拼回 prompt**。正确做法是**本层内扩 max_tokens 重试至多 1 次**，仍失败记硬失败。`length` 时 HTTP 200 也要自查 finish_reason，不能靠状态码。
+3. **拒答（`refusal`/`content_filter`）**：工业共识是**拒答是「路由决策」而非「可捕获异常」**（HTTP 200 的"正常返回"）。**不强行 repair、不盲目降级重试**（分类器刻意调保守，对抗被反对）。正确姿势是短路 + 记日志（含 category）+ 返回可区分信号（unknown/转人工/安全提示）。Anthropic 特殊要求：收到 `stop_reason:"refusal"` 后必须重置会话上下文再继续。
+
+**finish_reason 语义表**：
+
+| 提供商 | 截断 | 拒答/过滤 | 其它 |
+| --- | --- | --- | --- |
+| OpenAI | `length`（token 用尽，JSON 必残缺） | `content_filter`（内容被过滤移除） | `stop` / `tool_calls` |
+| Anthropic | `max_tokens`（官方建议：截断且以不完整 tool_use 结尾时用更大 max_tokens 重试） | `stop_reason:"refusal"`（Claude 4+，带 `stop_details{type, category, explanation}`） | `end_turn` / `stop_sequence` / `tool_use` |
+| DeepSeek | `length`（同 OpenAI）+ 额外 `insufficient_system_resource`（推理资源中断，需整体重发） | **无 refusal 字段**；拒答只能靠「content 空 + finish_reason 异常」推断 | `stop` / `tool_calls` / `content_filter` |
+
+**refusal 字段支持度**：
+
+| 提供商 | 支持 refusal 字段 | 拒答信号形态 |
+| --- | --- | --- |
+| OpenAI | ✅ | `message.refusal` 字符串，同时 `content` 可置 `null`；官方 structured outputs 文档示例 `if result.refusal: ...` |
+| Anthropic | ✅（Claude 4+） | `stop_reason:"refusal"` + `stop_details`（具名 category 如 cyber/bio） |
+| DeepSeek | ❌ | 只能靠「content 空 + finish_reason 异常」推断 |
+
+> 关键坑：OpenAI 把拒答文本放进 `refusal` 字段正是为了**不破坏 JSON 解析**——但代码若只读 `content`，就会拿到 `null`/空串 → 静默吞掉。这正是本项目当前缺陷。兼容层（LiteLLM 等）把各提供商非标准值归一化为 OpenAI 枚举，说明「内容被过滤」最终都落成 `content_filter` 或等价信号。
+
+**对本项目的启示（最小修法，分层）**：
+
+**第 1 层 — 数据透传（3 处小点）**：
+
+1. `StreamResult` 增加 `self.refusal: str | None = None`
+2. `parse_non_stream` 返回值加 `"refusal": getattr(msg, "refusal", None)`——**不能像 content 那样 `or ""`**，要保留 None 与空串的区分
+3. `parse_chunk` 增加 `delta.refusal` 提取（OpenAI 流式拒答形态）
+4. `llm_service.py` 非流式路径把 `parsed.get("refusal")` 填进 `StreamResult`
+
+**第 2 层 — 语义决策点（structured.py，唯一决策点）**：`_try_extract` 在 `json.loads` **之前**做三态检查：
+
+| 判定 | 条件（按序） | 动作 |
+| --- | --- | --- |
+| 截断 | `finish_reason == "length"`（及 `max_tokens` / `insufficient_system_resource`） | **本层内**扩 max_tokens（如 2048→4096）重试 1 次；仍截断 → 记截断日志、返回截断失败（不进入降级链） |
+| 拒答/过滤 | `refusal` 非空，或 `finish_reason == "content_filter"`，或 content 空且 finish_reason 异常 | **短路**：不降级、不 repair，返回可区分信号让上层转人工/安全提示/unknown，日志带 refusal 文本与 category |
+| 正常 | 其余 | 继续 `json.loads` + 已有 `_validate_schema` |
+
+**三个关键决策**：
+
+- **扩 max_tokens 重试放 structured 层**（`_try_extract` 内部），不放 generate/retry 层。理由：`retry.py` 是传输层（网络/限流/熔断），对「这是结构化输出」无感知；扩 token 是**业务语义重试**，只有 structured 层知道 `max_tokens=2048` 是自己设的、知道 JSON 截断可安全加大预算重试。放这里对 generate 其它调用方（Agent 聊天流）零影响。
+- **拒答不走三级降级链**：降级链解决「能力缺口」（provider 不支持某种 response_format）；拒答是**策略信号**，把同一段可能触发安全的输入喂给更宽松约束，大概率同样拒答，只有成本与日志噪音。
+- **截断也不走降级链**：截断是「token 预算/输出长度」问题，与 response_format 支持度正交；同一输入在 json_mode 下同样会截断。降级无益，扩 token 重试 1 次是唯一有意义的缓解。
+
+**两个附带发现**：
+
+- **DeepSeek 官方 API 不支持 `json_schema` 类型**（返回 400），本项目第一级（strict json_schema）对 DeepSeek 每次都白打一次请求——可选优化：按 model_key/provider 预判跳过第一级直接进 json_mode。
+- **DeepSeek 无 refusal 字段**，拒答形态是「content 空 + finish_reason 异常」——拒答判定必须覆盖「content 为空且非截断」这一形态，不能只查字段。
+
+**信息来源**：
+
+- OpenAI finish_reason 枚举：<https://developers.openai.com/api/reference/resources/chat>；refusal 检查示例：<https://developers.openai.com/api/docs/guides/structured-outputs>
+- Anthropic 停止原因处理：<https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons>；流式拒答（stop_details/context reset）：<https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/handle-streaming-refusals>
+- DeepSeek finish_reason：<https://theneuralbase.com/deepseek-api/learn/beginner/finish-reason-interpretation/>；不支持 json_schema：<https://github.com/BerriAI/litellm/issues/7580>、<https://github.com/deepseek-ai/DeepSeek-V3/issues/302>
+- instructor 解析前先查 finish_reason（token 烧毁事故）：<https://github.com/567-labs/instructor/pull/2232>
+- OpenAI SDK LengthFinishReasonError 仅在 .parse() 抛出：<https://github.com/openai/openai-python/issues/1700>
+- openclaw refusal 字段被丢弃的 bug（流式 delta.refusal 形态）：<https://github.com/openclaw/openclaw/issues/102321>
+- pi-refusal-guard（拒答即路由决策、Anthropic 具名 category）：<https://github.com/LoneExile/pi-refusal-guard>
+- 结构化输出生产管线检查顺序：<https://nbility.ai/blog/en/structured-output-json-schema>
 
 ### 问题 3（中）：降级而非「错误感知重试」 ⚠️ 未修复
 
