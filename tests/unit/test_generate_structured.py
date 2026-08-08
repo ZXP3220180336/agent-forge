@@ -194,7 +194,7 @@ async def test_messages_passed_through():
 
 @pytest.mark.asyncio
 async def test_schema_embedded_in_first_level():
-    """第一级的 json_schema 内含完整 schema。"""
+    """第一级的 json_schema 内含补全后的 schema（additionalProperties:false）。"""
     llm = LLMService()
     seen = {}
 
@@ -204,7 +204,11 @@ async def test_schema_embedded_in_first_level():
 
     llm.generate = fake_generate
     await llm.generate_structured(MESSAGES, SCHEMA)
-    assert seen["response_format"]["json_schema"]["schema"] == SCHEMA
+    embedded = seen["response_format"]["json_schema"]["schema"]
+    assert embedded["type"] == "object"
+    assert embedded["properties"] == SCHEMA["properties"]
+    assert embedded["required"] == SCHEMA["required"]
+    assert embedded["additionalProperties"] is False  # 问题 4 补全
     assert seen["response_format"]["json_schema"]["name"] == "structured_output"
 
 
@@ -560,3 +564,87 @@ async def test_reask_refusal_short_circuits():
     llm.generate = fake_generate
     assert await llm.generate_structured(MESSAGES, SCHEMA_RANGE) is None
     assert len(calls) == 2  # 拒答短路，不降级不继续回喂
+
+
+# =====================================================================
+# 问题 4：额外字段不拒绝
+# extract 默认补全 additionalProperties:false → 模型扩展字段被拒
+# =====================================================================
+
+SCHEMA_EXTRA = {
+    "type": "object",
+    "properties": {"name": {"type": "string"}},
+    "required": ["name"],
+}
+
+
+@pytest.mark.asyncio
+async def test_extra_field_rejected_by_default():
+    """模型返回额外字段（user_emotion）→ 默认补全 additionalProperties:false → 被拒降级。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) <= 3:  # 第一级 + 回喂 2 次（均带额外字段，同约束被拒）
+            return _sr(json.dumps({"name": "张三", "user_emotion": "开心"}))
+        return _sr(json.dumps({"name": "张三"}))  # 第二级成功（无额外字段）
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA_EXTRA)
+    assert result == {"name": "张三"}
+    assert calls[0]["type"] == "json_schema"
+    assert calls[1]["type"] == "json_schema"  # 回喂1仍被拒
+    assert calls[2]["type"] == "json_schema"  # 回喂2仍被拒
+    assert calls[3]["type"] == "json_object"  # 降级第二级成功
+
+
+@pytest.mark.asyncio
+async def test_caller_schema_not_polluted():
+    """extract 补全不污染调用方 schema（深拷贝）。"""
+    from app.services.llm.structured import StructuredOutput
+
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    }
+    enforced = StructuredOutput._enforce_no_extra_fields(schema)
+    assert enforced["additionalProperties"] is False
+    assert "additionalProperties" not in schema  # 调用方 schema 未被就地修改
+
+
+@pytest.mark.asyncio
+async def test_explicit_true_respected():
+    """调用方显式写 additionalProperties:true → 尊重意图，不覆盖。"""
+    from app.services.llm.structured import StructuredOutput
+
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "additionalProperties": True,  # 显式允许扩展
+    }
+    enforced = StructuredOutput._enforce_no_extra_fields(schema)
+    assert enforced["additionalProperties"] is True  # 保持 true
+
+
+@pytest.mark.asyncio
+async def test_nested_objects_recursively_enforced():
+    """嵌套 object 也递归补全 additionalProperties:false。"""
+    from app.services.llm.structured import StructuredOutput
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "address": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+        "required": ["name"],
+    }
+    enforced = StructuredOutput._enforce_no_extra_fields(schema)
+    assert enforced["additionalProperties"] is False  # 顶层
+    assert enforced["properties"]["address"]["additionalProperties"] is False  # 嵌套

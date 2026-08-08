@@ -17,6 +17,7 @@ StructuredOutput — 结构化输出支持
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from typing import Any
@@ -96,6 +97,33 @@ class StructuredOutput:
         return {"type": "json_object"}
 
     @staticmethod
+    def _enforce_no_extra_fields(schema: dict[str, Any]) -> dict[str, Any]:
+        """深拷贝并递归补全 `additionalProperties: false`（问题 4）。
+
+        - 深拷贝：不污染调用方 schema（默认补全发生在副本上）
+        - 递归：对每个 object 节点补 `additionalProperties:false`，拒绝模型扩展字段
+        - 显式尊重：调用方已写 `true` 的保持 `true`（不覆盖显式允许扩展的意图）
+
+        意义：减少模型自作主张扩展接口（如业务不需要的 `user_emotion` 混入）。
+        配合 Pydantic 侧 `extra="forbid"`（业务层）双保险。
+        """
+        new_schema = copy.deepcopy(schema)
+        stack = [new_schema]
+        while stack:
+            node = stack.pop()
+            if not isinstance(node, dict):
+                continue
+            if node.get("type") == "object" and "additionalProperties" not in node:
+                node["additionalProperties"] = False
+            # 递归属性定义与子结构
+            for value in node.values():
+                if isinstance(value, dict):
+                    stack.append(value)
+                elif isinstance(value, list):
+                    stack.extend(v for v in value if isinstance(v, dict))
+        return new_schema
+
+    @staticmethod
     async def extract(
         llm_service: Any,
         messages: list[dict],
@@ -117,6 +145,10 @@ class StructuredOutput:
         Returns:
             解析后的 dict，三级均失败返回 None
         """
+        # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）。
+        # 默认拒绝额外字段，模型无法扩展接口混入业务不需要的字段。
+        schema = StructuredOutput._enforce_no_extra_fields(schema)
+
         # 先用原生 JSON Schema
         response_format = StructuredOutput.build_json_schema_request(schema)
         try:

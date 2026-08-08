@@ -184,6 +184,9 @@ schema = {
         "age": {"type": "integer"},
     },
     "required": ["name", "age"],
+    # 默认补全：extract 会自动补 additionalProperties:false（拒绝额外字段混入）。
+    # 显式写出更清晰，也方便阅读者理解「模型不能扩展接口」的契约。
+    "additionalProperties": False,
 }
 
 data = await llm.generate_structured(

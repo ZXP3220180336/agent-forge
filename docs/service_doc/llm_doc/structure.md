@@ -40,7 +40,7 @@
       - [工业级调研记录（2026-08-08 问题2）](#工业级调研记录2026-08-08-问题2)
     - [问题 3（中）：降级而非「错误感知重试」 ✅ 已修复](#问题-3中降级而非错误感知重试-️-已修复)
       - [工业级调研记录（2026-08-08 问题3）](#工业级调研记录2026-08-08-问题3)
-    - [问题 4（低）：额外字段不拒绝 ⚠️ 未修复](#问题-4低额外字段不拒绝-️-未修复)
+    - [问题 4（低）：额外字段不拒绝 ✅ 已修复](#问题-4低额外字段不拒绝-️-已修复)
     - [已覆盖的工业级实践](#已覆盖的工业级实践)
     - [速查表](#速查表)
   - [相关文档](#相关文档)
@@ -212,7 +212,7 @@ def build_json_schema_request(schema: dict[str, Any]) -> dict[str, Any]:
 
 - **strict=True**：强制解码阶段匹配 Schema，字段/类型/枚举由服务商保证
 - **name 固定为 `structured_output`**：服务商要求的 schema 命名
-- **schema 原样透传**：调用方负责 schema 设计（字段少而明确、用枚举、禁额外字段，见「工业级对照」问题 4）
+- **schema 补全后透传**：`extract` 深拷贝递归补 `additionalProperties:false`（问题 4，已修复），再传给服务商。调用方仍负责字段设计（少而明确、用枚举）
 
 ### build_json_mode_request — JSON mode 请求
 
@@ -381,10 +381,9 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 1. **成功判定 = 可解析 dict + Schema 校验通过**：`_try_extract` / `_fallback_extract` 在 `json.loads` + `isinstance(dict)` 后，经 `_validate_schema`（jsonschema）校验字段类型/枚举/必填/范围，失败记日志并返回 `None` 触发降级。已修复（2026-08-08，见问题 1）。**残留边界**：校验失败先回喂重试再降级（问题 3 已覆盖），回喂仍失败才降级。
 2. **finish_reason / refusal 已检查**：`_classify_result` 解析前三态分类，截断扩 token 重试 1 次、拒答短路（均不进降级链），记区分日志。已修复（2026-08-08，见问题 2）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（不降级）；拒答直接短路返回 None，调用方需自行转安全兜底。
 3. **错误感知重试已实现**：`_try_extract` 校验失败先回喂错误重试（`_REASK_MAX_RETRIES=2`），耗尽才降级；strict/JSON mode 级回喂，正则级不加。已修复（2026-08-08，见问题 3）。**残留边界**：回喂重试增加模型调用次数（最坏 6 次/请求），token 消耗放大。
-4. **多级降级 = 多次模型调用**：三级全失败 = 3 组调用（含各组的重试），token 消耗放大。这是「兼容所有模型」的显式代价——换取廉价模型可用性，而非默认接受解析失败。
+4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 6 组调用（含各级回喂 2 次），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价——换取廉价模型可用性与纠错能力，而非默认接受解析失败。
 5. **每级调用 `max_tokens=2048` 硬编码**：结构化输出通常较短，2048 是合理默认；长字段截断时本层扩 4096 重试 1 次（见问题 2），超限后放弃。
-6. **额外字段不拒绝**：`extract` 接收任意 schema 原样透传，不强制 `additionalProperties:false`。调用方 schema 若未写死，模型可能扩展字段混入（见问题 4）。
-7. **吞异常无区分**：`_try_extract` 的 `except Exception: pass` 不区分失败类型——API 故障、解析失败、下游异常都归为「降级」。与可靠性层（重试/熔断/限流在 generate 内部）职责边界清晰，但**结构化层自身的失败原因不可观测**。
+6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（问题 4 已修复），模型无法扩展接口。显式 `additionalProperties:true` 仍被尊重。
 
 ---
 
@@ -680,17 +679,18 @@ for retry in 1..MAX_RETRIES:              # MAX_RETRIES = 2 或 3
 - LangChain RetryOutputParser：<https://python.langchain.com/v0.1/docs/modules/model_io/output_parsers/types/retry/>；checkpointed 旧值残留 bug：<https://github.com/langchain-ai/langchain/pull/39248>
 - 重试上限/温度/退避/错误格式 best practice：<https://thepromptbench.com/structured-outputs/retry-loops-for-validation-failures/>、<https://callsphere.ai/blog/handling-structured-output-failures-retries-fallbacks-partial-parsing>
 
-### 问题 4（低）：额外字段不拒绝 ⚠️ 未修复
+### 问题 4（低）：额外字段不拒绝 ✅ 已修复
 
-**位置**：`extract`（schema 原样透传，不强制 `additionalProperties:false`）
+**位置**：`extract`（`_enforce_no_extra_fields` 补全）
 
-**现状**：调用方 schema 若未写 `additionalProperties:false`，模型可能扩展字段混入系统（如业务不需要的 `user_emotion`）。
+**已修复（2026-08-08）**：`extract` 入口对 schema 深拷贝并递归补全 `additionalProperties:false`，默认拒绝额外字段：
 
-#### 工业级对照：禁止额外字段
+- **`_enforce_no_extra_fields`**：深拷贝（不污染调用方 schema）+ 递归每个 object 节点补 `additionalProperties:false`
+- **显式尊重**：调用方已写 `additionalProperties:true` 的保持 true（不覆盖显式允许扩展的意图）
+- **效果**：模型无法扩展接口混入业务不需要的字段（如 `user_emotion`），本地 `_validate_schema`/`_collect_schema_errors` 校验拒绝额外字段
+- **文档引导**：llm.md schema 使用示例加 `additionalProperties:false` 说明
 
-Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(extra="forbid")` 双保险。意义是**减少模型自作主张扩展接口**。
-
-**改进方向**（建议）：文档层面在 llm.md 的 schema 使用示例中引导调用方写 `additionalProperties:false`；若要做强制，可在 `extract` 对 schema 校验（或默认补全 `additionalProperties:false`）。
+修复前：调用方 schema 若未写 `additionalProperties:false`，模型可能扩展字段混入系统（如业务不需要的 `user_emotion`）。
 
 ### 已覆盖的工业级实践
 
@@ -706,7 +706,7 @@ Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(
 | **程序校验（Schema）** | ✅ `_validate_schema`（jsonschema）本地校验，三级降级全覆盖（问题 1） |
 | **API 边界检查（refusal/截断）** | ✅ `_classify_result` 三态分类，截断扩 token 重试 1 次、拒答短路（问题 2） |
 | **错误感知重试** | ✅ `_try_extract` 回喂循环（`_REASK_MAX_RETRIES=2`），strict/JSON mode 级回喂，校验失败先回喂再降级（问题 3） |
-| **禁额外字段** | ⚠️ 未强制（问题 4） |
+| **禁额外字段** | ✅ `_enforce_no_extra_fields` 递归补全 `additionalProperties:false`，默认拒绝额外字段（问题 4） |
 
 > **超出本模块范围**（属于 Agent 层与上层业务，structured 模块不负责）：语义/业务正确、工具执行权在后端、权限/幂等键、评测集闭环、SFT。这些由 Agent 循环与业务规则承载。
 
@@ -717,7 +717,7 @@ Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(
 | 解析后无 Schema 校验 | 程序校验是必需品（本地 jsonschema/Pydantic 校验） | ✅ `_validate_schema`（jsonschema）三级全覆盖，校验失败先回喂再降级 | zhuwei.fun 生产级方案 · jsonschema 库 | ✅ 已修复（2026-08-08） |
 | 不检查 finish_reason/refusal | API 边界检查：截断扩 token 重试、拒答走安全兜底 | ✅ `_classify_result` 三态分类：截断扩 token 重试 1 次、拒答短路（均不进降级链），记区分日志 | OpenAI 文档 · zhuwei.fun 失败处理表 | ✅ 已修复（2026-08-08） |
 | 降级而非错误感知重试 | 带具体校验错误回喂模型，`max_retries=2~3` 后进降级路径 | ✅ `_try_extract` 回喂循环（`_REASK_MAX_RETRIES=2`），strict/JSON mode 级回喂，耗尽才降级 | zhuwei.fun 错误感知 retry | ✅ 已修复（2026-08-08） |
-| 额外字段不拒绝 | `additionalProperties:false` + Pydantic `extra="forbid"` | schema 原样透传 | JSON Schema 规范 | ⚠️ 低，建议文档引导 |
+| 额外字段不拒绝 | `additionalProperties:false` + Pydantic `extra="forbid"` | ✅ `_enforce_no_extra_fields` 递归补全，默认拒绝额外字段；显式 `true` 尊重 | JSON Schema 规范 | ✅ 已修复（2026-08-08） |
 | 多级降级 = 多次调用 | 降级路径是兜底不是默认路径 | 三级全失败最多 6 组调用（含各级回喂 2 次） | — | ✅ 设计取舍，文档记录 |
 | 吞异常无区分 | 失败类型可观测、分别处理 | 截断/拒答/回喂均区分日志（问题 2/3）；纯解析失败仍静默降级 | zhuwei.fun 失败分类表 | ⚠️ 低，解析失败细分日志非必要 |
 
