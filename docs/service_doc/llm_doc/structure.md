@@ -3,7 +3,7 @@
 > **模块**：`app/services/llm/structured.py`
 > **职责**：从 LLM 输出中提取结构化数据（三级降级：JSON Schema → JSON Mode → 正则提取）
 > **统一入口**：对外唯一入口为 `LLMService.generate_structured()`，委托 `StructuredOutput.extract()` 三级降级；`StructuredOutput` 为内部实现载体（接收完整 messages）
-> **配套**：集成于 `LLMService.generate_structured()`，底层复用 `LLMService.generate()`（重试/熔断/限流），见 `llm_service.py`
+> **配套**：集成于 `LLMService.generate_structured()`（`app/services/llm_service.py`），底层复用 `LLMService.generate()`（重试/熔断/限流）
 
 ---
 
@@ -36,11 +36,11 @@
   - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题--修复--工业对照)
     - [问题 1（严重）：解析后无 Schema 校验 ✅ 已修复](#问题-1严重解析后无-schema-校验--已修复)
       - [工业级调研记录（2026-08-08 问题1）](#工业级调研记录2026-08-08-问题1)
-    - [问题 2（中）：不检查 finish\_reason / refusal ✅ 已修复](#问题-2中不检查-finish_reason--refusal-️-已修复)
+    - [问题 2（中）：不检查 finish\_reason / refusal ✅ 已修复](#问题-2中不检查-finish_reason--refusal--已修复)
       - [工业级调研记录（2026-08-08 问题2）](#工业级调研记录2026-08-08-问题2)
-    - [问题 3（中）：降级而非「错误感知重试」 ✅ 已修复](#问题-3中降级而非错误感知重试-️-已修复)
+    - [问题 3（中）：降级而非「错误感知重试」 ✅ 已修复](#问题-3中降级而非错误感知重试--已修复)
       - [工业级调研记录（2026-08-08 问题3）](#工业级调研记录2026-08-08-问题3)
-    - [问题 4（低）：额外字段不拒绝 ✅ 已修复](#问题-4低额外字段不拒绝-️-已修复)
+    - [问题 4（低）：额外字段不拒绝 ✅ 已修复](#问题-4低额外字段不拒绝--已修复)
     - [已覆盖的工业级实践](#已覆盖的工业级实践)
     - [速查表](#速查表)
   - [相关文档](#相关文档)
@@ -151,7 +151,7 @@
 第三级：纯 Prompt + 正则提取（无 schema）  —— 兼容所有模型，可靠性最低
 ```
 
-**为何降级而非「只用最高级」**：不同模型对结构化输出的支持差异很大。三级降级让结构化输出在廉价模型（fast）上也能工作，只是在必要时才走更低级。代价是每级失败多一次模型调用（token 消耗）。
+**为何降级而非「只用最高级」**：不同模型对结构化输出的支持差异很大。三级降级让结构化输出在廉价模型（fast）上也能工作，只是在必要时才走更低级。代价是每级失败多一次模型调用，加上错误回喂（问题 3）每级最多 2 次回喂，三级全失败最多 7 次调用（token 消耗）。
 
 ---
 
@@ -233,81 +233,175 @@ def build_json_mode_request() -> dict[str, str]:
 ```python
 @staticmethod
 async def extract(llm_service, messages, schema, model_key="fast"):
-    """三级降级：JSON Schema → JSON Mode → 正则提取。"""
+    """三级降级：JSON Schema → JSON Mode → 正则提取。
+
+    问题 2 语义：截断（StructuredTruncationError）短路返回 None——
+    不进入降级链（截断与降级正交）。拒答（StructuredRefusalError）向上抛——
+    调用方需区分「三级耗尽返回 None」与「拒答」（拒答需差异化处理）。
+    """
+    # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）
+    schema = StructuredOutput._enforce_no_extra_fields(schema)
+
+    # 第一级：原生 JSON Schema（strict）
     response_format = StructuredOutput.build_json_schema_request(schema)
-    result = await StructuredOutput._try_extract(llm_service, messages, response_format, model_key)
+    try:
+        result = await StructuredOutput._try_extract(
+            llm_service, messages, response_format, model_key, schema=schema,
+        )
+    except StructuredTruncationError:
+        return None  # 截断短路，不降级
     if result is not None:
         return result
 
+    # 第二级：JSON mode
     response_format = StructuredOutput.build_json_mode_request()
-    result = await StructuredOutput._try_extract(llm_service, messages, response_format, model_key)
+    try:
+        result = await StructuredOutput._try_extract(
+            llm_service, messages, response_format, model_key, schema=schema,
+        )
+    except StructuredTruncationError:
+        return None  # 截断短路，不降级
     if result is not None:
         return result
 
-    return await StructuredOutput._fallback_extract(llm_service, messages, model_key)
+    # 第三级：正则提取（无 response_format）
+    try:
+        return await StructuredOutput._fallback_extract(
+            llm_service, messages, model_key, schema=schema,
+        )
+    except StructuredTruncationError:
+        return None  # 截断短路
 ```
 
 **要点**：
 
 - **顺序固定**：高约束 → 低约束，每级成功即返回，不再下探
-- **级间判定是「解析成功 + Schema 校验通过」**：`_try_extract` 返回非 None dict 且通过 `_validate_schema` 才视为成功（见「代码审核」问题 1，已修复）
-- **透明**：调用方不知道命中了哪级
+- **级间判定是「解析成功 + Schema 校验通过」**：`_try_extract` 返回非 None dict 且通过校验才视为成功（见「代码审核」问题 1，已修复）
+- **截断短路返回 None，拒答向上抛**：截断与降级正交、拒答需业务层差异化处理（问题 2，已修复）
+- **schema 补全**：入口递归补 `additionalProperties:false` 拒绝额外字段（问题 4，已修复）
+- **透明**：调用方不知道命中了哪级（除拒答外，正常返回 None 仅表示「三级耗尽」）
 
 ### _try_extract — 单级提取（response_format 形态）
 
 ```python
 @staticmethod
-async def _try_extract(llm_service, messages, response_format, model_key):
-    """尝试用指定 response_format 提取。"""
+async def _try_extract(llm_service, messages, response_format, model_key, schema=None):
+    """尝试用指定 response_format 提取（解析前做三态检查 + 错误回喂）。
+
+    问题 2：截断扩 max_tokens 重试 1 次，仍截断抛 StructuredTruncationError；
+            拒答抛 StructuredRefusalError（短路不 repair）。
+    问题 3：正常响应解析/校验失败 → 回喂错误重试 _REASK_MAX_RETRIES 次，
+            耗尽返回 None（触发降级）。
+    """
     try:
         result = await llm_service.generate(
             messages=messages, temperature=0, max_tokens=2048,
             response_format=response_format, model_key=model_key,
         )
-        if result and result.content:
-            parsed = json.loads(result.content)
-            if isinstance(parsed, dict):
-                return parsed
     except Exception:
-        pass
-    return None
+        return None  # 下游失败（可靠性层已重试），降级
+    if result is None:
+        return None
+
+    failure = StructuredOutput._classify_result(result)
+    if failure == "truncated":
+        # 本层扩 max_tokens 重试 1 次（问题 2）
+        try:
+            retry = await llm_service.generate(
+                messages=messages, temperature=0, max_tokens=4096,
+                response_format=response_format, model_key=model_key,
+            )
+        except Exception:
+            return None  # 下游失败 → 降级
+        if retry is None:
+            return None  # 下游失败 → 降级
+        if StructuredOutput._classify_result(retry) == "ok":
+            result = retry
+        elif StructuredOutput._classify_result(retry) == "refusal":
+            raise StructuredRefusalError(...)
+        else:
+            raise StructuredTruncationError(...)
+    elif failure == "refusal":
+        raise StructuredRefusalError(...)
+
+    # 正常：解析 + 校验（错误回喂，问题 3）
+    content = result.content
+    for _ in range(_REASK_MAX_RETRIES):
+        parsed, errors = StructuredOutput._parse_and_validate(content, schema)
+        if parsed is not None:
+            return parsed
+        try:
+            retry = await llm_service.generate(
+                messages=StructuredOutput._build_reask_messages(
+                    messages, content, "\n".join(errors),
+                ),
+                temperature=0, max_tokens=2048,
+                response_format=response_format, model_key=model_key,
+            )
+        except Exception:
+            return None  # 下游失败 → 降级
+        if retry is None:
+            return None
+        failure = StructuredOutput._classify_result(retry)
+        if failure == "truncated":
+            raise StructuredTruncationError(...)  # 一律短路，不降级
+        if failure == "refusal":
+            raise StructuredRefusalError(...)
+        content = retry.content
+    return None  # 回喂耗尽 → 降级
 ```
 
 **要点**：
 
 - **temperature=0**：结构化输出要确定性，禁用采样随机
-- **max_tokens=2048**：硬编码输出上限（截断时本层扩 4096 重试 1 次，见「代码审核」问题 2）
-- **`isinstance(parsed, dict)`**：拒绝顶层是数组/标量的 JSON（列表穿不过，测试 `test_non_dict_content_returns_none` 覆盖）
-- **解析前三态检查**：`_classify_result` 区分截断/拒答/正常（见问题 2）——截断扩 token 重试、拒答短路，均不进入降级链
+- **解析前三态检查**：`_classify_result` 区分截断/拒答/正常（问题 2）——截断扩 token 重试 1 次、拒答短路，均不进入降级链
+- **错误回喂**：解析/校验失败回喂错误重试 `_REASK_MAX_RETRIES=2` 次，耗尽返回 None 触发降级（问题 3）
+- **下游失败降级**：`generate` 抛异常/返回 None（下游故障）→ 返回 None 降级，与截断/拒答短路区分（审核修复）
+- **回喂内截断一律短路**：不与扩 token 逻辑组合，防 token 爆炸（审核修复，对齐顶层「截断与降级正交」）
 
 ### _fallback_extract — 正则兜底提取（无 response_format）
 
 ```python
 @staticmethod
-async def _fallback_extract(llm_service, messages, model_key):
-    """纯 prompt 约束降级方案。"""
+async def _fallback_extract(llm_service, messages, model_key, schema=None):
+    """纯 prompt 约束降级方案（三态检查 + 正则定位 JSON 块）。"""
     try:
         result = await llm_service.generate(
             messages=messages, temperature=0, max_tokens=2048, model_key=model_key,
         )
-        if not result or not result.content:
-            return None
-        content = result.content.strip()
-        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.MULTILINE)
-        content = re.sub(r"\s*```$", "", content, flags=re.MULTILINE)
-        parsed = json.loads(content)
-        if isinstance(parsed, dict):
-            return parsed
     except Exception:
         return None
+    if result is None:
+        return None
+
+    failure = StructuredOutput._classify_result(result)
+    if failure == "truncated":
+        raise StructuredTruncationError(...)  # 第三级短路，不扩 token
+    if failure == "refusal":
+        raise StructuredRefusalError(...)
+
+    # 提取 JSON：剥代码块 → 整体解析失败 → 正则定位 {..} 块（prose 包裹场景）
+    content = result.content.strip()
+    fenced = re.sub(r"^```(?:json)?\s*", "", content, flags=re.MULTILINE)
+    fenced = re.sub(r"\s*```$", "", fenced, flags=re.MULTILINE)
+    parsed = StructuredOutput._try_parse_json(fenced, schema)
+    if parsed is not None:
+        return parsed
+    m = re.search(r"\{.*\}", fenced, flags=re.DOTALL)
+    if m:
+        parsed = StructuredOutput._try_parse_json(m.group(0), schema)
+        if parsed is not None:
+            return parsed
+    return None
 ```
 
 **要点**：
 
 - **无 response_format**：走纯 prompt 约束（prompt 由调用方构建），模型可能输出解释/代码块
-- **仅去 Markdown 代码块**：剥掉 ```` ```json ```` 包裹后 `json.loads`——这是「保守 repair」的典型动作
-- **不修事实**：只做语法级归一化（剥代码块），不猜测意图、不补字段、不映射枚举——符合工业级「JSON repair 只能修语法，不能修事实」
-- **每级一次模型调用**：三级全失败 = 3 次调用（token 消耗，见「已知边界」边界 4）
+- **渐进提取**：先剥 Markdown 代码块整体解析，失败后**正则定位首个 `{` 到末个 `}`** 提取候选块（审核修复——模型在 JSON 前后加说明文字也能救回）
+- **不修事实**：只做语法级归一化（剥代码块/定位块），不猜测意图、不补字段、不映射枚举——符合工业级「JSON repair 只能修语法，不能修事实」
+- **截断/拒答短路**：第三级到头无降级可走，截断不扩 token（纯 prompt 约束重试收益不定），拒答/截断抛异常（问题 2）
+- **每级多次模型调用**：三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1，token 消耗，见「已知边界」边界 4）
 
 ---
 
@@ -337,7 +431,7 @@ generate_structured(messages, schema, model_key="fast")
 
 - **级级完整调用 generate**：每级都是独立完整的模型调用（含重试/限流），不是「同一响应多级解析」
 - **成功短路**：高一级成功即返回，后续级别不再执行
-- **全失败返回 None**：调用方需自行处理 None（降级 / 追问 / 返回 unknown，见「工业级对照」）
+- **全失败返回 None**：调用方需自行处理 None（降级 / 追问 / 返回 unknown，见「工业级对照」）。**例外**：拒答抛 `StructuredRefusalError`（非 None），调用方需捕获转安全兜底
 
 ---
 
@@ -357,7 +451,7 @@ response_format 控制     RetryHandlerManager（重试/熔断，model_key 共�
 - **可靠性层**（generate 内部）透明兜底：限流排队、重试/熔断处理下游故障——结构化模块**不感知**，每级调用自动获得
 - **两者互补**：结构化降级处理「模型能力不足/输出不合规」，可靠性层处理「下游故障/配额不足」
 
-**注意**：结构化降级的每一级都会经过完整的重试/熔断/限流——三级全失败意味着最多 3 组（每组含内部重试）模型调用。这是「降级保证兼容」的代价（见「已知边界」边界 4）。
+**注意**：结构化降级的每一级都会经过完整的重试/熔断/限流——三级全失败意味着最多 7 次模型调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1，每组含内部重试）。这是「降级保证兼容 + 错误回喂」的代价（见「已知边界」边界 4）。
 
 ---
 
@@ -379,9 +473,9 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 ## 已知边界与设计取舍
 
 1. **成功判定 = 可解析 dict + Schema 校验通过**：`_try_extract` / `_fallback_extract` 在 `json.loads` + `isinstance(dict)` 后，经 `_validate_schema`（jsonschema）校验字段类型/枚举/必填/范围，失败记日志并返回 `None` 触发降级。已修复（2026-08-08，见问题 1）。**残留边界**：校验失败先回喂重试再降级（问题 3 已覆盖），回喂仍失败才降级。
-2. **finish_reason / refusal 已检查**：`_classify_result` 解析前三态分类，截断扩 token 重试 1 次、拒答短路（均不进降级链），记区分日志。已修复（2026-08-08，见问题 2）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（不降级）；拒答直接短路返回 None，调用方需自行转安全兜底。
-3. **错误感知重试已实现**：`_try_extract` 校验失败先回喂错误重试（`_REASK_MAX_RETRIES=2`），耗尽才降级；strict/JSON mode 级回喂，正则级不加。已修复（2026-08-08，见问题 3）。**残留边界**：回喂重试增加模型调用次数（最坏 6 次/请求），token 消耗放大。
-4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 6 组调用（含各级回喂 2 次），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价——换取廉价模型可用性与纠错能力，而非默认接受解析失败。
+2. **finish_reason / refusal 已检查**：`_classify_result` 解析前三态分类，截断扩 token 重试 1 次、拒答抛异常（均不进降级链），记区分日志。已修复（2026-08-08，见问题 2）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（返回 None，不降级）；拒答抛 `StructuredRefusalError`，调用方需捕获并转安全兜底。
+3. **错误感知重试已实现**：`_try_extract` 校验失败先回喂错误重试（`_REASK_MAX_RETRIES=2`），耗尽才降级；strict/JSON mode 级回喂，正则级不加。已修复（2026-08-08，见问题 3）。**残留边界**：回喂重试增加模型调用次数（最坏 7 次/请求），token 消耗放大。
+4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价——换取廉价模型可用性与纠错能力，而非默认接受解析失败。
 5. **每级调用 `max_tokens=2048` 硬编码**：结构化输出通常较短，2048 是合理默认；长字段截断时本层扩 4096 重试 1 次（见问题 2），超限后放弃。
 6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（问题 4 已修复），模型无法扩展接口。显式 `additionalProperties:true` 仍被尊重。
 
@@ -428,7 +522,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
     return IntentResult.model_validate_json(raw_json)
 ```
 
-**改进方向**（建议）：`extract` 增加可选 `validator`（或内置 JSON Schema 校验器）。解析后校验字段类型/枚举/必填；校验失败 → 记日志 + 返回 `None`（触发降级），而非返回坏数据。这会让降级链真正有意义——**当前第一级的 strict 约束一旦降级到 JSON mode/正则，Schema 保证就丢了，而后续级别恰好没有校验兜底**。
+**已实现**：`_validate_schema`（jsonschema）+ `_parse_and_validate` 三级全覆盖，解析后校验字段类型/枚举/必填/范围；校验失败先回喂重试（问题 3）再触发降级，而非返回坏数据。**三级降级每一级都有校验兜底**（见「已覆盖的工业级实践」表）。
 
 #### 工业级调研记录（2026-08-08 问题1）
 
@@ -486,7 +580,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 - **拒答/过滤**（`refusal` 字段非空 / `finish_reason=content_filter` / content 空且正常结束）：抛 `StructuredRefusalError`（短路，不强行 repair），记 `logger.warning` 含 refusal 文本与 finish_reason。
 - **正常**：走解析 + Schema 校验，普通失败返回 None 触发降级。
 - **数据透传**：`StreamResult` 增加 `refusal` 字段；`parse_non_stream` / `parse_chunk` 提取 `refusal`（保留 None 与空串区分，不用 `or ""`）；`llm_service.py` 非流式/流式路径填入。
-- **短路语义**：截断/拒答均不进入三级降级链——`extract` 捕获 `StructuredExtractionError` 直接返回 None（截断与降级正交、拒答是策略信号，降级无益）。
+- **短路语义**：截断/拒答均不进入三级降级链（截断与降级正交、拒答是策略信号，降级无益）。截断由 `extract` 捕获 `StructuredTruncationError` 返回 None；**拒答向上抛 `StructuredRefusalError`**——调用方需区分「三级耗尽返回 None」与「拒答」。
 
 修复前：`finish_reason="length"` 截断出半个 JSON → `json.loads` 失败 → **静默降级**；模型拒答 → content 为空 → **静默降级**，两类失败无区分、无日志。
 
@@ -502,7 +596,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 | 语义低置信 | confidence 低、缺失关键字段 | 追问用户或转人工 |
 | 业务校验失败 | 订单不可退、权限不足 | 返回业务原因，不让模型裁决 |
 
-**改进方向**（建议）：`_try_extract` 里检查 `finish_reason == "length"` 或 `refusal` 非空 → 视为失败并区分日志（截断 vs 拒答），不进错误结果。截断与拒答是不同性质失败，应可观测、可分别处理。
+**已实现**：`_classify_result` 三态检查（截断/拒答/正常），截断扩 token 重试 1 次、拒答短路抛异常，记区分日志。截断与拒答可观测、分别处理（见上方修复说明）。
 
 #### 工业级调研记录（2026-08-08 问题2）
 
@@ -582,8 +676,8 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 - **`_parse_and_validate`**：解析 + 校验，返回 `(结果, 错误列表)` 供回喂循环使用
 - **回喂上限 `_REASK_MAX_RETRIES = 2`**（工业共识 2~3 次），温度保持 0，无需退避（退避是 retry.py 职责）
 - **降级组合**：strict 级回喂 2 次（值约束只能这级救）、JSON mode 级回喂 2 次、正则级不加（最弱约束重试收益最低）
-- **回喂循环内保留 `_classify_result` 三态检查**：截断 → 降级（不与扩 token 逻辑组合，防 token 爆炸，对齐 Instructor PR #2232 教训）；拒答 → 短路
-- **返回契约 `dict | None` 不变**：回喂耗尽 → 返回 None 触发降级
+- **回喂循环内保留 `_classify_result` 三态检查**：截断 → 一律短路抛 `StructuredTruncationError`（不与扩 token 逻辑组合，防 token 爆炸，对齐 Instructor PR #2232 教训）；拒答 → 短路抛 `StructuredRefusalError`
+- **返回契约**：三级耗尽返回 None 触发降级；拒答抛 `StructuredRefusalError` 让调用方感知（审核修复）
 
 修复前：第一级 schema 失败 → 直接降级到 JSON mode（约束更弱）→ 失败 → 正则（约束最弱）。**三级都在「换约束」，没有一次「带错误重试」**。
 
@@ -600,7 +694,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 
 重试次数有限制（通常 `max_retries = 2~3`），超限后进入降级路径（返回 unknown / 追问 / 转人工 / 普通文本 / 进离线分析队列）。
 
-**改进方向**（建议，范围大）：schema 校验失败时把错误详情回喂模型再试一次，而非直接降级。这是对 cheap 模型最有效的纠错手段——降级到更弱约束往往仍会失败，而错误回喂直接针对缺陷修正。
+**已实现**：`_try_extract` 校验失败把错误详情回喂模型重试（`_REASK_MAX_RETRIES=2`），而非直接降级。这是对 cheap 模型最有效的纠错手段——降级到更弱约束往往仍会失败，而错误回喂直接针对缺陷修正（见上方修复说明）。
 
 #### 工业级调研记录（2026-08-08 问题3）
 
@@ -611,7 +705,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 1. **回喂重试是业界标准主路径**，非可选项——三个主流库全部以此为标准模式（Instructor `max_retries`、Guardrails `num_reasks`、LangChain RetryOutputParser）。「校验失败直接降级、零回喂」缺了主路径只留了兜底。
 2. **错误必须回喂，且要保留模型上一次失败输出**：把上一次失败 assistant 输出保留在对话历史里，再末尾追加 user 消息（具体校验错误 + 修正指令）。错误格式化成**人话指令**，绝不原样拼 traceback。
 3. **重试上限 2~3 次**，`temperature` 保持 0，校验失败重试**无需退避**（退避只用于网络/限流瞬时错误，是 retry.py 职责）。
-4. **与降级链组合**：先重试、后降级，**每一级各自重试**——降级到更弱约束救不了本级的错误（如值约束违反，JSON mode/正则根本不查值约束）。**最坏调用数 = (1+2)+(1+1)+1 = 6 次**，可控。
+4. **与降级链组合**：先重试、后降级，**每一级各自重试**——降级到更弱约束救不了本级的错误（如值约束违反，JSON mode/正则根本不查值约束）。**最坏调用数 = (1+2)+(1+2)+1 = 7 次**，可控。
 
 **实现范式（统一伪代码）**：
 
@@ -664,7 +758,7 @@ for retry in 1..MAX_RETRIES:              # MAX_RETRIES = 2 或 3
 
 1. 新增 `_REASK_MAX_RETRIES = 2` 常量 + `_collect_schema_errors`（`iter_errors` 收集全部错误格式化）+ `_build_reask_messages`（clone + assistant 失败输出 + user 反馈）
 2. `_try_extract` 的解析校验段外包回喂循环（保持同一 response_format，即同约束下重试）
-3. 降级组合：strict 级回喂 2 次（值约束只能这级救）、JSON mode 级回喂 1~2 次、正则级不加（最弱约束重试收益最低，与现有「第三级截断不重试」保守取向一致）
+3. 降级组合：strict 级回喂 2 次（值约束只能这级救）、JSON mode 级回喂 2 次（同一 `_REASK_MAX_RETRIES`）、正则级不加（最弱约束重试收益最低，与现有「第三级截断不重试」保守取向一致）
 
 **边缘情况**：
 
@@ -718,7 +812,7 @@ for retry in 1..MAX_RETRIES:              # MAX_RETRIES = 2 或 3
 | 不检查 finish_reason/refusal | API 边界检查：截断扩 token 重试、拒答走安全兜底 | ✅ `_classify_result` 三态分类：截断扩 token 重试 1 次、拒答短路（均不进降级链），记区分日志 | OpenAI 文档 · zhuwei.fun 失败处理表 | ✅ 已修复（2026-08-08） |
 | 降级而非错误感知重试 | 带具体校验错误回喂模型，`max_retries=2~3` 后进降级路径 | ✅ `_try_extract` 回喂循环（`_REASK_MAX_RETRIES=2`），strict/JSON mode 级回喂，耗尽才降级 | zhuwei.fun 错误感知 retry | ✅ 已修复（2026-08-08） |
 | 额外字段不拒绝 | `additionalProperties:false` + Pydantic `extra="forbid"` | ✅ `_enforce_no_extra_fields` 递归补全，默认拒绝额外字段；显式 `true` 尊重 | JSON Schema 规范 | ✅ 已修复（2026-08-08） |
-| 多级降级 = 多次调用 | 降级路径是兜底不是默认路径 | 三级全失败最多 6 组调用（含各级回喂 2 次） | — | ✅ 设计取舍，文档记录 |
+| 多级降级 = 多次调用 | 降级路径是兜底不是默认路径 | 三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1） | — | ✅ 设计取舍，文档记录 |
 | 吞异常无区分 | 失败类型可观测、分别处理 | 截断/拒答/回喂均区分日志（问题 2/3）；纯解析失败仍静默降级 | zhuwei.fun 失败分类表 | ⚠️ 低，解析失败细分日志非必要 |
 
 ---

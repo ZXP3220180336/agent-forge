@@ -437,7 +437,7 @@ class RetryHandler:
         if fallback_fn is not None:
             try:
                 return await fallback_fn()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 last_exc = e
 
         # --- 所有路径均失败 ---
@@ -488,7 +488,7 @@ class RetryHandler:
         if fallback_fn is not None:
             try:
                 return await fallback_fn()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 last_exc = e
 
         assert last_exc is not None

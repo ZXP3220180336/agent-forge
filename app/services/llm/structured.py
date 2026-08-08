@@ -113,7 +113,12 @@ class StructuredOutput:
             node = stack.pop()
             if not isinstance(node, dict):
                 continue
-            if node.get("type") == "object" and "additionalProperties" not in node:
+            # 匹配 object：type 单值 "object" 或数组含 "object"（draft-07 可空写法 ["object","null"]）
+            node_type = node.get("type")
+            is_object = node_type == "object" or (
+                isinstance(node_type, list) and "object" in node_type
+            )
+            if is_object and "additionalProperties" not in node:
                 node["additionalProperties"] = False
             # 递归属性定义与子结构
             for value in node.values():
@@ -133,8 +138,10 @@ class StructuredOutput:
         """
         根据 JSON Schema 从消息中提取结构化数据（三级降级）。
 
-        问题 2 语义：截断/拒答（StructuredExtractionError）短路返回 None——
-        不进入降级链（截断与降级正交、拒答是策略信号，降级无益只会浪费调用）。
+        问题 2 语义：截断（StructuredTruncationError）短路返回 None——
+        不进入降级链（截断与降级正交，降级无益只会浪费调用）。
+        拒答（StructuredRefusalError）向上抛——调用方需区分「三级耗尽」与「拒答」，
+        拒答通常需要业务层差异化处理（安全兜底/文案）。
 
         Args:
             llm_service: LLMService 实例（generate 代理）
@@ -144,6 +151,9 @@ class StructuredOutput:
 
         Returns:
             解析后的 dict，三级均失败返回 None
+
+        Raises:
+            StructuredRefusalError: 模型拒答（内容安全策略触发），不强行 repair
         """
         # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）。
         # 默认拒绝额外字段，模型无法扩展接口混入业务不需要的字段。
@@ -159,8 +169,8 @@ class StructuredOutput:
                 model_key,
                 schema=schema,
             )
-        except StructuredExtractionError:
-            return None  # 截断/拒答短路，不降级
+        except StructuredTruncationError:
+            return None  # 截断短路，不降级
         if result is not None:
             return result
 
@@ -174,8 +184,8 @@ class StructuredOutput:
                 model_key,
                 schema=schema,
             )
-        except StructuredExtractionError:
-            return None  # 截断/拒答短路，不降级
+        except StructuredTruncationError:
+            return None  # 截断短路，不降级
         if result is not None:
             return result
 
@@ -187,8 +197,8 @@ class StructuredOutput:
                 model_key,
                 schema=schema,
             )
-        except StructuredExtractionError:
-            return None  # 截断/拒答短路
+        except StructuredTruncationError:
+            return None  # 截断短路
 
     @staticmethod
     async def _try_extract(
@@ -239,20 +249,18 @@ class StructuredOutput:
                     model_key=model_key,
                 )
             except Exception:  # noqa: BLE001
-                retry = None
-            if retry is not None and StructuredOutput._classify_result(retry) == "ok":
+                return None  # 下游失败（非截断）→ 降级，与首次调用语义一致
+            if retry is None:
+                return None  # 下游失败 → 降级，与首次调用语义一致
+            if StructuredOutput._classify_result(retry) == "ok":
                 result = retry
-            elif (
-                retry is not None
-                and StructuredOutput._classify_result(retry) == "refusal"
-            ):
+            elif StructuredOutput._classify_result(retry) == "refusal":
                 raise StructuredRefusalError(
                     f"截断重试后拒答: finish_reason={retry.finish_reason}"
                 )
             else:
                 raise StructuredTruncationError(
-                    f"扩 token 重试后仍截断: finish_reason="
-                    f"{retry.finish_reason if retry else 'None'}"
+                    f"扩 token 重试后仍截断: finish_reason={retry.finish_reason}"
                 )
 
         elif failure == "refusal":
@@ -274,21 +282,33 @@ class StructuredOutput:
             parsed, errors = StructuredOutput._parse_and_validate(content, schema)
             if parsed is not None:
                 return parsed
-            # 回喂：clone + assistant 失败输出 + user 错误反馈（不污染调用方 messages）
-            retry = await llm_service.generate(
-                messages=StructuredOutput._build_reask_messages(
-                    messages, content, "\n".join(errors)
-                ),
-                temperature=0,
-                max_tokens=2048,
-                response_format=response_format,
-                model_key=model_key,
+            logger.warning(
+                "结构化输出解析/校验失败（回喂第 %d 次）: %s",
+                _ + 1,
+                "\n".join(errors),
             )
+            # 回喂：clone + assistant 失败输出 + user 错误反馈（不污染调用方 messages）
+            try:
+                retry = await llm_service.generate(
+                    messages=StructuredOutput._build_reask_messages(
+                        messages, content, "\n".join(errors)
+                    ),
+                    temperature=0,
+                    max_tokens=2048,
+                    response_format=response_format,
+                    model_key=model_key,
+                )
+            except Exception:  # noqa: BLE001
+                return None  # 下游失败 → 降级，与其他调用点语义一致
             if retry is None:
                 return None  # 下游失败 → 降级
             failure = StructuredOutput._classify_result(retry)
             if failure == "truncated":
-                return None  # 回喂循环内截断 → 降级（不与扩 token 逻辑组合，防 token 爆炸）
+                # 回喂循环内截断 → 一律短路（与顶层「截断与降级正交」一致），
+                # 不与扩 token 逻辑组合，防 token 爆炸。
+                raise StructuredTruncationError(
+                    f"回喂循环内截断: finish_reason={retry.finish_reason}"
+                )
             if failure == "refusal":
                 raise StructuredRefusalError(
                     f"回喂重试后拒答: finish_reason={retry.finish_reason}"
@@ -315,7 +335,7 @@ class StructuredOutput:
                 max_tokens=2048,
                 model_key=model_key,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         if result is None:
             return None
@@ -338,19 +358,33 @@ class StructuredOutput:
                 f"finish_reason={result.finish_reason}"
             )
 
-        # 尝试提取 JSON 块
+        # 尝试提取 JSON 块（问题 5 补正则：模型可能在 JSON 前后加说明文字）
+        content = result.content.strip()
+        # 1) 移除 markdown 代码块围栏后整体解析
+        fenced = re.sub(
+            r"^```(?:json)?\s*", "", content, flags=re.MULTILINE
+        )
+        fenced = re.sub(r"\s*```$", "", fenced, flags=re.MULTILINE)
+        parsed = StructuredOutput._try_parse_json(fenced, schema)
+        if parsed is not None:
+            return parsed
+        # 2) 正则定位首个 `{` 到末个 `}` 的候选块（prose 包裹场景）
+        m = re.search(r"\{.*\}", fenced, flags=re.DOTALL)
+        if m:
+            parsed = StructuredOutput._try_parse_json(m.group(0), schema)
+            if parsed is not None:
+                return parsed
+        return None
+
+    @staticmethod
+    def _try_parse_json(
+        content: str,
+        schema: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """解析 JSON 并校验 schema；任一失败返回 None（供第三级渐进提取复用）。"""
         try:
-            content = result.content.strip()
-            # 移除 markdown 代码块标记
-            content = re.sub(
-                r"^```(?:json)?\s*",
-                "",
-                content,
-                flags=re.MULTILINE,
-            )
-            content = re.sub(r"\s*```$", "", content, flags=re.MULTILINE)
             parsed = json.loads(content)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         if not isinstance(parsed, dict):
             return None
@@ -390,7 +424,7 @@ class StructuredOutput:
         """
         try:
             parsed = json.loads(content)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return None, [f"- 顶层 JSON 解析失败：{e}"]
 
         if not isinstance(parsed, dict):
@@ -457,7 +491,7 @@ class StructuredOutput:
                 json.dumps(parsed, ensure_ascii=False),
             )
             return False
-        except Exception as e:  # schema 本身非法（非标准关键字等）
+        except Exception as e:  # schema 本身非法（非标准关键字等）  # noqa: BLE001
             logger.error(
                 "Schema 校验器异常（schema 可能非法）: %s",
                 e,

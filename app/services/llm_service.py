@@ -348,7 +348,7 @@ class LLMService:
                     call_fn=_rate_limited_call,
                     fallback_fn=fallback_fn,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 event_fields["success"] = False
                 event_fields["error"] = str(e)[:200]
                 event_fields["duration"] = time.monotonic() - attempt_start
@@ -417,7 +417,7 @@ class LLMService:
                 res = active.pop("res", None)
                 if res is not None:
                     await res.settle((result.usage or {}).get("total_tokens"))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 event_fields["success"] = False
                 event_fields["error"] = f"流式读取中断: {e!s}"[:200]
                 event_fields["duration"] = time.monotonic() - attempt_start
@@ -548,7 +548,7 @@ class LLMService:
             response = await retry.execute(
                 call_fn=_rate_limited_call,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             event_fields["success"] = False
             event_fields["error"] = str(e)[:200]
             event_fields["duration"] = time.monotonic() - start_time
@@ -596,6 +596,10 @@ class LLMService:
 
         Returns:
             解析后的 dict，失败返回 None
+
+        Raises:
+            StructuredRefusalError: 模型拒答（内容安全策略触发）。调用方需区分
+                「三级耗尽返回 None」与「拒答」——拒答通常需要差异化处理。
         """
         return await StructuredOutput.extract(
             llm_service=self,

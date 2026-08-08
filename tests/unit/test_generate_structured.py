@@ -15,6 +15,10 @@ import json
 import pytest
 
 from app.services.llm_service import LLMService, StreamResult
+from app.services.llm.structured import (
+    StructuredRefusalError,
+    StructuredTruncationError,
+)
 
 SCHEMA = {
     "type": "object",
@@ -353,7 +357,7 @@ async def test_truncation_retry_still_truncated_returns_none():
 
 @pytest.mark.asyncio
 async def test_refusal_short_circuits_no_retry():
-    """拒答（refusal 字段）→ 短路不 repair、不降级，只调用一次。"""
+    """拒答（refusal 字段）→ 抛 StructuredRefusalError，不 repair、不降级，只调用一次。"""
     llm = LLMService()
     calls = []
 
@@ -362,13 +366,14 @@ async def test_refusal_short_circuits_no_retry():
         return _sr("", refusal="抱歉，我无法处理这个请求。")
 
     llm.generate = fake_generate
-    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    with pytest.raises(StructuredRefusalError):
+        await llm.generate_structured(MESSAGES, SCHEMA)
     assert len(calls) == 1  # 拒答短路，无降级重试
 
 
 @pytest.mark.asyncio
 async def test_content_filter_short_circuits():
-    """finish_reason=content_filter → 短路不 repair、不降级。"""
+    """finish_reason=content_filter → 抛 StructuredRefusalError，不 repair、不降级。"""
     llm = LLMService()
     calls = []
 
@@ -377,13 +382,14 @@ async def test_content_filter_short_circuits():
         return _sr("", finish_reason="content_filter")
 
     llm.generate = fake_generate
-    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    with pytest.raises(StructuredRefusalError):
+        await llm.generate_structured(MESSAGES, SCHEMA)
     assert len(calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_refusal_from_third_level_short_circuits():
-    """第三级 fallback 也做拒答短路（第三级无降级可走，直接 None）。"""
+    """第三级 fallback 也做拒答短路（抛 StructuredRefusalError，第三级无降级可走）。"""
     llm = LLMService()
     calls = []
 
@@ -396,14 +402,15 @@ async def test_refusal_from_third_level_short_circuits():
         return _sr("", refusal="无法提供结构化数据")
 
     llm.generate = fake_generate
-    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    with pytest.raises(StructuredRefusalError):
+        await llm.generate_structured(MESSAGES, SCHEMA)
     # 第一级(1)+回喂(2) + 第二级(1)+回喂(2) + 第三级(1 拒答短路) = 6
     assert len(calls) == 6
 
 
 @pytest.mark.asyncio
 async def test_fallback_truncation_short_circuits():
-    """第三级 fallback 截断 → 短路 None（不扩 token 重试，无降级可走）。"""
+    """第三级 fallback 截断 → 抛 StructuredTruncationError（不扩 token 重试，无降级可走）。"""
     llm = LLMService()
     calls = []
 
@@ -417,13 +424,13 @@ async def test_fallback_truncation_short_circuits():
 
     llm.generate = fake_generate
     assert await llm.generate_structured(MESSAGES, SCHEMA) is None
-    # 第一级(1)+回喂(2) + 第二级(1)+回喂(2) + 第三级(1 截断短路) = 7
-    assert len(calls) == 7
+    # 第一级(1)+回喂(2) + 第二级(1)+回喂(2) + 第二级第3次(截断短路) = 6
+    assert len(calls) == 6
 
 
 @pytest.mark.asyncio
 async def test_empty_content_normal_finish_treated_as_refusal():
-    """content 空 + finish_reason=stop（DeepSeek 无 refusal 字段形态）→ 当拒答短路。"""
+    """content 空 + finish_reason=stop（DeepSeek 无 refusal 字段形态）→ 当拒答短路抛异常。"""
     llm = LLMService()
     calls = []
 
@@ -432,7 +439,8 @@ async def test_empty_content_normal_finish_treated_as_refusal():
         return _sr("", finish_reason="stop")
 
     llm.generate = fake_generate
-    assert await llm.generate_structured(MESSAGES, SCHEMA) is None
+    with pytest.raises(StructuredRefusalError):
+        await llm.generate_structured(MESSAGES, SCHEMA)
     assert len(calls) == 1
 
 
@@ -540,18 +548,16 @@ async def test_reask_truncation_does_not_enter_loop():
         return _sr(json.dumps({"name": "李四", "confidence": 0.8}))  # 降级第二级成功
 
     llm.generate = fake_generate
-    result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
-    assert result == {"name": "李四", "confidence": 0.8}
-    # 第一次(校验失败) + 回喂1次(截断→放弃) + 第二级(成功)
-    assert len(calls) == 3
+    assert await llm.generate_structured(MESSAGES, SCHEMA_RANGE) is None
+    # 第一次(校验失败) + 回喂1次(截断→一律短路返回 None，不降级)
+    assert len(calls) == 2
     assert calls[0]["type"] == "json_schema"
     assert calls[1]["type"] == "json_schema"
-    assert calls[2]["type"] == "json_object"
 
 
 @pytest.mark.asyncio
 async def test_reask_refusal_short_circuits():
-    """回喂循环内拒答 → 短路（不降级、不继续回喂）。"""
+    """回喂循环内拒答 → 抛 StructuredRefusalError（不降级、不继续回喂）。"""
     llm = LLMService()
     calls = []
 
@@ -562,7 +568,8 @@ async def test_reask_refusal_short_circuits():
         return _sr("", refusal="无法修正")
 
     llm.generate = fake_generate
-    assert await llm.generate_structured(MESSAGES, SCHEMA_RANGE) is None
+    with pytest.raises(StructuredRefusalError):
+        await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
     assert len(calls) == 2  # 拒答短路，不降级不继续回喂
 
 
@@ -648,3 +655,43 @@ async def test_nested_objects_recursively_enforced():
     enforced = StructuredOutput._enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is False  # 顶层
     assert enforced["properties"]["address"]["additionalProperties"] is False  # 嵌套
+
+
+# =====================================================================
+# 审核修复：正则定位 JSON 块 / 可空对象形态
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_fallback_regex_extracts_json_from_prose():
+    """第三级 prose 包裹 JSON（前后有说明文字）→ 正则定位 JSON 块成功。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) <= 2:  # 第一级 + 回喂 2 次
+            return _sr("bad json")
+        if len(calls) <= 5:  # 第二级 + 回喂 2 次
+            return _sr("bad json")
+        # 第三级：prose 包裹（正则定位 {..} 提取）
+        return _sr("这是结果：{\"name\": \"王五\"} 希望对你有帮助")
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA)
+    assert result == {"name": "王五"}
+    # 第一级(1)+回喂(2) + 第二级(1)+回喂(2) + 第三级(1) = 7
+    assert len(calls) == 7
+
+
+@pytest.mark.asyncio
+async def test_enforce_nullable_object_type_array():
+    """type 数组含 object（可空写法 ["object","null"]）也补全 additionalProperties:false。"""
+    from app.services.llm.structured import StructuredOutput
+
+    schema = {
+        "type": ["object", "null"],  # 可空对象
+        "properties": {"name": {"type": "string"}},
+    }
+    enforced = StructuredOutput._enforce_no_extra_fields(schema)
+    assert enforced["additionalProperties"] is False
