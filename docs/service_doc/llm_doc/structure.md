@@ -38,7 +38,8 @@
       - [工业级调研记录（2026-08-08 问题1）](#工业级调研记录2026-08-08-问题1)
     - [问题 2（中）：不检查 finish\_reason / refusal ✅ 已修复](#问题-2中不检查-finish_reason--refusal-️-已修复)
       - [工业级调研记录（2026-08-08 问题2）](#工业级调研记录2026-08-08-问题2)
-    - [问题 3（中）：降级而非「错误感知重试」 ⚠️ 未修复](#问题-3中降级而非错误感知重试-️-未修复)
+    - [问题 3（中）：降级而非「错误感知重试」 ✅ 已修复](#问题-3中降级而非错误感知重试-️-已修复)
+      - [工业级调研记录（2026-08-08 问题3）](#工业级调研记录2026-08-08-问题3)
     - [问题 4（低）：额外字段不拒绝 ⚠️ 未修复](#问题-4低额外字段不拒绝-️-未修复)
     - [已覆盖的工业级实践](#已覆盖的工业级实践)
     - [速查表](#速查表)
@@ -377,9 +378,9 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 
 ## 已知边界与设计取舍
 
-1. **成功判定 = 可解析 dict + Schema 校验通过**：`_try_extract` / `_fallback_extract` 在 `json.loads` + `isinstance(dict)` 后，经 `_validate_schema`（jsonschema）校验字段类型/枚举/必填/范围，失败记日志并返回 `None` 触发降级。已修复（2026-08-08，见问题 1）。**残留边界**：校验失败直接降级，未做「错误回喂重试」（见问题 3）。
+1. **成功判定 = 可解析 dict + Schema 校验通过**：`_try_extract` / `_fallback_extract` 在 `json.loads` + `isinstance(dict)` 后，经 `_validate_schema`（jsonschema）校验字段类型/枚举/必填/范围，失败记日志并返回 `None` 触发降级。已修复（2026-08-08，见问题 1）。**残留边界**：校验失败先回喂重试再降级（问题 3 已覆盖），回喂仍失败才降级。
 2. **finish_reason / refusal 已检查**：`_classify_result` 解析前三态分类，截断扩 token 重试 1 次、拒答短路（均不进降级链），记区分日志。已修复（2026-08-08，见问题 2）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（不降级）；拒答直接短路返回 None，调用方需自行转安全兜底。
-3. **降级而非「错误感知重试」**：第一级失败后直接换更弱的约束方式，**不把校验错误回喂给模型重试**。对 cheap 模型，回喂错误往往是唯一有效纠错手段（见问题 3）。
+3. **错误感知重试已实现**：`_try_extract` 校验失败先回喂错误重试（`_REASK_MAX_RETRIES=2`），耗尽才降级；strict/JSON mode 级回喂，正则级不加。已修复（2026-08-08，见问题 3）。**残留边界**：回喂重试增加模型调用次数（最坏 6 次/请求），token 消耗放大。
 4. **多级降级 = 多次模型调用**：三级全失败 = 3 组调用（含各组的重试），token 消耗放大。这是「兼容所有模型」的显式代价——换取廉价模型可用性，而非默认接受解析失败。
 5. **每级调用 `max_tokens=2048` 硬编码**：结构化输出通常较短，2048 是合理默认；长字段截断时本层扩 4096 重试 1 次（见问题 2），超限后放弃。
 6. **额外字段不拒绝**：`extract` 接收任意 schema 原样透传，不强制 `additionalProperties:false`。调用方 schema 若未写死，模型可能扩展字段混入（见问题 4）。
@@ -401,9 +402,8 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 
 - **jsonschema 选型**：schema 是 JSON Schema dict（非 Pydantic model），`jsonschema` 零转换直接校验，与调研结论一致（Pydantic 作者官方定位：JSON Schema 实例校验归 jsonschema）
 - **strict 只锁结构，本地校验锁值**：`confidence` 0~1 这类 `minimum`/`maximum` 值约束 strict 不保证，`_validate_schema` 兜底（服务端 strict 锁结构 + 本地 jsonschema 锁值，双保险）
-- **校验失败触发降级**：与现有三级降级链衔接——校验失败 = 该级无效 → 降级下一级，而非返回坏数据
+- **校验失败触发降级**：与现有三级降级链衔接——校验失败先回喂重试（问题 3），耗尽再降级下一级，而非返回坏数据
 - **非法 schema 有防护**：`validate()` 抛非 `ValidationError` 异常（schema 本身非法）也记日志返回 False，不静默穿透
-- **遗留（不属于问题 1）**：校验失败直接降级，未做「错误回喂重试」（见问题 3）
 
 **工业级原则**：模型返回之后不能直接进业务逻辑，生产链路必须有 Schema 校验一环：
 
@@ -464,7 +464,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 **对本项目的启示**：
 
 - 接口 `generate_structured(messages, schema_dict, ...)` 的 schema 是 **JSON Schema dict**、不引 agent 框架 → 与调研结论完全吻合：**用 `jsonschema.validate()` 做本地校验**是问题 1 的最小正确修法，零模型映射成本。
-- 校验失败后「先回喂重试再降级」是工业级主路径，但这对应 structure.md 的**问题 3（错误感知重试）**，不在问题 1 范围。**本次问题 1 只做：加 `jsonschema` 校验 → 校验失败记日志 → 返回 `None` 触发降级**；「回喂重试」留给问题 3 作为独立迭代。
+- 校验失败后「先回喂重试再降级」是工业级主路径，对应 structure.md 的**问题 3（错误感知重试）**。问题 1 只做「加 `jsonschema` 校验 → 校验失败记日志 → 返回 `None` 触发降级」；「回喂重试」已由问题 3 独立迭代完成（2026-08-08）。
 - 兼容 API 若支持 strict mode，则为双保险：服务端锁结构 + `jsonschema` 锁值（范围/format 等 strict 不保证的部分）；不支持 strict 时 `jsonschema` 是唯一结构防线，优先级更高。
 - 参照实现：jsonschema 官方库、Pydantic `TypeAdapter`（内部接 jsonschema）。
 
@@ -572,11 +572,21 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 - pi-refusal-guard（拒答即路由决策、Anthropic 具名 category）：<https://github.com/LoneExile/pi-refusal-guard>
 - 结构化输出生产管线检查顺序：<https://nbility.ai/blog/en/structured-output-json-schema>
 
-### 问题 3（中）：降级而非「错误感知重试」 ⚠️ 未修复
+### 问题 3（中）：降级而非「错误感知重试」 ✅ 已修复
 
-**位置**：`extract`（失败即换约束方式，不回喂错误）
+**位置**：`_try_extract`（回喂循环）等
 
-**现状**：第一级 schema 失败 → 直接降级到 JSON mode（约束更弱）→ 失败 → 正则（约束最弱）。**三级都在「换约束」，没有一次「带错误重试」**。
+**已修复（2026-08-08）**：`_try_extract` 的解析校验段外包回喂循环（同一 response_format，即同约束下重试），校验失败把具体错误回喂模型修正：
+
+- **`_collect_schema_errors`**：`Draft7Validator.iter_errors` 收集全部校验错误，格式化为「字段路径: message」人话（一次改完，非第一条）
+- **`_build_reask_messages`**：clone（`[dict(m) for m in messages]`）+ 保留上次失败 assistant 输出 + 末尾追加 user 错误反馈——**不污染调用方 messages**
+- **`_parse_and_validate`**：解析 + 校验，返回 `(结果, 错误列表)` 供回喂循环使用
+- **回喂上限 `_REASK_MAX_RETRIES = 2`**（工业共识 2~3 次），温度保持 0，无需退避（退避是 retry.py 职责）
+- **降级组合**：strict 级回喂 2 次（值约束只能这级救）、JSON mode 级回喂 2 次、正则级不加（最弱约束重试收益最低）
+- **回喂循环内保留 `_classify_result` 三态检查**：截断 → 降级（不与扩 token 逻辑组合，防 token 爆炸，对齐 Instructor PR #2232 教训）；拒答 → 短路
+- **返回契约 `dict | None` 不变**：回喂耗尽 → 返回 None 触发降级
+
+修复前：第一级 schema 失败 → 直接降级到 JSON mode（约束更弱）→ 失败 → 正则（约束最弱）。**三级都在「换约束」，没有一次「带错误重试」**。
 
 #### 工业级对照：把具体校验错误回喂给模型
 
@@ -592,6 +602,83 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 重试次数有限制（通常 `max_retries = 2~3`），超限后进入降级路径（返回 unknown / 追问 / 转人工 / 普通文本 / 进离线分析队列）。
 
 **改进方向**（建议，范围大）：schema 校验失败时把错误详情回喂模型再试一次，而非直接降级。这是对 cheap 模型最有效的纠错手段——降级到更弱约束往往仍会失败，而错误回喂直接针对缺陷修正。
+
+#### 工业级调研记录（2026-08-08 问题3）
+
+> 调研目的：修复问题 3（降级而非错误感知重试）前，先查证工业级项目如何实现「校验失败 → 回喂错误重试 → 再降级」。调研对象：Instructor reask、Guardrails AI REASK、LangChain RetryOutputParser/OutputFixingParser 及通用 best practice。
+
+**结论先行**：
+
+1. **回喂重试是业界标准主路径**，非可选项——三个主流库全部以此为标准模式（Instructor `max_retries`、Guardrails `num_reasks`、LangChain RetryOutputParser）。「校验失败直接降级、零回喂」缺了主路径只留了兜底。
+2. **错误必须回喂，且要保留模型上一次失败输出**：把上一次失败 assistant 输出保留在对话历史里，再末尾追加 user 消息（具体校验错误 + 修正指令）。错误格式化成**人话指令**，绝不原样拼 traceback。
+3. **重试上限 2~3 次**，`temperature` 保持 0，校验失败重试**无需退避**（退避只用于网络/限流瞬时错误，是 retry.py 职责）。
+4. **与降级链组合**：先重试、后降级，**每一级各自重试**——降级到更弱约束救不了本级的错误（如值约束违反，JSON mode/正则根本不查值约束）。**最坏调用数 = (1+2)+(1+1)+1 = 6 次**，可控。
+
+**实现范式（统一伪代码）**：
+
+```
+attempt = model(prompt)
+for retry in 1..MAX_RETRIES:              # MAX_RETRIES = 2 或 3
+    errors = validate(attempt)            # 结构 + 语义
+    if not errors: return attempt
+    feedback = format_errors(errors)      # 格式化成指令，不是 traceback
+    attempt = model(prompt, previous=attempt, feedback=feedback)
+```
+
+**各库做法对照**：
+
+| 库 | 回喂机制 | 错误格式 | 是否保留上次输出 | 重试上限 |
+| --- | --- | --- | --- | --- |
+| Instructor | reask 循环 `handle_reask_kwargs` | 字段路径 + message + 失败值拼一条消息 | ✅ 保留（注释："prevent repeated mistakes"） | `max_retries`（TOOLS 常见 3、JSON 常见 0） |
+| Guardrails AI | `on_fail="reask"` 纠正 prompt 回喂 | validator 的 `error_message` | ✅ 保留 | `num_reasks`（默认 1，建议 2~3） |
+| LangChain | RetryOutputParser（原始 prompt + 坏输出回喂） | 错误 + 坏输出 | ✅ 保留 | `max_retries` 可配 |
+
+> Guardrails 特有 `full_schema_reask` 开关：True 整段重生成（贵），False 只重生成失败字段（省）。Instructor 默认保留全部上下文。
+
+**错误回喂的 prompt 设计**：
+
+- **格式化成「人话指令」**：`字段 items[2].qty：值 "three" 不是整数，必须是数字（如 3）`——保留字段路径 + 人类可读 message + 失败输入值三要素
+- **一次收集全部错误**（`iter_errors` 全量），让模型一次改完
+- **保留上次失败输出 + 末尾追加 user 反馈**：self-correction 能工作的关键（Instructor/Guardrails 都这么做）
+- **用 user 消息而非 system 消息**：错误是一次性指令，非恒定规则
+- 模板：`你的上一次输出未通过 JSON Schema 校验，具体错误如下：\n{errors}\n请根据错误修正，只输出符合 schema 的 JSON 对象，不要 markdown 代码块、不要额外解释。`
+
+**重试策略与终止**：
+
+| 维度 | 工业共识 |
+| --- | --- |
+| 重试上限 | 2~3 次（额外），最多 3 次请求；首次修正成功率最高，之后陡降 |
+| 退避 | 无需（只用于瞬时 API 错误，retry.py 职责） |
+| 温度 | 保持 0（结构化确定性优先） |
+| 错误分类前置 | 可修复的格式/参数错误 → 回喂；截断 → 扩 token/短路；拒答 → 短路不 repair；下游瞬时错误 → 退避 |
+
+重试耗尽 → 显式降级（本项目返回 None 触发降级，语义正确，只是少了回喂一环）。**不静默返回 partial/default**。
+
+**对本项目的具体修法（最小改动，全在 structured.py）**：
+
+- **关键判断 1**：错误回喂重试与问题 2 的截断扩 token 重试**正交**——截断重试在解析前（看 finish_reason，改 max_tokens 不动 messages），回喂重试在解析后（看 parse/validate 失败，改 messages 不动 max_tokens），由 `_classify_result` 三态自然隔离
+- **关键判断 2**：**strict 级必须加回喂**——strict 只锁结构，`minimum/maximum` 值约束靠 `_validate_schema` 兜底，这类失败降级救不了，strict 级回喂是唯一修正值约束的机会
+- **关键判断 3**：**不污染调用方 messages**——`_build_reask_messages` 需 clone（`[dict(m) for m in messages]`）+ append，绝不就地改
+- **关键判断 4**：**返回契约 `dict | None` 不变**——回喂耗尽 → 返回 None 触发降级，与现有语义无缝衔接
+
+改动点：
+
+1. 新增 `_REASK_MAX_RETRIES = 2` 常量 + `_collect_schema_errors`（`iter_errors` 收集全部错误格式化）+ `_build_reask_messages`（clone + assistant 失败输出 + user 反馈）
+2. `_try_extract` 的解析校验段外包回喂循环（保持同一 response_format，即同约束下重试）
+3. 降级组合：strict 级回喂 2 次（值约束只能这级救）、JSON mode 级回喂 1~2 次、正则级不加（最弱约束重试收益最低，与现有「第三级截断不重试」保守取向一致）
+
+**边缘情况**：
+
+- 回喂循环内保留 `_classify_result` 三态检查——避免截断的半截 JSON 被反复回喂吃 token（Instructor PR #2232 教训）
+- `_validate_schema` 的日志保留（重构为 `_collect_schema_errors` 后别丢审计日志）
+- 温度保持 0；建议记录「每级回喂次数/回喂后成功率」指标（若 strict 级回喂成功率极低，说明 schema 写错或模型不认该约束，应修 schema 而非加重试）
+
+**信息来源**：
+
+- Instructor reask/retry：<https://python.useinstructor.com/concepts/reask_validation/>、<https://python.useinstructor.com/learning/validation/retry_mechanisms/>；截断进回喂 token 爆炸修复：<https://github.com/567-labs/instructor/pull/2232>
+- Guardrails REASK/num_reasks：<https://guardrailsai.com/guardrails/docs/concepts/guard>、<https://theneuralbase.com/guardrails-ai/learn/beginner/reask-with-error-message/>
+- LangChain RetryOutputParser：<https://python.langchain.com/v0.1/docs/modules/model_io/output_parsers/types/retry/>；checkpointed 旧值残留 bug：<https://github.com/langchain-ai/langchain/pull/39248>
+- 重试上限/温度/退避/错误格式 best practice：<https://thepromptbench.com/structured-outputs/retry-loops-for-validation-failures/>、<https://callsphere.ai/blog/handling-structured-output-failures-retries-fallbacks-partial-parsing>
 
 ### 问题 4（低）：额外字段不拒绝 ⚠️ 未修复
 
@@ -618,7 +705,7 @@ Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(
 | 模型输出当不可信输入 | ✅ 三级降级 + 重试 + 熔断的整体设计意图 |
 | **程序校验（Schema）** | ✅ `_validate_schema`（jsonschema）本地校验，三级降级全覆盖（问题 1） |
 | **API 边界检查（refusal/截断）** | ✅ `_classify_result` 三态分类，截断扩 token 重试 1 次、拒答短路（问题 2） |
-| **错误感知重试** | ⚠️ 缺失（问题 3） |
+| **错误感知重试** | ✅ `_try_extract` 回喂循环（`_REASK_MAX_RETRIES=2`），strict/JSON mode 级回喂，校验失败先回喂再降级（问题 3） |
 | **禁额外字段** | ⚠️ 未强制（问题 4） |
 
 > **超出本模块范围**（属于 Agent 层与上层业务，structured 模块不负责）：语义/业务正确、工具执行权在后端、权限/幂等键、评测集闭环、SFT。这些由 Agent 循环与业务规则承载。
@@ -627,12 +714,12 @@ Schema 层面明确 `additionalProperties: false`，Pydantic 侧用 `ConfigDict(
 
 | 我们的缺陷 | 工业级正确做法 | 我们的现状 | 参照实现 | 结论 |
 | --- | --- | --- | --- | --- |
-| 解析后无 Schema 校验 | 程序校验是必需品（本地 jsonschema/Pydantic 校验） | ✅ `_validate_schema`（jsonschema）三级全覆盖，校验失败→记日志→降级 | zhuwei.fun 生产级方案 · jsonschema 库 | ✅ 已修复（2026-08-08），回喂重试留待问题 3 |
+| 解析后无 Schema 校验 | 程序校验是必需品（本地 jsonschema/Pydantic 校验） | ✅ `_validate_schema`（jsonschema）三级全覆盖，校验失败先回喂再降级 | zhuwei.fun 生产级方案 · jsonschema 库 | ✅ 已修复（2026-08-08） |
 | 不检查 finish_reason/refusal | API 边界检查：截断扩 token 重试、拒答走安全兜底 | ✅ `_classify_result` 三态分类：截断扩 token 重试 1 次、拒答短路（均不进降级链），记区分日志 | OpenAI 文档 · zhuwei.fun 失败处理表 | ✅ 已修复（2026-08-08） |
-| 降级而非错误感知重试 | 带具体校验错误回喂模型，`max_retries=2~3` 后进降级路径 | 只换约束方式，不回喂错误 | zhuwei.fun 错误感知 retry | ⚠️ 中，范围大留待后续 |
+| 降级而非错误感知重试 | 带具体校验错误回喂模型，`max_retries=2~3` 后进降级路径 | ✅ `_try_extract` 回喂循环（`_REASK_MAX_RETRIES=2`），strict/JSON mode 级回喂，耗尽才降级 | zhuwei.fun 错误感知 retry | ✅ 已修复（2026-08-08） |
 | 额外字段不拒绝 | `additionalProperties:false` + Pydantic `extra="forbid"` | schema 原样透传 | JSON Schema 规范 | ⚠️ 低，建议文档引导 |
-| 多级降级 = 多次调用 | 降级路径是兜底不是默认路径 | 三级全失败 3 组调用 | — | ✅ 设计取舍，文档记录 |
-| 吞异常无区分 | 失败类型可观测、分别处理 | 截断/拒答已区分（问题 2）；解析失败/下游失败仍静默降级 | zhuwei.fun 失败分类表 | ⚠️ 低，解析失败细分日志留待问题 3 |
+| 多级降级 = 多次调用 | 降级路径是兜底不是默认路径 | 三级全失败最多 6 组调用（含各级回喂 2 次） | — | ✅ 设计取舍，文档记录 |
+| 吞异常无区分 | 失败类型可观测、分别处理 | 截断/拒答/回喂均区分日志（问题 2/3）；纯解析失败仍静默降级 | zhuwei.fun 失败分类表 | ⚠️ 低，解析失败细分日志非必要 |
 
 ---
 

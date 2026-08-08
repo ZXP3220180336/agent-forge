@@ -70,43 +70,53 @@ async def test_first_level_schema_success():
 
 @pytest.mark.asyncio
 async def test_second_level_json_mode_fallback():
-    """第一级失败 → 第二级 json_object 成功。"""
+    """第一级回喂耗尽失败 → 第二级 json_object 成功。"""
     llm = LLMService()
     calls = []
 
     async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
         calls.append(response_format)
-        if len(calls) == 1:
-            return _sr("not valid json {")  # 第一级解析失败
+        if len(calls) <= 3:  # 第一级 + 回喂 2 次（均解析失败）
+            return _sr("not valid json {")
         return _sr(json.dumps({"name": "李四"}, ensure_ascii=False))
 
     llm.generate = fake_generate
     result = await llm.generate_structured(MESSAGES, SCHEMA)
     assert result == {"name": "李四"}
+    # 第一级(1) + 回喂(2) 均 json_schema，耗尽后降级第二级(1) json_object
     assert calls[0]["type"] == "json_schema"
-    assert calls[1]["type"] == "json_object"
+    assert calls[1]["type"] == "json_schema"
+    assert calls[2]["type"] == "json_schema"
+    assert calls[3]["type"] == "json_object"
+    assert len(calls) == 4
 
 
 @pytest.mark.asyncio
 async def test_third_level_regex_fallback():
-    """前两级失败 → 第三级正则 fallback 成功。"""
+    """前两级（含回喂）失败 → 第三级正则 fallback 成功。"""
     llm = LLMService()
     calls = []
 
     async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
         calls.append(response_format)
-        if len(calls) <= 2:
+        if len(calls) <= 2:  # 第一级 + 回喂 2 次
+            return _sr("bad json")
+        if len(calls) <= 5:  # 第二级 + 回喂 2 次
             return _sr("bad json")
         return _sr("```json\n{\"name\": \"王五\"}\n```")  # 无 response_format，带代码块
 
     llm.generate = fake_generate
     result = await llm.generate_structured(MESSAGES, SCHEMA)
     assert result == {"name": "王五"}
-    # 第三级无 response_format（fallback 调用 generate 不传 response_format）
+    # 第一级(1)+回喂(2) json_schema → 第二级(1)+回喂(2) json_object → 第三级(1) 无 response_format
     assert calls[0]["type"] == "json_schema"
-    assert calls[1]["type"] == "json_object"
-    assert calls[2] is None
-    assert len(calls) == 3
+    assert calls[1]["type"] == "json_schema"
+    assert calls[2]["type"] == "json_schema"
+    assert calls[3]["type"] == "json_object"
+    assert calls[4]["type"] == "json_object"
+    assert calls[5]["type"] == "json_object"
+    assert calls[6] is None
+    assert len(calls) == 7
 
 
 # =====================================================================
@@ -246,7 +256,7 @@ async def test_schema_validation_pass_no_extra_call():
 
 @pytest.mark.asyncio
 async def test_schema_validation_range_failure_falls_back():
-    """第一级结构合法但 confidence 超范围（strict 不保证值约束）→ 校验失败 → 降级第二级成功。"""
+    """第一级结构合法但 confidence 超范围（strict 不保证值约束）→ 回喂修正 → 成功。"""
     llm = LLMService()
     calls = []
 
@@ -254,18 +264,18 @@ async def test_schema_validation_range_failure_falls_back():
         calls.append(response_format)
         if len(calls) == 1:
             return _sr(json.dumps({"name": "张三", "confidence": 5}))
-        return _sr(json.dumps({"name": "张三", "confidence": 0.9}))
+        return _sr(json.dumps({"name": "张三", "confidence": 0.9}))  # 回喂修正后成功
 
     llm.generate = fake_generate
     result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
     assert result == {"name": "张三", "confidence": 0.9}
     assert calls[0]["type"] == "json_schema"
-    assert calls[1]["type"] == "json_object"
+    assert calls[1]["type"] == "json_schema"  # 回喂保持同一级约束
 
 
 @pytest.mark.asyncio
 async def test_schema_validation_missing_required_falls_back():
-    """第一级缺必填字段 confidence → 校验失败 → 降级。"""
+    """第一级缺必填字段 confidence → 回喂修正 → 成功。"""
     llm = LLMService()
     calls = []
 
@@ -273,7 +283,7 @@ async def test_schema_validation_missing_required_falls_back():
         calls.append(response_format)
         if len(calls) == 1:
             return _sr(json.dumps({"name": "张三"}))
-        return _sr(json.dumps({"name": "张三", "confidence": 0.8}))
+        return _sr(json.dumps({"name": "张三", "confidence": 0.8}))  # 回喂修正后成功
 
     llm.generate = fake_generate
     result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
@@ -283,7 +293,7 @@ async def test_schema_validation_missing_required_falls_back():
 
 @pytest.mark.asyncio
 async def test_schema_validation_all_levels_fail_returns_none():
-    """三级均返回结构合法但不合 schema → 全部校验失败 → None（含第三级正则路径也校验）。"""
+    """三级均返回结构合法但不合 schema（含各级回喂）→ 全部校验失败 → None（含第三级正则路径也校验）。"""
     llm = LLMService()
     calls = []
 
@@ -293,7 +303,8 @@ async def test_schema_validation_all_levels_fail_returns_none():
 
     llm.generate = fake_generate
     assert await llm.generate_structured(MESSAGES, SCHEMA_RANGE) is None
-    assert len(calls) == 3
+    # 第一级(1)+回喂(2) + 第二级(1)+回喂(2) + 第三级(1) = 7
+    assert len(calls) == 7
 
 
 # =====================================================================
@@ -374,13 +385,16 @@ async def test_refusal_from_third_level_short_circuits():
 
     async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
         calls.append(response_format)
-        if len(calls) <= 2:
-            return _sr("bad json")  # 前两级解析失败
+        if len(calls) <= 2:  # 第一级 + 回喂 2 次
+            return _sr("bad json")
+        if len(calls) <= 5:  # 第二级 + 回喂 2 次
+            return _sr("bad json")
         return _sr("", refusal="无法提供结构化数据")
 
     llm.generate = fake_generate
     assert await llm.generate_structured(MESSAGES, SCHEMA) is None
-    assert len(calls) == 3
+    # 第一级(1)+回喂(2) + 第二级(1)+回喂(2) + 第三级(1 拒答短路) = 6
+    assert len(calls) == 6
 
 
 @pytest.mark.asyncio
@@ -391,13 +405,16 @@ async def test_fallback_truncation_short_circuits():
 
     async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
         calls.append(response_format)
-        if len(calls) <= 2:
+        if len(calls) <= 2:  # 第一级 + 回喂 2 次
+            return _sr("bad json")
+        if len(calls) <= 5:  # 第二级 + 回喂 2 次
             return _sr("bad json")
         return _sr('{"name": "张', finish_reason="length")
 
     llm.generate = fake_generate
     assert await llm.generate_structured(MESSAGES, SCHEMA) is None
-    assert len(calls) == 3
+    # 第一级(1)+回喂(2) + 第二级(1)+回喂(2) + 第三级(1 截断短路) = 7
+    assert len(calls) == 7
 
 
 @pytest.mark.asyncio
@@ -426,3 +443,120 @@ async def test_normal_path_unaffected_by_classification():
     llm.generate = fake_generate
     result = await llm.generate_structured(MESSAGES, SCHEMA)
     assert result == {"name": "张三"}
+
+
+# =====================================================================
+# 问题 3：错误感知重试（校验失败回喂模型修正）
+# 回喂重试成功 / 回喂耗尽降级 / 不污染 messages / 截断不进回喂循环
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_reask_retries_then_success():
+    """第一级校验失败（confidence 超范围）→ 回喂错误重试 → 成功。"""
+    llm = LLMService()
+    seen = {}
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        if not seen.get("first"):
+            seen["first"] = True
+            seen["first_messages"] = messages
+            return _sr(json.dumps({"name": "张三", "confidence": 5}))  # 超范围
+        seen["reask_messages"] = messages
+        return _sr(json.dumps({"name": "张三", "confidence": 0.9}))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
+    assert result == {"name": "张三", "confidence": 0.9}
+    # 回喂消息 = 原 messages clone + assistant 失败输出 + user 错误反馈
+    assert len(seen["reask_messages"]) == len(seen["first_messages"]) + 2
+    assert seen["reask_messages"][-1]["role"] == "user"
+    assert "Schema 校验" in seen["reask_messages"][-1]["content"]
+    assert seen["reask_messages"][-2]["role"] == "assistant"
+    assert seen["reask_messages"][-2]["content"] == json.dumps({"name": "张三", "confidence": 5})
+
+
+@pytest.mark.asyncio
+async def test_reask_exhausted_falls_back():
+    """第一级回喂耗尽（2 次）仍校验失败 → 降级到第二级成功。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) <= 3:  # 第一级 + 回喂 2 次，均校验失败
+            return _sr(json.dumps({"name": "张三", "confidence": 5}))
+        return _sr(json.dumps({"name": "李四", "confidence": 0.8}))  # 第二级成功
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
+    assert result == {"name": "李四", "confidence": 0.8}
+    assert len(calls) == 4  # 第一级(1) + 回喂(2) + 第二级(1)
+    assert calls[0]["type"] == "json_schema"
+    assert calls[1]["type"] == "json_schema"  # 回喂保持同一级约束
+    assert calls[2]["type"] == "json_schema"
+    assert calls[3]["type"] == "json_object"  # 耗尽后降级
+
+
+@pytest.mark.asyncio
+async def test_reask_does_not_pollute_caller_messages():
+    """回喂不污染调用方 messages（clone 而非就地 append）。"""
+    llm = LLMService()
+    seen = {}
+    original_messages = [{"role": "user", "content": "张三去了北京"}]
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        if not seen.get("first"):
+            seen["first"] = True
+            seen["caller_messages_at_first"] = messages
+            return _sr(json.dumps({"name": "张三", "confidence": 5}))
+        seen["caller_messages_at_reask"] = messages
+        return _sr(json.dumps({"name": "张三", "confidence": 0.9}))
+
+    llm.generate = fake_generate
+    await llm.generate_structured(original_messages, SCHEMA_RANGE)
+    # 调用方原始 messages 未被就地修改
+    assert original_messages == [{"role": "user", "content": "张三去了北京"}]
+    # 第一次调用收到的 messages 就是原始列表（未污染）
+    assert seen["caller_messages_at_first"] == original_messages
+
+
+@pytest.mark.asyncio
+async def test_reask_truncation_does_not_enter_loop():
+    """回喂循环内截断 → 不进入回喂循环、不扩 token 组合 → 降级。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) == 1:
+            return _sr(json.dumps({"name": "张三", "confidence": 5}))  # 校验失败 → 回喂
+        if len(calls) == 2:
+            return _sr('{"name": "张', finish_reason="length")  # 回喂后截断
+        return _sr(json.dumps({"name": "李四", "confidence": 0.8}))  # 降级第二级成功
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
+    assert result == {"name": "李四", "confidence": 0.8}
+    # 第一次(校验失败) + 回喂1次(截断→放弃) + 第二级(成功)
+    assert len(calls) == 3
+    assert calls[0]["type"] == "json_schema"
+    assert calls[1]["type"] == "json_schema"
+    assert calls[2]["type"] == "json_object"
+
+
+@pytest.mark.asyncio
+async def test_reask_refusal_short_circuits():
+    """回喂循环内拒答 → 短路（不降级、不继续回喂）。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) == 1:
+            return _sr(json.dumps({"name": "张三", "confidence": 5}))
+        return _sr("", refusal="无法修正")
+
+    llm.generate = fake_generate
+    assert await llm.generate_structured(MESSAGES, SCHEMA_RANGE) is None
+    assert len(calls) == 2  # 拒答短路，不降级不继续回喂
