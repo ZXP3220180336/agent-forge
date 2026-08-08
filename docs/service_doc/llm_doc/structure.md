@@ -36,6 +36,7 @@
   - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题--修复--工业对照)
     - [问题 1（严重）：解析后无 Schema 校验 ⚠️ 未修复](#问题-1严重解析后无-schema-校验️-未修复)
       - [工业级对照：程序校验是必需品](#工业级对照程序校验是必需品)
+      - [工业级调研记录（2026-08-08）](#工业级调研记录2026-08-08)
     - [问题 2（中）：不检查 finish_reason / refusal ⚠️ 未修复](#问题-2中不检查-finish_reason--refusal️-未修复)
       - [工业级对照：失败处理要覆盖 API 边界](#工业级对照失败处理要覆盖-api-边界)
     - [问题 3（中）：降级而非「错误感知重试」 ⚠️ 未修复](#问题-3中降级而非错误感知重试️-未修复)
@@ -423,6 +424,52 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 ```
 
 **改进方向**（建议）：`extract` 增加可选 `validator`（或内置 JSON Schema 校验器）。解析后校验字段类型/枚举/必填；校验失败 → 记日志 + 返回 `None`（触发降级），而非返回坏数据。这会让降级链真正有意义——**当前第一级的 strict 约束一旦降级到 JSON mode/正则，Schema 保证就丢了，而后续级别恰好没有校验兜底**。
+
+### 工业级调研记录（2026-08-08）
+
+> 调研目的：修复问题 1（解析后无 Schema 校验）前，先查证工业级项目如何解决「模型返回 JSON 后的 Schema 校验」。调研对象：OpenAI/Anthropic 官方 Structured Outputs、Instructor、LangChain、Guardrails AI、Outlines/JSONFormer、Vellum 及 jsonschema vs Pydantic 选型讨论。
+
+**结论先行**：
+
+1. **双保险是业界共识**：即使启用服务端 strict mode，也必须在客户端再做一次本地校验。strict 只锁「结构」（字段存在、类型、enum、无多余字段），**不锁「值」**——`minimum`/`maximum`/`pattern`/`format` 等校验关键字不被服务端保证；且 refusal、`finish_reason="length"` 截断会绕过 schema。典型例：`confidence: "很高"` 在 strict 下仍会通过（strict 只保证它是 float，不保证在 [0,1]）。
+2. **校验失败的主路径是「带错误回喂重试（1~3 次）→ 失败后再降级」**，而非直接降级/默认值。要点：必须把 `ValidationError` 转成人话 + 模型上一次的输出一起回喂（**绝不盲目同 prompt 重试**）；按失败类别分流——结构/参数错（缺字段、类型错）可回喂重试（模型能自纠），业务语义错不重试直接降级。
+3. **校验库选型：schema 是 JSON Schema dict → 直接用 `jsonschema` 库**。Pydantic 作者官方表态「JSON Schema 实例校验是 jsonschema 的事，Pydantic 不做」，`TypeAdapter` 内部也是接 jsonschema。仅当「校验后立刻拿类型化对象 + 跨字段 validator」时才值得转 Pydantic。
+
+**工业级方案速览**：
+
+| 方案 | 校验策略 | 校验失败处理 |
+| --- | --- | --- |
+| OpenAI/Anthropic Strict Outputs | 服务端约束解码（解码层禁止非法 token） | 官方客户端不替你做业务校验；refusal/截断自行分支；官方仍建议本地 Pydantic `model_validate()` 回读 |
+| Instructor（Pydantic 标杆） | 客户端 4 层校验（JSON 解析 / Schema / 字段 validator / 跨字段 model validator） | reask：错误格式化后追加进对话历史重生成，`max_retries` 默认 3，耗尽抛 `InstructorRetryException`（含 `failed_attempts` 供监控） |
+| LangChain | 传 Pydantic 类才校验（实例化时）；**传 JSON Schema dict 默认不校验**（与本项目现状同缺口） | `include_raw=True` 返回 `{raw, parsed, parsing_error}` 便于接重试 runnable；`strict` 参数控制是否校验 |
+| Guardrails AI | 独立于模型的 Validators（schema + 内容质量） | OnFailAction 决策表：REASK（限次）/ FIX / FIX_REASK / FILTER / REFRAIN / EXCEPTION / NOOP；总失败暴露 `validation_passed` |
+| Outlines / JSONFormer（约束解码派） | 生成层 FSM/类型生成器，结构合法是「数学上不可能违反」 | 结构层不失败（除非截断）；作者警告只保形状不保语义，仍需内容层校验兜底 |
+
+**选型对照（jsonschema vs Pydantic）**：
+
+| 维度 | `jsonschema` 库 | Pydantic |
+| --- | --- | --- |
+| 输入 | JSON Schema dict 直接校验，零转换 | 需先定义 Model 或 `TypeAdapter`（非一等公民） |
+| 适用 schema | schema 是 dict、动态生成、跨语言契约 | schema 静态、写死在 Python 类型里 |
+| 校验能力 | 完整 JSON Schema 语义（`anyOf`/`oneOf`/`$ref`/format） | 类型 + 自定义 validator + 跨字段逻辑 |
+| 产物 | dict（原样返回） | 类型化对象 |
+| 官方定位 | Pydantic 作者：JSON Schema 实例校验归 jsonschema | 针对不可信数据的类型化校验 |
+
+**对本项目的启示**：
+
+- 接口 `generate_structured(messages, schema_dict, ...)` 的 schema 是 **JSON Schema dict**、不引 agent 框架 → 与调研结论完全吻合：**用 `jsonschema.validate()` 做本地校验**是问题 1 的最小正确修法，零模型映射成本。
+- 校验失败后「先回喂重试再降级」是工业级主路径，但这对应 structure.md 的**问题 3（错误感知重试）**，不在问题 1 范围。**本次问题 1 只做：加 `jsonschema` 校验 → 校验失败记日志 → 返回 `None` 触发降级**；「回喂重试」留给问题 3 作为独立迭代。
+- 兼容 API 若支持 strict mode，则为双保险：服务端锁结构 + `jsonschema` 锁值（范围/format 等 strict 不保证的部分）；不支持 strict 时 `jsonschema` 是唯一结构防线，优先级更高。
+- 参照实现：jsonschema 官方库、Pydantic `TypeAdapter`（内部接 jsonschema）。
+
+**信息来源**：
+
+- OpenAI strict mode 仍需客户端校验：<https://community.openai.com/t/strict-mode-does-not-enforce-the-json-schema/1104630>、<https://www.respan.ai/articles/openai-structured-outputs-vs-json-mode>
+- Instructor reask/校验：<https://python.useinstructor.com/concepts/reask_validation/>、错误未回喂 bug：<https://github.com/567-labs/instructor/issues/1736>
+- LangChain with_structured_output（JSON Schema 不校验）：<https://reference.langchain.com/python/langchain-core/output_parsers/pydantic/PydanticOutputParser>
+- Guardrails AI OnFailAction：<https://guardrailsai.com/guardrails/docs/concepts/error_remediation>
+- Outlines 约束解码：<https://deepwiki.com/dottxt-ai/outlines/3-structured-generation>
+- jsonschema vs Pydantic 选型：<https://www.glukhov.org/llm-performance/benchmarks/llm-structured-output-validation-python>、Pydantic 官方讨论：<https://github.com/pydantic/pydantic/discussions/5135>
 
 ### 问题 2（中）：不检查 finish_reason / refusal ⚠️ 未修复
 
