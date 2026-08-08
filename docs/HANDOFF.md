@@ -264,6 +264,8 @@ API 层（FastAPI 路由）
 | [service_doc/llm_doc/client.md](service_doc/llm_doc/client.md) | ✅ ClientManager 设计 |
 | [service_doc/llm_doc/streaming.md](service_doc/llm_doc/streaming.md) | ✅ StreamParser 设计（流式/非流式解析 + 工业级对照） |
 | [service_doc/llm_doc/retry.md](service_doc/llm_doc/retry.md) | ✅ RetryHandler 设计（滑动窗口/错误分类/半开探针/修复记录） |
+| [service_doc/llm_doc/limiter.md](service_doc/llm_doc/limiter.md) | ✅ 限流设计（acquire / reserve-settle 双形态 + 自适应预留 + 工业级对比） |
+| [service_doc/llm_doc/structure.md](service_doc/llm_doc/structure.md) | ✅ StructuredOutput 设计（三级降级 + 工业级对比 + 审核发现） |
 | [deployment.md](deployment.md) | ✅ 部署说明（运行方式/环境/依赖基础设施） |
 
 ### 常用命令

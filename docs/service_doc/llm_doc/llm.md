@@ -490,7 +490,7 @@ def parse_chunk(chunk) -> ParsedChunk:
 
 ### StructuredOutput — 结构化输出
 
-**文件**：`app/services/llm/structured.py`
+**文件**：`app/services/llm/structured.py`（设计文档见 [structure.md](structure.md)）
 
 > **统一入口（2026-08-07）**：对外唯一入口为 `LLMService.generate_structured()`，它委托 `StructuredOutput.extract()` 三级降级；`StructuredOutput` 是内部实现载体（接收完整 messages）。
 
