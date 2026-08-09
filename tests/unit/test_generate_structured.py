@@ -165,12 +165,30 @@ async def test_empty_response_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_generate_exception_returns_none():
-    """generate 抛异常 → None（降级路径静默吞异常）。"""
+async def test_generate_unrecoverable_exception_propagates():
+    """generate 抛不可恢复异常（未知=RuntimeError，B3）→ 向上抛，不静默降级。
+
+    B3 契约变更前：generate 的 except Exception 一律吞掉返回 None，structured 白打
+    降级请求。变更后：不可恢复错误（4xx/认证/熔断/未知异常归 NON_RETRYABLE）由
+    generate raise，structured 记录 ERROR 日志后 re-raise——调用方感知真实失败。
+    """
     llm = LLMService()
 
     async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
         raise RuntimeError("downstream failure")
+
+    llm.generate = fake_generate
+    with pytest.raises(RuntimeError):
+        await llm.generate_structured(MESSAGES, SCHEMA)
+
+
+@pytest.mark.asyncio
+async def test_generate_recoverable_exception_returns_none():
+    """generate 抛可恢复异常（超时）→ 仍返回 None 降级（B3 保持降级契约）。"""
+    llm = LLMService()
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        raise TimeoutError("downstream timeout")
 
     llm.generate = fake_generate
     assert await llm.generate_structured(MESSAGES, SCHEMA) is None

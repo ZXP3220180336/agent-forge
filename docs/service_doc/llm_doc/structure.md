@@ -356,7 +356,7 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
 - **temperature=0**：结构化输出要确定性，禁用采样随机
 - **解析前三态检查**：`_classify_result` 区分截断/拒答/正常（问题 2）——截断扩 token 重试 1 次、拒答短路，均不进入降级链
 - **错误回喂**：解析/校验失败回喂错误重试 `_REASK_MAX_RETRIES=2` 次，耗尽返回 None 触发降级（问题 3）
-- **下游失败降级**：`generate` 抛异常/返回 None（下游故障）→ 返回 None 降级，与截断/拒答短路区分（审核修复）
+- **下游失败降级（B3，2026-08-09）**：`generate` 对**可恢复错误**（超时/5xx/429）重试耗尽返回 None → 降级到下一级；对**不可恢复错误**（4xx/认证/熔断开启）抛异常 → structured 记录 ERROR 日志后 re-raise，不再白打降级请求。与截断/拒答短路区分（审核修复）
 - **回喂内截断一律短路**：不与扩 token 逻辑组合，防 token 爆炸（审核修复，对齐顶层「截断与降级正交」）
 
 ### _fallback_extract — 正则兜底提取（无 response_format）
@@ -415,7 +415,7 @@ generate_structured(messages, schema, model_key="fast")
          ├─ 第一级 _try_extract（response_format=json_schema, strict）
          │     ├─ generate() → 重试/熔断/限流（内部，见「分层配合」）
          │     ├─ json.loads(content) → dict → 返回 ✅（停在这里）
-         │     └─ 解析失败 / 非 dict / 异常 → None → 降级
+         │     └─ 解析失败 / 非 dict / 可恢复失败(None) → 降级；不可恢复异常 → 向上抛
          │
          ├─ 第二级 _try_extract（response_format=json_object）
          │     ├─ 同上
@@ -431,7 +431,7 @@ generate_structured(messages, schema, model_key="fast")
 
 - **级级完整调用 generate**：每级都是独立完整的模型调用（含重试/限流），不是「同一响应多级解析」
 - **成功短路**：高一级成功即返回，后续级别不再执行
-- **全失败返回 None**：调用方需自行处理 None（降级 / 追问 / 返回 unknown，见「工业级对照」）。**例外**：拒答抛 `StructuredRefusalError`（非 None），调用方需捕获转安全兜底
+- **全失败返回 None**：调用方需自行处理 None（降级 / 追问 / 返回 unknown，见「工业级对照」）。**例外**：拒答抛 `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`、下游不可恢复错误 re-raise（均非 None，B3）——调用方需捕获差异化处理（安全兜底 / 工具循环 / 修复参数）
 
 ---
 

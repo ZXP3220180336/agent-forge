@@ -24,6 +24,7 @@ from typing import Any
 
 from jsonschema import Draft7Validator, ValidationError, validate
 
+from app.services.llm.retry import ErrorCategory, classify_error
 from app.utils.logger import get_logger
 
 logger = get_logger("llm.structured")
@@ -241,7 +242,12 @@ class StructuredOutput:
                 response_format=response_format,
                 model_key=model_key,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as e:
+            # 不可恢复错误（4xx/认证/熔断）向上抛（generate 已对 NON_RETRYABLE raise）；
+            # 可恢复错误（超时/5xx/429）重试耗尽已由 generate 转 None，此处兜底防御。
+            if classify_error(e) == ErrorCategory.NON_RETRYABLE:
+                logger.error("结构化输出下游不可恢复错误: %s", e)
+                raise
             return None  # 下游失败（可靠性层已重试），降级
         if result is None:
             return None
@@ -262,7 +268,10 @@ class StructuredOutput:
                     response_format=response_format,
                     model_key=model_key,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as e:
+                if classify_error(e) == ErrorCategory.NON_RETRYABLE:
+                    logger.error("结构化输出截断重试下游不可恢复错误: %s", e)
+                    raise
                 return None  # 下游失败（非截断）→ 降级，与首次调用语义一致
             if retry is None:
                 return None  # 下游失败 → 降级，与首次调用语义一致
@@ -343,7 +352,10 @@ class StructuredOutput:
                     response_format=response_format,
                     model_key=model_key,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as e:
+                if classify_error(e) == ErrorCategory.NON_RETRYABLE:
+                    logger.error("结构化输出回喂下游不可恢复错误: %s", e)
+                    raise
                 return None  # 下游失败 → 降级，与其他调用点语义一致
             if retry is None:
                 return None  # 下游失败 → 降级
@@ -400,7 +412,10 @@ class StructuredOutput:
                 max_tokens=2048,
                 model_key=model_key,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as e:
+            if classify_error(e) == ErrorCategory.NON_RETRYABLE:
+                logger.error("结构化输出 fallback 下游不可恢复错误: %s", e)
+                raise
             return None
         if result is None:
             return None

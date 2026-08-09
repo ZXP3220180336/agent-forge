@@ -494,7 +494,11 @@ class LLMService:
             response_format: 结构化输出格式，如 {"type": "json_object"}
 
         Returns:
-            StreamResult | None（调用失败返回 None）
+            StreamResult | None（可恢复失败返回 None）
+
+        Raises:
+            不可恢复错误（4xx/认证/熔断开启）：重试/降级无意义，向上抛。
+            可恢复错误（超时/5xx/429）重试耗尽后返回 None。
         """
         kwargs = _build_chat_kwargs(
             model_key,
@@ -549,11 +553,16 @@ class LLMService:
             response = await retry.execute(
                 call_fn=_rate_limited_call,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             event_fields["success"] = False
             event_fields["error"] = str(e)[:200]
             event_fields["duration"] = time.monotonic() - start_time
             await log_event_async("llm_call", **event_fields)
+            # 契约：可恢复错误（超时/5xx/429）可靠性层已重试耗尽 → 返回 None
+            # （调用方按「业务无结果」降级）；不可恢复错误（4xx/认证/熔断开启）
+            # 是调用方问题或下游拒绝，降级无意义 → 向上抛让调用方感知并决策。
+            if classify_error(e) == ErrorCategory.NON_RETRYABLE:
+                raise
             return None
 
         # 解析非流式响应

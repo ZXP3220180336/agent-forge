@@ -79,30 +79,32 @@
         ↓
 [llm_service.py]
     ⑧ async_generate()：except Exception → 记日志 + yield build_error_event()（错误进事件流）
-    ⑨ generate()：      except Exception → 记日志 + return None（吞掉，契约「失败返回 None」）
+    ⑨ generate()：      except Exception → 记日志；NON_RETRYABLE re-raise / 可恢复 return None
         ↓
 [structured.py]  StructuredOutput.extract()
     ⑩ StructuredTruncationError → extract 顶层捕获 → return None（截断短路，不降级）
-    ⑪ StructuredRefusalError / StructuredToolCallError → 向上抛（调用方差异化处理）
+    ⑪ StructuredRefusalError / StructuredToolCallError / 下游不可恢复异常 → 向上抛（调用方差异化处理）
 ```
 
-**注意 ⑧ 与 ⑨ 的差异**：同样是 `except Exception`，流式转成 SSE 错误事件（错误信息进事件流、调用方可见），非流式吞成 None（错误只留日志）——这是两种**刻意不同**的契约，见下节。
+**注意 ⑧ 与 ⑨ 的差异**：同样是 `except Exception`，流式转成 SSE 错误事件（错误信息进事件流、调用方可见）；非流式按 B3 契约分流——可恢复错误转 None（调用方降级）、不可恢复错误 re-raise（调用方感知）。两种契约刻意不同，见下节。
 
 ---
 
 ## 传播链路（generate / async_generate / structured）
 
-### `generate()` —— 非流式，「失败返回 None」契约
+### `generate()` —— 非流式，「可恢复失败返回 None，不可恢复抛异常」契约
 
 ```
 调用方
   └─ generate()
        ├─ _build_chat_kwargs()      ← try 块外：配置错误（get_model ValueError）fail fast 传播
        ├─ retry.execute()           ← try 块内：可恢复错误已内部重试耗尽
-       └─ except Exception → return None   ← 吞掉一切异常，只留日志
+       └─ except Exception
+            ├─ classify_error == NON_RETRYABLE（4xx/认证/熔断开启/未知）→ raise（向上抛）
+            └─ 可恢复（超时/5xx/429）→ return None（调用方按「业务无结果」降级）
 ```
 
-**设计意图**：`generate()` 的契约是「有结果返回 `StreamResult`，失败返回 `None`」。可靠性（重试/熔断/限流）在内部完成，调用方（structured）拿到 None 就按降级处理。**已知边界**：这个设计把「网络失败」和「业务无结果」混为同一个 None——对 structured 提取场景，4xx/熔断被吞后会白打降级请求。改造方向（见「B3 背景」）是把「请求构建」与「API 调用」的异常分离，让不可恢复错误穿透。
+**设计意图**（B3 契约，2026-08-09）：`generate()` 对**可恢复错误**（超时/5xx/429）可靠性层已重试耗尽后返回 None，调用方（structured）按降级处理；对**不可恢复错误**（4xx/认证/熔断开启/未知异常）向上抛——这些是调用方问题或下游拒绝，降级无意义（会白打降级请求），调用方需感知并决策（修参数/换 key/告警）。**注意**：这个契约是 `generate()` 独有；`async_generate()` 走「错误转事件」契约（见下），两者刻意不同。
 
 ### `async_generate()` —— 流式，「错误转事件」契约
 
@@ -139,7 +141,7 @@ extract()
 
 1. **`except Exception` 只捕获该层该处理的错误**：`generate()`/`async_generate()` 的 `except Exception` 覆盖 `retry.execute` 的调用——配置错误（`_build_chat_kwargs` 内的 `get_model`）在 **try 块外**，能自然穿透不被吞。
 2. **请求构建阶段异常永不吞**：`_build_chat_kwargs`、`_count_prompt_tokens` 等「请求组装」代码若产生异常（未注册 key、编码器缺失），应在 try 外 fail fast，而不是被 facade 的 `except Exception` 吞掉。
-3. **structured 的 `except Exception` 实际防的是什么**：`generate()` 已把下游异常吞成 None，structured 的 `except Exception: return None` 防的是 generate() **之外**的异常（如 `_build_chat_kwargs` 内的 ValueError、`parse_non_stream` 的 IndexError）——作为兜底合理，但不应指望它捕获下游 API 异常。
+3. **structured 的 `except Exception` 防什么**（B3 后）：`generate()` 已把可恢复错误转 None、不可恢复错误 re-raise，structured 的 `except Exception` 再做一次分类——`NON_RETRYABLE` re-raise、可恢复降级（兜底防御）。作为兜底合理；真正区分靠 `classify_error`。
 4. **可靠性层已重试的异常，上层不要重复处理**：`retry.execute` 内部完成重试/退避/熔断，抛出的就是「最终状态」异常；上层只需决策「要不要降级/短路」，不要再重试。
 
 ---
