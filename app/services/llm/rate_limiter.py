@@ -74,6 +74,17 @@ class TokenBucket:
             # 回到循环顶部重新检查——sleep 期间 token 可能被其他请求抢走，
             # 也可能因容量封顶不需要等满 wait_time，重检保证公平且不过等
 
+    async def refund(self, tokens: float = 1.0) -> None:
+        """退还 token（受 capacity 封顶，best-effort）。
+
+        供 acquire 组合中途取消时回退已扣的配额（如 RateLimiter.acquire
+        先扣 RPM 后扣 TPM，TPM 扣减前被取消需退还 RPM）。容量封顶保证
+        退款不会让桶超出 capacity。
+        """
+        async with self._lock:
+            self._refill()
+            self._tokens = min(self.capacity, self._tokens + tokens)
+
     def _refill(self) -> None:
         """补充 Token。"""
         now = time.monotonic()
@@ -118,9 +129,16 @@ class RateLimiter:
             await asyncio.sleep(retry_after)
 
         wait1 = await self._req_bucket.acquire(1.0)
-        wait2 = await self._token_bucket.acquire(
-            max(estimated_tokens, 1.0),
-        )
+        try:
+            wait2 = await self._token_bucket.acquire(
+                max(estimated_tokens, 1.0),
+            )
+        except BaseException:
+            # 防取消泄漏：RPM 已扣、TPM 扣减前被硬取消（CancelledError 等
+            # BaseException 不被 except Exception 捕获）→ 退还 RPM，避免配额
+            # 永久占用导致后续请求无谓等待。
+            await self._req_bucket.refund(1.0)
+            raise
         return wait1 + wait2
 
 

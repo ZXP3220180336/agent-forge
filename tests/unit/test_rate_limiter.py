@@ -332,3 +332,36 @@ async def test_fixed_window_wait_does_not_block_others():
     elapsed = await check_not_blocked()
     assert elapsed < 1.8, f"固定窗口等待不应串行阻塞（elapsed={elapsed:.2f}）"
     await wait_task
+
+
+# =====================================================================
+# B1：RateLimiter.acquire 取消泄漏——RPM 扣后 TPM 前取消 → 退还 RPM
+# =====================================================================
+
+
+async def test_acquire_cancel_between_buckets_refunds_rpm():
+    """TPM 扣减前被取消 → RPM 配额退还，后续请求不无谓等待。
+
+    修复前：先扣 RPM 再扣 TPM，中间无保护——TPM acquire 挂起时被取消，
+    RPM 永久占用 → 后续请求因 RPM 桶耗尽而无谓等待。修复后：
+    except BaseException 退还 RPM 再 re-raise。
+    """
+    # rpm=2 / tpm=1：第一次调用后 RPM 剩 1、TPM 耗尽。
+    # 第二次调用 RPM 立即通过（1→0）、TPM 挂起等待补充（60s），
+    # 取消发生在 TPM acquire 内部——正是「RPM 已扣、TPM 未扣」的窗口。
+    limiter = RateLimiter(rpm=2, tpm=1)
+    await limiter.acquire(estimated_tokens=1)  # RPM 2→1, TPM 1→0
+
+    task = asyncio.create_task(limiter.acquire(estimated_tokens=1))
+    await asyncio.sleep(0.05)  # RPM 已扣到 0，TPM 进入等待
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # RPM 已退还：_tokens 恢复到 ~1（capacity=2，refill 仅 ~0.0017）。
+    # 未退款时 _tokens ≈ 0（refill 忽略），无法立即通过 acquire。
+    assert limiter._req_bucket._tokens >= 0.5, (
+        f"取消后 RPM 应已退还（_tokens≈1），实际 {limiter._req_bucket._tokens:.3f}"
+    )
+    # TPM 桶仍空（未扣成），不应有残留扣减
+    assert limiter._token_bucket._tokens < 0.5, "TPM 未完成扣减，不应有残留配额占用"
