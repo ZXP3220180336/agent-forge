@@ -192,21 +192,24 @@ class Reservation:
         """
         if self._settled:
             return
+        if actual is not None:
+            for bucket, reserved in self._entries[1:]:
+                await bucket.refund(max(0.0, reserved - actual))
+        # 终态标记放在全部退款完成之后：退款循环中途被取消时（CancelledError
+        # 向上传播）保持未终态，外层兜底（llm_service 的 cancel / finally）可
+        # 续退其余条目，避免部分桶配额永久泄漏。TokenBucket.refund 的 capacity
+        # 封顶保证重复退款安全，不超发。
         self._settled = True
-        if actual is None:
-            return
-        for bucket, reserved in self._entries[1:]:
-            await bucket.refund(max(0.0, reserved - actual))
-        if self._settle_callback is not None:
+        if self._settle_callback is not None and actual is not None:
             self._settle_callback(actual)
 
     async def cancel(self) -> None:
         """全额退还所有桶的预留配额（请求未确认发出时用）。幂等。"""
         if self._settled:
             return
-        self._settled = True
         for bucket, reserved in self._entries:
             await bucket.refund(reserved)
+        self._settled = True
 
     @property
     def settled(self) -> bool:

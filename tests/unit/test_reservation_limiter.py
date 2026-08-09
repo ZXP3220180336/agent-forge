@@ -361,3 +361,96 @@ async def test_manager_reasoning_gets_p99(monkeypatch):
     reasoning_limiter = ReservationLimiterManager.get("reasoning")
     assert main_limiter._quantile == 0.95
     assert reasoning_limiter._quantile == 0.99
+
+
+# =====================================================================
+# 取消泄漏：settle/cancel 退款中途被取消 → 保持未终态，外层可兜底续退
+# =====================================================================
+
+
+class _CancelOnRefundBucket:
+    """在指定次数的 refund 时抛 CancelledError 的桩桶（模拟退款中途被取消）。
+
+    每次 refund 前先检查：若已触发过 cancel 且本次是第 cancel_at 次 refund，
+    则 raise CancelledError——用于测试 settle/cancel 循环中途的取消中断。
+    """
+
+    def __init__(self, capacity: float = 1000.0) -> None:
+        self.capacity = capacity
+        self._tokens = capacity
+        self.refunds = 0
+        self._cancel_at: int | None = None
+
+    def cancel_on_refund(self, n: int) -> None:
+        """设定第 n 次 refund 时抛 CancelledError。"""
+        self._cancel_at = n
+
+    async def acquire(self, tokens: float = 1.0) -> float:
+        """返回等待时间：桶满（可全量取）返回 0，否则返回正等待时长。"""
+        if self._tokens >= tokens:
+            self._tokens -= tokens
+            return 0.0
+        return 1.0  # 非零即表示配额不足（测试仅断言"是否立即可取"）
+
+    async def refund(self, tokens: float = 1.0) -> None:
+        self.refunds += 1
+        if self._cancel_at is not None and self.refunds == self._cancel_at:
+            raise asyncio.CancelledError()
+        self._tokens = min(self.capacity, self._tokens + tokens)
+
+
+async def test_settle_cancelled_midway_keeps_unsettled_and_cancel_refunds_all():
+    """settle 退款中途被取消 → _settled 保持 False，后续 cancel 可全额续退。
+
+    修复前：settle 循环开始前就置 _settled=True，中途取消后剩余桶退款丢失、
+    重入 no-op → 配额永久泄漏。修复后：终态标记移到全部退款完成后，
+    取消中断时保持未终态，外层兜底 cancel 可续退全部条目。
+    """
+    # 按次桶 + 两个按量桶：组合预留 cancel 需退 3 个桶
+    rpm = TokenBucket(capacity=100, refill_rate=100)
+    tpm1 = _CancelOnRefundBucket()
+    tpm2 = _CancelOnRefundBucket()
+    res = Reservation()
+    res.add(rpm, 1.0)
+    res.add(tpm1, 10.0)
+    res.add(tpm2, 10.0)
+
+    tpm1.cancel_on_refund(1)  # settle 第一个按量桶退款时取消
+
+    with pytest.raises(asyncio.CancelledError):
+        await res.settle(5)
+
+    assert not res.settled, "取消中断时不得标记终态（外层兜底需能续退）"
+
+    # 外层兜底 cancel：继续全额退还全部桶（容量封顶保证已退部分不超发）
+    await res.cancel()
+    assert res.settled, "cancel 完成后应标记终态"
+
+    # 全部配额已退还：各桶满，可全量 acquire 且无等待
+    assert await rpm.acquire(100) == 0.0, "按次桶应已全额退还"
+    assert await tpm1.acquire(1000) == 0.0, "按量桶1应已全额退还"
+    assert await tpm2.acquire(1000) == 0.0, "按量桶2应已全额退还"
+
+
+async def test_cancel_cancelled_midway_keeps_unsettled():
+    """cancel 退款中途被取消 → _settled 保持 False，可重试 cancel 补齐。"""
+    b1 = TokenBucket(capacity=100, refill_rate=100)
+    b2 = _CancelOnRefundBucket()
+    res = Reservation()
+    res.add(b1, 5.0)
+    res.add(b2, 5.0)
+
+    b2.cancel_on_refund(1)  # 第一个桶已退，第二个桶退款时取消
+
+    with pytest.raises(asyncio.CancelledError):
+        await res.cancel()
+
+    assert not res.settled, "取消中断时不得标记终态"
+
+    # 重试 cancel：补齐剩余退款（已退部分由容量封顶保证不超发）
+    await res.cancel()
+    assert res.settled
+
+    # 全部配额已退还：两个桶都满，可全量 acquire 且无等待
+    assert await b1.acquire(100) == 0.0, "桶1应已全额退还"
+    assert await b2.acquire(1000) == 0.0, "桶2应已全额退还"
