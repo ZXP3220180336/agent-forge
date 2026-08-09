@@ -180,9 +180,10 @@ def _get_encoder(model: str) -> Any:
         import tiktoken
 
         encoder = tiktoken.encoding_for_model(model)
-    except KeyError, ImportError:
-        import tiktoken
-
+    except KeyError:
+        # 未知模型无专属编码器 → 回退通用 cl100k_base（token 估算足够）。
+        # 只捕获 KeyError：tiktoken 缺失（ImportError）是硬依赖损坏，应自然
+        # 传播 fail fast，不被此兜底掩盖。
         encoder = tiktoken.get_encoding("cl100k_base")
     _encoder_cache[model] = encoder
     return encoder
