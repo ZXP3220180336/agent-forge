@@ -600,6 +600,8 @@ class LLMService:
         Raises:
             StructuredRefusalError: 模型拒答（内容安全策略触发）。调用方需区分
                 「三级耗尽返回 None」与「拒答」——拒答通常需要差异化处理。
+            StructuredToolCallError: 模型选择调用工具而非输出 JSON（finish_reason=
+                tool_calls）。降级无意义，短路抛给调用方按工具调用处理。
         """
         return await StructuredOutput.extract(
             llm_service=self,

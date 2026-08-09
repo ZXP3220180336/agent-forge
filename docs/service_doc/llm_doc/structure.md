@@ -473,7 +473,7 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 ## 已知边界与设计取舍
 
 1. **成功判定 = 可解析 dict + Schema 校验通过**：`_try_extract` / `_fallback_extract` 在 `json.loads` + `isinstance(dict)` 后，经 `_validate_schema`（jsonschema）校验字段类型/枚举/必填/范围，失败记日志并返回 `None` 触发降级。已修复（2026-08-08，见问题 1）。**残留边界**：校验失败先回喂重试再降级（问题 3 已覆盖），回喂仍失败才降级。
-2. **finish_reason / refusal 已检查**：`_classify_result` 解析前三态分类，截断扩 token 重试 1 次、拒答抛异常（均不进降级链），记区分日志。已修复（2026-08-08，见问题 2）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（返回 None，不降级）；拒答抛 `StructuredRefusalError`，调用方需捕获并转安全兜底。
+2. **finish_reason / refusal 已检查**：`_classify_result` 解析前四态分类（截断/拒答/工具调用/正常），截断扩 token 重试 1 次、拒答抛 `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`（均不进降级链），记区分日志。已修复（2026-08-08 问题 2 + 2026-08-09 审核补充 tool_calls）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（返回 None，不降级）；拒答抛 `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`，调用方需捕获并差异化处理（安全兜底 / 按工具调用走 Agent 循环）。
 3. **错误感知重试已实现**：`_try_extract` 校验失败先回喂错误重试（`_REASK_MAX_RETRIES=2`），耗尽才降级；strict/JSON mode 级回喂，正则级不加。已修复（2026-08-08，见问题 3）。**残留边界**：回喂重试增加模型调用次数（最坏 7 次/请求），token 消耗放大。
 4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价——换取廉价模型可用性与纠错能力，而非默认接受解析失败。
 5. **每级调用 `max_tokens=2048` 硬编码**：结构化输出通常较短，2048 是合理默认；长字段截断时本层扩 4096 重试 1 次（见问题 2），超限后放弃。
@@ -597,6 +597,35 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 | 业务校验失败 | 订单不可退、权限不足 | 返回业务原因，不让模型裁决 |
 
 **已实现**：`_classify_result` 三态检查（截断/拒答/正常），截断扩 token 重试 1 次、拒答短路抛异常，记区分日志。截断与拒答可观测、分别处理（见上方修复说明）。
+
+#### 审核补充：finish_reason=tool_calls 误判为拒答（2026-08-09）
+
+**位置**：`structured.py`（`_classify_result` + `_try_extract` / `_fallback_extract`）
+
+**问题**：`_classify_result` 的 `if not result.content:` 未排除 `finish_reason="tool_calls"`——模型调用工具而非输出文本时，content 为空是**正常形态**，却被误判为拒答抛 `StructuredRefusalError`，调用方收到错误的安全兜底信号。
+
+**修复轨迹（两步演进）**：
+
+1. **初步：tool_calls 特判返回 ok**。`_classify_result` 在 content 空检查前加 `if fr == "tool_calls": return "ok"`——不误判拒答。**缺陷**：content 空返回 ok 后进入解析/回喂循环，空内容反复解析失败 → 白跑回喂 + 三级降级（浪费最多 7 次调用）。
+2. **定型：独立短路类别 + 独立异常**。采纳审核意见——模型已明确放弃输出 JSON，降级到更宽松约束（JSON mode/纯 prompt）对工具调用**无意义**，应短路不进降级链：
+   - 新增 `StructuredToolCallError(StructuredExtractionError)`：与截断/拒答同级的 API 边界失败
+   - `_classify_result` 返回独立 `"tool_calls"` 类别
+   - `_try_extract`（首次 / 截断重试后 / 回喂循环内）与 `_fallback_extract` 遇 `tool_calls` 一律 `raise StructuredToolCallError`（短路，不降级）
+   - `extract()` 顶层只捕获 `StructuredTruncationError`，`StructuredToolCallError` 与 `StructuredRefusalError` 一样向上传播给调用方
+3. **日志补全**：截断重试后 refusal/tool_calls 两处补 `logger.warning`（标注「两次调用行为分歧」），回喂循环内 refusal/tool_calls/truncated 也补 warning——所有短路点统一可观测。
+
+**截断重试后是否还需区分 refusal/tool_calls**：第一次已返回 truncated 说明模型在文本路径上正常生成（非拒答/工具调用），refusal/tool_calls 理论上几乎不会出现在截断重试后；但保留分支是正确的错误分类防御——万一 provider 行为异常，调用方能收到精确异常而非被吞成「截断」，代价极低。
+
+**修复后语义**：
+
+| finish_reason | 分类 | 处理 |
+| --- | --- | --- |
+| `length`/`max_tokens`/`insufficient_system_resource` | truncated | 扩 max_tokens 重试 1 次；仍失败抛 `StructuredTruncationError` |
+| `content_filter` / refusal 字段 / content 空且正常结束 | refusal | 抛 `StructuredRefusalError`（不 repair） |
+| `tool_calls`（content 空正常） | tool_calls | 抛 `StructuredToolCallError`（不降级，交回调用方按工具调用处理） |
+| 其它 | ok | 解析 + Schema 校验 |
+
+**对应测试**：`tests/unit/test_generate_structured.py::test_tool_calls_finish_not_treated_as_refusal`——断言 `StructuredToolCallError` + 只调用 1 次（第一级短路，不进降级链）。
 
 #### 工业级调研记录（2026-08-08 问题2）
 

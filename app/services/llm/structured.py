@@ -30,7 +30,7 @@ logger = get_logger("llm.structured")
 
 
 class StructuredExtractionError(Exception):
-    """结构化提取的 API 边界失败基类（截断/拒答），短路不进入降级链。"""
+    """结构化提取的 API 边界失败基类（截断/拒答/工具调用），短路不进入降级链。"""
 
 
 class StructuredTruncationError(StructuredExtractionError):
@@ -39,6 +39,15 @@ class StructuredTruncationError(StructuredExtractionError):
 
 class StructuredRefusalError(StructuredExtractionError):
     """模型拒答（内容安全策略触发），不强行 repair。"""
+
+
+class StructuredToolCallError(StructuredExtractionError):
+    """模型选择调用工具而非输出 JSON（finish_reason=tool_calls）。
+
+    与截断/拒答同级：模型已明确放弃输出结构化数据，降级到更宽松的约束
+    （JSON mode / 纯 prompt）对「模型要调用工具」无意义——反复降级只会
+    浪费调用。短路不进入降级链，抛给调用方按工具调用处理。
+    """
 
 
 # 截断/拒答的 finish_reason 判定集合（问题 2 三态检查）。
@@ -208,13 +217,17 @@ class StructuredOutput:
         model_key: str,
         schema: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """尝试用指定 response_format 提取（解析前做三态检查）。
+        """尝试用指定 response_format 提取（解析前做边界检查）。
 
         问题 2 语义：
         - 截断（length/max_tokens/insufficient_system_resource）：本层扩 max_tokens
           重试 1 次；重试后仍失败抛 StructuredTruncationError（短路，不降级）
         - 拒答（refusal/content_filter/content 空）：抛 StructuredRefusalError
           （短路，不强行 repair）
+        - 工具调用（finish_reason=tool_calls，content 空是正常形态）：抛
+          StructuredToolCallError（短路，不进回喂/降级循环——模型已放弃输出 JSON，
+          JSON mode/纯 prompt 对工具调用无意义，反复降级浪费调用；交回调用方按
+          工具调用处理）
         - 正常：解析 + Schema 校验，普通失败返回 None（触发降级）
 
         Args:
@@ -234,6 +247,7 @@ class StructuredOutput:
             return None
 
         failure = StructuredOutput._classify_result(result)
+
         if failure == "truncated":
             logger.warning(
                 "结构化输出截断: finish_reason=%s, 扩 max_tokens 重试 1 次",
@@ -252,17 +266,37 @@ class StructuredOutput:
                 return None  # 下游失败（非截断）→ 降级，与首次调用语义一致
             if retry is None:
                 return None  # 下游失败 → 降级，与首次调用语义一致
+
             if StructuredOutput._classify_result(retry) == "ok":
                 result = retry
             elif StructuredOutput._classify_result(retry) == "refusal":
+                logger.warning(
+                    "截断重试后拒答: refusal=%r, finish_reason=%s",
+                    getattr(retry, "refusal", None),
+                    retry.finish_reason,
+                )
                 raise StructuredRefusalError(
                     f"截断重试后拒答: finish_reason={retry.finish_reason}"
                 )
-            else:
-                raise StructuredTruncationError(
-                    f"扩 token 重试后仍截断: finish_reason={retry.finish_reason}"
+            elif StructuredOutput._classify_result(retry) == "tool_calls":
+                # 截断重试后模型改为调用工具（空 content）：模型已放弃输出 JSON，
+                # 短路抛 StructuredToolCallError（不降级——JSON mode/纯 prompt 对
+                # 工具调用无意义，反复降级浪费调用），交回调用方按工具调用处理。
+                logger.warning(
+                    "截断重试后转为工具调用: finish_reason=%s",
+                    retry.finish_reason,
                 )
-
+                raise StructuredToolCallError(
+                    f"截断重试后转为工具调用: finish_reason={retry.finish_reason}"
+                )
+            else:
+                logger.warning(
+                    "截断重试后仍截断: finish_reason=%s",
+                    retry.finish_reason,
+                )
+                raise StructuredTruncationError(
+                    f"截断重试后仍截断: finish_reason={retry.finish_reason}"
+                )
         elif failure == "refusal":
             logger.warning(
                 "结构化输出拒答: refusal=%r, finish_reason=%s，短路不 repair",
@@ -272,6 +306,17 @@ class StructuredOutput:
             raise StructuredRefusalError(
                 f"refusal={getattr(result, 'refusal', None)!r}, "
                 f"finish_reason={result.finish_reason}"
+            )
+        elif failure == "tool_calls":
+            # 模型调用工具而非输出文本（content 空）：模型已明确放弃输出 JSON，
+            # 短路抛 StructuredToolCallError（不降级——JSON mode/纯 prompt 对工具
+            # 调用无意义，反复降级浪费调用），交回调用方按工具调用处理。
+            logger.warning(
+                "结构化输出转为工具调用: finish_reason=%s, content 为空",
+                result.finish_reason,
+            )
+            raise StructuredToolCallError(
+                f"finish_reason={result.finish_reason}, content 为空"
             )
 
         # 正常：解析 + 校验（错误回喂重试，问题 3）
@@ -302,18 +347,38 @@ class StructuredOutput:
                 return None  # 下游失败 → 降级，与其他调用点语义一致
             if retry is None:
                 return None  # 下游失败 → 降级
+
             failure = StructuredOutput._classify_result(retry)
             if failure == "truncated":
                 # 回喂循环内截断 → 一律短路（与顶层「截断与降级正交」一致），
                 # 不与扩 token 逻辑组合，防 token 爆炸。
-                raise StructuredTruncationError(
-                    f"回喂循环内截断: finish_reason={retry.finish_reason}"
+                logger.warning(
+                    "回喂重试后截断: finish_reason=%s",
+                    retry.finish_reason,
                 )
-            if failure == "refusal":
+                raise StructuredTruncationError(
+                    f"回喂重试后截断: finish_reason={retry.finish_reason}"
+                )
+            elif failure == "refusal":
+                logger.warning(
+                    "回喂重试后拒答: finish_reason=%s",
+                    retry.finish_reason,
+                )
                 raise StructuredRefusalError(
                     f"回喂重试后拒答: finish_reason={retry.finish_reason}"
                 )
+            elif failure == "tool_calls":
+                # 回喂后模型改为调用工具（空 content）：模型已放弃输出 JSON，
+                # 短路抛 StructuredToolCallError，交回调用方按工具调用处理。
+                logger.warning(
+                    "回喂重试后转为工具调用: finish_reason=%s",
+                    retry.finish_reason,
+                )
+                raise StructuredToolCallError(
+                    f"回喂重试后转为工具调用: finish_reason={retry.finish_reason}"
+                )
             content = retry.content
+
         return None  # 回喂耗尽 → 降级
 
     @staticmethod
@@ -341,13 +406,14 @@ class StructuredOutput:
             return None
 
         failure = StructuredOutput._classify_result(result)
+
         if failure == "truncated":
             logger.warning(
                 "结构化输出截断（fallback）: finish_reason=%s，短路不降级",
                 result.finish_reason,
             )
             raise StructuredTruncationError(f"finish_reason={result.finish_reason}")
-        if failure == "refusal":
+        elif failure == "refusal":
             logger.warning(
                 "结构化输出拒答（fallback）: refusal=%r, finish_reason=%s，短路不 repair",
                 getattr(result, "refusal", None),
@@ -357,13 +423,19 @@ class StructuredOutput:
                 f"refusal={getattr(result, 'refusal', None)!r}, "
                 f"finish_reason={result.finish_reason}"
             )
+        elif failure == "tool_calls":
+            # 第三级模型仍选择调用工具（空 content）：模型已放弃输出 JSON，
+            # 短路抛 StructuredToolCallError（第三级无降级可走），交回调用方处理。
+            logger.warning(
+                "结构化输出转为工具调用（fallback）: finish_reason=%s, content 为空",
+                result.finish_reason,
+            )
+            raise StructuredToolCallError("finish_reason=tool_calls, content 为空")
 
         # 尝试提取 JSON 块（问题 5 补正则：模型可能在 JSON 前后加说明文字）
         content = result.content.strip()
         # 1) 移除 markdown 代码块围栏后整体解析
-        fenced = re.sub(
-            r"^```(?:json)?\s*", "", content, flags=re.MULTILINE
-        )
+        fenced = re.sub(r"^```(?:json)?\s*", "", content, flags=re.MULTILINE)
         fenced = re.sub(r"\s*```$", "", fenced, flags=re.MULTILINE)
         parsed = StructuredOutput._try_parse_json(fenced, schema)
         if parsed is not None:
@@ -396,8 +468,9 @@ class StructuredOutput:
     def _classify_result(result: Any) -> str:
         """分类结构化响应失败类型（解析前 API 边界检查，问题 2）。
 
-        检查顺序：refusal 字段 → finish_reason 拒答/过滤 → finish_reason 截断 → content 空。
-        返回 "ok" / "truncated" / "refusal"。
+        检查顺序：refusal 字段 → finish_reason 拒答/过滤 → finish_reason 截断 →
+        finish_reason 工具调用 → content 空。
+        返回 "ok" / "truncated" / "refusal" / "tool_calls"。
         """
         if getattr(result, "refusal", None):
             return "refusal"
@@ -406,6 +479,11 @@ class StructuredOutput:
             return "refusal"
         if fr in _TRUNCATED_REASONS:
             return "truncated"
+        if fr == "tool_calls":
+            # 模型决定调用工具而非输出文本：content 为空是正常形态，不是拒答。
+            # 作为独立短路类别：提取方遇此抛 StructuredToolCallError（模型已放弃
+            # 输出 JSON，进回喂/降级只会浪费调用），交回调用方按工具调用处理。
+            return "tool_calls"
         if not result.content:
             # content 空 + 正常结束 = 拒答/空回（DeepSeek 无 refusal 字段形态）
             return "refusal"

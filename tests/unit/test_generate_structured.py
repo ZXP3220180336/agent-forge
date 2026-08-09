@@ -445,6 +445,32 @@ async def test_empty_content_normal_finish_treated_as_refusal():
 
 
 @pytest.mark.asyncio
+async def test_tool_calls_finish_not_treated_as_refusal():
+    """finish_reason=tool_calls + content 空 → 短路抛 StructuredToolCallError。
+
+    修复前（原始）：`_classify_result` 的 `if not result.content:` 未排除 tool_calls，
+    工具调用响应（空 content 是正常形态）被误判为拒答抛 StructuredRefusalError。
+    修复后：tool_calls 作为独立短路类别抛 StructuredToolCallError——模型已放弃输出
+    JSON，降级到更宽松约束（JSON mode/纯 prompt）无意义，短路不进入降级链，
+    交回调用方按工具调用处理。
+    """
+    from app.services.llm.structured import StructuredToolCallError
+
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr("", finish_reason="tool_calls")
+
+    llm.generate = fake_generate
+    with pytest.raises(StructuredToolCallError):
+        await llm.generate_structured(MESSAGES, SCHEMA)
+    # 第一级 tool_calls 短路：只调用 1 次，不进降级链、不进回喂
+    assert len(calls) == 1, "tool_calls 应短路抛异常，不进入降级链"
+
+
+@pytest.mark.asyncio
 async def test_normal_path_unaffected_by_classification():
     """正常响应（stop + 完整 JSON）→ 校验通过直接返回，不误判。"""
     llm = LLMService()
