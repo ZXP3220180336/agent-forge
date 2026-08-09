@@ -274,10 +274,14 @@ class CircuitBreaker:
             return False
 
         if self._state == CircuitState.HALF_OPEN:
-            # 探针失败 → 重新熔断，新一轮冷却开始
+            # 探针失败 → 重新熔断，新一轮冷却开始。
+            # 清零半开计数与连续成功：OPEN 状态下不残留 HALF_OPEN 的记账
+            #（冷却后重新放行时由 allow_request() 重置为 1，但语义上 OPEN
+            #  不应再持有"半开计数"）。
             self._state = CircuitState.OPEN
             self._last_failure_time = time.monotonic()
             self._consecutive_successes = 0
+            self._half_open_requests = 0
             return True
 
         # CLOSED 下：窗口追加失败并评估熔断
@@ -466,11 +470,23 @@ class RetryHandler:
         """
         cb = self.circuit_breaker
         last_exc: Exception | None = None
+        # 探针槽位是否已作出终态记账（record_success / record_failure / release_probe）。
+        # 未记账的退出路径由 finally 兜底归还槽位，保证槽位永不泄漏。
+        accounted = False
 
         try:
             result = await call_fn()
             cb.record_success()
+            accounted = True
             return result
+        except asyncio.CancelledError:
+            # 探针被取消：槽位已在 allow_request 时占用（+1），需归还。
+            # 取消不提供任何下游健康证据——按失败处理回 OPEN（下一轮冷却后
+            # 重新探测，避免取消风暴持续占用探针槽位卡死 HALF_OPEN），
+            # 并立即向上传播取消，不尝试 fallback（外部取消不应继续发请求）。
+            cb.record_failure()
+            accounted = True
+            raise
         except Exception as e:
             last_exc = e
             category = classify_error(e)
@@ -480,9 +496,18 @@ class RetryHandler:
                 # （4xx 不算健康探测），归还探针槽位让后续正常请求探测真实状态；
                 # 异常直接抛给上层修复请求。
                 cb.release_probe()
+                accounted = True
                 raise
             # 429 / 超时 / 5xx：下游故障（过载/无响应）证据，熔断器回 OPEN
             cb.record_failure()
+            accounted = True
+        finally:
+            # 兜底：任何未记账的退出路径（SystemExit / KeyboardInterrupt / 自定义
+            # BaseException，或未来新增的异常分支遗漏）归还探针槽位，保证槽位永不
+            # 泄漏——泄漏会让 HALF_OPEN 下 _half_open_requests 被永久占用，
+            # allow_request 恒为 False，熔断器自动恢复失效。
+            if not accounted:
+                cb.release_probe()
 
         # 探针失败（429/超时/5xx）：尝试 fallback 兜底（不记录熔断）
         if fallback_fn is not None:

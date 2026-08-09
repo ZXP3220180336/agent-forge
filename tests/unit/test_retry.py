@@ -13,6 +13,7 @@ RetryHandler / CircuitBreaker 单元测试
     - fallback 与熔断器完全隔离
 """
 
+import asyncio
 import time
 
 import pytest
@@ -263,6 +264,7 @@ async def test_half_open_probe_429_no_false_close():
 
     assert cb.state.value == "open", "429 探针应回 OPEN（过载信号）"
     assert cb._consecutive_successes == 0, "429 不得计入连续成功"
+    assert cb._half_open_requests == 0, "回 OPEN 应清空半开计数（OPEN 不残留半开记账）"
     # 回 OPEN 后：后续请求被熔断拒绝，不再放行探针
     assert cb.allow_request() is False, "回 OPEN 后应停止放行（冷却期）"
 
@@ -781,3 +783,93 @@ async def test_mixed_failures_all_rate_limited_not_counted():
     cb = handler.circuit_breaker
     assert cb.failure_count == 0, "纯限流请求不得计入熔断窗口"
     assert cb.state.value == "closed"
+
+
+# =====================================================================
+# 探针取消：CancelledError 归还探针槽位 / 回 OPEN / 不走 fallback
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_cancelled_releases_slot():
+    """探针执行中被取消 → 熔断器回 OPEN，冷却后重新探测（不卡死 HALF_OPEN）。
+
+    修复前（仅 except Exception）：CancelledError 绕过 release_probe / record_failure，
+    探针槽位永久占用 → 多次取消后 allow_request 恒为 False，熔断器卡死 HALF_OPEN，
+    自动恢复失效。修复后：取消按探针失败回 OPEN，下一轮冷却后能重新放行探测。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    async def hang_fn():
+        await asyncio.sleep(3600)  # 挂起直到被取消
+
+    task = asyncio.create_task(handler.execute(hang_fn))
+    await asyncio.sleep(0.05)  # 确保探针已占用槽位进入 await
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # 取消 → record_failure 回 OPEN（冷却重新计时），清空连续成功与半开计数
+    assert cb.state.value == "open", "取消探针应回 OPEN（不再卡死 HALF_OPEN）"
+    assert cb._consecutive_successes == 0, "回 OPEN 应清空连续成功"
+    assert cb._half_open_requests == 0, "回 OPEN 应清空半开计数（OPEN 不残留半开记账）"
+
+    # 冷却期过后：能重新进入 HALF_OPEN 并放行探针（不因槽位残留而卡死）
+    cb._last_failure_time = time.monotonic() - 1000
+    assert cb.allow_request() is True, "冷却后应重新放行探测（取消不得永久卡死）"
+    assert cb.state.value == "half_open"
+    assert cb._half_open_requests == 1, "重进 HALF_OPEN 时槽位应重置为 1"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_cancelled_no_fallback():
+    """探针被取消 → 不尝试 fallback（外部取消不应继续发请求）。"""
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    fallback_called = [False]
+
+    async def hang_fn():
+        await asyncio.sleep(3600)
+
+    async def fallback_fn():
+        fallback_called[0] = True
+        return "fallback-ok"
+
+    task = asyncio.create_task(handler.execute(hang_fn, fallback_fn=fallback_fn))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert fallback_called[0] is False, "取消探针不应走 fallback"
+    assert cb.state.value == "open", "取消探针应回 OPEN"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_other_baseexception_releases_slot():
+    """探针被自定义 BaseException（SystemExit 等）中断 → finally 兜底归还槽位。
+
+    修复前（仅 except CancelledError + Exception）：BaseException 分支的
+    _half_open_requests 永久占用 → 熔断器卡死 HALF_OPEN，自动恢复失效。
+    修复后：finally 兜底归还槽位，熔断器保持 HALF_OPEN 且能继续放行探测。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    class _AppShutdown(BaseException):
+        """模拟应用关闭等非 Exception 中断。"""
+
+    async def boom_fn():
+        raise _AppShutdown()
+
+    with pytest.raises(_AppShutdown):
+        await handler.execute(boom_fn)
+
+    assert cb._half_open_requests == 0, "BaseException 中断应由 finally 归还槽位"
+    assert cb.state.value == "half_open", "BaseException 中断不改变熔断状态"
+    assert cb.allow_request() is True, "槽位归还后可继续放行探测真实状态"
