@@ -306,6 +306,19 @@ def test_parse_non_stream_content_none():
     assert r["content"] == ""
 
 
+def test_parse_non_stream_empty_choices():
+    """空 choices（适配层/异常响应）→ 返回空结果而非抛 IndexError（第 10 条修复）。"""
+    resp = SimpleNamespace(choices=[], usage=None)
+    r = StreamParser.parse_non_stream(resp)
+    assert r == {
+        "content": "",
+        "finish_reason": None,
+        "tool_calls": [],
+        "usage": None,
+        "refusal": None,
+    }, "空 choices 应返回空结果，让调用方按业务无结果处理"
+
+
 # =====================================================================
 # 漏洞回归：finish_reason 独立于 delta / usage 共存 / 混合 chunk
 # =====================================================================

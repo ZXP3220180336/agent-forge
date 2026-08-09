@@ -160,6 +160,18 @@ class StreamParser:
                 "refusal": str | None,
             }
         """
+        # 空 choices 防护：某些适配层/异常响应可能返回空 choices（无生成内容），
+        # 直接 response.choices[0] 会抛裸 IndexError。返回空结果让调用方按
+        # 「业务无结果」处理，而非不可读的索引异常。
+        if not response.choices:
+            return {
+                "content": "",
+                "finish_reason": None,
+                "tool_calls": [],
+                "usage": response.usage.model_dump() if response.usage else None,
+                "refusal": None,
+            }
+
         choice = response.choices[0]
         msg = choice.message
 
