@@ -135,6 +135,7 @@ POST /api/chat/send
 - [api 模块](api_doc/api.md)
 - [config 模块](config.md)
 - [logging 模块](logging.md)（全局日志框架）
+- [error_handling 模块](error_handling.md)（异常处理与传播约定）
 - [class-design 模块](class-design.md)（类的类型体系与实例形态）
 - [LLM 层](service_doc/llm_doc/llm.md)
 - [task 模块](service_doc/task_doc/task.md)
