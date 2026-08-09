@@ -173,6 +173,11 @@ class AppState:
         if self._engine is not None:
             cleanup_tasks.append(self._engine.dispose())
 
+        # 关闭 LLM 客户端连接池（AsyncOpenAI 底层 httpx 连接池），优雅退出
+        from app.services.llm import ClientManager
+
+        cleanup_tasks.append(ClientManager.close_all())
+
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
         self.initialized = False

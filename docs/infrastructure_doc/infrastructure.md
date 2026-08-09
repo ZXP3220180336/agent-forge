@@ -92,7 +92,7 @@ self.redis = Redis.from_url(
 await self.redis.ping()
 ```
 
-**调用链**：`AppState` 将 `redis` / `db_session_factory` 直接注入各服务（如 `SessionManager`），服务层拿到的是裸客户端对象，而非经过封装的统一接口。`shutdown()` 时通过 `redis.close()` 与 `engine.dispose()` 显式释放。
+**调用链**：`AppState` 将 `redis` / `db_session_factory` 直接注入各服务（如 `SessionManager`），服务层拿到的是裸客户端对象，而非经过封装的统一接口。`shutdown()` 时通过 `redis.close()`、`engine.dispose()` 与 `ClientManager.close_all()`（关闭 AsyncOpenAI 底层 httpx 连接池，2026-08-09）显式释放，三者并入 `asyncio.gather(return_exceptions=True)`——单个清理失败不影响整体优雅退出。
 
 ### 降级策略
 
