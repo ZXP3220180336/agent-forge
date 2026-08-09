@@ -55,7 +55,7 @@
 | 层 | 职责 | 异常处理 |
 | --- | --- | --- |
 | **SDK/网关层**（openai SDK） | 发起请求、网络传输 | **抛异常**（`APIStatusError`/`APITimeoutError`/`APIConnectionError`），永不静默吞掉 |
-| **可靠性层**（`retry.py`） | 重试/退避/熔断/fallback | 可恢复错误内部重试消化；重试耗尽 `raise last_exc`；不可恢复错误直接 `raise`；熔断开启 `raise CircuitBreakerOpenError` |
+| **可靠性层**（`retry.py`） | 重试/退避/熔断/fallback | 可恢复错误内部重试消化；重试耗尽 `raise last_exc`（fallback 也失败时主调用异常为主、fallback 异常链 `__cause__`）；不可恢复错误直接 `raise`；熔断开启 `raise CircuitBreakerOpenError` |
 | **facade 层**（`llm_service.py`） | 组装请求、编排 | 传输可靠性内部消化；**不可恢复错误向上抛**（或转业务信号）；配置错误在 try 外自然传播 |
 | **调用方**（Agent/业务/structured） | 业务决策 | 捕获具名异常按业务处理；未捕获异常记日志/告警 |
 
@@ -74,7 +74,7 @@
 [retry.py]  RetryHandler.execute()
     ④ NON_RETRYABLE（4xx/未知）→ raise（直接透传，不重试）
     ⑤ RETRYABLE（超时/5xx）耗尽 → record_failure → fallback 兜底
-    ⑥ fallback 失败 → raise（透传最后一个异常）
+    ⑥ fallback 失败 → raise 主调用异常（fallback 异常链 __cause__，不覆盖主异常）
     ⑦ 熔断 OPEN（无 fallback）→ raise CircuitBreakerOpenError
         ↓
 [llm_service.py]

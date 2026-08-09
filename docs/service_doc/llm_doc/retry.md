@@ -97,10 +97,12 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 ```
 主模型 call_fn → 重试 N 次 → 全部失败
     → fallback_fn（备用模型）→ 成功 → 直接返回（不触碰熔断器）
-    → fallback_fn 也失败 → 抛出最后一次异常
+    → fallback_fn 也失败 → 抛出主调用异常（fallback 异常链为 __cause__）
 ```
 
 **关键约束：fallback 是纯兜底，其成败完全不进入熔断状态机**（不调用 `record_success`/`record_failure`）。熔断器只观察主链路（`call_fn`）的健康：备用链路通不能证明主链路恢复，备用链路故障也不代表主链路故障。
+
+**fallback 也失败时**：最终抛出**主调用（call_fn）异常**，fallback 异常以 `__cause__` 链上保留——熔断窗口记录的是主链路状态，上层需按主异常判定语义（重试/降级/日志）；被 fallback 异常覆盖会导致上层拿到的异常类型与熔断器记录不一致。此约定对 CLOSED 重试路径与 HALF_OPEN 探针路径（`_probe_attempt`）一致；熔断 OPEN 的拒绝路径主调用未执行，fallback 异常直接抛。
 
 ---
 
@@ -301,7 +303,10 @@ flowchart TB
         P_CALL -- "❌ 4xx / 未知" --> P_NR["release_probe()<br>归还槽位 + raise（不改变状态）"]
         P_NR --> P_RAISE(["❌ 异常抛给上层修复"])
         P_FAIL --> P_FB["fallback_fn()<br>（纯兜底，429/超时/5xx 探针失败时兜底）"]
-        P_FB --> P_RET
+        P_FB --> P_FB_OK["✅ 成功 → 直接返回"]
+        P_FB --> P_FB_FAIL["❌ 失败 → raise 主调用异常<br>（fallback 异常链 __cause__）"]
+        P_FB_OK --> P_RET(["↩ 返回结果"])
+        P_FB_FAIL --> P_RET
     end
 
     PASS --> LOOP{"重试循环<br>attempt ∈ [0, max_retries]"}
@@ -341,7 +346,7 @@ flowchart TB
 
     FB_CALL -- "✅ 成功" --> FB_OK["直接返回<br>（不清零熔断窗口）"]
     FB_OK --> FB_RET(["↩ fallback 结果"])
-    FB_CALL -- "❌ 失败" --> FB_FAIL["raise last_exc<br>（不累计熔断窗口）"]
+    FB_CALL -- "❌ 失败" --> FB_FAIL["raise 主调用异常<br>（fallback 异常链 __cause__，不累计熔断窗口）"]
     FB_FAIL --> FB_END(["❌ fallback 也失败"])
 ```
 
@@ -558,7 +563,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
    - 一次 `execute()` 的多次重试失败只调用一次 `record_failure()`（重试耗尽后统一记录），返回 `True` 表示本次失败把熔断器切到 OPEN（影响后续请求放行）。
    - 429 / 不可恢复错误不记录
 3. **半开探针耗尽**：拒绝主调用（有 fallback 走纯兜底）但不改变熔断状态，直到现有探针完成。**每个被放行的探针必然推进状态机**（成功→连续成功，失败→回 OPEN 或归还探针槽位），不存在"放行后不记录"的路径，因此无 HALF_OPEN 死锁
-4. **fallback 也失败**：抛出最后异常（可能是 fallback 的异常或主模型的异常，取决于哪个是 last_exc）；fallback 的成败不进入熔断状态机
+4. **fallback 也失败**：抛出**主调用（call_fn）异常**，fallback 异常以 `__cause__` 链上保留（诊断完整）——熔断窗口记录的是主链路状态，上层需按主异常判定语义；被 fallback 异常覆盖会导致上层拿到的异常类型与熔断器记录不一致。fallback 的成败不进入熔断状态机。此约定对 CLOSED 重试路径与 HALF_OPEN 探针路径一致；熔断 OPEN 的拒绝路径主调用未执行，fallback 异常直接抛
 5. **429 探针回 OPEN、4xx 探针不改变状态**：
    - CLOSED 下 429 只退避重试（尊重服务端 `Retry-After`），不进入窗口统计；
    - HALF_OPEN 下探针收到 429 / 超时 / 5xx → 回 OPEN（停止探测让下游喘息）；
@@ -597,8 +602,9 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | **流式迭代异常无保护** | `llm_service.py` 的 `async for chunk` 不在任何 try/except 内 → 流中断/解析失败时异常泄漏到调用方，不重试不熔断不记录日志 | 流式迭代包进 try/except：失败时记录日志 + 产出错误事件（不重试，符合流式语义）；**2026-08-07 补熔断观察盲区**：迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」 |
 | **熔断器生命周期：每次调用新建导致窗口无法跨请求积累（2026-08-07）** | `_build_retry_handler()` 在每次 `async_generate`/`generate` 新建 `RetryHandler` + `CircuitBreaker` → 熔断窗口每次请求清空，`request_volume_threshold=20` 永远达不到 → **create 阶段熔断实际失效**（与「熔断器需要跨请求共享状态」设计意图矛盾） | 新增 `RetryHandlerManager`：按 model_key 缓存共享 RetryHandler（内含跨请求共享 CircuitBreaker），main/reasoning/fast 独立熔断；`LLMService` 改用 `RetryHandlerManager.get(model_key)` |
 | **审核补充：半开探针槽位泄漏——取消/`BaseException` 中断（2026-08-09）** | `_probe_attempt()` 仅 `except Exception`：协程被 `CancelledError`/`SystemExit`/自定义 `BaseException` 中断时绕过 `release_probe()`/`record_failure()`，`_half_open_requests` 被永久占用 → 多次取消后 `allow_request()` 恒为 False，熔断器卡死 HALF_OPEN，自动恢复失效 | `_probe_attempt()` 改 `try/finally` + `accounted` 标志兜底：任何未记账退出路径由 finally `release_probe()` 归还槽位（槽位永不泄漏）；`CancelledError` 单独捕获 → 按探针失败回 OPEN + 立即传播（**不尝试 fallback**，外部取消不应继续发请求）；附带语义修正：探针失败回 OPEN 时同步清零 `_half_open_requests`（OPEN 不残留半开记账） |
+| **异常覆盖：fallback 失败覆盖主调用异常（2026-08-09）** | fallback 也失败时 `last_exc = e` 被 fallback 异常覆盖，最终抛 fallback 异常——熔断窗口记录的是主链路，上层按异常类型判定重试/降级/日志时与熔断器记录不一致 | fallback 失败时 `raise last_exc from fallback_exc`：**主调用异常为主**（上层按它判定语义），fallback 异常链为 `__cause__` 保留诊断；CLOSED 重试路径与 HALF_OPEN 探针路径同改，熔断 OPEN 拒绝路径主调用未执行不改 |
 
-对应测试：`tests/unit/test_retry.py`（32 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）+ `tests/unit/test_retry_handler_manager.py`（6 个用例）。
+对应测试：`tests/unit/test_retry.py`（34 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）+ `tests/unit/test_retry_handler_manager.py`（6 个用例）。
 
 > **坑：测试构造 openai 异常** —— 构造 `openai.APIStatusError` 子类（如 `BadRequestError`/`InternalServerError`/`RateLimitError`）需要 `message` + `response` 两个参数（`InternalServerError` 无字面量 status_code，值来自传入的 `httpx.Response`）。`LengthFinishReasonError` 需要真实 `ChatCompletion` 对象（访问 `.usage`），不能传 None。**构造测试异常统一用 `httpx.Response(status_code, request=...)` 传参。**
 

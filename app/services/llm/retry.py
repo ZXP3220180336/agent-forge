@@ -441,8 +441,13 @@ class RetryHandler:
         if fallback_fn is not None:
             try:
                 return await fallback_fn()
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
+            except Exception as fallback_exc:  # noqa: BLE001
+                # 主调用异常才是最终结果（上层按它判定熔断/重试语义，
+                # 熔断窗口记录的也是主链路）；fallback 失败仅作为 __cause__ 链上，
+                # 不覆盖主异常——否则上层拿到 fallback 异常会与熔断器记录的
+                # 主链路状态不一致。
+                assert last_exc is not None  # 走到 fallback 必然主调用已失败
+                raise last_exc from fallback_exc
 
         # --- 所有路径均失败 ---
         assert last_exc is not None
@@ -513,8 +518,12 @@ class RetryHandler:
         if fallback_fn is not None:
             try:
                 return await fallback_fn()
-            except Exception as e:  # noqa: BLE001
-                last_exc = e
+            except Exception as fallback_exc:  # noqa: BLE001
+                # 主调用（探针）异常才是最终结果：熔断窗口已按主链路记录
+                # （record_failure 回 OPEN），上层需按主异常判定语义；fallback
+                # 失败仅作为 __cause__ 链上保留诊断信息，不覆盖主异常。
+                assert last_exc is not None  # 走到 fallback 必然主调用已失败
+                raise last_exc from fallback_exc
 
         assert last_exc is not None
         raise last_exc

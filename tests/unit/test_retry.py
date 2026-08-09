@@ -559,7 +559,10 @@ async def test_fallback_success_does_not_reset_breaker():
 
 @pytest.mark.asyncio
 async def test_fallback_failure_does_not_count_toward_breaker():
-    """CLOSED 下 fallback 失败不计入熔断窗口（备用链路失败 ≠ 主链路故障）。"""
+    """CLOSED 下 fallback 失败不计入熔断窗口（备用链路失败 ≠ 主链路故障）。
+
+    最终抛出主调用异常（上层按它判定熔断语义），fallback 异常链为 __cause__。
+    """
     handler = RetryHandler(
         config=RetryConfig(max_retries=0),
         circuit_breaker=CircuitBreaker(),
@@ -571,11 +574,14 @@ async def test_fallback_failure_does_not_count_toward_breaker():
     async def fallback_fn():
         raise ConnectionError("backup also down")
 
-    with pytest.raises(ConnectionError):
+    with pytest.raises(TimeoutError) as excinfo:
         await handler.execute(call_fn, fallback_fn=fallback_fn)
 
     assert handler.circuit_breaker.failure_count == 1, (
         "熔断窗口应只计主链路 1 次失败，fallback 失败不得额外累计"
+    )
+    assert isinstance(excinfo.value.__cause__, ConnectionError), (
+        "fallback 失败应保留为 __cause__（诊断完整）"
     )
 
 
@@ -604,6 +610,57 @@ async def test_open_fallback_failure_does_not_touch_breaker():
     assert cb.state.value == "open"
     assert cb.failure_count == count_before, "OPEN 下 fallback 失败不得累计熔断窗口"
     assert cb._last_failure_time == opened_at, "OPEN 下 fallback 失败不得改变冷却计时"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_fallback_failure_raises_primary():
+    """半开探针失败 + fallback 也失败：最终抛主调用（探针）异常，fallback 异常链 __cause__。
+
+    熔断窗口按主链路记录（record_failure 回 OPEN），上层需按主异常判定语义——
+    若被 fallback 异常覆盖，上层拿到的异常类型与熔断器记录的主链路状态不一致。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    async def call_fn():
+        raise TimeoutError("probe failed")
+
+    async def fallback_fn():
+        raise ConnectionError("backup also down")
+
+    with pytest.raises(TimeoutError) as excinfo:
+        await handler.execute(call_fn, fallback_fn=fallback_fn)
+
+    assert isinstance(excinfo.value.__cause__, ConnectionError), (
+        "fallback 失败应保留为 __cause__"
+    )
+    assert cb.state.value == "open", "探针失败应回 OPEN（新一轮冷却）"
+
+
+@pytest.mark.asyncio
+async def test_half_open_probe_rate_limited_fallback_failure_raises_primary():
+    """探针 429 + fallback 也失败：最终抛主调用（429）异常，fallback 异常链 __cause__。
+
+    429 探针按主链路 record_failure 回 OPEN，上层需按主异常判定限流语义。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(circuit_breaker=cb)
+
+    async def rl_fn():
+        raise _RateLimited()
+
+    async def fallback_fn():
+        raise ConnectionError("backup also down")
+
+    with pytest.raises(_RateLimited) as excinfo:
+        await handler.execute(rl_fn, fallback_fn=fallback_fn)
+
+    assert isinstance(excinfo.value.__cause__, ConnectionError), (
+        "fallback 失败应保留为 __cause__"
+    )
+    assert cb.state.value == "open", "429 探针应回 OPEN（下游过载信号）"
 
 
 # =====================================================================
