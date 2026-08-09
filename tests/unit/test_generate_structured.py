@@ -359,6 +359,42 @@ async def test_truncation_retries_with_larger_max_tokens():
 
 
 @pytest.mark.asyncio
+async def test_max_tokens_param_overrides_settings():
+    """调用方传入 max_tokens 覆盖 settings 默认（W4）。"""
+    llm = LLMService()
+    seen = {}
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        seen["max_tokens"] = max_tokens
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA, max_tokens=8192)
+    assert result == {"name": "张三"}
+    assert seen["max_tokens"] == 8192, "调用方 max_tokens 应覆盖 settings 默认"
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_truncation_retry_doubles_param():
+    """截断重试的 max_tokens 随调用方参数 ×2 缩放（W4），非硬编码 4096。"""
+    llm = LLMService()
+    seen = {}
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        if not seen.get("first"):
+            seen["first"] = True
+            return _sr('{"name": "张', finish_reason="length")
+        seen["retry_max_tokens"] = max_tokens
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA, max_tokens=8192)
+    assert result == {"name": "张三"}
+    assert seen["retry_max_tokens"] == 8192 * 2, "截断重试应按调用方 max_tokens ×2"
+    assert seen["retry_max_tokens"] != 4096, "不再硬编码 4096"
+
+
+@pytest.mark.asyncio
 async def test_truncation_retry_still_truncated_returns_none():
     """第一级截断 → 扩 token 重试仍截断 → 短路返回 None（不降级）。"""
     llm = LLMService()

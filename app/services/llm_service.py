@@ -593,6 +593,7 @@ class LLMService:
         messages: list[dict],
         schema: dict[str, Any],
         model_key: str = "fast",
+        max_tokens: int | None = None,
     ) -> dict | None:
         """
         生成结构化输出（委托 StructuredOutput.extract 三级降级）。
@@ -603,6 +604,8 @@ class LLMService:
             messages: 消息列表
             schema: JSON Schema
             model_key: 模型标识（默认 fast）
+            max_tokens: 输出预算上限。None 用 settings.llm_structured_max_tokens
+                （默认 2048）；截断时扩 2 倍重试 1 次。
 
         Returns:
             解析后的 dict，失败返回 None
@@ -618,6 +621,7 @@ class LLMService:
             messages=messages,
             schema=schema,
             model_key=model_key,
+            max_tokens=max_tokens,
         )
 
     # ==================================================================

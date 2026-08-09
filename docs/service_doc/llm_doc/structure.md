@@ -295,7 +295,7 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
     """
     try:
         result = await llm_service.generate(
-            messages=messages, temperature=0, max_tokens=2048,
+            messages=messages, temperature=0, max_tokens=max_tokens,
             response_format=response_format, model_key=model_key,
         )
     except Exception:
@@ -305,10 +305,10 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
 
     failure = StructuredOutput._classify_result(result)
     if failure == "truncated":
-        # 本层扩 max_tokens 重试 1 次（问题 2）
+        # 本层扩 max_tokens 重试 1 次（问题 2），按调用方预算 ×2
         try:
             retry = await llm_service.generate(
-                messages=messages, temperature=0, max_tokens=4096,
+                messages=messages, temperature=0, max_tokens=max_tokens * 2,
                 response_format=response_format, model_key=model_key,
             )
         except Exception:
@@ -335,7 +335,7 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
                 messages=StructuredOutput._build_reask_messages(
                     messages, content, "\n".join(errors),
                 ),
-                temperature=0, max_tokens=2048,
+                temperature=0, max_tokens=max_tokens,
                 response_format=response_format, model_key=model_key,
             )
         except Exception:
@@ -367,7 +367,7 @@ async def _fallback_extract(llm_service, messages, model_key, schema=None):
     """纯 prompt 约束降级方案（三态检查 + 正则定位 JSON 块）。"""
     try:
         result = await llm_service.generate(
-            messages=messages, temperature=0, max_tokens=2048, model_key=model_key,
+            messages=messages, temperature=0, max_tokens=max_tokens, model_key=model_key,
         )
     except Exception:
         return None
@@ -457,16 +457,16 @@ response_format 控制     RetryHandlerManager（重试/熔断，model_key 共�
 
 ## 配置项清单（隐含参数）
 
-structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参数：
+structured.py 的调用参数（W4，2026-08-09 参数化）：
 
-| 参数 | 硬编码值 | 说明 |
+| 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `temperature` | `0` | 结构化输出确定性（禁采样随机） |
-| `max_tokens` | `2048` | 输出上限（过大可能截断，见问题 2） |
+| `max_tokens` | `settings.llm_structured_max_tokens`（默认 2048） | 输出预算；调用方经 `generate_structured(max_tokens=...)` 覆盖；截断时扩 2 倍重试 1 次 |
 | `model_key` | `fast`（可传参覆盖） | 默认用廉价快速模型，必要时传 reasoning/main |
 | `response_format` | 级内构造 | 第一级 json_schema / 第二级 json_object / 第三级无 |
 
-> **与限流的关系**：结构化模块不直接接触限流配置（RPM/TPM 由 generate 内部按 model_key 读取），但其每次调用都按 `model_key` 扣配额——见 [limiter.md](limiter.md)。
+> **与限流的关系**：结构化模块不直接接触限流配置（RPM/TPM 由 generate 内部按 model_key 读取），但其每次调用都按 `model_key` 扣配额——`max_tokens` 参数会直接影响 `_count_prompt_tokens` 的 TPM 预留量（调用方传更大预算，限流预留随之增大），见 [limiter.md](limiter.md)。
 
 ---
 
@@ -476,7 +476,7 @@ structured.py 无独立配置项，调用 `generate` 时使用硬编码默认参
 2. **finish_reason / refusal 已检查**：`_classify_result` 解析前四态分类（截断/拒答/工具调用/正常），截断扩 token 重试 1 次、拒答抛 `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`（均不进降级链），记区分日志。已修复（2026-08-08 问题 2 + 2026-08-09 审核补充 tool_calls）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（返回 None，不降级）；拒答抛 `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`，调用方需捕获并差异化处理（安全兜底 / 按工具调用走 Agent 循环）。
 3. **错误感知重试已实现**：`_try_extract` 校验失败先回喂错误重试（`_REASK_MAX_RETRIES=2`），耗尽才降级；strict/JSON mode 级回喂，正则级不加。已修复（2026-08-08，见问题 3）。**残留边界**：回喂重试增加模型调用次数（最坏 7 次/请求），token 消耗放大。
 4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价——换取廉价模型可用性与纠错能力，而非默认接受解析失败。
-5. **每级调用 `max_tokens=2048` 硬编码**：结构化输出通常较短，2048 是合理默认；长字段截断时本层扩 4096 重试 1 次（见问题 2），超限后放弃。
+5. **输出预算可配置（W4，2026-08-09）**：`max_tokens` 由 `settings.llm_structured_max_tokens`（默认 2048）控制，调用方经 `generate_structured(max_tokens=...)` 按业务覆盖；截断时扩 2 倍重试 1 次（随参数缩放，不再硬编码 4096），超限后放弃。
 6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（问题 4 已修复），模型无法扩展接口。显式 `additionalProperties:true` 仍被尊重。
 
 ---
@@ -674,7 +674,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 
 **三个关键决策**：
 
-- **扩 max_tokens 重试放 structured 层**（`_try_extract` 内部），不放 generate/retry 层。理由：`retry.py` 是传输层（网络/限流/熔断），对「这是结构化输出」无感知；扩 token 是**业务语义重试**，只有 structured 层知道 `max_tokens=2048` 是自己设的、知道 JSON 截断可安全加大预算重试。放这里对 generate 其它调用方（Agent 聊天流）零影响。
+- **扩 max_tokens 重试放 structured 层**（`_try_extract` 内部），不放 generate/retry 层。理由：`retry.py` 是传输层（网络/限流/熔断），对「这是结构化输出」无感知；扩 token 是**业务语义重试**，只有 structured 层知道 `max_tokens` 是自己设的（W4 后可配/可覆盖）、知道 JSON 截断可安全加大预算重试。放这里对 generate 其它调用方（Agent 聊天流）零影响。
 - **拒答不走三级降级链**：降级链解决「能力缺口」（provider 不支持某种 response_format）；拒答是**策略信号**，把同一段可能触发安全的输入喂给更宽松约束，大概率同样拒答，只有成本与日志噪音。
 - **截断也不走降级链**：截断是「token 预算/输出长度」问题，与 response_format 支持度正交；同一输入在 json_mode 下同样会截断。降级无益，扩 token 重试 1 次是唯一有意义的缓解。
 

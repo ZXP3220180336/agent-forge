@@ -24,6 +24,7 @@ from typing import Any
 
 from jsonschema import Draft7Validator, ValidationError, validate
 
+from app.config import settings
 from app.services.llm.retry import ErrorCategory, classify_error
 from app.utils.logger import get_logger
 
@@ -144,6 +145,7 @@ class StructuredOutput:
         messages: list[dict],
         schema: dict[str, Any],
         model_key: str = "fast",
+        max_tokens: int | None = None,
     ) -> dict[str, Any] | None:
         """
         根据 JSON Schema 从消息中提取结构化数据（三级降级）。
@@ -158,6 +160,8 @@ class StructuredOutput:
             messages: 完整消息列表（调用方构建）
             schema: JSON Schema 定义
             model_key: 使用的模型标识（默认 fast，低延迟低成本）
+            max_tokens: 输出预算上限。None 用 settings.llm_structured_max_tokens
+                （默认 2048）；截断时扩 2 倍重试 1 次。
 
         Returns:
             解析后的 dict，三级均失败返回 None
@@ -168,6 +172,7 @@ class StructuredOutput:
         # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）。
         # 默认拒绝额外字段，模型无法扩展接口混入业务不需要的字段。
         schema = StructuredOutput._enforce_no_extra_fields(schema)
+        max_tokens = max_tokens if max_tokens is not None else settings.llm_structured_max_tokens
 
         # 先用原生 JSON Schema
         response_format = StructuredOutput.build_json_schema_request(schema)
@@ -178,6 +183,7 @@ class StructuredOutput:
                 response_format,
                 model_key,
                 schema=schema,
+                max_tokens=max_tokens,
             )
         except StructuredTruncationError:
             return None  # 截断短路，不降级
@@ -193,6 +199,7 @@ class StructuredOutput:
                 response_format,
                 model_key,
                 schema=schema,
+                max_tokens=max_tokens,
             )
         except StructuredTruncationError:
             return None  # 截断短路，不降级
@@ -206,6 +213,7 @@ class StructuredOutput:
                 messages,
                 model_key,
                 schema=schema,
+                max_tokens=max_tokens,
             )
         except StructuredTruncationError:
             return None  # 截断短路
@@ -217,6 +225,7 @@ class StructuredOutput:
         response_format: dict,
         model_key: str,
         schema: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any] | None:
         """尝试用指定 response_format 提取（解析前做边界检查）。
 
@@ -238,7 +247,7 @@ class StructuredOutput:
             result = await llm_service.generate(
                 messages=messages,
                 temperature=0,
-                max_tokens=2048,
+                max_tokens=max_tokens,
                 response_format=response_format,
                 model_key=model_key,
             )
@@ -264,7 +273,7 @@ class StructuredOutput:
                 retry = await llm_service.generate(
                     messages=messages,
                     temperature=0,
-                    max_tokens=4096,
+                    max_tokens=max_tokens * 2,
                     response_format=response_format,
                     model_key=model_key,
                 )
@@ -348,7 +357,7 @@ class StructuredOutput:
                         messages, content, "\n".join(errors)
                     ),
                     temperature=0,
-                    max_tokens=2048,
+                    max_tokens=max_tokens,
                     response_format=response_format,
                     model_key=model_key,
                 )
@@ -399,6 +408,7 @@ class StructuredOutput:
         messages: list[dict],
         model_key: str,
         schema: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any] | None:
         """纯 prompt 约束降级方案（同样做三态检查，截断/拒答短路）。
 
@@ -409,7 +419,7 @@ class StructuredOutput:
             result = await llm_service.generate(
                 messages=messages,
                 temperature=0,
-                max_tokens=2048,
+                max_tokens=max_tokens,
                 model_key=model_key,
             )
         except Exception as e:

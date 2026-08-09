@@ -122,6 +122,12 @@ class Settings(BaseSettings):
     llm_reserve_min_samples: int = 30  # 冷启动阈值：样本不足用静态上限
     llm_reserve_window: int = 256  # 滚动样本窗口（deque 上限）
 
+    # ===== 结构化输出 =====
+    # 三级降级（strict json_schema → json mode → 正则）的模型输出预算。
+    # 首次/回喂/fallback 用此值；截断时扩 2 倍重试 1 次。调用方可通过
+    # generate_structured(max_tokens=...) 按业务覆盖（None 则用此默认）。
+    llm_structured_max_tokens: int = 2048
+
     # ===== 上下文配置 =====
     max_context_tokens: int = 128000
     max_output_tokens: int = 4096
