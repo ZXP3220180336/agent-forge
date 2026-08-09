@@ -404,9 +404,10 @@ class Reservation:
     async def settle(self, actual: int | None) -> None:
         # 仅对按量桶（非首条目）退 max(0, reserved-actual)
         # actual=None 保留全部预留（保守）但标记终态
+        # 终态标记在全部退款完成后置位（取消中断时保持未终态，外层可续退）
         # actual 非 None 且挂回调时 → 触发 settle_callback(actual)（喂估算器样本）
     async def cancel(self) -> None:
-        # 所有桶全额退还（请求未确认发出时用）
+        # 所有桶全额退还（请求未确认发出时用）；终态标记在退款完成后置位
     @property
     def settled(self) -> bool: ...
 ```
@@ -417,6 +418,7 @@ class Reservation:
 - `settle(None)`：无 usage 时的保守路径——保留全部预留，但**标记终态**（闭环不泄漏）
 - `cancel()`：请求未发出（create 失败/取消）时**所有桶全额退还**
 - **终态幂等**：settle/cancel 任一调用后，再次调用为 no-op
+- **取消泄漏防护（2026-08-09）**：终态标记 `_settled` 在**全部退款完成后**才置位——若退款循环中途被取消（`CancelledError` 向上传播），保持未终态，外层兜底（`llm_service` 的 `cancel`/`finally`）可续退剩余条目，避免部分桶配额永久泄漏。`TokenBucket.refund` 的 capacity 封顶保证重复退款不超发，兜底续退安全幂等
 
 ### ReservationLimiter — 双桶组合（reserve/settle 形态）
 
