@@ -571,7 +571,11 @@ T3 + 30s 后 → 请求 H（探针 #1）
 6. **OPEN 下 no-op 与统计冻结**：
    - `allow_request()` 拒绝主调用，`call_fn` 从不执行，窗口统计保持不变；
    - 即便外部误调用 `record_success()`/`record_failure()` 也是 no-op（不关闭熔断器、不追加窗口、不改写冷却计时），直到熔断关闭时窗口清空
-7. **并发熔断状态竞争**：`CircuitBreaker` 不是线程安全的，但 `RetryHandler` 在 asyncio 单线程事件循环中运行，无并发问题
+7. **并发熔断状态竞争**：`CircuitBreaker` 在 asyncio 单线程事件循环中**无需加锁**。原因有三：
+   - `allow_request()` / `record_success()` / `record_failure()` 都是纯同步方法，内部无 `await`；一个协程执行这些方法时事件循环不会让出，对 `_state`、`_window`、`_half_open_requests`、`_consecutive_successes` 的读写是原子的。
+   - 方法之间的状态交错是设计允许的：`allow_request()` 放行后，请求执行期间（`await call_fn()`）其他请求可以并发修改熔断器状态；已放行请求的 `record_success()` 在 OPEN 状态下是 no-op，不会错误关闭熔断器，符合"状态机只按当前状态推进"的语义。
+   - HALF_OPEN 下多个探针可并发放行：每个探针独立占用槽位，结果分别推进状态机；成功累加 `_consecutive_successes`，失败回 OPEN，4xx/未知归还槽位，不存在死锁。
+   - **不需要加锁的边界**：只有方法内部出现 `await`、多线程同时访问、或需要把 `allow_request() + record_success()` 组合成原子事务时，才需要 `asyncio.Lock` / `threading.Lock`。当前实现均不满足，因此保持无锁。
 8. **`max_retries=0`**：不重试，但熔断器仍然生效。首次失败后 `record_failure()` 被调用（请求级 1 次），窗口累积
 9. **流式迭代「放弃时」计入熔断窗口**：流式迭代异常不受 `retry.execute` 保护（响应对象创建后重试循环已退出）。`LLMService.async_generate` 在**最终放弃**（不整流）且异常为 RETRYABLE 时，直接调 `retry.circuit_breaker.record_failure()`——让熔断器感知「create 正常但流频繁中断」的下游故障。整流重试（未放弃）、NON_RETRYABLE / RATE_LIMITED / 用户取消不计入
 10. **熔断状态按 model_key 隔离**：`RetryHandlerManager` 为每个 model_key（main/reasoning/fast）维护独立实例。`reasoning` 的故障只累计 `reasoning` 熔断器窗口，不会熔断 `fast` / `main`
