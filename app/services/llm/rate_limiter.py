@@ -353,7 +353,10 @@ class SlidingWindowCounterLimiter:
                 now = time.monotonic()
                 self._current_bucket(now)
                 if self._window_count(now) + tokens <= self.rate:
-                    self._counts[-1] = (self._counts[-1][0], self._counts[-1][1] + tokens)
+                    self._counts[-1] = (
+                        self._counts[-1][0],
+                        self._counts[-1][1] + tokens,
+                    )
                     return total_wait
                 # 窗口已满：计算最老的桶滑出窗口剩余时间，锁外 sleep
                 if self._counts:

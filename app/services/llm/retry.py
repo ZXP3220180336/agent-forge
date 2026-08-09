@@ -276,7 +276,7 @@ class CircuitBreaker:
         if self._state == CircuitState.HALF_OPEN:
             # 探针失败 → 重新熔断，新一轮冷却开始。
             # 清零半开计数与连续成功：OPEN 状态下不残留 HALF_OPEN 的记账
-            #（冷却后重新放行时由 allow_request() 重置为 1，但语义上 OPEN
+            # （冷却后重新放行时由 allow_request() 重置为 1，但语义上 OPEN
             #  不应再持有"半开计数"）。
             self._state = CircuitState.OPEN
             self._last_failure_time = time.monotonic()
@@ -441,7 +441,7 @@ class RetryHandler:
         if fallback_fn is not None:
             try:
                 return await fallback_fn()
-            except Exception as fallback_exc:  # noqa: BLE001
+            except Exception as fallback_exc:
                 # 主调用异常才是最终结果（上层按它判定熔断/重试语义，
                 # 熔断窗口记录的也是主链路）；fallback 失败仅作为 __cause__ 链上，
                 # 不覆盖主异常——否则上层拿到 fallback 异常会与熔断器记录的
@@ -518,7 +518,7 @@ class RetryHandler:
         if fallback_fn is not None:
             try:
                 return await fallback_fn()
-            except Exception as fallback_exc:  # noqa: BLE001
+            except Exception as fallback_exc:
                 # 主调用（探针）异常才是最终结果：熔断窗口已按主链路记录
                 # （record_failure 回 OPEN），上层需按主异常判定语义；fallback
                 # 失败仅作为 __cause__ 链上保留诊断信息，不覆盖主异常。
