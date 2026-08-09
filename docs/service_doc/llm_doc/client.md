@@ -76,19 +76,21 @@ _OPENAI_CLIENT_KWARGS = {
 
 **要。** 当初次实现时，`register_config` 只做 `cls._instances.pop(key, None)`——新配置进来只是弹出旧引用，旧连接泄漏到 GC。
 
-修复方案：
+修复方案（2026-08-09 增强：无 loop 不再静默忽略，进入 `_pending_closes` 追踪）：
 
 ```python
 old = cls._instances.pop(key, None)
 if old is not None:
     try:
-        asyncio.ensure_future(old.close())
+        asyncio.get_running_loop()  # 仅判断是否有运行中事件循环
     except RuntimeError:
-        pass  # 无事件循环时忽略
+        cls._pending_closes.append(old)  # 无 loop：登记待关闭，close_all 统一关
+    else:
+        asyncio.ensure_future(old.close())  # 有 loop：后台异步关闭
 ```
 
-- 使用 `asyncio.ensure_future` 而非 `await`，因为 `register_config` 不是 async 方法，且可能在事件循环未启动时调用
-- `RuntimeError` 捕获"无事件循环"的场景（如纯注册阶段）
+- 使用 `asyncio.ensure_future` 而非 `await`，因为 `register_config` 不是 async 方法，有运行循环时后台关闭不阻塞注册
+- 用 `asyncio.get_running_loop()` 显式判断而非依赖 `ensure_future` 抛异常：无运行循环（纯注册阶段，如 AppState.initialize 之前）时旧 client 放入 `_pending_closes` 列表，由 `close_all()` 统一关闭——**不再静默忽略**，避免旧连接池泄漏且可追踪
 
 ### Q3: `**extra` 被静默吞没了
 
@@ -102,12 +104,12 @@ if old is not None:
 
 | 方法                                                      | 同步/异步 | 说明                                 |
 | --------------------------------------------------------- | --------- | ------------------------------------ |
-| `register_config(key, api_key, base_url, model, **extra)` | 同步      | 注册配置，如旧 client 存在则异步关闭 |
+| `register_config(key, api_key, base_url, model, **extra)` | 同步      | 注册配置；有运行循环则旧 client 后台异步关闭，无则入 `_pending_closes` 追踪 |
 | `get_client(key)`                                         | 同步      | 获取 / 创建 client（懒加载）         |
 | `get_model(key)`                                          | 同步      | 获取配置中的模型名                   |
 | `get_config(key)`                                         | 同步      | 获取完整配置副本                     |
 | `list_keys()`                                             | 同步      | 列出所有已注册 key                   |
-| `close_all()`                                             | 异步      | 关闭所有 client 并清理               |
+| `close_all()`                                             | 异步      | 关闭所有 client + 待关闭列表，并清理 |
 | `close_client(key)`                                       | 异步      | 关闭并移除指定 client                |
 | `remove(key)`                                             | 同步      | 仅移除引用，不关闭连接               |
 
@@ -117,6 +119,6 @@ if old is not None:
 
 1. **多次注册同一 key**：先关闭旧 client，再覆盖配置，下次 `get_client` 创建新实例
 2. **未注册 key**：`get_client` / `get_model` / `get_config` 抛出 `ValueError`
-3. **无事件循环时注册**：`asyncio.ensure_future` 抛出 `RuntimeError`，静默忽略
+3. **无事件循环时注册（2026-08-09 修复）**：`asyncio.get_running_loop()` 判无运行循环 → 旧 client 放入 `_pending_closes` 由 `close_all()` 统一关闭，**不再静默忽略**（修复前旧连接池泄漏）
 4. **并发 get_client**：Python GIL + dict 操作原子性，首次创建在锁外可能有重复创建，但 `AsyncOpenAI` 本身是线程安全的，覆盖旧实例即可
 5. **代理 client 的生命周期**：`_build_proxied_client` 创建的 `httpx.AsyncClient` 由 `AsyncOpenAI` 接管关闭，无需单独管理

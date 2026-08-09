@@ -47,6 +47,9 @@ class ClientManager:
 
     _instances: ClassVar[dict[str, AsyncOpenAI]] = {}
     _configs: ClassVar[dict[str, dict[str, Any]]] = {}
+    # 待关闭的旧 client（无事件循环时 register_config 无法 fire-and-forget，
+    # 放入此列表由 close_all 统一关闭，避免旧连接池泄漏且可追踪）
+    _pending_closes: ClassVar[list[AsyncOpenAI]] = []
 
     @classmethod
     def register_config(
@@ -72,9 +75,15 @@ class ClientManager:
         old = cls._instances.pop(key, None)
         if old is not None:
             try:
-                asyncio.ensure_future(old.close())
+                # 仅在有运行中事件循环时后台关闭（fire-and-forget，不阻塞注册）
+                asyncio.get_running_loop()
             except RuntimeError:
-                pass  # 无事件循环时忽略（纯注册阶段）
+                # 无运行事件循环（纯注册阶段，如 AppState.initialize 之前）：
+                # 无法后台关闭，放入待关闭列表由 close_all 统一关闭，
+                # 避免旧连接池泄漏且可追踪（不再静默忽略）。
+                cls._pending_closes.append(old)
+            else:
+                asyncio.ensure_future(old.close())
 
     @classmethod
     def get_client(cls, key: str = "main") -> AsyncOpenAI:
@@ -134,6 +143,10 @@ class ClientManager:
         for client in cls._instances.values():
             await client.close()
         cls._instances.clear()
+        # 关闭无循环阶段积累的待关闭旧 client（register_config 无法 fire-and-forget）
+        for client in cls._pending_closes:
+            await client.close()
+        cls._pending_closes.clear()
 
     @classmethod
     async def close_client(cls, key: str) -> None:
