@@ -88,6 +88,7 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 | 429 | 失败 | `record_failure()` 回 OPEN + 冷却重置（下游仍过载，停止探测） |
 | 超时 / 5xx | 失败 | `record_failure()` 回 OPEN + 冷却重置（下游故障证据） |
 | 4xx / 未知 | 无效探测 | **不改变状态 + `release_probe()` 归还槽位 + `raise`**（客户端问题，不算健康探测，等待正常请求探测真实状态） |
+| 协程被取消 / 自定义 `BaseException` | 中断 | `CancelledError` → `record_failure()` 回 OPEN + 立即传播（不尝试 fallback）；其余 `BaseException`（SystemExit 等）→ **finally 兜底归还槽位**（见「改造记录与工业实践·半开探针槽位泄漏」） |
 
 ### 降级 / Fallback
 
@@ -187,7 +188,7 @@ class CircuitBreaker:
 | 状态项 | 字段 | 更新时机 | 清除时机 |
 | --- | --- | --- | --- |
 | 窗口请求记录 | `_window`（deque） | 每次请求级 `record_success()`/`record_failure()` 追加 `(ts, 成败)`；429 不计入 | 窗口滑动过期剔除；熔断关闭 → `clear()`；`reset()` |
-| 半开探针计数 | `_half_open_requests` | `allow_request()` 放行探针时 +1 | `record_success()` → 0；`OPEN→HALF_OPEN` → 1；`release_probe()` → -1（归还槽位） |
+| 半开探针计数 | `_half_open_requests` | `allow_request()` 放行探针时 +1 | `record_success()` → 0；`OPEN→HALF_OPEN` → 1；`release_probe()` → -1（归还槽位）；**探针失败回 OPEN → 0**（OPEN 不残留半开记账，2026-08-09） |
 | 连续成功计数 | `_consecutive_successes` | 半开下每次 `record_success()` +1 | 熔断关闭时 → 0；半开中失败 → 0 |
 
 ### RetryHandler — 重试执行器
@@ -595,8 +596,9 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | **错误分类：未知/未覆盖异常默认 RETRYABLE，盲目重试** | 只显式分类 400/401/403/422/429/5xx/超时，其余（404/405/413 等 4xx、非 HTTP 异常、裸 httpx 网络异常）落入 RETRYABLE 兜底 → 重试无效的错误白打下游 N 次并计入熔断窗口 | 白名单映射：4xx 全部 NON_RETRYABLE；显式捕获 openai 网络异常 + 裸 httpx 异常 → RETRYABLE；`APIResponseValidationError`/`LengthFinishReasonError`/`ContentFilterFinishReasonError` → NON_RETRYABLE；**未知异常默认 NON_RETRYABLE** |
 | **流式迭代异常无保护** | `llm_service.py` 的 `async for chunk` 不在任何 try/except 内 → 流中断/解析失败时异常泄漏到调用方，不重试不熔断不记录日志 | 流式迭代包进 try/except：失败时记录日志 + 产出错误事件（不重试，符合流式语义）；**2026-08-07 补熔断观察盲区**：迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」 |
 | **熔断器生命周期：每次调用新建导致窗口无法跨请求积累（2026-08-07）** | `_build_retry_handler()` 在每次 `async_generate`/`generate` 新建 `RetryHandler` + `CircuitBreaker` → 熔断窗口每次请求清空，`request_volume_threshold=20` 永远达不到 → **create 阶段熔断实际失效**（与「熔断器需要跨请求共享状态」设计意图矛盾） | 新增 `RetryHandlerManager`：按 model_key 缓存共享 RetryHandler（内含跨请求共享 CircuitBreaker），main/reasoning/fast 独立熔断；`LLMService` 改用 `RetryHandlerManager.get(model_key)` |
+| **审核补充：半开探针槽位泄漏——取消/`BaseException` 中断（2026-08-09）** | `_probe_attempt()` 仅 `except Exception`：协程被 `CancelledError`/`SystemExit`/自定义 `BaseException` 中断时绕过 `release_probe()`/`record_failure()`，`_half_open_requests` 被永久占用 → 多次取消后 `allow_request()` 恒为 False，熔断器卡死 HALF_OPEN，自动恢复失效 | `_probe_attempt()` 改 `try/finally` + `accounted` 标志兜底：任何未记账退出路径由 finally `release_probe()` 归还槽位（槽位永不泄漏）；`CancelledError` 单独捕获 → 按探针失败回 OPEN + 立即传播（**不尝试 fallback**，外部取消不应继续发请求）；附带语义修正：探针失败回 OPEN 时同步清零 `_half_open_requests`（OPEN 不残留半开记账） |
 
-对应测试：`tests/unit/test_retry.py`（29 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）+ `tests/unit/test_retry_handler_manager.py`（6 个用例）。
+对应测试：`tests/unit/test_retry.py`（32 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）+ `tests/unit/test_retry_handler_manager.py`（6 个用例）。
 
 > **坑：测试构造 openai 异常** —— 构造 `openai.APIStatusError` 子类（如 `BadRequestError`/`InternalServerError`/`RateLimitError`）需要 `message` + `response` 两个参数（`InternalServerError` 无字面量 status_code，值来自传入的 `httpx.Response`）。`LengthFinishReasonError` 需要真实 `ChatCompletion` 对象（访问 `.usage`），不能传 None。**构造测试异常统一用 `httpx.Response(status_code, request=...)` 传参。**
 
