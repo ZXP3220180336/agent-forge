@@ -348,7 +348,7 @@ def _build_proxied_client(proxy_url: str) -> httpx.AsyncClient:
 
 1. **指数退避**：`base_delay × 2^attempt`，上限 `max_delay`
 2. **随机抖动**：在退避基础上 `random.uniform(0, delay)`，防止羊群效应
-3. **CircuitBreaker**：连续失败 N 次后熔断，超时后半开探测
+3. **CircuitBreaker**：滑动窗口错误率判定熔断（参考 Hystrix），超时后半开探测
 4. **Fallback 降级**：主模型全部失败后尝试备用模型
 5. **错误分类**：区分可重试 / 不可恢复 / 限流 / 熔断触发
 
@@ -356,17 +356,16 @@ def _build_proxied_client(proxy_url: str) -> httpx.AsyncClient:
 
 ```python
 class ErrorCategory(Enum):
-    RETRYABLE        # 超时、5xx → 可重试
-    CIRCUIT_TRIGGER  # 连续超时/5xx → 触发熔断
-    NON_RETRYABLE    # 401、403、422 → 直接抛出
-    RATE_LIMITED     # 429 → 可重试 + 标记熔断
+    RETRYABLE      # 超时、5xx → 可重试
+    NON_RETRYABLE  # 4xx、未知异常 → 直接抛出（不重试）
+    RATE_LIMITED   # 429 → 可重试但退避，不计入熔断
 ```
 
 | 异常类型                           | 分类          | 处理方式              |
 | ---------------------------------- | ------------- | --------------------- |
 | `TimeoutError` / `APITimeoutError` | RETRYABLE     | 重试                  |
 | 5xx                                | RETRYABLE     | 重试                  |
-| 429 `RateLimitError`               | RATE_LIMITED  | 重试 + 记入熔断计数器 |
+| 429 `RateLimitError`               | RATE_LIMITED  | 重试 + 尊重 Retry-After，**不计入熔断** |
 | 401 / 403 / 422                    | NON_RETRYABLE | 直接抛出              |
 | 400                                | NON_RETRYABLE | 直接抛出              |
 
@@ -405,7 +404,7 @@ call_fn（主模型）→ 重试 3 次 → 全部失败
 | 特性     | 当前做法                | 替代方案                   |
 | -------- | ----------------------- | -------------------------- |
 | 退避算法 | 指数 × 2，加随机抖动    | 固定间隔、线性增加、无抖动 |
-| 熔断     | 基于连续失败次数 + 探针 | 无熔断 / 基于错误率        |
+| 熔断     | 滑动窗口错误率 + 探针   | 无熔断 / 连续失败计数      |
 | 降级     | 一个 fallback 函数      | 无降级 / 多级降级链        |
 
 **选择理由**：
