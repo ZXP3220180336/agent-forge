@@ -25,9 +25,8 @@ import math
 import time
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import ClassVar
-
-from app.config import settings
 
 
 class TokenBucket:
@@ -217,6 +216,19 @@ class Reservation:
         return self._settled
 
 
+@dataclass
+class ReservationLimiterConfig:
+    """ReservationLimiter 配置（纯配置对象，默认值为合理硬编码；由外层
+    ReservationLimiterManager.register_config() 注入）。"""
+
+    rpm: int = 60
+    tpm: int = 100_000
+    quantile: float = 0.95
+    safety_margin: float = 1.15
+    min_samples: int = 30
+    window: int = 256
+
+
 class ReservationLimiter:
     """
     客户端限流器（reserve/settle 形态）。
@@ -353,66 +365,62 @@ class ReservationLimiter:
 # =====================================================================
 
 
-# model_key → 读取 settings 中的 RPM / TPM 配置字段名
-_RATE_LIMIT_FIELDS: dict[str, tuple[str, str]] = {
-    "main": ("llm_main_rpm", "llm_main_tpm"),
-    "reasoning": ("llm_reasoning_rpm", "llm_reasoning_tpm"),
-    "fast": ("llm_fast_rpm", "llm_fast_tpm"),
-}
-
-# model_key → 自适应预留分位数配置字段名（推理模型 p99，其余 p95）
-_QUANTILE_FIELD_BY_KEY: dict[str, str] = {
-    "main": "llm_reserve_quantile",
-    "reasoning": "llm_reserve_reasoning_quantile",
-    "fast": "llm_reserve_quantile",
-}
-
-
 class ReservationLimiterManager:
     """
     按 model_key 提供共享限流器实例。
 
     与 ClientManager 同款缓存模式：同一 model_key 复用同一个
     ReservationLimiter（双 Token Bucket 跨请求记账，不能每次 new）。
-    配置（RPM / TPM）从配置中心懒加载，修改配置后 reset() 重建。
+    配置（RPM / TPM）由外层 register_config() 注入（AppState 读 settings 后调用），
+    子模块不再直接依赖 settings；修改配置后 reset() 重建实例生效。
     """
 
     _instances: ClassVar[dict[str, ReservationLimiter]] = {}
+    _configs: ClassVar[dict[str, ReservationLimiterConfig]] = {}
+
+    @classmethod
+    def register_config(cls, configs: dict[str, ReservationLimiterConfig]) -> None:
+        """注入按 model_key 的限流配置，并重建已缓存实例使新配置生效。
+
+        Args:
+            configs: model_key → ReservationLimiterConfig 映射
+        """
+        cls._configs = dict(configs)
+        cls.reset()
 
     @classmethod
     def get(cls, model_key: str = "main") -> ReservationLimiter:
         """获取指定 key 的限流器（懒创建 + 缓存复用）。
 
+        model_key 由外部传入（与 ClientManager 对齐，不内置白名单）：
+        任意 key 都懒构建——未配置过的 key 用默认 ReservationLimiter。
+
         Args:
-            model_key: 模型标识（main / reasoning / fast）
+            model_key: 模型标识（如 main / reasoning / fast / 自定义）
 
         Returns:
             共享 ReservationLimiter 实例
-
-        Raises:
-            ValueError: model_key 未在限流配置映射中
         """
         if model_key in cls._instances:
             return cls._instances[model_key]
-
-        fields = _RATE_LIMIT_FIELDS.get(model_key)
-        if fields is None:
-            raise ValueError(f"未知限流 key: {model_key!r}")
-        rpm_field, tpm_field = fields
-
-        # 普通模型 p95、推理模型 p99（_RATE_LIMIT_FIELDS 已校验 key 合法，此处必有值）
-        quantile_field = _QUANTILE_FIELD_BY_KEY[model_key]
-
-        limiter = ReservationLimiter(
-            rpm=getattr(settings, rpm_field, 0),
-            tpm=getattr(settings, tpm_field, 0),
-            quantile=getattr(settings, quantile_field, 0.95),
-            safety_margin=getattr(settings, "llm_reserve_safety_margin", 1.15),
-            min_samples=getattr(settings, "llm_reserve_min_samples", 30),
-            window=getattr(settings, "llm_reserve_window", 256),
-        )
+        limiter = cls._build_for(model_key)
         cls._instances[model_key] = limiter
         return limiter
+
+    @classmethod
+    def _build_for(cls, model_key: str) -> ReservationLimiter:
+        """按注入配置构建指定 key 的限流器；未配置的 key 用默认值。"""
+        config = cls._configs.get(model_key)
+        if config is None:
+            return ReservationLimiter()
+        return ReservationLimiter(
+            rpm=config.rpm,
+            tpm=config.tpm,
+            quantile=config.quantile,
+            safety_margin=config.safety_margin,
+            min_samples=config.min_samples,
+            window=config.window,
+        )
 
     @classmethod
     def reset(cls) -> None:

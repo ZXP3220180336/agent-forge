@@ -39,11 +39,12 @@ def test_manager_different_key_isolated():
     assert reasoning is not fast
 
 
-def test_manager_unknown_key_raises():
-    """未知 model_key 抛 ValueError。"""
+def test_manager_custom_key_lazy_builds():
+    """任意 model_key（含未预定义）都懒构建，不再抛 ValueError（对齐 ClientManager）。"""
     RetryHandlerManager.reset()
-    with pytest.raises(ValueError):
-        RetryHandlerManager.get("unknown_key")
+    handler = RetryHandlerManager.get("custom_key")
+    assert handler is not None, "未知 key 应懒构建返回 handler"
+    assert RetryHandlerManager.get("custom_key") is handler, "同 key 复用实例"
 
 
 def test_manager_reset_clears_cache():

@@ -19,7 +19,11 @@ import pytest
 from openai import APIResponseValidationError, BadRequestError, RateLimitError
 
 from app.config import settings
-from app.services.llm import ClientManager, RetryHandlerManager
+from app.services.llm import (
+    ClientManager,
+    RetryConfig,
+    RetryHandlerManager,
+)
 from app.services.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
 from app.services.llm_service import LLMService, StreamResult
 
@@ -176,11 +180,16 @@ def _setup(monkeypatch, script, stream_max_retries=1):
     monkeypatch.setattr(
         ClientManager, "get_model", staticmethod(lambda key: "test-model")
     )
-    # 退避/重试配置：极短延迟 + 关闭抖动 + create 不内部重试（调用次数可确定）
-    monkeypatch.setattr(settings, "llm_base_delay", 0.001)
-    monkeypatch.setattr(settings, "llm_max_delay", 0.01)
-    monkeypatch.setattr(settings, "llm_use_jitter", False)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
+    # 退避/重试配置：极短延迟 + 关闭抖动 + create 不内部重试（调用次数可确定）。
+    # configure 注入（子模块不读 settings），内部会 reset 保证测试隔离。
+    RetryHandlerManager.register_config(
+        config=RetryConfig(
+            max_retries=0,
+            base_delay=0.001,
+            max_delay=0.01,
+            use_jitter=False,
+        ),
+    )
     monkeypatch.setattr(settings, "llm_stream_max_retries", stream_max_retries)
 
     # 限流 stub：reserve 立即放行，记录调用次数与 estimated_tokens，并统计 settle 退差。
@@ -304,10 +313,14 @@ async def test_cancel_event_no_rectify(monkeypatch):
     monkeypatch.setattr(
         ClientManager, "get_model", staticmethod(lambda key: "test-model")
     )
-    monkeypatch.setattr(settings, "llm_base_delay", 0.001)
-    monkeypatch.setattr(settings, "llm_max_delay", 0.01)
-    monkeypatch.setattr(settings, "llm_use_jitter", False)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
+    RetryHandlerManager.register_config(
+        config=RetryConfig(
+            max_retries=0,
+            base_delay=0.001,
+            max_delay=0.01,
+            use_jitter=False,
+        ),
+    )
     monkeypatch.setattr(settings, "llm_stream_max_retries", 3)  # 即使可重试也不整流
 
     completions = fake_client.completions
@@ -484,10 +497,15 @@ async def test_rate_limiter_acquire_on_retry_inside_execute(monkeypatch):
         FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
     ]
     _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=1)
-    # retry.execute 内部重试需要 llm_max_retries >= 1
-    monkeypatch.setattr(settings, "llm_max_retries", 1)
-    monkeypatch.setattr(settings, "llm_base_delay", 0.001)
-    monkeypatch.setattr(settings, "llm_max_delay", 0.01)
+    # retry.execute 内部重试需要 max_retries >= 1（configure 覆盖 _setup 的 0）
+    RetryHandlerManager.register_config(
+        config=RetryConfig(
+            max_retries=1,
+            base_delay=0.001,
+            max_delay=0.01,
+            use_jitter=False,
+        ),
+    )
 
     sr, events = await run()
 
@@ -528,7 +546,6 @@ async def test_rate_limiter_cancel_on_create_failure(monkeypatch):
         httpx.ReadError("connection reset"),  # create 失败 → cancel 全额退
     ]
     _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=0)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
 
     sr, events = await run()
 
@@ -563,7 +580,6 @@ async def test_iter_interrupt_after_token_feeds_breaker(monkeypatch):
         ),
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
 
     await run()
 
@@ -579,7 +595,6 @@ async def test_rectified_then_success_not_feeds_breaker(monkeypatch):
         FakeStream([_content_chunk("ok"), _finish_chunk("stop")]),  # 整流成功
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
 
     sr, events = await run()
 
@@ -597,7 +612,6 @@ async def test_rectify_exhausted_then_abandon_feeds_once(monkeypatch):
         FakeStream([], fail_at=0, exc=httpx.ReadError("connection reset")),  # 第 2 轮死流
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
 
     sr, events = await run()
 
@@ -618,7 +632,6 @@ async def test_non_retryable_iter_exception_not_feeds_breaker(monkeypatch):
         FakeStream([], fail_at=0, exc=exc),
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
 
     await run()
 
@@ -636,7 +649,6 @@ async def test_rate_limited_iter_exception_not_feeds_breaker(monkeypatch):
     ]
     # stream_max_retries=0 禁用整流 → 429 迭代异常直接走放弃分支
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=0)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
 
     await run()
 
@@ -651,7 +663,6 @@ async def test_cancel_event_not_feeds_breaker(monkeypatch):
         FakeStream([_content_chunk("ok")], fail_at=None),
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
-    monkeypatch.setattr(settings, "llm_max_retries", 0)
 
     cancel_event = asyncio.Event()
     cancel_event.set()  # 置位 → 迭代内取消检查触发

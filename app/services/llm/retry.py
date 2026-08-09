@@ -32,7 +32,7 @@ import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, ClassVar
 
@@ -46,8 +46,6 @@ from openai import (
     RateLimitError,
 )
 
-from app.config import settings
-
 # =====================================================================
 # 重试配置
 # =====================================================================
@@ -55,12 +53,13 @@ from app.config import settings
 
 @dataclass
 class RetryConfig:
-    """重试配置。"""
+    """重试配置（纯配置对象，默认值为合理硬编码；运行时由 RetryHandlerManager
+    register_config() 注入 settings 值）。"""
 
-    max_retries: int = settings.llm_max_retries
-    base_delay: float = settings.llm_base_delay
-    max_delay: float = settings.llm_max_delay
-    use_jitter: bool = settings.llm_use_jitter
+    max_retries: int = 2
+    base_delay: float = 1.0
+    max_delay: float = 30.0
+    use_jitter: bool = True
 
 
 # =====================================================================
@@ -134,31 +133,39 @@ class CircuitState(Enum):
 
 
 @dataclass
+class CircuitBreakerConfig:
+    """熔断器配置（纯配置对象，默认值为合理硬编码；运行时由 RetryHandlerManager
+    register_config() 注入 settings 值）。"""
+
+    window_seconds: float = 10.0
+    error_threshold: float = 0.5
+    request_volume_threshold: int = 20
+    all_failed_min: int = 3
+    recovery_timeout: float = 30.0
+    half_open_max_requests: int = 3
+
+
 class CircuitBreaker:
     """
-    熔断器（滑动时间窗口 + 错误率判定）。
+    熔断器（滑动窗口时间 + 错误率判定）。
 
     判定基于滑动窗口内的请求错误率，参考 Hystrix 工业模型：
         - 窗口内总请求 ≥ request_volume_threshold 且错误率 ≥ error_threshold → OPEN
         - 或 窗口内全部失败且失败数 ≥ all_failed_min → OPEN（低流量纯失败保护）
     429（限流）不计入窗口统计——限流是客户触发自身限额，不是下游故障证据。
 
-    状态机：CLOSED → OPEN → HALF_OPEN → CLOSED / OPEN
+    配置统一由 CircuitBreakerConfig 承载（配置对象，纯数据），本类只持有
+    config 并维护状态机。状态机：CLOSED → OPEN → HALF_OPEN → CLOSED / OPEN
     """
 
-    window_seconds: float = settings.llm_circuit_window_seconds
-    error_threshold: float = settings.llm_circuit_error_threshold
-    request_volume_threshold: int = settings.llm_circuit_request_volume_threshold
-    all_failed_min: int = settings.llm_circuit_all_failed_min
-    recovery_timeout: float = settings.llm_circuit_recovery_timeout
-    half_open_max_requests: int = settings.llm_circuit_half_open_max_requests
-
-    _state: CircuitState = field(default=CircuitState.CLOSED, init=False)
-    # 滑动窗口：[(timestamp, is_success), ...]，新条目追加在右，过期从左弹出
-    _window: deque[tuple[float, bool]] = field(default_factory=deque, init=False)
-    _last_failure_time: float = field(default=0.0, init=False)
-    _half_open_requests: int = field(default=0, init=False)
-    _consecutive_successes: int = field(default=0, init=False)
+    def __init__(self, config: CircuitBreakerConfig | None = None) -> None:
+        self.config = config or CircuitBreakerConfig()
+        self._state = CircuitState.CLOSED
+        # 滑动窗口：[(timestamp, is_success), ...]，新条目追加在右，过期从左弹出
+        self._window: deque[tuple[float, bool]] = deque()
+        self._last_failure_time = 0.0
+        self._half_open_requests = 0
+        self._consecutive_successes = 0
 
     def allow_request(self) -> bool:
         """判断是否允许请求通过。"""
@@ -167,14 +174,17 @@ class CircuitBreaker:
             return True
 
         if self._state == CircuitState.OPEN:
-            if time.monotonic() - self._last_failure_time >= self.recovery_timeout:
+            if (
+                time.monotonic() - self._last_failure_time
+                >= self.config.recovery_timeout
+            ):
                 self._state = CircuitState.HALF_OPEN
                 self._half_open_requests = 1  # 本次作为第一个探针
                 return True
             return False
 
         # HALF_OPEN
-        if self._half_open_requests < self.half_open_max_requests:
+        if self._half_open_requests < self.config.half_open_max_requests:
             self._half_open_requests += 1
             return True
         return False
@@ -202,7 +212,7 @@ class CircuitBreaker:
 
     def _prune_window(self) -> None:
         """清理窗口内过期的请求记录（惰性，记录操作时调用）。"""
-        cutoff = time.monotonic() - self.window_seconds
+        cutoff = time.monotonic() - self.config.window_seconds
         while self._window and self._window[0][0] < cutoff:
             self._window.popleft()
 
@@ -218,11 +228,11 @@ class CircuitBreaker:
         if total == 0:
             return False
         # 低流量纯失败保护：请求量不足正常门槛时，全部失败且达最小样本量仍熔断
-        if failures == total and failures >= self.all_failed_min:
+        if failures == total and failures >= self.config.all_failed_min:
             return True
         # 主判据：窗口内总请求达到最小请求量，且错误率达标
-        if total >= self.request_volume_threshold:
-            return failures / total >= self.error_threshold
+        if total >= self.config.request_volume_threshold:
+            return failures / total >= self.config.error_threshold
         return False
 
     # ------------------------------------------------------------------
@@ -243,7 +253,7 @@ class CircuitBreaker:
         # HALF_OPEN 下：累积连续探针成功，达到探针阈值才关闭熔断器
         if self._state == CircuitState.HALF_OPEN:
             self._consecutive_successes += 1
-            if self._consecutive_successes >= self.half_open_max_requests:
+            if self._consecutive_successes >= self.config.half_open_max_requests:
                 self._state = CircuitState.CLOSED
                 self._window.clear()
                 self._half_open_requests = 0
@@ -562,10 +572,6 @@ class RetryHandler:
 # =====================================================================
 
 
-# 已知模型 key（与 ClientManager / 限流器 Manager 的 key 约定对齐）
-_KNOWN_MODEL_KEYS: frozenset[str] = frozenset(("main", "reasoning", "fast"))
-
-
 class RetryHandlerManager:
     """
     按 model_key 提供共享 RetryHandler 实例（内含跨请求共享的 CircuitBreaker）。
@@ -574,26 +580,45 @@ class RetryHandlerManager:
     同一个 RetryHandler——熔断窗口（滑动窗口错误率）需跨请求积累，每次 new
     会清空窗口、等于熔断永不触发（create 阶段熔断失效的隐性缺陷根源）。
     main / reasoning / fast 是不同模型/端点，独立熔断（reasoning 故障不熔断 fast）。
-    配置（重试/熔断）从 settings 懒加载，修改配置后 reset() 重建。
+    配置（重试/熔断）由外层 register_config() 注入（AppState 读 settings 后调用），
+    子模块不再直接依赖 settings；修改配置后 reset() 重建实例生效。
     """
 
     _instances: ClassVar[dict[str, RetryHandler]] = {}
+    _config: ClassVar[RetryConfig | None] = None
+    _circuit_breaker_config: ClassVar[CircuitBreakerConfig | None] = None
+
+    @classmethod
+    def register_config(
+        cls,
+        config: RetryConfig | None = None,
+        circuit_breaker_config: CircuitBreakerConfig | None = None,
+    ) -> None:
+        """注入重试/熔断配置，并重建已缓存实例使新配置生效。
+
+        Args:
+            config: 重试配置（None 保持现有或默认）
+            circuit_breaker_config: 熔断器配置（None 保持现有或默认）
+        """
+        if config is not None:
+            cls._config = config
+        if circuit_breaker_config is not None:
+            cls._circuit_breaker_config = circuit_breaker_config
+        cls.reset()
 
     @classmethod
     def get(cls, model_key: str = "main") -> RetryHandler:
         """获取指定 key 的 RetryHandler（懒创建 + 缓存复用）。
 
+        model_key 由外部传入（与 ClientManager 对齐，不内置白名单）：
+        任意 key 都懒构建——未配置过的 key 用注入的全局配置或默认值。
+
         Args:
-            model_key: 模型标识（main / reasoning / fast）
+            model_key: 模型标识（如 main / reasoning / fast / 自定义）
 
         Returns:
             共享 RetryHandler 实例（含共享 CircuitBreaker）
-
-        Raises:
-            ValueError: model_key 未在已知模型 key 中
         """
-        if model_key not in _KNOWN_MODEL_KEYS:
-            raise ValueError(f"未知模型 key: {model_key!r}")
         if model_key not in cls._instances:
             cls._instances[model_key] = cls._build()
         return cls._instances[model_key]
@@ -605,17 +630,13 @@ class RetryHandlerManager:
 
     @classmethod
     def _build(cls) -> RetryHandler:
-        """按 settings 构建 RetryHandler（重试配置从配置中心读取）。
+        """按注入配置构建 RetryHandler；未 register_config 时用硬编码默认值。
 
-        与 create 阶段的重试语义一致；熔断阈值亦从 settings 默认值读取
-        （RetryHandler 未显式传 circuit_breaker 时内部创建默认 CircuitBreaker）。
-        当前重试/熔断配置为进程级全局一致，不按 model_key 差异化。
+        重试/熔断配置为进程级全局一致，不按 model_key 差异化。
         """
         return RetryHandler(
-            config=RetryConfig(
-                max_retries=settings.llm_max_retries,
-                base_delay=settings.llm_base_delay,
-                max_delay=settings.llm_max_delay,
-                use_jitter=settings.llm_use_jitter,
+            config=cls._config or RetryConfig(),
+            circuit_breaker=CircuitBreaker(
+                config=cls._circuit_breaker_config or CircuitBreakerConfig(),
             ),
         )

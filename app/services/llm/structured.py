@@ -24,7 +24,6 @@ from typing import Any
 
 from jsonschema import Draft7Validator, ValidationError, validate
 
-from app.config import settings
 from app.services.llm.retry import ErrorCategory, classify_error
 from app.utils.logger import get_logger
 
@@ -76,6 +75,14 @@ class StructuredOutput:
     兜底使用 JSON Mode、prompt 约束 + 正则提取。
     统一对外入口：LLMService.generate_structured()（本类为内部实现）。
     """
+
+    # 默认输出预算：extract 未传 max_tokens 时用（由 register_config 注入 settings 值）。
+    _default_max_tokens: int = 2048
+
+    @classmethod
+    def register_config(cls, max_tokens: int) -> None:
+        """注入默认输出预算（AppState 读 settings 后调用），替代模块内硬编码。"""
+        cls._default_max_tokens = max_tokens
 
     @staticmethod
     def build_json_schema_request(
@@ -160,8 +167,9 @@ class StructuredOutput:
             messages: 完整消息列表（调用方构建）
             schema: JSON Schema 定义
             model_key: 使用的模型标识（默认 fast，低延迟低成本）
-            max_tokens: 输出预算上限。None 用 settings.llm_structured_max_tokens
-                （默认 2048）；截断时扩 2 倍重试 1 次。
+            max_tokens: 输出预算上限。None 用 register_config 注入的默认值
+                （AppState 注入 settings.llm_structured_max_tokens，默认 2048）；
+                截断时扩 2 倍重试 1 次。
 
         Returns:
             解析后的 dict，三级均失败返回 None
@@ -172,7 +180,8 @@ class StructuredOutput:
         # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）。
         # 默认拒绝额外字段，模型无法扩展接口混入业务不需要的字段。
         schema = StructuredOutput._enforce_no_extra_fields(schema)
-        max_tokens = max_tokens if max_tokens is not None else settings.llm_structured_max_tokens
+        if max_tokens is None:
+            max_tokens = StructuredOutput._default_max_tokens
 
         # 先用原生 JSON Schema
         response_format = StructuredOutput.build_json_schema_request(schema)
@@ -273,7 +282,9 @@ class StructuredOutput:
                 retry = await llm_service.generate(
                     messages=messages,
                     temperature=0,
-                    max_tokens=max_tokens * 2,
+                    max_tokens=max_tokens * 2
+                    if max_tokens is not None
+                    else StructuredOutput._default_max_tokens * 2,
                     response_format=response_format,
                     model_key=model_key,
                 )

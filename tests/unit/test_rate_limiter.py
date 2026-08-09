@@ -17,12 +17,12 @@ import time
 
 import pytest
 
-from app.config import settings
 from app.services.llm.rate_limiter import (
     FixedWindowLimiter,
     GCRALimiter,
     LeakyBucket,
     RateLimiter,
+    RateLimiterConfig,
     RateLimiterManager,
     SlidingWindowCounterLimiter,
     SlidingWindowLogLimiter,
@@ -166,11 +166,11 @@ async def test_rate_limiter_retry_after_respected():
 
 
 @pytest.mark.asyncio
-async def test_manager_builds_limiter_from_settings(monkeypatch):
-    """manager 按 settings 的 RPM/TPM 建桶。"""
-    monkeypatch.setattr(settings, "llm_main_rpm", 5)
-    monkeypatch.setattr(settings, "llm_main_tpm", 1_000_000)
-    RateLimiterManager.reset()
+async def test_manager_builds_limiter_from_config():
+    """manager 按 configure 注入的 RPM/TPM 建桶。"""
+    RateLimiterManager.register_config(
+        {"main": RateLimiterConfig(rpm=5, tpm=1_000_000)}
+    )
     limiter = RateLimiterManager.get("main")
     # RPM 桶只有 5 个 token，第 6 次 acquire 需等待
     for _ in range(5):
@@ -178,6 +178,17 @@ async def test_manager_builds_limiter_from_settings(monkeypatch):
     start = time.monotonic()
     await limiter.acquire(estimated_tokens=1)
     assert time.monotonic() - start >= 0.5, "RPM 桶应被扣减到需要等待"
+
+
+@pytest.mark.asyncio
+async def test_manager_configure_unconfigured_key_uses_default():
+    """configure 只配部分 key，未配置的 key 用默认值（不报错）。"""
+    RateLimiterManager.register_config({"main": RateLimiterConfig(rpm=1, tpm=1_000_000)})
+    limiter = RateLimiterManager.get("fast")  # 未配置
+    # 默认 rpm=60 → 60 次 acquire 内不等待
+    for _ in range(10):
+        await limiter.acquire(estimated_tokens=1)
+    assert limiter._req_bucket.capacity == 60, "未配置 key 应使用默认 RPM"
 
 
 @pytest.mark.asyncio
@@ -199,11 +210,12 @@ async def test_manager_reset_clears_cache():
     assert a is not b, "reset 后应新建实例"
 
 
-def test_manager_unknown_key_raises():
-    """未知 model_key 抛 ValueError。"""
+def test_manager_custom_key_lazy_builds():
+    """任意 model_key（含未预定义）都懒构建，不再抛 ValueError（对齐 ClientManager）。"""
     RateLimiterManager.reset()
-    with pytest.raises(ValueError):
-        RateLimiterManager.get("unknown_key")
+    limiter = RateLimiterManager.get("custom_key")
+    assert limiter is not None, "未知 key 应懒构建返回 limiter"
+    assert RateLimiterManager.get("custom_key") is limiter, "同 key 复用实例"
 
 
 # =====================================================================

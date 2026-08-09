@@ -227,11 +227,15 @@ class RetryHandlerManager:
     """按 model_key 提供共享 RetryHandler 实例（内含跨请求共享的 CircuitBreaker）。"""
 
     _instances: ClassVar[dict[str, RetryHandler]] = {}
+    _config: ClassVar[RetryConfig | None] = None
+    _circuit_breaker_config: ClassVar[CircuitBreakerConfig | None] = None
 
     @classmethod
+    def register_config(cls, config=None, circuit_breaker_config=None) -> None:
+        # 注入重试/熔断配置（AppState 读 settings 后调用），并 reset 重建实例
+    @classmethod
     def get(cls, model_key="main") -> RetryHandler:
-        # 缓存命中 → 返回；未命中 → 按 settings 懒创建 + 缓存
-        # 未知 key → ValueError
+        # 缓存命中 → 返回；未命中 → 懒创建 + 缓存（任意 key 均接受，不内置白名单）
     @classmethod
     def reset(cls) -> None:
         cls._instances.clear()
@@ -245,9 +249,10 @@ class RetryHandlerManager:
 **要点**：
 
 - **共享实例**：同一 model_key 复用同一个 `RetryHandler`——熔断窗口跨请求记账，每次 new 等于没熔断
-- **懒加载**：首次 `get()` 才创建，读取 `settings` 的重试/熔断配置
+- **懒加载**：首次 `get()` 才创建，按 register_config 注入的配置构建（未注入时用硬编码默认值）
 - **同步无竞态**：`get` 无 await，GIL 下天然原子，不会双实例
 - **`reset()`**：配置变更或测试时清空缓存
+- **配置注入（2026-08-10）**：子模块不直接依赖 settings——`AppState.initialize()` 读 settings 调 `register_config()` 注入 `RetryConfig` + `CircuitBreakerConfig`；model_key 由外部传入，不内置白名单（对齐 ClientManager）
 - **配置全局一致**：当前重试/熔断配置为进程级全局（不按 model_key 差异化），仅熔断状态按 key 隔离；未来若需按模型差异化重试参数，在 `_build` 中按 key 读配置即可
 
 ### classify_error — 错误分类
@@ -521,9 +526,9 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | **深度容错** | 3 | 20 | 0.7 | 30 | 5 | 5 | 窗口长、阈值高 → 尽可能多试，大面积故障才熔断 |
 | **不熔断（纯重试）** | 2 | 10 | 0.99 | 1000 | 999 | 3 | 阈值开到不可能触发，等于禁用熔断 |
 
-### Q4: 为什么 `RetryConfig` 和 `CircuitBreaker` 的默认值从 settings 读取？
+### Q4: `RetryConfig` 和 `CircuitBreaker` 的配置从哪里来？
 
-保证**运行时统一可配**。所有 LLM 子包的重试行为都由 `app/config/settings.py` 集中控制，修改 `.env` 即可调整，无需改代码。
+**通过 `RetryHandlerManager.register_config()` 注入（2026-08-10）**。`RetryConfig`/`CircuitBreakerConfig` 是纯配置 dataclass（默认值硬编码为合理值），不直接 import settings——`AppState.initialize()` 读 settings 组装配置对象后调 `register_config()` 注入，修改 `.env` 重启即生效，无需改代码。子模块零 settings 依赖，测试可经 `register_config()` 隔离注入。
 
 ### Q5: 为什么不引入 `tenacity` 等第三方重试库？
 

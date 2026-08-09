@@ -19,9 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import ClassVar
-
-from app.config import settings
 
 
 class TokenBucket:
@@ -91,6 +90,15 @@ class TokenBucket:
         elapsed = now - self._last_refill
         self._tokens = min(self.capacity, self._tokens + elapsed * self.refill_rate)
         self._last_refill = now
+
+
+@dataclass
+class RateLimiterConfig:
+    """RateLimiter 配置（纯配置对象，默认值为合理硬编码；由外层
+    RateLimiterManager.register_config() 注入）。"""
+
+    rpm: int = 60
+    tpm: int = 100_000
 
 
 class RateLimiter:
@@ -452,52 +460,55 @@ class GCRALimiter:
 # =====================================================================
 
 
-# model_key → 读取 settings 中的 RPM / TPM 配置字段名
-_RATE_LIMIT_FIELDS: dict[str, tuple[str, str]] = {
-    "main": ("llm_main_rpm", "llm_main_tpm"),
-    "reasoning": ("llm_reasoning_rpm", "llm_reasoning_tpm"),
-    "fast": ("llm_fast_rpm", "llm_fast_tpm"),
-}
-
-
 class RateLimiterManager:
     """
     按 model_key 提供共享限流器实例。
 
     与 ClientManager 同款缓存模式：同一 model_key 复用同一个
     RateLimiter（双 Token Bucket 跨请求记账，不能每次 new）。
-    配置（RPM / TPM）从配置中心懒加载，修改配置后 reset() 重建。
+    配置（RPM / TPM）由外层 register_config() 注入（AppState 读 settings 后调用），
+    子模块不再直接依赖 settings；修改配置后 reset() 重建实例生效。
     """
 
     _instances: ClassVar[dict[str, RateLimiter]] = {}
+    _configs: ClassVar[dict[str, RateLimiterConfig]] = {}
+
+    @classmethod
+    def register_config(cls, configs: dict[str, RateLimiterConfig]) -> None:
+        """注入按 model_key 的限流配置，并重建已缓存实例使新配置生效。
+
+        Args:
+            configs: model_key → RateLimiterConfig 映射
+        """
+        cls._configs = dict(configs)
+        cls.reset()
 
     @classmethod
     def get(cls, model_key: str = "main") -> RateLimiter:
         """获取指定 key 的限流器（懒创建 + 缓存复用）。
 
+        model_key 由外部传入（与 ClientManager 对齐，不内置白名单）：
+        任意 key 都懒构建——未配置过的 key 用默认 RateLimiter。
+
         Args:
-            model_key: 模型标识（main / reasoning / fast）
+            model_key: 模型标识（如 main / reasoning / fast / 自定义）
 
         Returns:
             共享 RateLimiter 实例
-
-        Raises:
-            ValueError: model_key 未在限流配置映射中
         """
         if model_key in cls._instances:
             return cls._instances[model_key]
-
-        fields = _RATE_LIMIT_FIELDS.get(model_key)
-        if fields is None:
-            raise ValueError(f"未知限流 key: {model_key!r}")
-
-        rpm_field, tpm_field = fields
-        limiter = RateLimiter(
-            rpm=getattr(settings, rpm_field, 0),
-            tpm=getattr(settings, tpm_field, 0),
-        )
+        limiter = cls._build_for(model_key)
         cls._instances[model_key] = limiter
         return limiter
+
+    @classmethod
+    def _build_for(cls, model_key: str) -> RateLimiter:
+        """按注入配置构建指定 key 的限流器；未配置的 key 用默认值。"""
+        config = cls._configs.get(model_key)
+        if config is None:
+            return RateLimiter()
+        return RateLimiter(rpm=config.rpm, tpm=config.tpm)
 
     @classmethod
     def reset(cls) -> None:

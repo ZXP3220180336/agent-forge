@@ -462,7 +462,7 @@ structured.py 的调用参数（W4，2026-08-09 参数化）：
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `temperature` | `0` | 结构化输出确定性（禁采样随机） |
-| `max_tokens` | `settings.llm_structured_max_tokens`（默认 2048） | 输出预算；调用方经 `generate_structured(max_tokens=...)` 覆盖；截断时扩 2 倍重试 1 次 |
+| `max_tokens` | `StructuredOutput.register_config()` 注入（AppState 注入 `settings.llm_structured_max_tokens`，默认 2048） | 输出预算；调用方经 `generate_structured(max_tokens=...)` 覆盖；截断时扩 2 倍重试 1 次 |
 | `model_key` | `fast`（可传参覆盖） | 默认用廉价快速模型，必要时传 reasoning/main |
 | `response_format` | 级内构造 | 第一级 json_schema / 第二级 json_object / 第三级无 |
 
@@ -476,7 +476,7 @@ structured.py 的调用参数（W4，2026-08-09 参数化）：
 2. **finish_reason / refusal 已检查**：`_classify_result` 解析前四态分类（截断/拒答/工具调用/正常），截断扩 token 重试 1 次、拒答抛 `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`（均不进降级链），记区分日志。已修复（2026-08-08 问题 2 + 2026-08-09 审核补充 tool_calls）。**残留边界**：截断扩 token 重试仅 1 次，超限后放弃（返回 None，不降级）；拒答抛 `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`，调用方需捕获并差异化处理（安全兜底 / 按工具调用走 Agent 循环）。
 3. **错误感知重试已实现**：`_try_extract` 校验失败先回喂错误重试（`_REASK_MAX_RETRIES=2`），耗尽才降级；strict/JSON mode 级回喂，正则级不加。已修复（2026-08-08，见问题 3）。**残留边界**：回喂重试增加模型调用次数（最坏 7 次/请求），token 消耗放大。
 4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价——换取廉价模型可用性与纠错能力，而非默认接受解析失败。
-5. **输出预算可配置（W4，2026-08-09）**：`max_tokens` 由 `settings.llm_structured_max_tokens`（默认 2048）控制，调用方经 `generate_structured(max_tokens=...)` 按业务覆盖；截断时扩 2 倍重试 1 次（随参数缩放，不再硬编码 4096），超限后放弃。
+5. **输出预算可配置（W4 + 2026-08-10 注入化）**：`max_tokens` 由 `StructuredOutput.register_config()` 注入（AppState 读 `settings.llm_structured_max_tokens`，默认 2048），调用方经 `generate_structured(max_tokens=...)` 按业务覆盖；截断时扩 2 倍重试 1 次（随参数缩放，不再硬编码 4096），超限后放弃。
 6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（问题 4 已修复），模型无法扩展接口。显式 `additionalProperties:true` 仍被尊重。
 
 ---

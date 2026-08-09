@@ -17,11 +17,11 @@ import time
 
 import pytest
 
-from app.config import settings
 from app.services.llm.reservation_limiter import (
     OutputTokenEstimator,
     Reservation,
     ReservationLimiter,
+    ReservationLimiterConfig,
     ReservationLimiterManager,
     TokenBucket,
 )
@@ -176,11 +176,11 @@ async def test_reservation_limiter_cancel_refunds_both():
 
 
 @pytest.mark.asyncio
-async def test_manager_builds_limiter_from_settings(monkeypatch):
-    """manager 按 settings 的 RPM/TPM 建桶。"""
-    monkeypatch.setattr(settings, "llm_main_rpm", 5)
-    monkeypatch.setattr(settings, "llm_main_tpm", 1_000_000)
-    ReservationLimiterManager.reset()
+async def test_manager_builds_limiter_from_config():
+    """manager 按 configure 注入的 RPM/TPM 建桶。"""
+    ReservationLimiterManager.register_config(
+        {"main": ReservationLimiterConfig(rpm=5, tpm=1_000_000)}
+    )
     limiter = ReservationLimiterManager.get("main")
     # RPM 桶只有 5 个 token，第 6 次 reserve 需等待
     for _ in range(5):
@@ -209,11 +209,12 @@ async def test_manager_reset_clears_cache():
     assert a is not b, "reset 后应新建实例"
 
 
-def test_manager_unknown_key_raises():
-    """未知 model_key 抛 ValueError。"""
+def test_manager_custom_key_lazy_builds():
+    """任意 model_key（含未预定义）都懒构建，不再抛 ValueError（对齐 ClientManager）。"""
     ReservationLimiterManager.reset()
-    with pytest.raises(ValueError):
-        ReservationLimiterManager.get("unknown_key")
+    limiter = ReservationLimiterManager.get("custom_key")
+    assert limiter is not None, "未知 key 应懒构建返回 limiter"
+    assert ReservationLimiterManager.get("custom_key") is limiter, "同 key 复用实例"
 
 
 # =====================================================================
@@ -352,11 +353,14 @@ async def test_reserve_backward_compat():
 
 
 @pytest.mark.asyncio
-async def test_manager_reasoning_gets_p99(monkeypatch):
-    """Manager：reasoning 模型用 p99 分位，main 用 p95。"""
-    monkeypatch.setattr(settings, "llm_reserve_quantile", 0.95)
-    monkeypatch.setattr(settings, "llm_reserve_reasoning_quantile", 0.99)
-    ReservationLimiterManager.reset()
+async def test_manager_reasoning_gets_p99():
+    """Manager：configure 注入的 reasoning 用 p99 分位，main 用 p95。"""
+    ReservationLimiterManager.register_config(
+        {
+            "main": ReservationLimiterConfig(quantile=0.95),
+            "reasoning": ReservationLimiterConfig(quantile=0.99),
+        }
+    )
     main_limiter = ReservationLimiterManager.get("main")
     reasoning_limiter = ReservationLimiterManager.get("reasoning")
     assert main_limiter._quantile == 0.95

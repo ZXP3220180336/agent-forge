@@ -13,18 +13,27 @@ LLM 子包 — 工业级 LLM 通信组件
 
 from .client import ClientManager
 from .cost_tracker import CostTracker
-from .rate_limiter import RateLimiter, RateLimiterManager
-from .reservation_limiter import ReservationLimiterManager
-from .retry import CircuitBreaker, RetryConfig, RetryHandler, RetryHandlerManager
+from .rate_limiter import RateLimiter, RateLimiterConfig, RateLimiterManager
+from .reservation_limiter import ReservationLimiterConfig, ReservationLimiterManager
+from .retry import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    RetryConfig,
+    RetryHandler,
+    RetryHandlerManager,
+)
 from .streaming import StreamParser
 from .structured import StructuredOutput
 
 __all__ = [
     "CircuitBreaker",
+    "CircuitBreakerConfig",
     "ClientManager",
     "CostTracker",
     "RateLimiter",
+    "RateLimiterConfig",
     "RateLimiterManager",
+    "ReservationLimiterConfig",
     "ReservationLimiterManager",
     "RetryConfig",
     "RetryHandler",

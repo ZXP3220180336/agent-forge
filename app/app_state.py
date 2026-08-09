@@ -12,6 +12,18 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from app.services.llm import (
+    CircuitBreakerConfig,
+    ClientManager,
+    RateLimiterConfig,
+    RateLimiterManager,
+    ReservationLimiterConfig,
+    ReservationLimiterManager,
+    RetryConfig,
+    RetryHandlerManager,
+    StructuredOutput,
+)
+
 from .config import settings
 from .services import (
     ContextManager,
@@ -69,7 +81,7 @@ class AppState:
             )
             await self.redis.ping()
             logger.info("Redis 连接成功")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self._errors.append(f"Redis 连接失败: {e}")
             logger.warning("Redis 不可用（服务降级）: %s", e)
             self.redis = None
@@ -89,7 +101,7 @@ class AppState:
                 expire_on_commit=False,
             )
             logger.info("数据库引擎创建成功")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self._errors.append(f"数据库初始化失败: {e}")
             logger.warning("数据库不可用（服务降级）: %s", e)
             self._engine = None
@@ -110,8 +122,6 @@ class AppState:
 
         # 3. 注册 LLM 客户端配置 & 创建服务
         # ClientManager 管理连接池，三种模型按需获取
-        from app.services.llm import ClientManager
-
         ClientManager.register_config(
             "main",
             api_key=settings.llm_api_key,
@@ -136,6 +146,60 @@ class AppState:
             model=fast_model,
         )
 
+        # 3.5 注入 LLM 可靠性配置（重试/熔断/限流）——子模块不直接依赖 settings
+
+        RetryHandlerManager.register_config(
+            config=RetryConfig(
+                max_retries=settings.llm_max_retries,
+                base_delay=settings.llm_base_delay,
+                max_delay=settings.llm_max_delay,
+                use_jitter=settings.llm_use_jitter,
+            ),
+            circuit_breaker_config=CircuitBreakerConfig(
+                window_seconds=settings.llm_circuit_window_seconds,
+                error_threshold=settings.llm_circuit_error_threshold,
+                request_volume_threshold=settings.llm_circuit_request_volume_threshold,
+                all_failed_min=settings.llm_circuit_all_failed_min,
+                recovery_timeout=settings.llm_circuit_recovery_timeout,
+                half_open_max_requests=settings.llm_circuit_half_open_max_requests,
+            ),
+        )
+
+        def _reservation_config(
+            key: str, quantile_field: str
+        ) -> ReservationLimiterConfig:
+            return ReservationLimiterConfig(
+                rpm=getattr(settings, f"llm_{key}_rpm", 60),
+                tpm=getattr(settings, f"llm_{key}_tpm", 2_000_000),
+                quantile=getattr(settings, quantile_field, 0.95),
+                safety_margin=getattr(settings, "llm_reserve_safety_margin", 1.15),
+                min_samples=getattr(settings, "llm_reserve_min_samples", 30),
+                window=getattr(settings, "llm_reserve_window", 256),
+            )
+
+        ReservationLimiterManager.register_config(
+            {
+                "main": _reservation_config("main", "llm_reserve_quantile"),
+                "reasoning": _reservation_config(
+                    "reasoning", "llm_reserve_reasoning_quantile"
+                ),
+                "fast": _reservation_config("fast", "llm_reserve_quantile"),
+            }
+        )
+
+        RateLimiterManager.register_config(
+            {
+                key: RateLimiterConfig(
+                    rpm=getattr(settings, f"llm_{key}_rpm", 60),
+                    tpm=getattr(settings, f"llm_{key}_tpm", 2_000_000),
+                )
+                for key in ("main", "reasoning", "fast")
+            }
+        )
+
+        # 结构化输出默认预算（extract 未显式传 max_tokens 时用）
+        StructuredOutput.register_config(settings.llm_structured_max_tokens)
+
         self.llm_service = LLMService()  # 空构造，通过 ClientManager 获取 client
 
         # 4. 注册内置工具到全局注册中心
@@ -143,7 +207,7 @@ class AppState:
         try:
             registered = self.tool_service.init_default_tools()
             logger.info("已注册工具: %s", registered)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             self._errors.append(f"工具初始化失败: {e}")
             logger.warning("工具初始化失败（服务降级）: %s", e)
 

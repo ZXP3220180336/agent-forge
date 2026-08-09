@@ -364,19 +364,16 @@ class RateLimiter:
 ### RateLimiterManager — 实例管理
 
 ```python
-_RATE_LIMIT_FIELDS = {
-    "main": ("llm_main_rpm", "llm_main_tpm"),
-    "reasoning": ("llm_reasoning_rpm", "llm_reasoning_tpm"),
-    "fast": ("llm_fast_rpm", "llm_fast_tpm"),
-}
-
 class RateLimiterManager:
     _instances: ClassVar[dict[str, RateLimiter]] = {}
+    _configs: ClassVar[dict[str, RateLimiterConfig]] = {}
 
     @classmethod
+    def register_config(cls, configs: dict[str, RateLimiterConfig]) -> None:
+        # 注入按 model_key 的限流配置（AppState 读 settings 后调用），并 reset 重建
+    @classmethod
     def get(cls, model_key="main") -> RateLimiter:
-        # 缓存命中 → 返回；未命中 → 按 settings 懒创建 + 缓存
-        # 未知 key → ValueError
+        # 缓存命中 → 返回；未命中 → 按注入配置懒创建 + 缓存（任意 key 均接受）
     @classmethod
     def reset(cls) -> None:
         cls._instances.clear()
@@ -385,9 +382,10 @@ class RateLimiterManager:
 **要点**：
 
 - **共享实例**：同一 model_key 复用同一个 `RateLimiter`——**双桶必须跨请求记账**，每次 new 会重置桶、等于没限流
-- **懒加载**：首次 `get()` 才创建，读取 `settings` 的 RPM/TPM 配置
+- **懒加载**：首次 `get()` 才创建，按 `register_config()` 注入的配置构建（未注入的 key 用默认值）
 - **同步无竞态**：`get` 无 await，GIL 下天然原子，不会双实例
 - **`reset()`**：配置变更或测试时清空缓存
+- **配置注入（2026-08-10）**：子模块不直接依赖 settings——`AppState.initialize()` 读 settings 组装 `RateLimiterConfig` 后调 `register_config()` 注入；model_key 由外部传入，不内置白名单（对齐 ClientManager）
 
 ### Reservation — 预留对象（终态幂等）
 
@@ -503,9 +501,9 @@ res = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
 
 **文件**：`reservation_limiter.py`
 
-与 `RateLimiterManager` 同款缓存模式：`_instances: dict[str, ReservationLimiter]`，`get()` 懒创建 + 缓存复用，`reset()` 清空。配置映射复用 `_RATE_LIMIT_FIELDS` 同款逻辑（main/reasoning/fast 各配 RPM/TPM）。
+与 `RateLimiterManager` 同款缓存模式：`_instances: dict[str, ReservationLimiter]`，`get()` 懒创建 + 缓存复用，`reset()` 清空。配置由 `register_config()` 注入 `ReservationLimiterConfig`（按 model_key 各配 RPM/TPM/quantile 等），未注入的 key 用默认值。
 
-**自适应预留分位数**：`_QUANTILE_FIELD_BY_KEY` 按 model_key 读取分位数配置——`main`/`fast` 用 `llm_reserve_quantile`（p95），`reasoning` 用 `llm_reserve_reasoning_quantile`（p99，推理输出有相关性突发尖峰）。`get()` 构造 limiter 时传入 `quantile` + 通用 `safety_margin`/`min_samples`/`window`。
+**自适应预留分位数**：`ReservationLimiterConfig.quantile` 按 model_key 注入——`main`/`fast` 用 `llm_reserve_quantile`（p95），`reasoning` 用 `llm_reserve_reasoning_quantile`（p99，推理输出有相关性突发尖峰）。`get()` 构造 limiter 时从 config 取 `quantile` + 通用 `safety_margin`/`min_samples`/`window`。
 
 ### 其他限流算法组件（参考实现）
 
@@ -1070,7 +1068,7 @@ async_generate() / generate()
 
 ## 配置项清单
 
-以下配置集中在 `app/config/settings.py`，经 `RateLimiterManager.get()` / `ReservationLimiterManager.get()` 从 settings 读取：
+以下配置集中在 `app/config/settings.py`，由 `AppState.initialize()` 读 settings 组装 `RateLimiterConfig`/`ReservationLimiterConfig` 后经 `register_config()` 注入（子模块不直接依赖 settings）：
 
 ### RPM / TPM（双 Token Bucket）
 
@@ -1103,7 +1101,7 @@ async_generate() / generate()
 1. **等待期间锁外 sleep**（`TokenBucket.acquire` 的 `while True` 循环）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见下文问题 2（✅ 已修复）。
 2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文问题 3（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
 3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见下文问题 4（✅ 已修复）。`reserve` 形态无返回值（返回 Reservation，等待发生在内部）。
-4. **配置 0 = 禁用限流**：`Manager.get` 用 `getattr(settings, field, 0)`；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文问题 1（✅ 已修复）。
+4. **配置 0 = 禁用限流**：`register_config()` 注入的 `rpm`/`tpm` 为 0（或未注入该 key 用默认）；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文问题 1（✅ 已修复）。
 5. **reserve/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。
 6. **防 R5（组合两步间硬取消）**：`reserve` 先扣 RPM 再扣 TPM，若 TPM 预留前被硬取消（`CancelledError`），`except BaseException` 回退已扣的 RPM。
 
@@ -1115,7 +1113,7 @@ async_generate() / generate()
 
 ### 问题 1（严重）：配置为 0 时除零崩溃 ✅
 
-**位置**：`TokenBucket.acquire`（`refill_rate <= 0` 防御处）+ `RateLimiterManager.get`（`getattr(settings, field, 0)` 兜底处）
+**位置**：`TokenBucket.acquire`（`refill_rate <= 0` 防御处）+ `RateLimiterManager._build_for`（未注入配置时默认值兜底处）
 
 **触发**：RPM/TPM 配置为 0（或缺失）→ `TokenBucket(capacity=0, refill_rate=0)` → 桶空时 `wait_time = needed / 0` → `ZeroDivisionError`。
 

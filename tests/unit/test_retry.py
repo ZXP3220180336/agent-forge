@@ -20,6 +20,7 @@ import pytest
 
 from app.services.llm.retry import (
     CircuitBreaker,
+    CircuitBreakerConfig,
     CircuitBreakerOpenError,
     CircuitState,
     RetryConfig,
@@ -47,7 +48,7 @@ class _RateLimited(Exception):
 
 def _quick_cb(**kwargs) -> CircuitBreaker:
     """快速触发熔断的测试熔断器：单次失败即可 OPEN。"""
-    return CircuitBreaker(request_volume_threshold=1, **kwargs)
+    return CircuitBreaker(config=CircuitBreakerConfig(request_volume_threshold=1, **kwargs))
 
 
 def _force_open(cb: CircuitBreaker) -> None:
@@ -85,9 +86,11 @@ def _force_half_open_fresh(cb: CircuitBreaker) -> None:
 def test_window_error_rate_opens_breaker():
     """主判据：窗口内总请求达标且错误率达标 → OPEN。"""
     cb = CircuitBreaker(
-        window_seconds=1000,
-        error_threshold=0.5,
-        request_volume_threshold=5,
+        config=CircuitBreakerConfig(
+            window_seconds=1000,
+            error_threshold=0.5,
+            request_volume_threshold=5,
+        )
     )
     # 5 次请求中 4 次失败 → 错误率 80% ≥ 50%，total=5 ≥ 5 → OPEN
     cb.record_success()
@@ -101,9 +104,11 @@ def test_window_error_rate_opens_breaker():
 def test_error_rate_below_threshold_keeps_closed():
     """错误率低于阈值 → 不熔断（有成功稀释，错误率回落）。"""
     cb = CircuitBreaker(
-        window_seconds=1000,
-        error_threshold=0.5,
-        request_volume_threshold=4,
+        config=CircuitBreakerConfig(
+            window_seconds=1000,
+            error_threshold=0.5,
+            request_volume_threshold=4,
+        )
     )
     # 4 次请求中 1 次失败 → 错误率 25% < 50% → 不熔断
     cb.record_success()
@@ -116,10 +121,12 @@ def test_error_rate_below_threshold_keeps_closed():
 def test_window_volume_not_reached_keeps_closed():
     """窗口内请求量不足 → 不评估，保持 CLOSED（防低流量误判）。"""
     cb = CircuitBreaker(
-        window_seconds=1000,
-        error_threshold=0.5,
-        request_volume_threshold=5,
-        all_failed_min=10,  # 关闭纯失败保护，只测主判据
+        config=CircuitBreakerConfig(
+            window_seconds=1000,
+            error_threshold=0.5,
+            request_volume_threshold=5,
+            all_failed_min=10,  # 关闭纯失败保护，只测主判据
+        )
     )
     # 只有 3 次请求全失败：total=3 < 5 不达请求量门槛；failures=3 < 10 也不达纯失败保护
     cb.record_failure()
@@ -131,10 +138,12 @@ def test_window_volume_not_reached_keeps_closed():
 def test_all_failed_low_volume_opens_breaker():
     """低流量纯失败保护：请求量不足但全部失败且达最小样本量 → 熔断。"""
     cb = CircuitBreaker(
-        window_seconds=1000,
-        error_threshold=0.5,
-        request_volume_threshold=100,  # 主判据永不满足
-        all_failed_min=3,
+        config=CircuitBreakerConfig(
+            window_seconds=1000,
+            error_threshold=0.5,
+            request_volume_threshold=100,  # 主判据永不满足
+            all_failed_min=3,
+        )
     )
     cb.record_failure()
     cb.record_failure()
@@ -144,7 +153,11 @@ def test_all_failed_low_volume_opens_breaker():
 
 def test_window_expiry_prunes_old_failures():
     """滑动窗口：过期失败记录被清理，不再计入统计。"""
-    cb = CircuitBreaker(window_seconds=0.01, error_threshold=0.5, request_volume_threshold=3)
+    cb = CircuitBreaker(
+        config=CircuitBreakerConfig(
+            window_seconds=0.01, error_threshold=0.5, request_volume_threshold=3
+        )
+    )
     # 注入一条早已过期的失败记录
     cb._window.append((time.monotonic() - 100, False))
     assert cb.failure_count == 0, "过期失败应被清理"
@@ -726,7 +739,9 @@ async def test_rate_limited_not_counted_toward_breaker():
     """429 不计入熔断：单次限流失败（正常配置下会熔断）不触发熔断。"""
     handler = RetryHandler(
         config=RetryConfig(max_retries=0),  # 不重试，1 次失败
-        circuit_breaker=CircuitBreaker(request_volume_threshold=1),  # 正常 1 次失败即熔断
+        circuit_breaker=CircuitBreaker(
+            config=CircuitBreakerConfig(request_volume_threshold=1)
+        ),  # 正常 1 次失败即熔断
     )
 
     async def call_fn():
