@@ -1184,7 +1184,7 @@ response = await retry.execute(
 
 ### 已实现
 
-- 8 子模块全部落地：ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / ReservationLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
+- 7 个子模块全部落地：ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
 - retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针按异常类别判定、流式迭代保护；**2026-08-05 修正**：4xx 探针不再回 OPEN，改为不改变状态 + 归还槽位 + 抛上层（详见 [retry.md](retry.md)）
 - **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。见 [设计决策记录·流式整流重试](#流式整流重试)
 - **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
@@ -1192,6 +1192,10 @@ response = await retry.execute(
 - **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」。「实际消耗 > 预留」仍无法补扣（预留-结算模型结构性限制，「宁多勿少」保守取舍，已缓解未消除），详述见 [limiter.md](limiter.md)「对比 3.1·已缓解但未消除」
 - **统一结构化输出入口（2026-08-07）**：`generate_structured` 委托 `StructuredOutput.extract` 三级降级（JSON Schema → JSON Mode → 正则提取），消除双入口；`extract` 签名改为接收完整 messages
 - **补熔断观察盲区 + 熔断器生命周期修复（2026-08-07）**：流式迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，熔断器感知「create 正常但流频繁中断」；新增 `RetryHandlerManager`（按 model_key 跨请求共享熔断器），修复熔断窗口无法跨请求积累的隐性缺陷（create 阶段熔断此前实际失效）
+- **配置对象 + 依赖注入（2026-08-9）**：`RetryConfig` / `CircuitBreakerConfig` / `ReservationLimiterConfig` 纯配置对象 + 各 `Manager.register_config()` 类方法注入，子模块**零 `settings` 依赖**（由 `app_state.initialize()` 读 settings 后统一注册）
+- **流式整流拆为独立策略类（2026-08-10）**：`StreamingRectifier`（无状态静态类，不实例化）封装整流循环/emitted_any/熔断 feeding/结算闭环/事件日志 + `RectifierContext`（result/active/event_fields 共享状态）；`async_generate` 只做编排（构造 create_fn + 调 `rectified_stream`）。详见 [streaming_rectifier.md](streaming_rectifier.md)
+- **acquire 形态限流移除（2026-08-10）**：`rate_limiter.py` 删除，代码作为学习参考并入 [limiter.md](limiter.md)；llm_service 实际使用 reserve/settle 形态（`reservation_limiter.py`）
+- **整流判定 emitted_any 累积语义修复（2026-08-10）**：`_apply_chunk` 返回「单 chunk 是否产出」改为累积（`emitted_any = emitted_any or chunk_emitted`）——修复中断前最后一个 usage/finish-only chunk 把已产出标记冲成 False、导致误整流（重复输出 + 双倍计费）的缺陷；新增回归测试固化
 
 ### 遗留未定事项
 
