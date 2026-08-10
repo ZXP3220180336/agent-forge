@@ -10,7 +10,7 @@
 1. **连接池复用**：避免每次请求创建新 `AsyncOpenAI` 实例导致的 TCP 握手和 SSL 开销
 2. **多 key 隔离**：`main` / `reasoning` / `fast` 各自独立配置，按需获取
 3. **懒加载**：配置注册后不立即创建 client，第一次使用时才实例化
-4. **优雅关闭**：应用退出或热切换配置时，主动关闭底层 httpx 连接池
+4. **优雅关闭**：应用退出或热切换配置时，主动关闭底层 httpx 连接池；**无运行事件循环时依赖 `close_all()` 显式调用**（见「`_pending_closes` 的释放时机」）
 
 ---
 
@@ -92,6 +92,11 @@ if old is not None:
 - 使用 `asyncio.ensure_future` 而非 `await`，因为 `register_config` 不是 async 方法，有运行循环时后台关闭不阻塞注册
 - 用 `asyncio.get_running_loop()` 显式判断而非依赖 `ensure_future` 抛异常：无运行循环（纯注册阶段，如 AppState.initialize 之前）时旧 client 放入 `_pending_closes` 列表，由 `close_all()` 统一关闭——**不再静默忽略**，避免旧连接池泄漏且可追踪
 
+**`_pending_closes` 的释放时机**：无运行事件循环阶段积累的旧 client 不会自我关闭，必须由 `close_all()` 显式触发，否则旧 `AsyncOpenAI` 的 httpx 连接池泄漏。`close_all()` 的调用方约定：
+
+- **正常路径**：`AppState.shutdown()`（FastAPI lifespan 关闭事件）调用 `ClientManager.close_all()`，应用退出即统一关闭 `_instances` 与 `_pending_closes`
+- **兜底路径**：无 lifespan 的场景（测试 tearDown、独立脚本）必须显式 `await ClientManager.close_all()`——测试用 `autouse` fixture 清理状态时不只要 `clear()` 字典，还应关闭 `_pending_closes` 中的旧 client，否则测试进程内连接池残留
+
 ### Q3: `**extra` 被静默吞没了
 
 旧实现中 `get_client` 只取了 `api_key` 和 `base_url`，调用方传入的 `organization`、`timeout`、`max_retries` 等参数虽存入了 `_configs`，但永远不会传给 `AsyncOpenAI`。
@@ -119,6 +124,6 @@ if old is not None:
 
 1. **多次注册同一 key**：先关闭旧 client，再覆盖配置，下次 `get_client` 创建新实例
 2. **未注册 key**：`get_client` / `get_model` / `get_config` 抛出 `ValueError`
-3. **无事件循环时注册（2026-08-09 修复）**：`asyncio.get_running_loop()` 判无运行循环 → 旧 client 放入 `_pending_closes` 由 `close_all()` 统一关闭，**不再静默忽略**（修复前旧连接池泄漏）
+3. **无事件循环时注册（2026-08-09 修复）**：`asyncio.get_running_loop()` 判无运行循环 → 旧 client 放入 `_pending_closes` 由 `close_all()` 统一关闭，**不再静默忽略**（修复前旧连接池泄漏）。**注意**：`_pending_closes` 中的旧 client 不会自我关闭——若 `close_all()` 未被调用（应用未启动事件循环、或测试 tearDown/独立脚本未显式关闭），旧 httpx 连接池将泄漏，必须在这些场景显式 `await ClientManager.close_all()`（见「`_pending_closes` 的释放时机」）
 4. **并发 get_client**：Python GIL + dict 操作原子性，首次创建在锁外可能有重复创建，但 `AsyncOpenAI` 本身是线程安全的，覆盖旧实例即可
 5. **代理 client 的生命周期**：`_build_proxied_client` 创建的 `httpx.AsyncClient` 由 `AsyncOpenAI` 接管关闭，无需单独管理
