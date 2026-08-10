@@ -576,7 +576,7 @@ class RetryHandlerManager:
     """
     按 model_key 提供共享 RetryHandler 实例（内含跨请求共享的 CircuitBreaker）。
 
-    与 ClientManager / RateLimiterManager 同款缓存模式：同一 model_key 复用
+    与 ClientManager / ReservationLimiterManager 同款缓存模式：同一 model_key 复用
     同一个 RetryHandler——熔断窗口（滑动窗口错误率）需跨请求积累，每次 new
     会清空窗口、等于熔断永不触发（create 阶段熔断失效的隐性缺陷根源）。
     main / reasoning / fast 是不同模型/端点，独立熔断（reasoning 故障不熔断 fast）。

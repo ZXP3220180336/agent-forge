@@ -94,8 +94,7 @@ app/services/
 │   ├── retry.py                   ← RetryHandler + CircuitBreaker
 │   ├── streaming.py               ← StreamParser 流式/非流式解析
 │   ├── structured.py              ← StructuredOutput 结构化输出
-│   ├── rate_limiter.py            ← RateLimiter 客户端限流（acquire 形态）+ 5 种参考算法组件
-│   ├── reservation_limiter.py     ← ReservationLimiter 客户端限流（reserve/settle + 自适应预留，独立实现）
+│   ├── reservation_limiter.py     ← ReservationLimiter 客户端限流（reserve/settle + 自适应预留，生产唯一）
 │   └── cost_tracker.py            ← CostTracker 成本计算
 ```
 
@@ -603,11 +602,11 @@ await log_event_async("llm_call", **event_fields)
 
 使用双 Token Bucket 算法，同时限制 **RPM**（每分钟请求数）与 **TPM**（每分钟 Token 消耗量）。限流完整设计（算法代码、5 种参考算法可视化、等待 vs 拒绝、自适应预留、工业级对比）见 **[limiter.md](limiter.md)**。
 
-**双形态**：
+**双形态（acquire 已移除，2026-08-10）**：
 
 | 形态 | 文件 | 特点 | 生产使用者 |
 | --- | --- | --- | --- |
-| acquire | `rate_limiter.py` | 一次性扣减，不退款；独立保留供对比/兼容 | 无 |
+| acquire（学习参考） | 已移除，代码见 limiter.md | 一次性扣减，不退款 | 无 |
 | reserve/settle | `reservation_limiter.py` | 先预留、请求后 `settle(actual)` 退差 / `cancel()` 全额退；含自适应预留（`reserve_adaptive`，开关默认关） | ✅ `llm_service.py` |
 
 ---

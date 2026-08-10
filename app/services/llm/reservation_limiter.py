@@ -1,7 +1,6 @@
 """
 ReservationLimiter — 客户端限流（reserve/settle 形态）
 
-与 rate_limiter.py（acquire 形态）并存，独立实现、不共用任何代码。
 使用 Token Bucket 算法，支持按模型独立配置，集成 Retry-After 处理。
 
 用法（reserve/settle：请求前预留，请求后结算退差）：
@@ -15,7 +14,7 @@ ReservationLimiter — 客户端限流（reserve/settle 形态）
 避免按 max_tokens 预留导致的长期偏保守。
 
 ReservationLimiterManager 负责按 model_key 提供共享限流器实例
-（RPM / TPM 从配置中心读取，实例跨请求复用，同一模型共享同一个桶）。
+（RPM / TPM 由外层 register_config() 注入，实例跨请求复用，同一模型共享同一个桶）。
 """
 
 from __future__ import annotations

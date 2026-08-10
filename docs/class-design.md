@@ -27,7 +27,7 @@
 | 类 | 不实例化的真实原因 |
 |---|---|
 | `StreamParser` / `CostTracker` / `StructuredOutput` | **无状态**，实例无意义（纯函数） |
-| `ClientManager` / 两个 `RateLimiterManager` | **必须全局唯一**，实例化会分裂共享缓存 |
+| `ClientManager` / `ReservationLimiterManager` | **必须全局唯一**，实例化会分裂共享缓存 |
 
 > **一句话记忆**：工具类不实例化是因为「无所谓」，管理器不实例化是因为「必须唯一」。
 
@@ -254,12 +254,12 @@ AppState 容器（模块级单例实例）
     ├── llm_service       │      （从 app_state 取，非自己 new）
     └── task_service ─────┘
 
-ClientManager / RateLimiterManager   ← 全局管理器类（classmethod，路由不直接碰）
+ClientManager / ReservationLimiterManager   ← 全局管理器类（classmethod，路由不直接碰）
 ```
 
 - **第一层（容器）**：`app_state` —— 模块级单例实例
 - **第二层（服务）**：`SessionManager` 等 —— 容器管理的应用级单例，经 DI 分发
-- **第三层（资源管理器）**：`ClientManager` / `RateLimiterManager` —— 全局管理器类
+- **第三层（资源管理器）**：`ClientManager` / `ReservationLimiterManager`（及 `RetryHandlerManager`） —— 全局管理器类
 
 各司其职，是工业级应用的典型依赖注入骨架。
 

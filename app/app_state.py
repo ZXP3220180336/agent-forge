@@ -15,8 +15,6 @@ from sqlalchemy.ext.asyncio import (
 from app.services.llm import (
     CircuitBreakerConfig,
     ClientManager,
-    RateLimiterConfig,
-    RateLimiterManager,
     ReservationLimiterConfig,
     ReservationLimiterManager,
     RetryConfig,
@@ -184,16 +182,6 @@ class AppState:
                     "reasoning", "llm_reserve_reasoning_quantile"
                 ),
                 "fast": _reservation_config("fast", "llm_reserve_quantile"),
-            }
-        )
-
-        RateLimiterManager.register_config(
-            {
-                key: RateLimiterConfig(
-                    rpm=getattr(settings, f"llm_{key}_rpm", 60),
-                    tpm=getattr(settings, f"llm_{key}_tpm", 2_000_000),
-                )
-                for key in ("main", "reasoning", "fast")
             }
         )
 

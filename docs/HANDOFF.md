@@ -286,7 +286,7 @@ uv run python -c "from app.core.agent import ReActAgent; print('OK')"
 uv run python -c "
 from app.services.llm import (
     ClientManager, CircuitBreaker, RetryConfig, RetryHandler,
-    StreamParser, StructuredOutput, CostTracker, RateLimiter,
+    StreamParser, StructuredOutput, CostTracker,
     ReservationLimiterManager,
 )
 print('OK')
