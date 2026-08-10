@@ -416,8 +416,13 @@ class RetryHandler:
                 last_exc = e
                 category = classify_error(e)
 
-                # 不可恢复的错误 → 直接抛出（不计入熔断窗口）
+                # 不可恢复的错误 → 直接抛出。但若本次请求此前已触及过
+                # RETRYABLE 故障（超时/5xx），该下游故障信号仍应计入熔断窗口
+                # ——4xx 本身是调用方问题不计入，但前期的下游故障不能因
+                # 最后一次是 4xx 而被抹掉。
                 if category == ErrorCategory.NON_RETRYABLE:
+                    if saw_retryable_failure:
+                        cb.record_failure()
                     raise
 
                 # 出现下游故障（超时/5xx）：标记本次请求触及过故障

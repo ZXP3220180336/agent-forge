@@ -218,6 +218,7 @@ class RetryHandler:
   - 本次请求**任一次尝试**出现过 `RETRYABLE` 失败（超时/5xx），统一调用一次 `cb.record_failure()`（可能触发 OPEN）
   - 纯 429 / 不可恢复错误不记录
   - 判定看"整个请求是否触及下游故障"，而非最后一次异常——混合 429 与超时的情况下，只要出现过超时就计入窗口
+  - **混合失败（超时/5xx → 4xx）也补记**：若某次尝试是 `NON_RETRYABLE`（4xx）直接抛出，但**此前已出现过** `RETRYABLE` 失败，则在 `raise` 前先 `cb.record_failure()`——4xx 本身不计入（调用方问题），但前期的下游故障信号不能因最后一次是 4xx 而被抹掉（2026-08-10 修正）
 - **fallback 是纯兜底**：成功/失败都不触碰熔断器（熔断器只观察主链路 `call_fn` 的成败）
 
 ### RetryHandlerManager — 重试执行器管理
@@ -612,8 +613,9 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | **熔断器生命周期：每次调用新建导致窗口无法跨请求积累（2026-08-07）** | `_build_retry_handler()` 在每次 `async_generate`/`generate` 新建 `RetryHandler` + `CircuitBreaker` → 熔断窗口每次请求清空，`request_volume_threshold=20` 永远达不到 → **create 阶段熔断实际失效**（与「熔断器需要跨请求共享状态」设计意图矛盾） | 新增 `RetryHandlerManager`：按 model_key 缓存共享 RetryHandler（内含跨请求共享 CircuitBreaker），main/reasoning/fast 独立熔断；`LLMService` 改用 `RetryHandlerManager.get(model_key)` |
 | **审核补充：半开探针槽位泄漏——取消/`BaseException` 中断（2026-08-09）** | `_probe_attempt()` 仅 `except Exception`：协程被 `CancelledError`/`SystemExit`/自定义 `BaseException` 中断时绕过 `release_probe()`/`record_failure()`，`_half_open_requests` 被永久占用 → 多次取消后 `allow_request()` 恒为 False，熔断器卡死 HALF_OPEN，自动恢复失效 | `_probe_attempt()` 改 `try/finally` + `accounted` 标志兜底：任何未记账退出路径由 finally `release_probe()` 归还槽位（槽位永不泄漏）；`CancelledError` 单独捕获 → 按探针失败回 OPEN + 立即传播（**不尝试 fallback**，外部取消不应继续发请求）；附带语义修正：探针失败回 OPEN 时同步清零 `_half_open_requests`（OPEN 不残留半开记账） |
 | **异常覆盖：fallback 失败覆盖主调用异常（2026-08-09）** | fallback 也失败时 `last_exc = e` 被 fallback 异常覆盖，最终抛 fallback 异常——熔断窗口记录的是主链路，上层按异常类型判定重试/降级/日志时与熔断器记录不一致 | fallback 失败时 `raise last_exc from fallback_exc`：**主调用异常为主**（上层按它判定语义），fallback 异常链为 `__cause__` 保留诊断；CLOSED 重试路径与 HALF_OPEN 探针路径同改，熔断 OPEN 拒绝路径主调用未执行不改 |
+| **混合失败丢失熔断信号（2026-08-10）** | 一次 `execute()` 先出现 `RETRYABLE`（超时/5xx）、后出现 `NON_RETRYABLE`（4xx）时，`NON_RETRYABLE` 处直接 `raise` 绕过请求级统一记录 → 前期反映的下游故障信号丢失（与「只要任一次尝试是超时/5xx 就应计入窗口」设计意图相悖） | `NON_RETRYABLE` `raise` 前判断 `saw_retryable_failure`，曾为 True 先 `cb.record_failure()` 再抛——4xx 本身仍不计入（调用方问题），仅补记前期的下游故障；新增回归测试 `test_mixed_failures_timeout_then_bad_request_counts_once` |
 
-对应测试：`tests/unit/test_retry.py`（34 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）+ `tests/unit/test_retry_handler_manager.py`（6 个用例）。
+对应测试：`tests/unit/test_retry.py`（35 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）+ `tests/unit/test_retry_handler_manager.py`（6 个用例）。
 
 > **坑：测试构造 openai 异常** —— 构造 `openai.APIStatusError` 子类（如 `BadRequestError`/`InternalServerError`/`RateLimitError`）需要 `message` + `response` 两个参数（`InternalServerError` 无字面量 status_code，值来自传入的 `httpx.Response`）。`LengthFinishReasonError` 需要真实 `ChatCompletion` 对象（访问 `.usage`），不能传 None。**构造测试异常统一用 `httpx.Response(status_code, request=...)` 传参。**
 

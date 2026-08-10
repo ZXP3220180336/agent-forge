@@ -46,6 +46,12 @@ class _RateLimited(Exception):
     headers: dict[str, str] = {}
 
 
+class _BadRequest(Exception):
+    """模拟 4xx 不可恢复异常（status_code → NON_RETRYABLE）。"""
+
+    status_code = 400
+
+
 def _quick_cb(**kwargs) -> CircuitBreaker:
     """快速触发熔断的测试熔断器：单次失败即可 OPEN。"""
     return CircuitBreaker(config=CircuitBreakerConfig(request_volume_threshold=1, **kwargs))
@@ -855,6 +861,26 @@ async def test_mixed_failures_all_rate_limited_not_counted():
     cb = handler.circuit_breaker
     assert cb.failure_count == 0, "纯限流请求不得计入熔断窗口"
     assert cb.state.value == "closed"
+
+
+@pytest.mark.asyncio
+async def test_mixed_failures_timeout_then_bad_request_counts_once():
+    """超时 → 4xx（最后一次是 NON_RETRYABLE）→ 仍应计入 1 次失败。
+
+    修复前：NON_RETRYABLE 直接 raise，绕过 saw_retryable_failure 的请求级
+    记录，前面出现过的超时（下游故障信号）被丢失。修复后：4xx 本身仍不计入
+    （调用方问题），但先前触及过的下游故障应先入熔断窗口。
+    """
+    handler, call_fn = _make_sequence_handler(
+        [TimeoutError("boom"), _BadRequest()]
+    )
+
+    with pytest.raises(_BadRequest):
+        await handler.execute(call_fn)
+
+    assert handler.circuit_breaker.failure_count == 1, (
+        "请求中出现过超时（下游故障），即使最后一次是 4xx 也应计入失败"
+    )
 
 
 # =====================================================================
