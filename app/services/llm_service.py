@@ -10,27 +10,24 @@ LLM 服务 — 统一 Facade
 from __future__ import annotations
 
 import asyncio
-import random
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 from app.config import settings
-from app.core.events import (
-    build_error_event,
-    build_message_event,
-    build_reasoning_event,
-)
 from app.services.llm import (
     ClientManager,
     ReservationLimiterManager,
     RetryHandlerManager,
+    StreamingRectifier,
     StreamParser,
     StructuredOutput,
 )
 from app.services.llm.cost_tracker import CostTracker
+from app.services.llm.reservation_limiter import Reservation
 from app.services.llm.retry import ErrorCategory, classify_error
-from app.utils.logger import log_event_async
+from app.services.llm.streaming_rectifier import RectifierContext
+from app.utils.logger import fill_llm_event_fields
 
 # =====================================================================
 # 辅助数据结构
@@ -51,18 +48,6 @@ class StreamResult:
         self.tool_calls: list[dict] = []
         self.usage: dict | None = None
         self.refusal: str | None = None
-
-
-def _stream_backoff(attempt: int) -> float:
-    """流式整流重试的退避延迟（复用 LLM 退避配置）。
-
-    与 create 阶段的指数退避公式一致：base_delay × 2^attempt，
-    上限 max_delay，可选随机抖动打散羊群效应。
-    """
-    delay = min(settings.llm_base_delay * (2**attempt), settings.llm_max_delay)
-    if settings.llm_use_jitter:
-        delay = random.uniform(0, delay)
-    return delay
 
 
 def _build_chat_kwargs(
@@ -136,27 +121,35 @@ def _build_event_fields(
     }
 
 
-def _should_rectify(
-    emitted_any: bool,
-    attempt: int,
-    stream_max_retries: int,
-    exc: Exception,
-    cancel_event: asyncio.Event | None,
-) -> bool:
-    """判断迭代中断是否应整流重试。
+async def _rate_limited_call(
+    adaptive: bool,
+    limiter: Any,
+    client: Any,
+    kwargs: dict[str, Any],
+    active: dict[str, Reservation],
+    prompt_tokens: int = 0,
+    estimated: int = 0,
+    max_tokens: int = 0,
+) -> Any:
+    """限流闭环：每次真实调用主模型前先预留配额，再发起请求。
 
-    整流条件（全部满足）：
-        1. 首 token 前（emitted_any=False）——已产出 token 不整流，避免重复输出
-        2. 未超整流重试上限
-        3. 异常可恢复（RETRYABLE / RATE_LIMITED，复用 classify_error）
-        4. 用户未取消
+    create 失败/被取消时全额退（cancel）再 re-raise——retry.execute 捕获最终
+    抛出的异常，不关心 call_fn 内部是否 catch 过，重试/fallback 判定不受影响。
+    每次真实请求（含 retry 内部重试、整流重试）都重新 reserve。
     """
-    if emitted_any or attempt >= stream_max_retries:
-        return False
-    if cancel_event and cancel_event.is_set():
-        return False
-    category = classify_error(exc)
-    return category in (ErrorCategory.RETRYABLE, ErrorCategory.RATE_LIMITED)
+    if adaptive:
+        res = await limiter.reserve_adaptive(
+            prompt_tokens=prompt_tokens, max_tokens=max_tokens
+        )
+    else:
+        res = await limiter.reserve(estimated_tokens=estimated)
+    active["res"] = res
+    try:
+        return await client.chat.completions.create(**kwargs)
+    except BaseException:  # 含 CancelledError（R1：硬取消不泄漏预留）
+        await res.cancel()
+        active.pop("res", None)
+        raise
 
 
 # =====================================================================
@@ -273,19 +266,13 @@ class LLMService:
             model_key, messages, temperature, max_tokens, tools, stream=True
         )
 
-        if result is None:
-            result = StreamResult()
-
-        # 准备重试执行器 + fallback 函数 + 日志记录（辅助函数统一构建）
-        retry = RetryHandlerManager.get(model_key)
         fallback_fn = _build_fallback_fn(kwargs, model_key)
-        event_fields = _build_event_fields(
-            model_key, messages, temperature, bool(tools), stream=True
-        )
+
         # client 由 ClientManager 连接池按 key 缓存复用，与整流 attempt 无关，
         # 提到循环外，避免循环内定义闭包引用循环变量（Pylance 警告）。
         client = ClientManager.get_client(model_key)
-
+        # 准备重试执行器 + fallback 函数 + 日志记录（辅助函数统一构建）
+        retry = RetryHandlerManager.get(model_key)
         # 客户端限流：reserve/settle 统一闭环。
         # estimated_tokens 用 tiktoken 实时数当前 messages（含此前各轮工具结果）。
         # 限流只保护主模型链路：retry.execute 内部每次重试 call_fn 都重新 reserve；
@@ -297,6 +284,8 @@ class LLMService:
         # 开启 llm_adaptive_reserve 时用自适应形态（高分位估算输出，减少占桶）。
         # 结构性解耦：provider 仍收宽裕 max_tokens（不截断输出），只有限流器预留下降。
         adaptive = settings.llm_adaptive_reserve
+        prompt_tokens = 0
+        estimated = 0
         if adaptive:
             prompt_tokens = _count_prompt_tokens(
                 model_key, messages
@@ -305,177 +294,39 @@ class LLMService:
             estimated = _count_prompt_tokens(model_key, messages, max_tokens)
         limiter = ReservationLimiterManager.get(model_key)
 
+        # ----- 流式整流重试（独立策略 StreamingRectifier） -----
+        # 首 token 前中断可整流重试，已产出 token 后中断放弃。
+        # create 阶段由 retry.execute() 保护（重试/熔断/fallback），
+        # 迭代阶段异常由 rectifier 判断整流。产出 SSE 事件字符串。
+
+        if result is None:
+            result = StreamResult()
         # 当前活跃 reservation，跨 create 与迭代传递。定义在整流循环外：
         # 循环内各 attempt 的迭代分支与 call_fn 需要读写同一个 dict。
-        active: dict[str, Any] = {}
+        active: dict[str, Reservation] = {}
+        event_fields = _build_event_fields(
+            model_key, messages, temperature, bool(tools), stream=True
+        )
+        rectifier_context = RectifierContext(result, active, event_fields)
 
-        async def _rate_limited_call() -> Any:
-            """每次真实调用主模型前先预留配额，再发起请求。
-
-            create 失败/被取消时全额退（cancel）再 re-raise——retry.execute
-            捕获最终抛出的异常，不关心 call_fn 内部是否 catch 过，重试/fallback
-            判定不受影响。
-            """
-            if adaptive:
-                res = await limiter.reserve_adaptive(
-                    prompt_tokens=prompt_tokens, max_tokens=max_tokens
-                )
-            else:
-                res = await limiter.reserve(estimated_tokens=estimated)
-            active["res"] = res
-            try:
-                return await client.chat.completions.create(**kwargs)
-            except BaseException:  # 含 CancelledError（R1：硬取消不泄漏预留）
-                await res.cancel()
-                active.pop("res", None)
-                raise
-
-        # ----- 整流重试循环 -----
-        # create 阶段由 retry.execute() 保护（重试/熔断/fallback），失败直接 raise；
-        # 迭代阶段异常不受保护，需自行判断是否整流重试。
-        # 整流条件：首 token 前（emitted_any=False）中断，且异常可恢复
-        # （RETRYABLE / RATE_LIMITED），且未超重试上限，且用户未取消。
-        # 已产出任何 token 后中断不整流——用户已看到部分输出，整流会产生重复内容。
-        stream_max_retries = settings.llm_stream_max_retries
-
-        for attempt in range(stream_max_retries + 1):
-            attempt_start = time.monotonic()
-
-            # ----- 阶段 1：创建流式响应（带重试 + 熔断 + fallback） -----
-            # call_fn 内部先 reserve 再 create：重试每次真实请求都重新预留配额；
-            # fallback 不参与 reserve（备用模型防突发无意义）。
-            try:
-                response = await retry.execute(
-                    call_fn=_rate_limited_call,
-                    fallback_fn=fallback_fn,
-                )
-            except Exception as e:  # noqa: BLE001
-                event_fields["success"] = False
-                event_fields["error"] = str(e)[:200]
-                event_fields["duration"] = time.monotonic() - attempt_start
-                await log_event_async("llm_call", **event_fields)
-                yield build_error_event(f"LLM 调用失败: {e!s}")
-                return
-
-            # ----- 阶段 2：逐 chunk 解析 -----
-            emitted_any = False
-            tool_deltas: list[Any] = []
-
-            # 流式迭代异常不受 retry.execute() 保护（响应对象创建后重试循环已退出），
-            # 此处捕获并判断是否整流重试，避免未处理异常向上泄漏到调用方。
-            # try 正常结束 = 迭代成功，在块内结算；except 处理整流/失败；
-            # finally 兜底硬取消（CancelledError 不被 except Exception 捕获）。
-            try:
-                async for chunk in response:
-                    # 取消检查
-                    if cancel_event and cancel_event.is_set():
-                        # 请求已发出（create 成功）→ settle（退 TPM 差），非 cancel
-                        res = active.pop("res", None)
-                        if res is not None:
-                            await res.settle((result.usage or {}).get("total_tokens"))
-                        yield build_error_event("用户取消了请求")
-                        event_fields["success"] = False
-                        event_fields["error"] = "用户取消"
-                        event_fields["duration"] = time.monotonic() - attempt_start
-                        await log_event_async("llm_call", **event_fields)
-                        return
-
-                    parsed = StreamParser.parse_chunk(chunk)
-
-                    # reasoning
-                    if parsed.reasoning_token:
-                        emitted_any = True
-                        result.reasoning_content += parsed.reasoning_token
-                        yield build_reasoning_event(parsed.reasoning_token)
-
-                    # message
-                    if parsed.message_token:
-                        emitted_any = True
-                        result.content += parsed.message_token
-                        yield build_message_event(parsed.message_token)
-
-                    # finish_reason
-                    if parsed.finish_reason:
-                        result.finish_reason = parsed.finish_reason
-
-                    # refusal（OpenAI 流式拒答形态）
-                    if parsed.refusal:
-                        result.refusal = parsed.refusal
-
-                    # tool_calls deltas
-                    if parsed.tool_call_deltas:
-                        emitted_any = True
-                        tool_deltas.extend(parsed.tool_call_deltas)
-
-                    # usage（最后一个 chunk）
-                    if parsed.usage:
-                        result.usage = parsed.usage
-
-                # ----- try 正常结束 = 成功：本次尝试完整读完 -----
-                # 合并 tool_calls + 结算退差（请求已发出，settle 而非 cancel）
-                if tool_deltas:
-                    result.tool_calls = StreamParser.merge_tool_calls(tool_deltas)
-                res = active.pop("res", None)
-                if res is not None:
-                    await res.settle((result.usage or {}).get("total_tokens"))
-            except Exception as e:  # noqa: BLE001
-                event_fields["success"] = False
-                event_fields["error"] = f"流式读取中断: {e!s}"[:200]
-                event_fields["duration"] = time.monotonic() - attempt_start
-                await log_event_async("llm_call", **event_fields)
-
-                # 请求已发出（create 成功）→ settle，无论整流与否
-                # 死流可能已带回 usage（如 test_usage_only_interrupt_rectifies），
-                # 用它退差；无 usage 则保守保留。settle 在 backoff sleep 前（R8）。
-                res = active.pop("res", None)
-                if res is not None:
-                    await res.settle((result.usage or {}).get("total_tokens"))
-
-                # 整流条件：首 token 前 + 可恢复异常 + 未超上限 + 未取消
-                if _should_rectify(
-                    emitted_any, attempt, stream_max_retries, e, cancel_event
-                ):
-                    await asyncio.sleep(_stream_backoff(attempt))
-                    if cancel_event and cancel_event.is_set():
-                        yield build_error_event("用户取消了请求")
-                        return
-                    # 清掉死流的元数据残留（usage/finish_reason 不算"首 token"，
-                    # 但整流后不能带入下一尝试；content/reasoning/tool_calls 因
-                    # emitted_any=False 本就为空，整流幂等安全）
-                    result.finish_reason = None
-                    result.usage = None
-                    # 防御性清空：当前 tool_deltas 每 attempt 重新初始化必为空，
-                    # 但显式清空避免未来重构将初始化移到循环外时携带脏数据
-                    tool_deltas.clear()
-                    continue
-
-                if classify_error(e) == ErrorCategory.RETRYABLE:
-                    retry.circuit_breaker.record_failure()
-                yield build_error_event(f"流式响应中断: {e!s}")
-                return
-
-            finally:
-                # R1：迭代阶段硬取消（CancelledError，BaseException 不被上面 except
-                # Exception 捕获）时兜底闭环，避免 reservation 泄漏。
-                # 成功路径已在 try 内 settle+pop，此处 active 应为空；仅异常/硬取消
-                # 未闭环时兜底 cancel。
-                res = active.pop("res", None)
-                if res is not None and not res.settled:
-                    await res.cancel()
-
-            event_fields["success"] = True
-            event_fields["error"] = (
-                None  # 清掉整流失败尝试残留的 error（同一 record 复用）
-            )
-            event_fields["prompt_tokens"] = (result.usage or {}).get("prompt_tokens")
-            event_fields["completion_tokens"] = (result.usage or {}).get(
-                "completion_tokens"
-            )
-            event_fields["total_tokens"] = (result.usage or {}).get("total_tokens")
-            event_fields["finish_reason"] = result.finish_reason
-            event_fields["duration"] = time.monotonic() - attempt_start
-            await log_event_async("llm_call", **event_fields)
-            return
+        async for event in StreamingRectifier.rectified_stream(
+            create_fn=lambda: _rate_limited_call(
+                adaptive,
+                limiter,
+                client,
+                kwargs,
+                active,
+                prompt_tokens=prompt_tokens,
+                estimated=estimated,
+                max_tokens=max_tokens,
+            ),
+            retry=retry,
+            cancel_event=cancel_event,
+            stream_max_retries=settings.llm_stream_max_retries,
+            context=rectifier_context,
+            fallback_fn=fallback_fn,
+        ):
+            yield event
 
     async def generate(
         self,
@@ -521,6 +372,8 @@ class LLMService:
         # 每次真实请求（含 retry 内部重试）都重新 reserve，create 失败全额退。
         # 自适应预留：开启 llm_adaptive_reserve 时用高分位估算输出（结构性解耦）。
         adaptive = settings.llm_adaptive_reserve
+        prompt_tokens = 0
+        estimated = 0
         if adaptive:
             prompt_tokens = _count_prompt_tokens(
                 model_key, messages
@@ -531,33 +384,28 @@ class LLMService:
 
         # 当前活跃 reservation（跨 create 与结算传递）。generate 无整流循环，
         # 但 retry 内部重试会多次调用 call_fn，需用同一 dict 让成功路径读到。
-        active: dict[str, Any] = {}
-
-        async def _rate_limited_call() -> Any:
-            """每次真实调用前先预留配额，再发起请求。create 失败全额退再 re-raise。"""
-            if adaptive:
-                res = await limiter.reserve_adaptive(
-                    prompt_tokens=prompt_tokens, max_tokens=max_tokens
-                )
-            else:
-                res = await limiter.reserve(estimated_tokens=estimated)
-            active["res"] = res
-            try:
-                return await client.chat.completions.create(**kwargs)
-            except BaseException:
-                await res.cancel()
-                active.pop("res", None)
-                raise
+        active: dict[str, Reservation] = {}
 
         try:
             response = await retry.execute(
-                call_fn=_rate_limited_call,
+                call_fn=lambda: _rate_limited_call(
+                    adaptive,
+                    limiter,
+                    client,
+                    kwargs,
+                    active,
+                    prompt_tokens=prompt_tokens,
+                    estimated=estimated,
+                    max_tokens=max_tokens,
+                ),
             )
         except Exception as e:
-            event_fields["success"] = False
-            event_fields["error"] = str(e)[:200]
-            event_fields["duration"] = time.monotonic() - start_time
-            await log_event_async("llm_call", **event_fields)
+            await fill_llm_event_fields(
+                event_fields,
+                success=False,
+                error=str(e)[:200],
+                duration=time.monotonic() - start_time,
+            )
             # 契约：可恢复错误（超时/5xx/429）可靠性层已重试耗尽 → 返回 None
             # （调用方按「业务无结果」降级）；不可恢复错误（4xx/认证/熔断开启）
             # 是调用方问题或下游拒绝，降级无意义 → 向上抛让调用方感知并决策。
@@ -579,12 +427,14 @@ class LLMService:
         if res is not None:
             await res.settle((sr.usage or {}).get("total_tokens"))
 
-        event_fields["success"] = True
-        event_fields["prompt_tokens"] = (sr.usage or {}).get("prompt_tokens")
-        event_fields["completion_tokens"] = (sr.usage or {}).get("completion_tokens")
-        event_fields["total_tokens"] = (sr.usage or {}).get("total_tokens")
-        event_fields["duration"] = time.monotonic() - start_time
-        await log_event_async("llm_call", **event_fields)
+        await fill_llm_event_fields(
+            event_fields,
+            success=True,
+            error=None,
+            duration=time.monotonic() - start_time,
+            usage=sr.usage,
+            finish_reason=sr.finish_reason,
+        )
 
         return sr
 

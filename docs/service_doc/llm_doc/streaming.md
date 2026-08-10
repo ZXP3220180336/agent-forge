@@ -107,7 +107,7 @@ result.tool_calls = StreamParser.merge_tool_calls(tool_deltas)
 选择理由：
 
 - **测试友好**：直接 mock 一个 chunk，断言输出；有状态解析器每次测试要 reset
-- **与整流重试契合**：`async_generate` 的整流重试会重新迭代，每次迭代的增量是独立的——无状态解析器天然幂等，有状态解析器需在整流前清空缓冲
+- **与整流重试契合**：`StreamingRectifier`（见 [streaming_rectifier.md](streaming_rectifier.md)）的整流重试会重新迭代，每次迭代的增量是独立的——无状态解析器天然幂等，有状态解析器需在整流前清空缓冲
 - **与事件层解耦**：调用方决定何时把增量转成 SSE 事件、何时合并 tool_call
 
 **代价**：调用方需要自己写 `tool_deltas.extend(...)` 循环——这是「纯函数」设计的显式化，换来灵活性与可测试性。

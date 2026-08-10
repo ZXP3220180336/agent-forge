@@ -77,8 +77,8 @@
     ⑥ fallback 失败 → raise 主调用异常（fallback 异常链 __cause__，不覆盖主异常）
     ⑦ 熔断 OPEN（无 fallback）→ raise CircuitBreakerOpenError
         ↓
-[llm_service.py]
-    ⑧ async_generate()：except Exception → 记日志 + yield build_error_event()（错误进事件流）
+[llm_service.py]  （流式整流策略在 streaming_rectifier.py）
+    ⑧ async_generate()：编排 StreamingRectifier——迭代异常转 build_error_event()（错误进事件流）
     ⑨ generate()：      except Exception → 记日志；NON_RETRYABLE re-raise / 可恢复 return None
         ↓
 [structured.py]  StructuredOutput.extract()
@@ -114,6 +114,7 @@
   ├─ 迭代中断（阶段2）     → except Exception → 可整流则重试，不可整流 yield build_error_event(f"流式响应中断: {e!s}") + return
   └─ 硬取消（CancelledError）→ finally 兜底 cancel reservation，异常向上传播
 ```
+> 整流/错误事件/finally 兜底逻辑封装在 `StreamingRectifier`（见 [streaming_rectifier.md](service_doc/llm_doc/streaming_rectifier.md)），`async_generate` 只做编排。
 
 **关键**：async_generate 是 **async generator**，异常被捕获后**不是静默吞掉**，而是转成 SSE 错误事件产出。错误通过事件流（`build_error_event`）传达给调用方，错误文案携带异常信息。调用方（Agent 层）收到错误事件即可感知失败。
 

@@ -71,6 +71,10 @@ await log_event_async("llm_call", success=True, duration=2.3, total_tokens=120)
 
 异步版本：`await asyncio.to_thread(log_event, ...)`，文件 IO 移出事件循环。**需运行中的事件循环**；无循环场景（脚本/测试）用同步 `log_event`。
 
+### `fill_llm_event_fields(event_fields, *, success, duration, error=None, usage=None, finish_reason=None) -> None`
+
+LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`duration`/`prompt_tokens`/`completion_tokens`/`total_tokens`/`finish_reason` 到 `event_fields` 并 `await log_event_async("llm_call")`。被 `llm_service.py`（generate）与 `streaming_rectifier.py`（整流循环）复用，统一各调用点的日志填充与记录。
+
 ---
 
 ## 输出形态
@@ -100,7 +104,7 @@ await log_event_async("llm_call", success=True, duration=2.3, total_tokens=120)
 
 **用途**：记录领域事件（LLM 调用、任务流转等），事件名即 message，字段进结构化输出。
 
-**LLM 调用事件 `llm_call`**（由 `llm_service.py` 的 `log_event_async` 产生）：
+**LLM 调用事件 `llm_call`**（由 `fill_llm_event_fields` 产生——`app/utils/logger.py` 的通用 LLM 事件日志工具，被 `llm_service.py` 与 `streaming_rectifier.py` 复用）：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -116,6 +120,8 @@ await log_event_async("llm_call", success=True, duration=2.3, total_tokens=120)
 | `completion_tokens` | int\|None | 输出 Token |
 | `total_tokens` | int\|None | 总计 Token |
 | `finish_reason` | str\|None | 停止原因 |
+
+**用法**：`await fill_llm_event_fields(event_fields, success=True, duration=2.3, usage=..., finish_reason=...)` —— 填充 success/error/duration/tokens/finish_reason 并 `log_event_async("llm_call")` 落盘，统一各调用点（LLMService.generate、StreamingRectifier 整流循环）。
 
 **脱敏**：只记元数据（消息数/Token），不记 messages 内容本身。
 

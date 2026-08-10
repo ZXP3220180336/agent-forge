@@ -32,6 +32,7 @@ from app.config import settings
 __all__ = [
     "ConsoleFormatter",
     "JsonFormatter",
+    "fill_llm_event_fields",
     "get_logger",
     "log_event",
     "log_event_async",
@@ -140,6 +141,32 @@ async def log_event_async(
     需在运行中的事件循环内调用；无循环场景用同步 log_event。
     """
     await asyncio.to_thread(log_event, event_name, level=level, **fields)
+
+
+async def fill_llm_event_fields(
+    event_fields: dict[str, Any],
+    *,
+    success: bool,
+    duration: float,
+    error: str | None = None,
+    usage: dict[str, Any] | None = None,
+    finish_reason: str | None = None,
+) -> None:
+    """填充 LLM 调用事件（llm_call）字段并记录。
+
+    通用 LLM 事件日志工具：填充 success/error/duration/tokens/finish_reason
+    到 event_fields 并 await log_event_async 落盘。由 LLM 服务层（LLMService、
+    StreamingRectifier）复用，统一各调用点的日志填充与记录。
+    """
+    event_fields["success"] = success
+    event_fields["error"] = error
+    event_fields["duration"] = duration
+    if usage:
+        event_fields["prompt_tokens"] = usage.get("prompt_tokens")
+        event_fields["completion_tokens"] = usage.get("completion_tokens")
+        event_fields["total_tokens"] = usage.get("total_tokens")
+    event_fields["finish_reason"] = finish_reason
+    await log_event_async("llm_call", **event_fields)
 
 
 def _extra_fields(record: logging.LogRecord) -> dict[str, Any]:

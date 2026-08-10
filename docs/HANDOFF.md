@@ -23,7 +23,7 @@
 API 层（FastAPI 路由）
     ↓
 服务层（LLMService / SessionManager / ContextManager / MemoryService / TaskService / ToolService）
-    ├── LLM 子包（ClientManager / RetryHandler / StreamParser / RateLimiter / ReservationLimiter / CostTracker / StructuredOutput）
+    ├── LLM 子包（ClientManager / RetryHandler / StreamParser / StreamingRectifier / ReservationLimiter / CostTracker / StructuredOutput）
     └── EmbeddingService
     ↓
 核心层（Agent / Reasoning / Memory / Prompts）
@@ -81,7 +81,7 @@ API 层（FastAPI 路由）
 
 - **作用**：系统的模型通信基础设施，统一封装与大语言模型的所有交互。
 - **需要实现**：连接池管理、重试与熔断、流式/非流式解析、结构化输出、请求日志、客户端限流、成本计算、文本向量化。
-- **已经实现**：`LLMService` Facade + `app/services/llm/` 子模块（ClientManager / RetryHandler / StreamParser / StructuredOutput / RateLimiter / ReservationLimiter / CostTracker）+ `EmbeddingService`。限流双文件：`rate_limiter.py`（acquire 形态）+ `reservation_limiter.py`（reserve/settle 形态，独立实现，llm_service 实际使用）。**LLM 调用日志并入全局日志框架**（`app/utils/logger.py`，`log_event_async("llm_call")`，原 LLMLogger 已移除）。
+- **已经实现**：`LLMService` Facade + `app/services/llm/` 子模块（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）+ `EmbeddingService`。限流为 reserve/settle 形态（`reservation_limiter.py`，llm_service 实际使用）；acquire 形态（rate_limiter.py）已移除，代码作为学习参考并入 limiter.md。流式整流重试为独立策略类（`streaming_rectifier.py`）。**LLM 调用日志并入全局日志框架**（`app/utils/logger.py`，`fill_llm_event_fields` / `log_event_async("llm_call")`，原 LLMLogger 已移除）。
 - **核心改造（2026-08-01，retry.py）**：
   - 熔断判定升级为**滑动窗口错误率模型**（Hystrix 参考），请求级粒度，429 分离
   - 错误分类**白名单映射**（`classify_error`），未知异常默认 NON_RETRYABLE，显式捕获 httpx 网络异常
@@ -91,7 +91,7 @@ API 层（FastAPI 路由）
   - RateLimiter 集成 + **结算退差**（reserve/settle）+ 6 个审核问题修复
   - 限流模块**拆分为双文件**：`rate_limiter.py`（acquire）+ `reservation_limiter.py`（reserve/settle，零共享代码）
 
-**详见** [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)（层总览）· [client.md](service_doc/llm_doc/client.md)（ClientManager）· [streaming.md](service_doc/llm_doc/streaming.md)（StreamParser 流式/非流式解析）· [retry.md](service_doc/llm_doc/retry.md)（熔断/错误分类/探针设计 + 修复记录 + 场景推演）
+**详见** [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)（层总览）· [client.md](service_doc/llm_doc/client.md)（ClientManager）· [streaming.md](service_doc/llm_doc/streaming.md)（StreamParser 流式/非流式解析）· [streaming_rectifier.md](service_doc/llm_doc/streaming_rectifier.md)（流式整流重试策略）· [retry.md](service_doc/llm_doc/retry.md)（熔断/错误分类/探针设计 + 修复记录 + 场景推演）
 
 ### 3.4 核心 Agent 层（Phase 3）✅
 
@@ -221,8 +221,8 @@ API 层（FastAPI 路由）
 | `app/main.py`                             | ⭐⭐⭐    | FastAPI 入口                                                                          |
 | `app/config/settings.py`                  | ⭐⭐⭐    | 全局配置（约 350 行）                                                                 |
 | `app/app_state.py`                        | ⭐⭐⭐    | 应用状态管理                                                                          |
-| `app/services/llm_service.py`             | ⭐⭐⭐    | LLM Facade（流式迭代保护 + 限流闭环）                                                 |
-| `app/services/llm/`                       | ⭐⭐⭐    | LLM 子包（ClientManager/Retry/Stream/Structured/Logger/RateLimiter/Reservation/Cost） |
+| `app/services/llm_service.py`             | ⭐⭐⭐    | LLM Facade（编排 async_generate/generate/generate_structured + 限流闭环）             |
+| `app/services/llm/`                       | ⭐⭐⭐    | LLM 子包（ClientManager/Retry/Stream/StreamingRectifier/Structured/Reservation/Cost） |
 | `app/services/llm/client.py`              | ⭐⭐⭐    | 连接池管理                                                                            |
 | `app/services/llm/retry.py`               | ⭐⭐⭐    | 重试+熔断（滑动窗口熔断/错误分类/半开探针）                                           |
 | `app/services/llm/reservation_limiter.py` | ⭐⭐⭐    | 限流（reserve/settle 形态，llm_service 实际使用）                                     |
@@ -263,6 +263,7 @@ API 层（FastAPI 路由）
 | [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md) | ✅ LLM 层总览 |
 | [service_doc/llm_doc/client.md](service_doc/llm_doc/client.md) | ✅ ClientManager 设计 |
 | [service_doc/llm_doc/streaming.md](service_doc/llm_doc/streaming.md) | ✅ StreamParser 设计（流式/非流式解析 + 工业级对照） |
+| [service_doc/llm_doc/streaming_rectifier.md](service_doc/llm_doc/streaming_rectifier.md) | ✅ StreamingRectifier 设计（流式整流重试策略 + RectifierContext） |
 | [service_doc/llm_doc/retry.md](service_doc/llm_doc/retry.md) | ✅ RetryHandler 设计（滑动窗口/错误分类/半开探针/修复记录） |
 | [service_doc/llm_doc/limiter.md](service_doc/llm_doc/limiter.md) | ✅ 限流设计（acquire / reserve-settle 双形态 + 自适应预留 + 工业级对比） |
 | [service_doc/llm_doc/structure.md](service_doc/llm_doc/structure.md) | ✅ StructuredOutput 设计（三级降级 + 工业级对比 + 审核发现） |

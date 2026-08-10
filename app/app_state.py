@@ -19,6 +19,7 @@ from app.services.llm import (
     ReservationLimiterManager,
     RetryConfig,
     RetryHandlerManager,
+    StreamingRectifier,
     StructuredOutput,
 )
 
@@ -187,6 +188,13 @@ class AppState:
 
         # 结构化输出默认预算（extract 未显式传 max_tokens 时用）
         StructuredOutput.register_config(settings.llm_structured_max_tokens)
+
+        # 流式整流退避配置（StreamingRectifier 不直接依赖 settings）
+        StreamingRectifier.register_config(
+            base_delay=settings.llm_base_delay,
+            max_delay=settings.llm_max_delay,
+            use_jitter=settings.llm_use_jitter,
+        )
 
         self.llm_service = LLMService()  # 空构造，通过 ClientManager 获取 client
 

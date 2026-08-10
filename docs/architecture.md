@@ -28,7 +28,7 @@ API 层（FastAPI 路由）
     └── admin / agent / tool 路由（预留）
     ↓
 服务层（app/services/）
-    ├── LLMService（Facade）→ LLM 子包（8 模块）
+    ├── LLMService（Facade）→ LLM 子包（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）
     ├── SessionManager / ContextManager / ToolService / TaskService / EmbeddingService
     └── MemoryService（预留）
     ↓
@@ -113,7 +113,7 @@ POST /api/chat/send
 | API | chat / session 路由 | ✅ 已实现 |
 | API | admin / agent / tool 路由 | ❌ 预留 |
 | API | middleware（auth/rate_limit/error_handler） | ❌ 预留 |
-| 服务 | LLMService + LLM 子包（8 模块） | ✅ 已实现 |
+| 服务 | LLMService + LLM 子包（7 模块） | ✅ 已实现 |
 | 服务 | SessionManager / ContextManager / ToolService / TaskService / EmbeddingService | ✅ 已实现 |
 | 服务 | MemoryService | ❌ 预留 |
 | 核心 | BaseAgent / ReActAgent / Events / Prompts | ✅ 已实现 |
