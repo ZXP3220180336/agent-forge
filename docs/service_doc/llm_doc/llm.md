@@ -1100,6 +1100,8 @@ data = await llm.generate_structured(..., model_key="fast")
 ### 配额缺口：重试/降级不计入限流申请
 
 > 本节记录「限流申请量 vs 实际请求量」不一致的问题（2026-08-02 调研并实施）。跨模块：涉及限流（RateLimiter）与重试（RetryHandler）的配合。
+>
+> **术语说明**：本节为历史决策记录，采用当时的 `acquire` 术语。当前实现已改为 **`reserve/settle` 形态**（`reservation_limiter.py`，llm_service 实际使用；acquire 形态的 `rate_limiter.py` 已移除，代码作为学习参考并入 [limiter.md](limiter.md)）。语义对照：`acquire` ≈ `reserve`（预留配额），「重试/降级不计入限流申请」的结论与实施要点在 `reserve/settle` 下同样成立——重试经 `call_fn` 内重新 `reserve`、fallback 不参与 `reserve`。
 
 #### 配额缺口：问题背景
 
