@@ -195,9 +195,11 @@ class StreamingRectifier:
                         return
 
                     # 处理单个 chunk：累积 StreamResult + 产出事件，标记是否产出 token
-                    emitted_any, events = StreamingRectifier._apply_chunk(
+                    # 累积语义：一旦产出过 token，后续 usage/finish-only chunk 不把标记冲回 False
+                    chunk_emitted, events = StreamingRectifier._apply_chunk(
                         chunk, result, tool_deltas
                     )
+                    emitted_any = emitted_any or chunk_emitted
                     for event in events:
                         yield event
 

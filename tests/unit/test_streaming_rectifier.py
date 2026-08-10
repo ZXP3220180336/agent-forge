@@ -183,6 +183,29 @@ def test_no_rectify_after_token_emitted():
     assert reservation.settle_calls == 1, "请求已发出（create 成功）→ settle"
 
 
+def test_no_rectify_when_interrupt_after_usage_chunk():
+    """已产出 content 后接 usage-only chunk 再中断 → 不整流。
+
+    回归：_apply_chunk 返回「单 chunk 是否产出」，若直接覆盖 emitted_any，
+    中断前的 usage-only chunk 会把累积值冲成 False，误判「首 token 前」而整流，
+    造成重复输出 + 双倍计费。
+    """
+    streams = [
+        # 尝试 1：产出 content 后，usage-only chunk 后再中断
+        # （usage 不算首 token，但 content 已置 emitted_any=True）
+        _FakeStream(
+            [_content_chunk("你好"), _usage_chunk(10, 2)], fail_at=2, exc=TimeoutError("reset")
+        ),
+        # 若误整流，尝试 2 会执行；断言 calls==1 即证明未整流
+        _FakeStream([_content_chunk("重复")]),
+    ]
+    events, result, retry, reservation = _run(streams)
+
+    assert retry.calls == 1, "已产出 token（即便最后一个 chunk 是 usage-only）不应整流"
+    assert result.content == "你好", "已产出部分应保留"
+    assert any("error" in e for e in events), "应产出 error 事件"
+
+
 # =====================================================================
 # cancel 不整流
 # =====================================================================
