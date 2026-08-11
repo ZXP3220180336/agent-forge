@@ -90,6 +90,13 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 | 4xx / 未知 | 无效探测 | **不改变状态 + `release_probe()` 归还槽位 + `raise`**（客户端问题，不算健康探测，等待正常请求探测真实状态） |
 | 协程被取消 / 自定义 `BaseException` | 中断 | `CancelledError` → `record_failure()` 回 OPEN + 立即传播（不尝试 fallback）；其余 `BaseException`（SystemExit 等）→ **finally 兜底归还槽位**（见「改造记录与工业实践·半开探针槽位泄漏」） |
 
+**探针不重试 + 探针失败仍降级**（决策记录，2026-08-11，对照 Hystrix / Resilience4j 工业实践）：
+
+两个问题必须分开看——**探针是否需要重试** 与 **探针失败是否需要降级**：
+
+1. **探针不重试**（共识）：Hystrix 源码注释「only the first request after sleep window should execute」、Resilience4j 半开放行 `permittedNumberOfCallsInHalfOpenState` 个探针**直接打主服务**——探针的意义就是单次探测恢复，重试会让一次探测失败放大成多次调用、干扰恢复判断。
+2. **探针失败仍降级**（fallback 是方法级包装，非熔断状态机一部分）：fallback 的触发条件是「主调用抛异常/超时」或「熔断器拒绝」**两个独立事件**——HALF_OPEN 探针失败 = 主调用抛异常，必然触发 fallback。用户请求不该因「系统正探测恢复」而收到裸异常，应拿到降级响应。Netflix Hystrix `getFallback()` 在请求被拒绝/失败/超时/短路时都执行。**探针的目的只是探测恢复，不代表这次用户请求该被牺牲**。
+
 ### 降级 / Fallback
 
 主模型全部重试失败后，尝试备用模型：
@@ -685,6 +692,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | **resilience4j 半开** | 用独立环形缓冲统计探针错误率：≥ failureRateThreshold（默认 50%）→ 回 OPEN，< 50% → 回 CLOSED；环形缓冲必须满才决策；记录二元强制，不存在"放行不记录"路径 | 保留"全部成功才恢复"的严格语义（探针数少、验证更谨慎），主动设计不在本次改造范围 |
 | **429 处理** | 多数派（cc-orchestrator/TYPO3/ofetch）计为失败触发熔断；少数派（Fedify/llm_circuit_breaker）不计熔断、尊重 Retry-After | **CLOSED 下排除 429**（只退避），走少数派路线（避免客户端自限流误触发熔断）；**但半开探针下 429 是下游过载信号**，多数派直觉成立，429 探针不得计为成功 |
 | **4xx 处理** | 中性（ofetch 默认）：4xx 是调用方 bug，不算 provider 故障；可达即算成功（Fedify） | **CLOSED 下 4xx 不计入熔断窗口**（与 ofetch 中性一致）；**半开探针下 4xx 是客户端问题**：不 record_failure（不误判下游故障）、不 record_success（不算健康探测），`release_probe()` 归还槽位 + 抛上层；熔断器保持 HALF_OPEN，等待正常请求探测真实状态 |
+| **探针失败是否降级** | fallback 是**方法级包装**（Resilience4j/Hystrix），触发条件是「主调用抛异常/超时」或「熔断器拒绝」两个独立事件——HALF_OPEN 探针失败 = 主调用抛异常，**必然触发 fallback**；Netflix `getFallback()` 在请求被拒绝/失败/超时/短路时都执行 | **探针失败仍降级**（fallback 纯兜底，不进入熔断状态机）：探针的目的只是探测恢复，不代表这次用户请求该被牺牲，应拿到降级响应而非裸异常。探针本身**不重试**（单次探测，重试会放大探测失败干扰恢复判断）——与 Hystrix「only the first request after sleep window」、Resilience4j 半开直打主服务一致 |
 
 **最终方案**（2026-08-05 修正）：三分类处理——
 
