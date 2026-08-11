@@ -54,6 +54,9 @@ class ClientManager:
     # 待关闭的旧 client（无事件循环时 register_config 无法 fire-and-forget，
     # 放入此列表由 close_all 统一关闭，避免旧连接池泄漏且可追踪）
     _pending_closes: ClassVar[list[AsyncOpenAI]] = []
+    # 有事件循环时后台关闭旧 client 的 task（close_all 等待其完成，避免
+    # task 泄漏、竞态与 "Task was destroyed but it is pending" 警告）
+    _closing_tasks: ClassVar[list[asyncio.Task]] = []
 
     @classmethod
     def register_config(
@@ -87,7 +90,9 @@ class ClientManager:
                 # 避免旧连接池泄漏且可追踪（不再静默忽略）。
                 cls._pending_closes.append(old)
             else:
-                asyncio.ensure_future(old.close())
+                # 后台关闭 task 记录到 _closing_tasks，由 close_all 统一等待，
+                # 避免 task 泄漏（无引用）与事件循环先关闭时 pending task 警告。
+                cls._closing_tasks.append(asyncio.ensure_future(old.close()))
 
     @classmethod
     def get_client(cls, key: str = "main") -> AsyncOpenAI:
@@ -149,6 +154,12 @@ class ClientManager:
         若其他协程 register_config()/close_client() 修改字典，直接迭代会抛
         RuntimeError。单个 close 异常用日志隔离，不中断其余 client 的关闭。
         """
+        # 先等待后台 close task 完成（含热切换产生的旧 client 后台关闭），
+        # 避免与 close_all 并行关闭的竞态、task 泄漏与异常无人消费。
+        if cls._closing_tasks:
+            await asyncio.gather(*cls._closing_tasks, return_exceptions=True)
+            cls._closing_tasks.clear()
+
         for client in list(cls._instances.values()):
             try:
                 await client.close()

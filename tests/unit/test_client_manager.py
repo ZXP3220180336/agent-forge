@@ -39,6 +39,7 @@ def _clean_state():
     ClientManager._instances.clear()
     ClientManager._configs.clear()
     ClientManager._pending_closes.clear()
+    ClientManager._closing_tasks.clear()
 
 
 def test_register_no_loop_tracks_old_client_in_pending():
@@ -85,6 +86,72 @@ async def test_register_with_loop_closes_old_async():
     # 让 ensure_future 的后台关闭任务跑完
     await asyncio.sleep(0.05)
     assert old.closed == 1, "有 loop 时旧 client 应被后台关闭"
+
+
+async def test_register_with_loop_tracks_closing_task():
+    """有运行事件循环 → 后台 close task 被记录到 _closing_tasks，close_all 等待。"""
+    old = _register_with_old_client("main")
+
+    ClientManager.register_config("main", api_key="k", base_url="http://x", model="m")
+
+    assert len(ClientManager._closing_tasks) == 1, "后台 close task 应被追踪"
+    assert not ClientManager._closing_tasks[0].done(), "task 尚未完成（可被 close_all 等待）"
+
+    # close_all 等待后台 task 完成后清空，不留 pending task
+    await ClientManager.close_all()
+
+    assert old.closed == 1, "close_all 应确保旧 client 被关闭"
+    assert ClientManager._closing_tasks == [], "close_all 后清空后台 task 列表"
+
+
+class _SlowCloseClient(_FakeClient):
+    """close 阻塞一段时间，模拟后台关闭未完成场景。"""
+
+    async def close(self) -> None:
+        await asyncio.sleep(0.05)
+        await super().close()
+
+
+async def test_close_all_awaits_pending_close_tasks():
+    """close_all 等待未完成的后台 close task（避免 task 泄漏 + 竞态）。"""
+    slow = _SlowCloseClient()
+    ClientManager._instances["main"] = slow
+    # 手动触发热切换：有 loop → 后台 task，不进入 pending_closes
+    ClientManager.register_config("main", api_key="k", base_url="http://x", model="m")
+
+    assert slow not in ClientManager._pending_closes, "有 loop 时走后台 task"
+    assert len(ClientManager._closing_tasks) == 1, "后台 close task 应被追踪"
+
+    # 立即 close_all（task 尚未完成）→ 应等待其完成而非丢弃
+    await ClientManager.close_all()
+
+    assert slow.closed == 1, "close_all 应等待后台 task 完成关闭"
+    assert ClientManager._closing_tasks == [], "close_all 后清空后台 task 列表"
+
+
+class _SlowThrowCloseClient(_SlowCloseClient):
+    """close 阻塞后抛异常，模拟后台 close task 失败。"""
+
+    async def close(self) -> None:
+        await asyncio.sleep(0.05)
+        self.closed += 1
+        raise RuntimeError("close failed")
+
+
+async def test_close_all_isolates_pending_close_task_exception():
+    """后台 close task 抛异常 → close_all 用 return_exceptions 隔离，不中断清理。"""
+    bad = _SlowThrowCloseClient()
+    good = _FakeClient()
+    ClientManager._instances["main"] = bad
+    ClientManager.register_config("main", api_key="k", base_url="http://x", model="m")
+    ClientManager._instances["backup"] = good
+
+    await ClientManager.close_all()
+
+    assert bad.closed == 1, "异常 client 自身 close 仍被调用"
+    assert good.closed == 1, "异常 task 不影响其余 client 关闭"
+    assert ClientManager._closing_tasks == [], "close_all 后清空后台 task 列表"
+    assert ClientManager._instances == {}, "close_all 后清空实例缓存"
 
 
 class _ConcurrentCloseClient(_FakeClient):
