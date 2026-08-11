@@ -85,3 +85,66 @@ async def test_register_with_loop_closes_old_async():
     # 让 ensure_future 的后台关闭任务跑完
     await asyncio.sleep(0.05)
     assert old.closed == 1, "有 loop 时旧 client 应被后台关闭"
+
+
+class _ConcurrentCloseClient(_FakeClient):
+    """close 时触发 register_config 修改 _instances（模拟并发热重配）。"""
+
+    def __init__(self, key: str) -> None:
+        super().__init__()
+        self._key = key
+
+    async def close(self) -> None:
+        # 在 close_all 迭代 _instances 的 await 间隙修改字典 → 迭代器失效
+        ClientManager.register_config(
+            self._key, api_key="k2", base_url="http://x", model="m2"
+        )
+        await super().close()
+
+
+async def test_close_all_snapshots_instances_before_iterating():
+    """close_all 迭代期间字典被修改 → 不抛 RuntimeError（先快照再逐个关）。
+
+    修复前：for client in cls._instances.values(): await client.close() 中 await
+    释放事件循环控制权，若 close 期间 register_config()/close_client() 修改字典，
+    迭代器失效抛 RuntimeError: dictionary changed size during iteration，清理中断。
+    """
+    # 两个实例，第一个 close 时触发 register_config 修改 _instances
+    a = _ConcurrentCloseClient("main")
+    b = _FakeClient()
+    ClientManager._instances.update({"main": a, "backup": b})
+
+    await ClientManager.close_all()
+
+    assert a.closed == 1, "迭代期间字典被改也应收尾（快照后逐关）"
+    assert b.closed == 1, "后续实例应继续被关闭"
+    assert ClientManager._instances == {}, "close_all 后清空实例缓存"
+
+
+class _ThrowOnCloseClient(_FakeClient):
+    """close() 抛异常，模拟连接池关闭失败。"""
+
+    async def close(self) -> None:
+        self.closed += 1
+        raise RuntimeError("close failed")
+
+
+async def test_close_all_isolates_single_close_failure():
+    """某个 client.close() 抛异常 → 后续 client 与 _pending_closes 仍被关闭。
+
+    修复前：await client.close() 异常中断循环，后续 client 与 _pending_closes
+    均不关闭 → 连接池泄漏。
+    """
+    bad = _ThrowOnCloseClient()
+    good = _FakeClient()
+    pending = _FakeClient()
+    ClientManager._instances.update({"main": bad, "backup": good})
+    ClientManager._pending_closes.append(pending)
+
+    await ClientManager.close_all()
+
+    assert bad.closed == 1, "异常 client 自身 close 仍被调用"
+    assert good.closed == 1, "异常后后续实例应继续被关闭"
+    assert pending.closed == 1, "异常后 _pending_closes 应继续被关闭"
+    assert ClientManager._instances == {}, "close_all 后清空实例缓存"
+    assert ClientManager._pending_closes == [], "close_all 后清空待关闭列表"

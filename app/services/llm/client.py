@@ -23,6 +23,10 @@ from typing import Any, ClassVar
 
 from openai import AsyncOpenAI
 
+from app.utils.logger import get_logger
+
+logger = get_logger("llm.client")
+
 # AsyncOpenAI 构造函数支持的参数（排除内部管理字段）
 _OPENAI_CLIENT_KWARGS = {
     "api_key",
@@ -139,13 +143,24 @@ class ClientManager:
 
     @classmethod
     async def close_all(cls) -> None:
-        """清理所有缓存的 client 实例（关闭底层连接池）。"""
-        for client in cls._instances.values():
-            await client.close()
+        """清理所有缓存的 client 实例（关闭底层连接池）。
+
+        先快照再逐个关闭：迭代期间 await client.close() 会让出事件循环控制权，
+        若其他协程 register_config()/close_client() 修改字典，直接迭代会抛
+        RuntimeError。单个 close 异常用日志隔离，不中断其余 client 的关闭。
+        """
+        for client in list(cls._instances.values()):
+            try:
+                await client.close()
+            except Exception:
+                logger.warning("关闭 LLM client 失败", exc_info=True)
         cls._instances.clear()
         # 关闭无循环阶段积累的待关闭旧 client（register_config 无法 fire-and-forget）
-        for client in cls._pending_closes:
-            await client.close()
+        for client in list(cls._pending_closes):
+            try:
+                await client.close()
+            except Exception:
+                logger.warning("关闭待清理 LLM client 失败", exc_info=True)
         cls._pending_closes.clear()
 
     @classmethod
