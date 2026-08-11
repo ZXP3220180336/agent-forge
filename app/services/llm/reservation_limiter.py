@@ -142,7 +142,9 @@ class OutputTokenEstimator:
         if len(self._samples) < self.min_samples:
             return 0
         ordered = sorted(self._samples)
-        idx = min(int(self.quantile * (len(ordered) - 1)), len(ordered) - 1)
+        # quantile clamp 到 [0, 1]：负值（配置异常）会取负索引倒数元素、语义错反
+        q = max(0.0, min(1.0, self.quantile))
+        idx = min(int(q * (len(ordered) - 1)), len(ordered) - 1)
         return math.ceil(ordered[idx] * self.safety_margin)
 
     def reset(self) -> None:

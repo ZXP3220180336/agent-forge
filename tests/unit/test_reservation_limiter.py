@@ -241,6 +241,26 @@ def test_estimator_quantile_value():
     assert est.estimate() == 49
 
 
+def test_estimator_negative_quantile_clamps_to_min():
+    """负 quantile（配置异常）clamp 到 0——取最小值而非负索引取倒数元素。
+
+    修复前：int(self.quantile * (len(ordered) - 1)) 为负索引，Python 取倒数元素，
+    语义错反且难发现（quantile=-1.0 → 取倒数第 2 个而非最小值）。
+    """
+    est = OutputTokenEstimator(quantile=-1.0, safety_margin=1.0, min_samples=1)
+    for i in range(100):
+        est.record(i)
+    assert est.estimate() == 0, "负 quantile 应 clamp 到 0（取最小值）"
+
+
+def test_estimator_quantile_over_one_clamps_to_max():
+    """quantile > 1（配置异常）clamp 到 1——取最大值而非超界索引。"""
+    est = OutputTokenEstimator(quantile=5.0, safety_margin=1.0, min_samples=1)
+    for i in range(100):
+        est.record(i)
+    assert est.estimate() == 99, "quantile>1 应 clamp 到 1（取最大值）"
+
+
 def test_estimator_safety_margin_applied():
     """安全系数应用：p95 × 2.0。"""
     est = OutputTokenEstimator(quantile=0.95, safety_margin=2.0, min_samples=1)
