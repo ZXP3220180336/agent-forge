@@ -413,32 +413,69 @@ class ErrorCategory(Enum):
 #### CircuitBreaker 状态机
 
 ```
-    ┌──────────┐    failure >= threshold     ┌──────────┐
-    │  CLOSED  │ ──────────────────────────► │   OPEN   │
-    │  (正常)  │                              │  (熔断)  │
-    └────┬─────┘                              └────┬─────┘
-         ▲                                         │
-         │          recovery_timeout 超时            │
-         │    ┌─────────────────────────┐          │
-         │    │                         │          │
-         │    ▼                         │          │
-         │  ┌──────────┐               │          │
-         │  │HALF_OPEN │ ◄─────────────┘          │
-         │  │ (半开)   │    允许多少探针            │
-         │  └────┬─────┘                           │
-         │       │                                 │
-         └───────┘                                 │
-         成功恢复        ───────────────────────────┘
-                        失败则继续熔断
+    ┌───────────┐
+    │  CLOSED   │
+    │  (正常)   │
+    └─────┬─────┘
+          │
+          │  record_failure() 满足熔断条件*
+          │  （窗口错误率≥error_threshold 且请求量≥request_volume_threshold，
+          │    或全失败且失败数≥all_failed_min）
+          ▼
+    ┌───────────┐
+    │   OPEN    │
+    │  (熔断)   │
+    └─────┬─────┘
+          │
+          │  recovery_timeout 超时（冷却结束，放行首个探针）
+          ▼
+    ┌───────────┐
+    │ HALF_OPEN │
+    │  (半开)   │
+    └─────┬─────┘
+          │
+          ├────────► 探针连续成功 ≥ half_open_max_requests → CLOSED（成功恢复）
+          │
+          ▼
+    ┌───────────┐
+    │   OPEN    │
+    │  (熔断)   │
+    └───────────┘
+    探针失败（429/超时/5xx）→ 回 OPEN（新一轮冷却）
+
+    * 熔断条件：窗口内错误率≥error_threshold 且请求量≥request_volume_threshold；
+      或窗口内全部失败且失败数≥all_failed_min（低流量纯失败保护）。
+    4xx 探针是客户端问题：不 record_success 也不 record_failure，release_probe()
+    归还槽位，熔断器保持 HALF_OPEN 等待正常请求探测真实状态。
 ```
 
 #### Fallback 降级链
 
 ```
-call_fn（主模型）→ 重试 3 次 → 全部失败
-    → fallback_fn（备选模型）→ 成功 → 半开恢复
-    → fallback_fn 也失败 → 抛出最后一次异常
+CLOSED（重试循环）
+  call_fn 最多尝试 max_retries+1 次（默认 llm_max_retries=2 → 最多 3 次）
+    ├─ 任一次成功 → cb.record_success() → 返回
+    └─ 全部失败 → 请求级统一 record_failure()（曾触及 RETRYABLE 故障时）
+                   → fallback_fn（备用模型）——
+                       ├─ 成功 → 直接返回结果（fallback 不触碰熔断器）
+                       └─ 失败 → raise last_exc from fallback_exc（主异常为主，
+                                  fallback 异常链为 __cause__）
+
+OPEN（熔断开启，有 fallback）
+  allow_request() 拒绝主调用 → 直接走 fallback_fn 纯兜底（单次、不重试、
+  不进入熔断状态机）——成功返回，失败则异常自然向上传播（无 __cause__ 链）
+
+HALF_OPEN（半开探针）
+  _probe_attempt 单次探测主链路：
+    ├─ 成功 → 累计探针成功数，达 half_open_max_requests 关闭熔断器
+    ├─ 429/超时/5xx → cb.record_failure() 回 OPEN（新一轮冷却），
+    │                 再尝试 fallback 纯兜底（同上，不记录熔断）
+    └─ 4xx/未知 → cb.release_probe() 归还槽位，异常直接抛上层
+                 （客户端问题，熔断器保持 HALF_OPEN）
+  CancelledError → 按失败回 OPEN + 立即传播（不尝试 fallback）
 ```
+
+**核心约束**：fallback 是**纯兜底**——其成败完全不进入熔断状态机（不调用 `record_success`/`record_failure`）。熔断器只观察主链路（`call_fn`）的健康：备用链路通不能证明主链路恢复，备用链路故障也不代表主链路故障。
 
 #### 为什么选择「CircuitBreaker + 指数退避 + 抖动」
 
