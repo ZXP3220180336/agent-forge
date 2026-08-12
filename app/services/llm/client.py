@@ -7,13 +7,13 @@ ClientManager — 连接池复用与多 client 管理
     3. 支持 HTTP 代理
 
 使用方式：
+    client.register_config("reasoning", api_key="...", base_url="...", model="...")
     client = ClientManager.get_client("reasoning")
     response = await client.chat.completions.create(...)
 
     # 自定义配置
-    custom = ClientManager.get_client("custom", {
-        "api_key": "...", "base_url": "...", "model": "..."
-    })
+    ClientManager.register_config("custom", api_key="...", base_url="...", model="...")
+    custom = ClientManager.get_client("custom")
 """
 
 from __future__ import annotations
