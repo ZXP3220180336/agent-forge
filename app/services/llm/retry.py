@@ -2,24 +2,14 @@
 RetryHandler — 增强重试：jitter + circuit breaker + fallback
 
 核心组件：
-    RetryConfig      重试配置（最大重试、退避基数、抖动开关）
-    CircuitBreaker   熔断器（滑动窗口错误率判定、恢复超时、半开探针）
-    RetryHandler     重试执行器（整合退避 + 熔断 + fallback）
-
-熔断判定（工业级，参考 Hystrix 模型）：
-    - 滑动时间窗口内统计请求总数与失败数
-    - 窗口内总请求 ≥ request_volume_threshold 且 错误率 ≥ error_threshold → 熔断
-    - 或 窗口内全部失败且失败数 ≥ all_failed_min → 熔断（低流量纯失败保护）
-    - 429（RATE_LIMITED）不计入窗口统计，只退避（尊重服务端 Retry-After）
-    - 计数粒度为请求（execute）级：一次 execute 的多次重试只汇报一次结果，
-      避免单请求的重试放大熔断计数
+    RetryConfig             重试配置（最大重试、退避基数、抖动开关）
+    CircuitBreaker          熔断器（滑动窗口错误率判定、恢复超时、半开探针）
+    RetryHandler            重试执行器（整合退避 + 熔断 + fallback）
+    RetryHandlerManager     重试执行器管理（按 model_key 提供共享 RetryHandler 实例）
 
 使用方式：
-    handler = RetryHandler(
-        config=RetryConfig(max_retries=3),
-        circuit_breaker=CircuitBreaker(),
-    )
-    result = await handler.execute(
+    retry = RetryHandlerManager.get(model_key)
+    response = await retry.execute(
         call_fn=lambda: client.chat.completions.create(**kwargs),
         fallback_fn=lambda: fallback_client.chat.completions.create(**kwargs),
     )
@@ -45,22 +35,6 @@ from openai import (
     LengthFinishReasonError,
     RateLimitError,
 )
-
-# =====================================================================
-# 重试配置
-# =====================================================================
-
-
-@dataclass
-class RetryConfig:
-    """重试配置（纯配置对象，默认值为合理硬编码；运行时由 RetryHandlerManager
-    register_config() 注入 settings 值）。"""
-
-    max_retries: int = 2
-    base_delay: float = 1.0
-    max_delay: float = 30.0
-    use_jitter: bool = True
-
 
 # =====================================================================
 # 错误分类
@@ -147,15 +121,19 @@ class CircuitBreakerConfig:
 
 class CircuitBreaker:
     """
-    熔断器（滑动窗口时间 + 错误率判定）。
+        熔断器（滑动窗口时间 + 错误率判定）。
 
-    判定基于滑动窗口内的请求错误率，参考 Hystrix 工业模型：
-        - 窗口内总请求 ≥ request_volume_threshold 且错误率 ≥ error_threshold → OPEN
-        - 或 窗口内全部失败且失败数 ≥ all_failed_min → OPEN（低流量纯失败保护）
-    429（限流）不计入窗口统计——限流是客户触发自身限额，不是下游故障证据。
+    熔断判定（工业级：基于滑动窗口内的请求错误率判定，参考 Hystrix 模型）：
+        - 滑动时间窗口内统计请求总数与失败数
+        - 窗口内总请求 ≥ request_volume_threshold 且 错误率 ≥ error_threshold → 熔断
+        - 或 窗口内全部失败且失败数 ≥ all_failed_min → 熔断（低流量纯失败保护）
+        - 429（RATE_LIMITED）不计入窗口统计，只退避（尊重服务端 Retry-After）
+          限流是客户触发自身限额，不是下游故障证据
+        - 计数粒度为请求（execute）级：一次 execute 的多次重试只汇报一次结果，
+          避免单请求的重试放大熔断计数
 
-    配置统一由 CircuitBreakerConfig 承载（配置对象，纯数据），本类只持有
-    config 并维护状态机。状态机：CLOSED → OPEN → HALF_OPEN → CLOSED / OPEN
+        配置统一由 CircuitBreakerConfig 承载（配置对象，纯数据），本类只持有
+        config 并维护状态机。状态机：CLOSED → OPEN → HALF_OPEN → CLOSED / OPEN
     """
 
     def __init__(self, config: CircuitBreakerConfig | None = None) -> None:
@@ -177,7 +155,7 @@ class CircuitBreaker:
             if (
                 time.monotonic() - self._last_failure_time
                 >= self.config.recovery_timeout
-            ):
+            ):  # 冷却期结束，进入半开探针阶段
                 self._state = CircuitState.HALF_OPEN
                 self._half_open_requests = 1  # 本次作为第一个探针
                 return True
@@ -190,20 +168,29 @@ class CircuitBreaker:
         return False
 
     def release_probe(self) -> None:
-        """半开探针归还槽位：本次探测不计入健康判定时调用。
+        """半开探针归还槽位，保证槽位永不泄漏：本次探测不计入健康判定时调用。
 
-        探针收到 NON_RETRYABLE（4xx/参数/权限/未知）是客户端问题，不代表下游状态：
-        既不应 record_success（4xx 不算健康探测），也不应 record_failure（否则半开
-        阶段客户端错误把熔断器反复打回 OPEN，下游即使恢复也无法完成健康探测）。
-        释放槽位让后续正常请求探测真实状态。
+        槽位泄露后果：
+        - 泄漏会让 HALF_OPEN 下 _half_open_requests 被永久占用，allow_request
+        恒为 False，熔断器自动恢复失效。
 
-        只在 HALF_OPEN 下有效：若状态已变（如并发探针已回 OPEN），槽位记账已冻结，
+        归还槽位的场景：
+        - 探针收到 NON_RETRYABLE（4xx/参数/权限/未知）客户端问题：不代表下游状态。
+        - 探针收到任何未记账的退出路径（SystemExit / KeyboardInterrupt / 自定义
+        BaseException，或未来新增的异常分支遗漏）
+
+        归还槽位的语义：
+        - 不 record_failure（避免 HALF_OPEN→OPEN 反复横跳，
+        即客户端错误把熔断器反复打回 OPEN，下游即使恢复也无法完成健康探测），
+        - 不 record_success（4xx 不算健康探测），
+        - 归还探针槽位让后续正常请求探测真实状态；
+
+        归还槽位的限制：
+        - 只在 HALF_OPEN 下有效：若状态已变（如并发探针已回 OPEN），槽位记账已冻结，
         无需递减——下次 OPEN→HALF_OPEN 时由 allow_request() 重置。
-        _consecutive_successes 保持不变（此前成功的健康探测仍有效）。
+        - _consecutive_successes 保持不变（此前成功的健康探测仍有效）。
         """
-        if self._state != CircuitState.HALF_OPEN:
-            return
-        if self._half_open_requests > 0:
+        if self._state == CircuitState.HALF_OPEN and self._half_open_requests > 0:
             self._half_open_requests -= 1
 
     # ------------------------------------------------------------------
@@ -268,17 +255,17 @@ class CircuitBreaker:
         """
         记录一次主链路请求失败，更新熔断状态。
 
-        调用方（RetryHandler）在**整个请求触及过 RETRYABLE 故障**（任一次
-        尝试是超时/5xx）时才调用本方法；纯 429（限流）/ 不可恢复错误不调用
-        本方法——限流只退避、后者是调用方问题，均非下游故障证据。
-        （例外：HALF_OPEN 探针路径对 429 也调用本方法——半开语境下 429 是
-        下游过载信号；NON_RETRYABLE 探针改走 release_probe()，不调用本方法。）
+        - RETRYABLE（超时/5xx）：**整个请求过程中，只要出现一次**，
+        必须调用本方法计入熔断窗口，可能触发熔断。
+        - RATE_LIMITED（429）：熔断Close情况下限流只退避，不计入熔断窗口；
+        熔断Half_Open情况下限流是下游过载信号，仍会触发熔断打开。
+        - NON_RETRYABLE（4xx/参数/权限/未知）：客户端问题，任何情况下都不调用本方法。
 
         Returns:
             True 表示本次失败将熔断器切换到 OPEN——调用方可据此感知
             熔断已触发（请求粒度下熔断评估在请求完成后进行）。
         """
-        # OPEN 下防御：正常路径不可达，即便外部误调用也不累计窗口、
+        # OPEN 下no-op防御：正常路径不可达，即便外部误调用也不累计窗口、
         # 不改写冷却计时——熔断期间窗口统计保持冻结。
         if self._state == CircuitState.OPEN:
             return False
@@ -322,6 +309,22 @@ class CircuitBreaker:
         self._window.clear()
         self._half_open_requests = 0
         self._consecutive_successes = 0
+
+
+# =====================================================================
+# 重试配置
+# =====================================================================
+
+
+@dataclass
+class RetryConfig:
+    """重试配置（纯配置对象，默认值为合理硬编码；运行时由 RetryHandlerManager
+    register_config() 注入 settings 值）。"""
+
+    max_retries: int = 2
+    base_delay: float = 1.0
+    max_delay: float = 30.0
+    use_jitter: bool = True
 
 
 # =====================================================================
@@ -512,9 +515,7 @@ class RetryHandler:
             category = classify_error(e)
             if category == ErrorCategory.NON_RETRYABLE:
                 # 客户端问题（4xx/参数/权限/未知）：不代表下游状态。
-                # 不 record_failure（避免 HALF_OPEN→OPEN 反复横跳）、不 record_success
-                # （4xx 不算健康探测），归还探针槽位让后续正常请求探测真实状态；
-                # 异常直接抛给上层修复请求。
+                # 归还探针槽位并将异常直接抛给上层修复请求。
                 cb.release_probe()
                 accounted = True
                 raise
@@ -523,9 +524,7 @@ class RetryHandler:
             accounted = True
         finally:
             # 兜底：任何未记账的退出路径（SystemExit / KeyboardInterrupt / 自定义
-            # BaseException，或未来新增的异常分支遗漏）归还探针槽位，保证槽位永不
-            # 泄漏——泄漏会让 HALF_OPEN 下 _half_open_requests 被永久占用，
-            # allow_request 恒为 False，熔断器自动恢复失效。
+            # BaseException，或未来新增的异常分支遗漏）归还探针槽位
             if not accounted:
                 cb.release_probe()
 
@@ -568,7 +567,7 @@ class RetryHandler:
             return None
         try:
             return float(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None  # 可能是 HTTP-date 形式，简化忽略，回退到指数退避
 
 
@@ -582,11 +581,11 @@ class RetryHandlerManager:
     按 model_key 提供共享 RetryHandler 实例（内含跨请求共享的 CircuitBreaker）。
 
     与 ClientManager / ReservationLimiterManager 同款缓存模式：同一 model_key 复用
-    同一个 RetryHandler——熔断窗口（滑动窗口错误率）需跨请求积累，每次 new
+    - 同一个 RetryHandler的熔断窗口（滑动窗口错误率）需跨请求积累，每次 new
     会清空窗口、等于熔断永不触发（create 阶段熔断失效的隐性缺陷根源）。
-    main / reasoning / fast 是不同模型/端点，独立熔断（reasoning 故障不熔断 fast）。
-    配置（重试/熔断）由外层 register_config() 注入（AppState 读 settings 后调用），
-    子模块不再直接依赖 settings；修改配置后 reset() 重建实例生效。
+    - main / reasoning / fast 是不同模型/端点，独立熔断（reasoning 故障不熔断 fast）。
+    - 配置（重试/熔断）由外层 register_config() 注入（AppState 读 settings 后调用），
+    子模块不再直接依赖 settings；修改配置后 reset() 重建实例生效；现在多实例共享同一份配置。
     """
 
     _instances: ClassVar[dict[str, RetryHandler]] = {}

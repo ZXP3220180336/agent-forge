@@ -12,6 +12,7 @@
 - [架构总览](#架构总览)
 - [组件详解](#组件详解)
   - [RetryConfig — 重试配置](#retryconfig--重试配置)
+  - [CircuitBreakerConfig — 熔断配置](#circuitbreakerconfig--熔断配置)
   - [CircuitBreaker — 熔断器](#circuitbreaker--熔断器)
   - [RetryHandler — 重试执行器](#retryhandler--重试执行器)
   - [RetryHandlerManager — 重试执行器管理](#retryhandlermanager--重试执行器管理)
@@ -121,23 +122,28 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
                      ▼
                  RetryHandler
                      │
-        ┌────────────┼────────────┐
-        ▼            ▼            ▼
-   RetryConfig  CircuitBreaker  classify_error
-        │            │            │
-   max_retries  window_seconds   超时→RETRYABLE
-   base_delay   error_threshold  5xx→RETRYABLE
-   max_delay    request_volume   429→RATE_LIMITED
-   use_jitter   all_failed_min   4xx→NON_RETRYABLE
+        ┌────────────┼───────────────┐
+        ▼            ▼               ▼
+  RetryConfig   CircuitBreaker   classify_error
+        │            │               │
+   max_retries  CircuitBreakerConfig 超时→RETRYABLE
+   base_delay   │                   5xx→RETRYABLE
+   max_delay    ├─ window_seconds    429→RATE_LIMITED
+   use_jitter   ├─ error_threshold   4xx→NON_RETRYABLE
+                ├─ request_volume_threshold
+                ├─ all_failed_min
+                ├─ recovery_timeout
+                └─ half_open_max_requests
 ```
 
 | 层 | 组件 | 职责 |
 | --- | --- | --- |
 | 管理 | `RetryHandlerManager` | 按 model_key 缓存共享 RetryHandler（熔断窗口跨请求积累） |
 | 配置层 | `RetryConfig` | 重试参数（次数、退避、抖动） |
-| 保护层 | `CircuitBreaker` | 熔断状态机（关闭/开启/半开） |
+| 配置层 | `CircuitBreakerConfig` | 熔断参数（滑动窗口、错误率阈值、冷却、半开探针数） |
+| 保护层 | `CircuitBreaker` | 熔断状态机（关闭/开启/半开），持有 `CircuitBreakerConfig` |
 | 判定层 | `classify_error()` | 异常分类（可重试/致命/限流） |
-| 编排层 | `RetryHandler` | 整合上述三者的主循环 |
+| 编排层 | `RetryHandler` | 整合上述四者的主循环 |
 
 ---
 
@@ -156,17 +162,32 @@ class RetryConfig:
 
 `max_retries=2` 时实际最多执行 3 次（首次 + 重试 2 次），与 `range(max_retries + 1)` 配合。
 
-### CircuitBreaker — 熔断器
+### CircuitBreakerConfig — 熔断配置
 
 ```python
 @dataclass
-class CircuitBreaker:
+class CircuitBreakerConfig:
     window_seconds: float = 10.0             # 滑动时间窗口长度（秒）
     error_threshold: float = 0.5             # 窗口内错误率熔断阈值（50%）
     request_volume_threshold: int = 20       # 窗口内最小请求量，不足则不做错误率评估
     all_failed_min: int = 3                  # 低流量纯失败保护：全部失败且达此样本量才熔断
     recovery_timeout: float = 30.0           # 熔断持续秒数后进入半开
     half_open_max_requests: int = 3          # 半开状态最大探针数
+```
+
+纯配置对象（默认值为合理硬编码），运行时由 `RetryHandlerManager.register_config(circuit_breaker_config=...)` 注入 settings 值；`CircuitBreaker` 只持有该对象并维护状态机，与 `RetryConfig` 一样遵循「配置与逻辑分离」的依赖注入模式。
+
+### CircuitBreaker — 熔断器
+
+```python
+class CircuitBreaker:
+    def __init__(self, config: CircuitBreakerConfig | None = None) -> None:
+        self.config = config or CircuitBreakerConfig()
+        self._state = CircuitState.CLOSED
+        self._window: deque[tuple[float, bool]] = deque()
+        self._last_failure_time = 0.0
+        self._half_open_requests = 0
+        self._consecutive_successes = 0
 ```
 
 **关键方法**：
@@ -703,6 +724,16 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | 4xx / 未知（NON_RETRYABLE） | 不 record_failure、不 record_success，`release_probe()` 归还槽位 + 异常抛上层（保持 HALF_OPEN） |
 
 > **修正说明（2026-08-05）**：早期方案「探针失败一律回 OPEN，4xx 抛给上层」中，4xx 也执行 `record_failure()` 回 OPEN。后发现缺陷：半开阶段客户端错误（4xx）不断出现时，熔断器 `HALF_OPEN→OPEN` 反复横跳，下游即使恢复也永远无法完成健康探测。修正为 4xx 探针不改变状态、归还槽位。
+
+**探针被取消的语义**（决策记录，2026-08-12，对照 Hystrix / Resilience4j）：
+
+| 议题 | Hystrix | Resilience4j | 本项目立场 |
+| --- | --- | --- | --- |
+| **探针取消/中断** | 「if the executing command gets unsubscribed, the status will transition to OPEN」——**取消 = 探针失败回 OPEN**（[issue #1723 引用的 HystrixCircuitBreakerImpl 源码注释](https://github.com/Netflix/Hystrix/issues/1723)） | 用 `maxWaitDurationInHalfOpenState` 约束半开超时——探针卡住不返回时强制回 OPEN；不区分「超时取消」与「外部取消」，半开探针只有成功/失败两终态 | **取消 → `record_failure()` 回 OPEN**（与 Hystrix 一致）：取消的探针**没有证明下游恢复**，若归还槽位让它「当没发生」，熔断器误以为探针还在飞而继续等，是「槽位泄漏卡死 HALF_OPEN」的变体 |
+| **取消是否影响并发请求** | 半开探针各自独立 | 半开放行多探针，各自独立计数，单探针取消不影响其余 | **单探针取消只影响自身**——回 OPEN 是整个熔断器的冷却决策，不针对并发请求；回 OPEN 反而给下游冷却喘息，避免取消风暴持续消耗探针槽位 |
+| **取消风暴反复重置冷却** | 无此防护 | `maxWaitDurationInHalfOpenState` 给半开总时长设上限 | **已识别为残余风险**：高频取消会反复重置冷却计时，可能无限推迟恢复探测。当前未采纳 `max_wait_in_half_open`（对齐 Resilience4j 的防御），因取消风暴在 LLM 调用场景罕见（多为单用户主动取消）——若未来观测到频繁取消导致恢复探测迟迟不触发，再引入半开超时上限 |
+
+> **辨析**：为什么「CLOSED 请求取消归还资源」而「HALF_OPEN 探针取消回 OPEN」？CLOSED 下取消是客户自身决定、不代表下游状态；半开探针的每一票都构成「下游是否恢复」的证据采样——探针没跑完 = 无法得出成功结论 = 按失败处理。这不是「请求维度」的错误，而是「熔断器统计维度」的规则：探针要么成功关闭熔断，要么不成功就继续熔断。
 
 **备选方案（未采纳，记录在案）**：
 
