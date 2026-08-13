@@ -75,7 +75,7 @@ LLM 层是系统的**模型通信基础设施**，负责所有与大语言模型
 
 - **连接管理**：全局共享 AsyncOpenAI 连接池，支持 main / reasoning / fast 三种模型按需切换
 - **重试与熔断**：指数退避 + 随机抖动 + CircuitBreaker 熔断器 + fallback 降级链
-- **流式解析**：逐 chunk 解析流式响应，提取 reasoning / message / tool_calls / usage
+- **流式解析**：逐 chunk 解析流式响应，提取 reasoning / message / finish_reason / usage / refusal / tool_calls
 - **流式整流重试**：首 token 前流中断自动整流（重新 create + 重新迭代），已产出后放弃
 - **非流式通道**：适合简单任务的低延迟通道（分类、提取、标签）
 - **结构化输出**：三级降级策略（JSON Schema → JSON Mode → 正则提取）
@@ -507,7 +507,7 @@ HALF_OPEN（半开探针）
 
 #### 功能
 
-1. 逐 chunk 解析 OpenAI 流式响应，提取五种信息
+1. 逐 chunk 解析 OpenAI 流式响应，提取六种信息（reasoning / message / finish_reason / usage / refusal / tool_call_deltas）
 2. 合并增量 tool_call 片段为完整对象
 3. 解析非流式完整响应
 
@@ -519,6 +519,7 @@ class ParsedChunk:
     message_token: str | None      # 回复文本片段
     finish_reason: str | None      # 停止原因（stop / length / tool_calls）
     usage: dict | None             # Token 用量（最后一个 chunk）
+    refusal: str | None            # 拒答形态（delta.refusal）
     tool_call_deltas: list[ToolCallDelta] | None  # 工具调用增量
 
 class ToolCallDelta:
@@ -533,18 +534,26 @@ class ToolCallDelta:
 ```python
 @staticmethod
 def parse_chunk(chunk) -> ParsedChunk:
-    # 1. 无 choices → 检查 usage（最后一个 chunk）
+    # 1. usage 独立于 choices/delta 提取——usage-only chunk 的 choices 通常为空，
+    #    但某些代理/适配层可能在带 delta 的 chunk 上也附带 usage，不应静默丢弃
+    if chunk.usage:
+        result.usage = chunk.usage.model_dump()
+
+    # 2. finish_reason 独立于 delta 提取——finish chunk 的 delta 可能为 None
+    #    或空对象，但 finish_reason 在 choices[0] 上，不能因 delta 为空而丢失
+    if chunk.choices and chunk.choices[0].finish_reason is not None:
+        result.finish_reason = chunk.choices[0].finish_reason
+
+    # 3. 无内容增量（usage-only / finish-only chunk）→ 到此为止
     if not chunk.choices or not chunk.choices[0].delta:
-        if chunk.usage:
-            result.usage = chunk.usage.model_dump()
         return result
 
-    # 2. 有 choices → 解析 delta
+    # 4. 有 delta → 提取（hasattr 守卫字段缺失，不同 provider 的 delta 字段集不同）
     delta = chunk.choices[0].delta
     #   - reasoning_content（推理模型）
     #   - content（回复）
-    #   - tool_calls（工具调用增量）
-    #   - finish_reason（停止原因）
+    #   - refusal（OpenAI 流式拒答形态）
+    #   - tool_calls（工具调用增量 → ToolCallDelta 列表）
 ```
 
 #### 为什么选择「静态方法 + 纯函数」
@@ -559,6 +568,7 @@ def parse_chunk(chunk) -> ParsedChunk:
 - **纯函数**便于测试 —— 输入一个 mock chunk，输出 `ParsedChunk`，无需 mock 内部状态
 - **与事件层解耦** —— `StreamParser` 不知道 `build_message_event()` 的存在，调用方决定如何渲染
 - **同时支持流式与非流式** —— `parse_non_stream()` 复用同一个数据模型
+- **与整流重试契合** —— 无状态解析器天然幂等，整流重试重新迭代时无残留缓冲
 
 #### 其他可选的方法
 
