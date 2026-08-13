@@ -29,24 +29,21 @@
     - [Reservation — 预留对象（终态幂等）](#reservation--预留对象终态幂等)
     - [ReservationLimiter — 双桶组合（reserve/settle 形态）](#reservationlimiter--双桶组合reservesettle-形态)
     - [OutputTokenEstimator — 自适应输出估算器](#outputtokenestimator--自适应输出估算器)
-    - [reserve_adaptive — 自适应预留](#reserve_adaptive--自适应预留)
+    - [reserve\_adaptive — 自适应预留](#reserve_adaptive--自适应预留)
     - [ReservationLimiterManager — 实例管理](#reservationlimitermanager--实例管理)
     - [其他限流算法组件（参考实现）](#其他限流算法组件参考实现)
   - [调用流程（reserve/settle 生产形态）](#调用流程reservesettle-生产形态)
   - [与重试/熔断的分层配合](#与重试熔断的分层配合)
   - [配置项清单](#配置项清单)
+    - [RPM / TPM（双 Token Bucket）](#rpm--tpm双-token-bucket)
+    - [自适应预留（Fenic 式，开关默认关）](#自适应预留fenic-式开关默认关)
   - [已知边界与设计取舍](#已知边界与设计取舍)
-  - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题-修复-工业对照)
+  - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题--修复--工业对照)
     - [问题 1（严重）：配置为 0 时除零崩溃 ✅](#问题-1严重配置为-0-时除零崩溃-)
-      - [工业级对照：「禁用限流」的表达](#工业级对照禁用限流的表达)
     - [问题 2（中）：持锁 sleep ✅](#问题-2中持锁-sleep-)
-      - [工业级对照：等待是否持锁](#工业级对照等待是否持锁)
     - [问题 3（中）：TPM 桶只算 prompt token ✅](#问题-3中tpm-桶只算-prompt-token-)
-      - [工业级对照：TPM 消耗估算](#工业级对照tpm-消耗估算)
-      - [对比 3.2：自适应预留（Fenic 式，2026-08-06 实现）](#对比-32自适应预留fenic-式2026-08-06-实现)
     - [问题 4（低）：`acquire` 返回值表述不准确 ✅](#问题-4低acquire-返回值表述不准确-)
     - [问题 5（低）：`async with` 用法误导 ✅](#问题-5低async-with-用法误导-)
-      - [工业级对照：限流器 API 形态](#工业级对照限流器-api-形态)
     - [问题 6（低）：`_tokens` 可轻微为负 ✅](#问题-6低_tokens-可轻微为负-)
     - [速查表](#速查表)
 
@@ -1106,7 +1103,7 @@ async_generate() / generate()
 2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文问题 3（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
 3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见下文问题 4（✅ 已修复）。`reserve` 形态无返回值（返回 Reservation，等待发生在内部）。
 4. **配置 0 = 禁用限流**：`register_config()` 注入的 `rpm`/`tpm` 为 0（或未注入该 key 用默认）；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文问题 1（✅ 已修复）。
-5. **reserve/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。
+5. **cancel/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。
 6. **防 R5（组合两步间硬取消）**：`reserve` 先扣 RPM 再扣 TPM，若 TPM 预留前被硬取消（`CancelledError`），`except BaseException` 回退已扣的 RPM。
 
 ---
