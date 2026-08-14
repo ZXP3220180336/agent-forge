@@ -35,7 +35,9 @@ class LLMGateway(Protocol):
         result: StreamResult | None = None,
         model_key: str = "main",
         cancel_event: asyncio.Event | None = None,
-    ) -> AsyncGenerator[str]: ...
+    ) -> AsyncGenerator[str]:
+        """流式生成；yield 标记为 async generator（类型用途，运行时不可达）。"""
+        yield ""  # 使类型检查器识别为 async generator，可被 async for 遍历
 
     async def generate(
         self,
