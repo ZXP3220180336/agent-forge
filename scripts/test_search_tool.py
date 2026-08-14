@@ -1,9 +1,9 @@
 import asyncio
 
-from app.services import ToolService
-from app.tools.base import BaseTool
-from app.tools.builtin import SearchTool
-from app.tools.builtin import __all__ as builtin_tools
+from app.integration.tools.tool_service import ToolService
+from app.integration.tools.base import BaseTool
+from app.integration.tools.builtin import SearchTool
+from app.integration.tools.builtin import __all__ as builtin_tools
 
 
 async def demo():
@@ -29,7 +29,7 @@ async def main():
     # 根据 __all__ 中的类名动态导入并注册
     import importlib
 
-    pkg = importlib.import_module("app.tools.builtin")
+    pkg = importlib.import_module("app.integration.tools.builtin")
     for tool_name in builtin_tools:
         tool_cls: type[BaseTool] = getattr(pkg, tool_name)
         reg.register(tool_cls())

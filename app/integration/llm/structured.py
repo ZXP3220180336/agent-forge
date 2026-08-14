@@ -24,7 +24,7 @@ from typing import Any
 
 from jsonschema import Draft7Validator, ValidationError, validate
 
-from app.services.llm.retry import ErrorCategory, classify_error
+from app.integration.llm.retry import ErrorCategory, classify_error
 from app.utils.logger import get_logger
 
 logger = get_logger("llm.structured")

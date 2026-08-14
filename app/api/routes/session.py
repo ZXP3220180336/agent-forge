@@ -5,13 +5,13 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.dependencies import (
+from app.api.deps import (
     get_current_user,
     get_session_manager,
 )
-from app.models.schemas.request import CreateSessionRequest
-from app.models.schemas.response import CreateSessionResponse
-from app.services import SessionManager
+from app.api.schemas.request import CreateSessionRequest
+from app.api.schemas.response import CreateSessionResponse
+from app.application.session.session_manager import SessionManager
 
 router = APIRouter(prefix="/api", tags=["会话管理"])
 

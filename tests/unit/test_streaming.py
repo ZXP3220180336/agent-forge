@@ -11,7 +11,7 @@ mock chunk 用 SimpleNamespace 模拟 OpenAI SDK 流式 chunk 形态，不走真
 
 from types import SimpleNamespace
 
-from app.services.llm.streaming import StreamParser, ToolCallDelta
+from app.integration.llm.streaming import StreamParser, ToolCallDelta
 
 
 # =====================================================================

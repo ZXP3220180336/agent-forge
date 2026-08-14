@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 from app.config import settings
-from app.services.llm import (
+from app.integration.llm import (
     ClientManager,
     ReservationLimiterManager,
     RetryHandlerManager,
@@ -23,10 +23,10 @@ from app.services.llm import (
     StreamParser,
     StructuredOutput,
 )
-from app.services.llm.cost_tracker import CostTracker
-from app.services.llm.reservation_limiter import Reservation
-from app.services.llm.retry import ErrorCategory, classify_error
-from app.services.llm.streaming_rectifier import RectifierContext
+from app.integration.llm.cost_tracker import CostTracker
+from app.integration.llm.reservation_limiter import Reservation
+from app.integration.llm.retry import ErrorCategory, classify_error
+from app.integration.llm.streaming_rectifier import RectifierContext
 from app.utils.logger import fill_llm_event_fields
 
 # =====================================================================

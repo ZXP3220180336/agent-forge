@@ -28,8 +28,8 @@ from app.utils.logger import get_logger
 logger = get_logger("services.tool_service")
 
 from app.config import settings
-from app.tools import BaseTool, ToolResult
-from app.tools.builtin import __all__ as builtin_tool_names
+from app.integration.tools import BaseTool, ToolResult
+from app.integration.tools.builtin import __all__ as builtin_tool_names
 
 
 @dataclass
@@ -400,7 +400,7 @@ class ToolService:
         工具实例化不依赖外部服务（API Key 在执行时才需要），
         因此注册失败只会导致个别工具不可用，不影响启动。
         """
-        pkg = importlib.import_module("app.tools.builtin")
+        pkg = importlib.import_module("app.integration.tools.builtin")
         registered: list[str] = []
         for name in builtin_tool_names:
             tool_cls = getattr(pkg, name)

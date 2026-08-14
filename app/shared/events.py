@@ -20,7 +20,7 @@ Agent 层额外产出：
   - agent_info（状态信息）
 
 用法：
-    from app.core.events import build_message_event, build_tool_call_event
+    from app.shared.events import build_message_event, build_tool_call_event
     yield build_message_event("Hello")
     yield build_tool_call_event("search", {"q": "..."}, iteration=1)
 """

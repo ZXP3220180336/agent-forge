@@ -85,7 +85,7 @@ def get_logger(name: str) -> logging.Logger:
     """返回 app.* 命名空间下的标准 Logger。
 
     Args:
-        name: 模块名（如 "app_state"）→ 返回 logger "app.app_state"
+        name: 模块名（如 "app_state"）→ 返回 logger "app.container"
     """
     return logging.getLogger(f"app.{name}")
 

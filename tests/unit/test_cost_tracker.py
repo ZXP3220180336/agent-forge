@@ -13,7 +13,7 @@ CostTracker 单元测试
 
 import pytest
 
-from app.services.llm.cost_tracker import MODEL_PRICING, CostTracker
+from app.integration.llm.cost_tracker import MODEL_PRICING, CostTracker
 
 
 # =====================================================================
@@ -64,7 +64,7 @@ def test_prefix_match_independent_of_dict_insertion_order(monkeypatch):
         "deepseek-chat": {"input": 1.0, "output": 2.0},  # 覆盖原值便于断言，且排在末尾
     }
     monkeypatch.setattr(
-        "app.services.llm.cost_tracker.MODEL_PRICING",
+        "app.integration.llm.cost_tracker.MODEL_PRICING",
         test_pricing,
     )
     # deepseek-chat-v2 同时以 deepseek-chat / deepseek-reasoner 为前缀（不等长），

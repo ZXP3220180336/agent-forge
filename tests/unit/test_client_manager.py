@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from app.services.llm import ClientManager
+from app.integration.llm import ClientManager
 
 
 class _FakeClient:

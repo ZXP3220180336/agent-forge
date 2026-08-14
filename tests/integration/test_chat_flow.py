@@ -15,11 +15,11 @@ import json
 import pytest
 
 from app.api.routes.chat import SendMessageRequest, send_message
-from app.services import ToolService
-from app.services.context_manager import ContextManager
-from app.services.llm_service import StreamResult
-from app.services.task_service import TaskService
-from app.tools.builtin import WriteFileTool
+from app.integration.tools.tool_service import ToolService
+from app.application.context.context_manager import ContextManager
+from app.integration.llm.llm_service import StreamResult
+from app.application.task.task_service import TaskService
+from app.integration.tools.builtin import WriteFileTool
 
 
 class FakeSessionManager:

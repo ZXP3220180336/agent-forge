@@ -1,18 +1,16 @@
 # ============================================
-# dependencies.py - 依赖注入函数
+# deps.py - 依赖注入函数（原 dependencies.py）
 # 与路由定义在同一包中，供路由函数使用
 # ============================================
 
 from fastapi import Header, HTTPException
 
-from .app_state import app_state
-from .services import (
-    ContextManager,
-    LLMService,
-    SessionManager,
-    TaskService,
-    ToolService,
-)
+from app.container import app_state
+from app.application.context.context_manager import ContextManager
+from app.application.session.session_manager import SessionManager
+from app.application.task.task_service import TaskService
+from app.integration.llm.llm_service import LLMService
+from app.integration.tools.tool_service import ToolService
 
 
 async def get_current_user(

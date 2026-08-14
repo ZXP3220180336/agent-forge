@@ -22,7 +22,7 @@ from openai import (
     UnprocessableEntityError,
 )
 
-from app.services.llm.retry import ErrorCategory, classify_error
+from app.integration.llm.retry import ErrorCategory, classify_error
 
 
 def _http_exc(cls, status_code: int):

@@ -29,7 +29,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import MessageModel, SessionModel
+from app.infrastructure.models.database import MessageModel, SessionModel
 
 
 class SessionManager:

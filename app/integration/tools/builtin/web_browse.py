@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from ...config import settings
+from app.config import settings
 from ..base import BaseTool, ToolResult
 
 

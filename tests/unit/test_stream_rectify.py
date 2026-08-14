@@ -19,13 +19,13 @@ import pytest
 from openai import APIResponseValidationError, BadRequestError, RateLimitError
 
 from app.config import settings
-from app.services.llm import (
+from app.integration.llm import (
     ClientManager,
     RetryConfig,
     RetryHandlerManager,
 )
-from app.services.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
-from app.services.llm_service import LLMService, StreamResult
+from app.integration.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
+from app.integration.llm.llm_service import LLMService, StreamResult
 
 
 # =====================================================================

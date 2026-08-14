@@ -11,8 +11,8 @@ import asyncio
 import pytest
 
 from app.config import settings
-from app.core.agent.base import AgentContext
-from app.services.task_service import TaskService
+from app.domain.agent.base import AgentContext
+from app.application.task.task_service import TaskService
 
 
 class _FakeAgent:

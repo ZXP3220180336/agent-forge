@@ -152,7 +152,7 @@ async def test_log_event_async_uses_to_thread(monkeypatch, tmp_path):
 def test_console_formatter_is_human_readable():
     """ConsoleFormatter 输出人类可读文本，含 ASCII 级别前缀。"""
     record = logging.LogRecord(
-        name="app.app_state",
+        name="app.container",
         level=logging.WARNING,
         pathname=__file__,
         lineno=1,

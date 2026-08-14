@@ -14,9 +14,9 @@ import time
 import pytest
 
 from app.config import settings
-from app.core.agent import AgentContext, ReActAgent
-from app.services import ToolService
-from app.tools.base import BaseTool, ToolResult
+from app.domain.agent import AgentContext, ReActAgent
+from app.integration.tools.tool_service import ToolService
+from app.integration.tools.base import BaseTool, ToolResult
 
 
 class _DelayTool(BaseTool):

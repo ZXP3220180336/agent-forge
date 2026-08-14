@@ -5,7 +5,7 @@
 import asyncio
 from typing import Any
 
-from ...config import settings
+from app.config import settings
 from ..base import BaseTool, ToolResult
 
 

@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from app.services.llm.reservation_limiter import (
+from app.integration.llm.reservation_limiter import (
     OutputTokenEstimator,
     Reservation,
     ReservationLimiter,

@@ -5,9 +5,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.core.agent import AgentContext, ReActAgent
-from app.core.events import build_error_event
-from app.dependencies import (
+from app.domain.agent import AgentContext, ReActAgent
+from app.shared.events import build_error_event
+from app.api.deps import (
     get_context_manager,
     get_current_user,
     get_llm_service,
@@ -15,14 +15,12 @@ from app.dependencies import (
     get_task_service,
     get_tool_service,
 )
-from app.models.schemas.request import SendMessageRequest
-from app.services import (
-    ContextManager,
-    LLMService,
-    SessionManager,
-    TaskService,
-    ToolService,
-)
+from app.api.schemas.request import SendMessageRequest
+from app.application.context.context_manager import ContextManager
+from app.integration.llm.llm_service import LLMService
+from app.application.session.session_manager import SessionManager
+from app.application.task.task_service import TaskService
+from app.integration.tools.tool_service import ToolService
 
 router = APIRouter(prefix="/api", tags=["聊天"])
 

@@ -14,8 +14,8 @@ import json
 
 import pytest
 
-from app.services.llm_service import LLMService, StreamResult
-from app.services.llm.structured import (
+from app.integration.llm.llm_service import LLMService, StreamResult
+from app.integration.llm.structured import (
     StructuredRefusalError,
     StructuredTruncationError,
     _enforce_no_extra_fields,
@@ -509,7 +509,7 @@ async def test_tool_calls_finish_not_treated_as_refusal():
     JSON，降级到更宽松约束（JSON mode/纯 prompt）无意义，短路不进入降级链，
     交回调用方按工具调用处理。
     """
-    from app.services.llm.structured import StructuredToolCallError
+    from app.integration.llm.structured import StructuredToolCallError
 
     llm = LLMService()
     calls = []
@@ -690,7 +690,7 @@ async def test_extra_field_rejected_by_default():
 @pytest.mark.asyncio
 async def test_caller_schema_not_polluted():
     """extract 补全不污染调用方 schema（深拷贝）。"""
-    from app.services.llm.structured import StructuredOutput
+    from app.integration.llm.structured import StructuredOutput
 
     schema = {
         "type": "object",
@@ -705,7 +705,7 @@ async def test_caller_schema_not_polluted():
 @pytest.mark.asyncio
 async def test_explicit_true_respected():
     """调用方显式写 additionalProperties:true → 尊重意图，不覆盖。"""
-    from app.services.llm.structured import StructuredOutput
+    from app.integration.llm.structured import StructuredOutput
 
     schema = {
         "type": "object",
@@ -719,7 +719,7 @@ async def test_explicit_true_respected():
 @pytest.mark.asyncio
 async def test_nested_objects_recursively_enforced():
     """嵌套 object 也递归补全 additionalProperties:false。"""
-    from app.services.llm.structured import StructuredOutput
+    from app.integration.llm.structured import StructuredOutput
 
     schema = {
         "type": "object",
@@ -768,7 +768,7 @@ async def test_fallback_regex_extracts_json_from_prose():
 @pytest.mark.asyncio
 async def test_enforce_nullable_object_type_array():
     """type 数组含 object（可空写法 ["object","null"]）也补全 additionalProperties:false。"""
-    from app.services.llm.structured import StructuredOutput
+    from app.integration.llm.structured import StructuredOutput
 
     schema = {
         "type": ["object", "null"],  # 可空对象

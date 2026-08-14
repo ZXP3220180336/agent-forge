@@ -23,14 +23,15 @@ import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.core.events import (
+from app.shared.events import (
     build_done_event,
     build_info_event,
     build_tool_call_event,
     build_tool_result_event,
 )
-from app.services import LLMService, ToolService
-from app.services.llm_service import StreamResult
+from app.integration.llm.llm_service import LLMService
+from app.integration.tools.tool_service import ToolService
+from app.integration.llm.llm_service import StreamResult
 
 from .base import AgentResult, BaseAgent
 

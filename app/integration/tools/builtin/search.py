@@ -7,7 +7,7 @@ from typing import Any
 
 from tavily import TavilyClient
 
-from ...config import settings
+from app.config import settings
 from ..base import BaseTool, ToolResult
 
 

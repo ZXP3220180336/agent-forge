@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING
 from app.config import settings
 
 if TYPE_CHECKING:
-    from app.core.agent.base import AgentContext
-    from app.core.agent.executor import ReActAgent
+    from app.domain.agent.base import AgentContext
+    from app.domain.agent.executor import ReActAgent
 
 
 class TaskService:

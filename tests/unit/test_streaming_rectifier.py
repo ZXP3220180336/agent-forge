@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.llm.streaming_rectifier import RectifierContext, StreamingRectifier
-from app.services.llm_service import StreamResult
+from app.integration.llm.streaming_rectifier import RectifierContext, StreamingRectifier
+from app.integration.llm.llm_service import StreamResult
 
 
 # =====================================================================

@@ -1,5 +1,5 @@
 # ============================================
-# app_state.py - 应用状态管理模块
+# container.py - 装配根（Composition Root，原 app_state.py）
 # ============================================
 
 import asyncio
@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.services.llm import (
+from app.application.context.context_manager import ContextManager
+from app.application.session.session_manager import SessionManager
+from app.application.task.task_service import TaskService
+from app.integration.embedding_service import EmbeddingService
+from app.integration.llm import (
     CircuitBreakerConfig,
     ClientManager,
     ReservationLimiterConfig,
@@ -22,16 +26,10 @@ from app.services.llm import (
     StreamingRectifier,
     StructuredOutput,
 )
+from app.integration.llm.llm_service import LLMService
+from app.integration.tools.tool_service import ToolService
 
 from .config import settings
-from .services import (
-    ContextManager,
-    EmbeddingService,
-    LLMService,
-    SessionManager,
-    TaskService,
-    ToolService,
-)
 from .utils.logger import get_logger
 
 logger = get_logger("app_state")
@@ -234,7 +232,7 @@ class AppState:
             cleanup_tasks.append(self._engine.dispose())
 
         # 关闭 LLM 客户端连接池（AsyncOpenAI 底层 httpx 连接池），优雅退出
-        from app.services.llm import ClientManager
+        from app.integration.llm import ClientManager
 
         cleanup_tasks.append(ClientManager.close_all())
 

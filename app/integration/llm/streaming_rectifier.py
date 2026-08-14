@@ -39,19 +39,19 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.core.events import (
+from app.integration.llm.retry import ErrorCategory, classify_error
+from app.integration.llm.streaming import StreamParser
+from app.shared.events import (
     build_error_event,
     build_message_event,
     build_reasoning_event,
 )
-from app.services.llm.retry import ErrorCategory, classify_error
-from app.services.llm.streaming import StreamParser
 from app.utils.logger import fill_llm_event_fields
 
 if TYPE_CHECKING:
-    from app.services.llm.reservation_limiter import Reservation
-    from app.services.llm.retry import RetryHandler
-    from app.services.llm_service import StreamResult
+    from app.integration.llm.llm_service import StreamResult
+    from app.integration.llm.reservation_limiter import Reservation
+    from app.integration.llm.retry import RetryHandler
 
 
 def _stream_backoff(attempt: int) -> float:

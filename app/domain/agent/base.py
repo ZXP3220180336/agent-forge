@@ -25,8 +25,9 @@ from enum import Enum
 from typing import Any
 
 from app.config import settings
-from app.core.events import build_error_event, build_info_event
-from app.services import LLMService, ToolService
+from app.shared.events import build_error_event, build_info_event
+from app.integration.llm.llm_service import LLMService
+from app.integration.tools.tool_service import ToolService
 
 
 class AgentState(Enum):

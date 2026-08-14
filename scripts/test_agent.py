@@ -16,12 +16,12 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from app.config import settings
-from app.core.agent import AgentContext
-from app.core.agent.executor import ReActAgent
-from app.core.prompts.manager import PromptManager
-from app.services import ToolService
-from app.services.llm_service import LLMService
-from app.tools.builtin import ReadFileTool, SearchTool, WriteFileTool
+from app.domain.agent import AgentContext
+from app.domain.agent.executor import ReActAgent
+from app.domain.prompts.manager import PromptManager
+from app.integration.tools.tool_service import ToolService
+from app.integration.llm.llm_service import LLMService
+from app.integration.tools.builtin import ReadFileTool, SearchTool, WriteFileTool
 
 
 async def main():

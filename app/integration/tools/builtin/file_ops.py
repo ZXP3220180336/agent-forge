@@ -7,7 +7,7 @@ from typing import Any
 
 import aiofiles
 
-from ...config import settings
+from app.config import settings
 from ..base import BaseTool, ToolResult
 
 

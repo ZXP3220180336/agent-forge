@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from app.services.llm.retry import (
+from app.integration.llm.retry import (
     CircuitBreaker,
     CircuitBreakerConfig,
     CircuitBreakerOpenError,

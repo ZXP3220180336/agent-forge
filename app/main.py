@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import chat_router, session_router
-from app.app_state import app_state
+from app.container import app_state
 from app.utils.logger import get_logger, setup_logging
 
 # 配置全局日志框架（在 lifespan 与静态目录检查前，确保所有模块日志生效）

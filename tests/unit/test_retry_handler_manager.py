@@ -10,7 +10,7 @@ RetryHandlerManager 单元测试
 
 import pytest
 
-from app.services.llm.retry import RetryHandlerManager
+from app.integration.llm.retry import RetryHandlerManager
 
 
 # =====================================================================
