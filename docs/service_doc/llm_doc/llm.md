@@ -1245,6 +1245,8 @@ response = await retry.execute(
 - **流式整流拆为独立策略类（2026-08-10）**：`StreamingRectifier`（无状态静态类，不实例化）封装整流循环/emitted_any/熔断 feeding/结算闭环/事件日志 + `RectifierContext`（result/active/event_fields 共享状态）；`async_generate` 只做编排（构造 create_fn + 调 `rectified_stream`）。详见 [streaming_rectifier.md](streaming_rectifier.md)
 - **acquire 形态限流移除（2026-08-10）**：`rate_limiter.py` 删除，代码作为学习参考并入 [limiter.md](limiter.md)；llm_service 实际使用 reserve/settle 形态（`reservation_limiter.py`）
 - **整流判定 emitted_any 累积语义修复（2026-08-10）**：`_apply_chunk` 返回「单 chunk 是否产出」改为累积（`emitted_any = emitted_any or chunk_emitted`）——修复中断前最后一个 usage/finish-only chunk 把已产出标记冲成 False、导致误整流（重复输出 + 双倍计费）的缺陷；新增回归测试固化
+- **结构化输出调用/短路辅助方法抽取（2026-08-12）**：`StructuredOutput` 新增 `_call_generate`（统一调 generate + 下游异常分类：NON_RETRYABLE raise / 可恢复返回 None，`stage` 参数做日志前缀）与 `_raise_boundary`（统一 refusal / tool_calls / truncated 短路抛异常）——`_try_extract` 主调用/截断重试/回喂三处调用点与 `_fallback_extract` 共用，消除重复 try/except 与短路分支。truncated 为主调用点可选短路（主调用点截断仍需扩 token 重试，用 `else` 隔离）。详见 [structure.md](structure.md)
+- **结构化输出纯工具函数提取模块级（2026-08-12）**：`_build_json_schema_request` / `_build_json_mode_request` / `_enforce_no_extra_fields` / `_try_parse_json` / `_parse_and_validate` / `_collect_schema_errors` / `_build_reask_messages` / `_validate_schema` 提取为模块级私有函数（无类状态、可独立测试）；`StructuredOutput` 只保留业务编排与边界决策（`extract` / `_try_extract` / `_fallback_extract` / `_call_generate` / `_classify_result` / `_raise_boundary` / `register_config`）。详见 [structure.md](structure.md)
 
 ### 遗留未定事项
 

@@ -18,6 +18,7 @@ from app.services.llm_service import LLMService, StreamResult
 from app.services.llm.structured import (
     StructuredRefusalError,
     StructuredTruncationError,
+    _enforce_no_extra_fields,
 )
 
 SCHEMA = {
@@ -696,7 +697,7 @@ async def test_caller_schema_not_polluted():
         "properties": {"name": {"type": "string"}},
         "required": ["name"],
     }
-    enforced = StructuredOutput._enforce_no_extra_fields(schema)
+    enforced = _enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is False
     assert "additionalProperties" not in schema  # 调用方 schema 未被就地修改
 
@@ -711,7 +712,7 @@ async def test_explicit_true_respected():
         "properties": {"name": {"type": "string"}},
         "additionalProperties": True,  # 显式允许扩展
     }
-    enforced = StructuredOutput._enforce_no_extra_fields(schema)
+    enforced = _enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is True  # 保持 true
 
 
@@ -732,7 +733,7 @@ async def test_nested_objects_recursively_enforced():
         },
         "required": ["name"],
     }
-    enforced = StructuredOutput._enforce_no_extra_fields(schema)
+    enforced = _enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is False  # 顶层
     assert enforced["properties"]["address"]["additionalProperties"] is False  # 嵌套
 
@@ -773,5 +774,5 @@ async def test_enforce_nullable_object_type_array():
         "type": ["object", "null"],  # 可空对象
         "properties": {"name": {"type": "string"}},
     }
-    enforced = StructuredOutput._enforce_no_extra_fields(schema)
+    enforced = _enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is False
