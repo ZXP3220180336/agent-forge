@@ -118,4 +118,4 @@ Agent 是核心层的**决策与行动核心**，负责编排 LLM 推理与工�
 - [记忆系统（预留）](memory_doc/memory.md)
 - [推理策略（预留）](reasoning_doc/reasoning.md)
 - [service 模块](../service_doc/service.md)
-- [config 模块](../config.md)
+- [config 模块](../config_doc/config.md)

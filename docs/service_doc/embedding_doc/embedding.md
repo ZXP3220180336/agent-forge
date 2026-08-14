@@ -147,7 +147,7 @@ print(app_state.embedding_service.cache_size)
 
 ## 配置关联
 
-相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config.md) 与 [LLM 层文档](../llm_doc/llm.md)）：
+相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config_doc/config.md) 与 [LLM 层文档](../llm_doc/llm.md)）：
 
 | 配置项 | 默认值 | 使用位置 | 说明 |
 | --- | --- | --- | --- |
@@ -165,5 +165,5 @@ print(app_state.embedding_service.cache_size)
 - [记忆系统（预留）](../../core_doc/memory_doc/memory.md)（规划中「长期记忆向量化」的能力来源）
 - [核心层说明](../../core_doc/core.md)
 - [架构设计](../../architecture.md)
-- [配置说明](../../config.md)
+- [配置说明](../../config_doc/config.md)
 - [HANDOFF](../../HANDOFF.md)

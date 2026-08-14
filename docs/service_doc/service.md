@@ -513,7 +513,7 @@ cost = LLMService.calculate_cost(
 
 ## 配置关联
 
-服务层相关配置集中在 `app/config/settings.py`（详见 [config 文档](../config.md)）：
+服务层相关配置集中在 `app/config/settings.py`（详见 [config 文档](../config_doc/config.md)）：
 
 | 配置项 | 默认值 | 关联模块 | 说明 |
 | --- | --- | --- | --- |
@@ -553,5 +553,5 @@ cost = LLMService.calculate_cost(
 - [工具层说明](../tool_doc/tools.md)（BaseTool 与内置工具）
 - [Agent 模块](../core_doc/agent_doc/agent.md)（ReActAgent 循环，服务层的下游调用方）
 - [API 模块](../api_doc/api.md)（服务层上游调用方）
-- [配置说明](../config.md)（全部配置项）
+- [配置说明](../config_doc/config.md)（全部配置项）
 - [部署](../deployment.md)

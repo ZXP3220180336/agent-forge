@@ -136,4 +136,4 @@ class RectifierContext:
 - [StreamParser](streaming.md)（chunk 解析，`ParsedChunk`）
 - [重试与熔断](retry.md)（`RetryHandler` / `classify_error` / 熔断 feeding）
 - [限流器](limiter.md)（reserve/settle 结算闭环）
-- [全局日志框架](../../logging.md)（`fill_llm_event_fields`）
+- [全局日志框架](../../utils_doc/logging.md)（`fill_llm_event_fields`）

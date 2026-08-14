@@ -161,7 +161,7 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 
 ## 相关文档
 
-- [配置管理模块](config.md)（`LOG_*` 配置项）
-- [LLM 服务层说明](service_doc/llm_doc/llm.md)（LLM 调用业务事件）
-- [服务层说明](service_doc/service.md)（各模块日志归属）
-- [架构设计](architecture.md)
+- [配置管理模块](../config_doc/config.md)（`LOG_*` 配置项）
+- [LLM 服务层说明](../service_doc/llm_doc/llm.md)（LLM 调用业务事件）
+- [服务层说明](../service_doc/service.md)（各模块日志归属）
+- [架构设计](../architecture.md)

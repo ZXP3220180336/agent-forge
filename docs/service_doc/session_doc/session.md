@@ -189,7 +189,7 @@ await app_state.session_manager.delete_session(session_id)
 
 ## 配置关联
 
-相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config.md)）：
+相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config_doc/config.md)）：
 
 | 配置项 | 默认值 | 当前是否被引用 | 说明 |
 | --- | --- | --- | --- |
@@ -210,5 +210,5 @@ await app_state.session_manager.delete_session(session_id)
 - [API 模块](../../api_doc/api.md)（`session.py` / `chat.py` 路由，本模块的上游调用方）
 - [核心层说明](../../core_doc/core.md)
 - [架构设计](../../architecture.md)
-- [配置说明](../../config.md)
+- [配置说明](../../config_doc/config.md)
 - [HANDOFF](../../HANDOFF.md)

@@ -133,10 +133,10 @@ POST /api/chat/send
 - [product](product.md)（产品方向）
 - [agent 模块](core_doc/agent_doc/agent.md)
 - [api 模块](api_doc/api.md)
-- [config 模块](config.md)
-- [logging 模块](logging.md)（全局日志框架）
-- [error_handling 模块](error_handling.md)（异常处理与传播约定）
-- [class-design 模块](class-design.md)（类的类型体系与实例形态）
+- [config 模块](config_doc/config.md)
+- [logging 模块](utils_doc/logging.md)（全局日志框架）
+- [error_handling 模块](utils_doc/error_handling.md)（异常处理与传播约定）
+- [class-design 模块](utils_doc/class-design.md)（类的类型体系与实例形态）
 - [LLM 层](service_doc/llm_doc/llm.md)
 - [task 模块](service_doc/task_doc/task.md)
 - [tool 模块](tool_doc/tools.md)

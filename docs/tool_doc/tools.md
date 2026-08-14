@@ -685,7 +685,7 @@ TOOL_MAX_CONTENT_LENGTH=500000
 
 ## 相关文档
 
-- [配置管理模块说明](../config.md)
+- [配置管理模块说明](../config_doc/config.md)
 - [架构设计文档](../architecture.md)
 - [API 文档](../api_doc/api.md)
 - [内置工具详解](builtin_doc/builtin.md)（BaseTool + 5 个内置工具）

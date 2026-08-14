@@ -658,7 +658,7 @@ async for event in StreamingRectifier.rectified_stream(
 
 ### LLM 调用业务事件（llm_call）
 
-**来源**：`app/utils/logger.py` 全局日志框架的业务事件机制（`fill_llm_event_fields` → `log_event_async`）；早期 `LLMLogger`（`app/services/llm/logger.py`）已移除，职责并入全局框架。详见 [logging.md](../../logging.md)。
+**来源**：`app/utils/logger.py` 全局日志框架的业务事件机制（`fill_llm_event_fields` → `log_event_async`）；早期 `LLMLogger`（`app/services/llm/logger.py`）已移除，职责并入全局框架。详见 [logging.md](../../utils_doc/logging.md)。
 
 #### 功能
 

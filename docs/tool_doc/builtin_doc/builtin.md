@@ -405,6 +405,6 @@ _http_client = httpx.AsyncClient(
 - [工具模块总览](../tools.md)（ToolService 注册中心、并发控制、重试、统计、配置关联）
 - [service 模块](../../service_doc/service.md)（ToolService 所在的服务层）
 - [架构设计](../../architecture.md)（工具层在整体架构中的定位）
-- [配置管理](../../config.md)（`TAVILY_API_KEY`、`TOOL_MAX_OUTPUT_LENGTH` 等配置项）
+- [配置管理](../../config_doc/config.md)（`TAVILY_API_KEY`、`TOOL_MAX_OUTPUT_LENGTH` 等配置项）
 - [核心层](../../core_doc/core.md)（Agent 推理循环如何消费工具）
 - [API 文档](../../api_doc/api.md)

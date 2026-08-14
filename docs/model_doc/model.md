@@ -312,5 +312,5 @@ Pydantic Schema 用于 **API 层出入参的校验与文档化**：
 | [任务模块](../service_doc/task_doc/task.md)   | `task.py` 预留对应的任务数据结构             |
 | [工具系统](../tool_doc/tools.md)  | `tool_log.py` 预留对应的工具抽象与内置工具   |
 | [API 层](../api_doc/api.md)       | `schemas/` 预留对应的请求 / 响应模型         |
-| [配置参考](../config.md)          | `DATABASE_URL` 等数据库连接配置              |
+| [配置参考](../config_doc/config.md)      | `DATABASE_URL` 等数据库连接配置              |
 | [部署文档](../deployment.md)      | 数据库部署与 `asyncpg` 依赖说明              |

@@ -161,7 +161,7 @@ await self.redis.ping()
 
 ## 相关文档链接
 
-- [配置参考](../config.md) — `DATABASE_URL` / `REDIS_URL` / `memory_vector_db` 等基础设施相关配置
+- [配置参考](../config_doc/config.md) — `DATABASE_URL` / `REDIS_URL` / `memory_vector_db` 等基础设施相关配置
 - [系统架构](../architecture.md) — 整体架构中基础设施层的定位
 - [项目整体进度](../HANDOFF.md) — 项目全局状态与待办
 - [LLM 层说明文档](../service_doc/llm_doc/llm.md) — 同风格的分层文档参考

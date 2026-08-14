@@ -746,7 +746,7 @@ Agent 模块与 `settings.py` 中的以下配置项关联：
 ## 相关文档
 
 - [架构设计文档](../../architecture.md)
-- [配置管理模块说明](../../config.md)
+- [配置管理模块说明](../../config_doc/config.md)
 - [工具模块说明](../../tool_doc/tools.md)
 - [API 文档](../../api_doc/api.md)
 - [部署文档](../../deployment.md)

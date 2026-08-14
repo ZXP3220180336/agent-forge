@@ -349,7 +349,7 @@ Pydantic 类型验证
 | `LOG_FORMAT` | str  | "json"         | 日志格式（json/text） |
 | `LOG_FILE`   | str  | "logs/app.log" | 日志文件路径          |
 
-> `LOG_*` 由全局日志框架（`app/utils/logger.py` 的 `setup_logging()`）读取生效，见 [logging.md](logging.md)。
+> `LOG_*` 由全局日志框架（`app/utils/logger.py` 的 `setup_logging()`）读取生效，见 [logging.md](../utils_doc/logging.md)。
 
 ---
 
@@ -674,10 +674,10 @@ api_key = settings.llm_api_key  # ✅ 而不是 os.getenv("LLM_API_KEY")
 
 **相关文档：**
 
-- [架构设计文档](architecture.md)
-- [工具模块说明](tool_doc/tools.md)
-- [API 文档](api_doc/api.md)
-- [部署文档](deployment.md)
+- [架构设计文档](../architecture.md)
+- [工具模块说明](../tool_doc/tools.md)
+- [API 文档](../api_doc/api.md)
+- [部署文档](../deployment.md)
 
 ## 后续优化建议
 

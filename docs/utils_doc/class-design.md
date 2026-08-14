@@ -327,7 +327,7 @@ def __init__(self):
 
 ## 相关文档
 
-- [架构设计](architecture.md)（分层与模块状态）
-- [服务层说明](service_doc/service.md)（各服务实例归属）
-- [LLM 层](service_doc/llm_doc/llm.md)（ClientManager / 限流器 / StreamParser 详解）
-- [数据模型](model_doc/model.md)（BaseModel 契约层）
+- [架构设计](../architecture.md)（分层与模块状态）
+- [服务层说明](../service_doc/service.md)（各服务实例归属）
+- [LLM 层](../service_doc/llm_doc/llm.md)（ClientManager / 限流器 / StreamParser 详解）
+- [数据模型](../model_doc/model.md)（BaseModel 契约层）

@@ -1195,7 +1195,7 @@ async_generate() / generate()
 
 ##### 「已缓解但未消除」的具体情形
 
-**预留公式**（[llm_service.py](app/services/llm_service.py) 的 `_count_prompt_tokens`）：`estimated = prompt_tokens + max_tokens`（输出上限的保守估算），TPM 桶按此扣减。**这个数是「上限」而非「实际」**——实际输出往往远小于 max_tokens。
+**预留公式**（[llm_service.py](../../../app/services/llm_service.py) 的 `_count_prompt_tokens`）：`estimated = prompt_tokens + max_tokens`（输出上限的保守估算），TPM 桶按此扣减。**这个数是「上限」而非「实际」**——实际输出往往远小于 max_tokens。
 
 **「已缓解」——退差解决了什么**（单请求长期不耗空桶）：
 
