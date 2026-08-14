@@ -3,14 +3,20 @@
 """
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
-from app.config import settings
 from ..base import BaseTool, ToolResult
 
 
 class CodeExecTool(BaseTool):
     """终端命令执行工具"""
+
+    _max_output_length: ClassVar[int] = 100_000
+
+    @classmethod
+    def register_config(cls, *, max_output_length: int = 100_000, **kwargs: Any) -> None:
+        """注入输出截断配置（由装配根调用，避免直接依赖 settings）。"""
+        cls._max_output_length = max_output_length
 
     # 禁止执行的危险命令前缀
     FORBIDDEN_PREFIXES: tuple[str, ...] = (
@@ -98,7 +104,7 @@ class CodeExecTool(BaseTool):
             stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
 
             # 截断过长的输出
-            max_len = settings.tool_max_output_length
+            max_len = self._max_output_length
             if len(stdout_str) > max_len:
                 stdout_str = (
                     stdout_str[:max_len]

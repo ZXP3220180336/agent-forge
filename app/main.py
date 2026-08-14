@@ -34,10 +34,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import chat_router, session_router
 from app.container import container
-from app.utils.logger import get_logger, setup_logging
+from app.utils.logger import get_logger
 
-# 配置全局日志框架（在 lifespan 与静态目录检查前，确保所有模块日志生效）
-setup_logging()
 logger = get_logger("main")
 
 

@@ -3,11 +3,10 @@
 """
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
 from tavily import TavilyClient
 
-from app.config import settings
 from ..base import BaseTool, ToolResult
 
 
@@ -16,6 +15,15 @@ class SearchTool(BaseTool):
     网络搜索工具
     使用 Tavily Search API 进行实时搜索
     """
+
+    _api_key: ClassVar[str] = ""
+    _search_depth: ClassVar[str] = "basic"
+
+    @classmethod
+    def register_config(cls, *, api_key: str = "", search_depth: str = "basic", **kwargs: Any) -> None:
+        """注入 Tavily 配置（由装配根调用，避免直接依赖 settings）。"""
+        cls._api_key = api_key
+        cls._search_depth = search_depth
 
     @property
     def name(self) -> str:
@@ -51,7 +59,7 @@ class SearchTool(BaseTool):
         if not self.validate_parameters(**kwargs):
             return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
 
-        api_key = settings.tavily_api_key
+        api_key = self._api_key
 
         if not api_key:
             return ToolResult(
@@ -66,7 +74,7 @@ class SearchTool(BaseTool):
             response = await asyncio.to_thread(
                 tavily.search,
                 query=kwargs["query"],
-                search_depth=settings.tavily_search_depth,
+                search_depth=self._search_depth,
                 include_answer=True,
             )
 

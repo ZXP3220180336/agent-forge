@@ -48,7 +48,7 @@ class _SleepTool(BaseTool):
 async def test_tool_service_limits_concurrency(monkeypatch):
     """工具级并发不超过 agent_max_concurrent_tools。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 2)
-    reg = ToolService()
+    reg = ToolService(max_concurrent_tools=2)
     tool = _SleepTool(delay=0.02)
     reg.register(tool)
 
@@ -63,7 +63,7 @@ async def test_tool_service_limits_concurrency(monkeypatch):
 async def test_tool_service_execute_basic(monkeypatch):
     """execute 基本流程：成功返回 + 统计记录。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 5)
-    reg = ToolService()
+    reg = ToolService(max_concurrent_tools=5)
     tool = _SleepTool(delay=0)
     reg.register(tool)
 
@@ -80,7 +80,7 @@ async def test_tool_service_execute_basic(monkeypatch):
 async def test_tool_service_releases_semaphore_on_error(monkeypatch):
     """工具异常时信号量仍释放（async with 保证）。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 2)
-    reg = ToolService()
+    reg = ToolService(max_concurrent_tools=2)
 
     class _FailTool(_SleepTool):
         async def execute(self, **kwargs) -> ToolResult:

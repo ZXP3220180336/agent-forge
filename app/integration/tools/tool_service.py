@@ -27,7 +27,6 @@ from app.utils.logger import get_logger
 
 logger = get_logger("services.tool_service")
 
-from app.config import settings
 from app.integration.tools import BaseTool, ToolResult
 from app.integration.tools.builtin import __all__ as builtin_tool_names
 
@@ -73,13 +72,20 @@ class ToolService:
     - 内置工具自动装配（importlib 扫描）
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        max_concurrent_tools: int = 3,
+        tool_timeout: int = 30,
+        tool_max_retries: int = 3,
+    ) -> None:
         self._tools: dict[str, BaseTool] = {}
         self._execution_hooks: list[Callable] = []
         self._stats: dict[str, ToolStats] = {}
+        self._tool_timeout = tool_timeout
+        self._tool_max_retries = tool_max_retries
         # 工具级并发信号量：限制单任务内最大并发工具调用数。
         # Agent 维度（GPU/服务器资源），对应配置 agent_max_concurrent_tools。
-        self._tool_semaphore = asyncio.Semaphore(settings.agent_max_concurrent_tools)
+        self._tool_semaphore = asyncio.Semaphore(max_concurrent_tools)
 
     # ===== 注册管理 =====
 
@@ -201,10 +207,10 @@ class ToolService:
     ) -> ToolResult:
         """执行工具（带参数验证、自动重试、执行统计），在信号量保护内调用。"""
 
-        # 1. 使用配置默认值（调用方传 None 则走 settings）
-        timeout = timeout if timeout is not None else settings.tool_timeout
+        # 1. 使用配置默认值（调用方传 None 则走注入配置）
+        timeout = timeout if timeout is not None else self._tool_timeout
         max_retries = (
-            max_retries if max_retries is not None else settings.tool_max_retries
+            max_retries if max_retries is not None else self._tool_max_retries
         )
 
         # 2. 查找工具

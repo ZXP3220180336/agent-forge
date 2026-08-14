@@ -45,7 +45,7 @@ def test_get_logger_returns_app_namespaced():
 
 def test_setup_logging_creates_dual_handlers(tmp_path):
     """setup_logging 创建控制台 + 文件双 handler，级别按 settings。"""
-    setup_logging()
+    setup_logging(log_file=str(tmp_path / "app.log"))
     root = logging.getLogger()
     types = [type(h).__name__ for h in root.handlers]
     assert "StreamHandler" in types, f"应有控制台 handler: {types}"
@@ -54,18 +54,18 @@ def test_setup_logging_creates_dual_handlers(tmp_path):
     assert tmp_path.joinpath("app.log").exists(), "日志文件应已创建"
 
 
-def test_setup_logging_is_idempotent():
+def test_setup_logging_is_idempotent(tmp_path):
     """重复 setup_logging 不叠加 handler。"""
-    setup_logging()
+    setup_logging(log_file=str(tmp_path / "app.log"))
     n1 = len(logging.getLogger().handlers)
-    setup_logging()
+    setup_logging(log_file=str(tmp_path / "app.log"))
     n2 = len(logging.getLogger().handlers)
     assert n1 == n2, f"重复 setup 后 handler 数应不变: {n1} -> {n2}"
 
 
 def test_json_handler_writes_structured_event(tmp_path):
     """文件 handler 输出结构化 JSON，含 event_name 与自定义字段。"""
-    setup_logging()
+    setup_logging(log_file=str(tmp_path / "app.log"))
     log_event("llm_call", success=False, error="超时", duration=1.5)
     # 触发 flush：logging 的 FileHandler 每条日志即写，直接读即可
     lines = tmp_path.joinpath("app.log").read_text(encoding="utf-8").strip().splitlines()
@@ -106,7 +106,7 @@ def test_json_formatter_excludes_reserved_keys():
 
 def test_json_event_survives_none_values(tmp_path):
     """JSON 中 None 字段保留为 null（成功路径 error=None 必须可见）。"""
-    setup_logging()
+    setup_logging(log_file=str(tmp_path / "app.log"))
     log_event("llm_call", success=True, error=None)
     data = json.loads(tmp_path.joinpath("app.log").read_text(encoding="utf-8").strip())
     assert data["error"] is None
@@ -115,8 +115,7 @@ def test_json_event_survives_none_values(tmp_path):
 
 def test_text_format_variant(tmp_path, monkeypatch):
     """log_format=text 时文件输出人类可读文本（非 JSON）。"""
-    monkeypatch.setattr(settings, "log_format", "text")
-    setup_logging()
+    setup_logging(log_file=str(tmp_path / "app.log"), log_format="text")
     log_event("llm_call", success=True, duration=2.0)
     line = tmp_path.joinpath("app.log").read_text(encoding="utf-8").strip()
     with pytest.raises(json.JSONDecodeError):
@@ -128,7 +127,7 @@ def test_text_format_variant(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_log_event_async_uses_to_thread(monkeypatch, tmp_path):
     """log_event_async 通过 asyncio.to_thread 调用同步 log_event。"""
-    setup_logging()  # 先配置文件 handler，确保日志落盘
+    setup_logging(log_file=str(tmp_path / "app.log"))  # 先配置文件 handler，确保日志落盘
     calls = {}
 
     async def fake_to_thread(fn, *args, **kwargs):

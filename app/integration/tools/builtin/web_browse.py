@@ -4,12 +4,11 @@
 
 import html as html_module
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urljoin
 
 import httpx
 
-from app.config import settings
 from ..base import BaseTool, ToolResult
 
 
@@ -157,6 +156,15 @@ def _get_http_client() -> httpx.AsyncClient:
 class WebBrowseTool(BaseTool):
     """网页浏览工具"""
 
+    _max_content_length: ClassVar[int] = 50_000
+
+    @classmethod
+    def register_config(
+        cls, *, max_content_length: int = 50_000, **kwargs: Any
+    ) -> None:
+        """注入网页内容截断配置（由装配根调用，避免直接依赖 settings）。"""
+        cls._max_content_length = max_content_length
+
     @property
     def name(self) -> str:
         return "web_browse"
@@ -218,7 +226,7 @@ class WebBrowseTool(BaseTool):
             links_block = parser.get_links_formatted()
 
             # 截断过长的内容
-            max_len = settings.tool_max_content_length
+            max_len = self._max_content_length
             if len(page_text) > max_len:
                 page_text = (
                     page_text[:max_len]

@@ -101,3 +101,11 @@ class BaseTool(ABC):
                 return False
 
         return True
+
+    @classmethod
+    def register_config(cls, **kwargs: Any) -> None:
+        """可选：由装配根注入工具运行配置（默认无操作，子类按需覆盖）。
+
+        内置工具（SearchTool / WebBrowseTool 等）各自实现此方法，
+        经装配根调用，避免直接依赖 settings。
+        """

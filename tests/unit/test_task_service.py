@@ -34,7 +34,7 @@ class _FakeAgent:
 async def test_task_service_limits_concurrency(monkeypatch):
     """并发 Agent 任务数不超过信号量上限。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tasks", 2)
-    ts = TaskService()
+    ts = TaskService(max_concurrent=2)
 
     # 用共享计数：只有信号量放行后（run() 内部）才递增，观测真正并发
     state = {"active": 0, "max_active": 0}
@@ -67,7 +67,7 @@ async def test_task_service_limits_concurrency(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_agent_forwards_events():
     """run_agent 流式转发 Agent 事件。"""
-    ts = TaskService()
+    ts = TaskService(max_concurrent=2)
     fake = _FakeAgent(delay=0, events=3)
     events = []
     async for ev in ts.run_agent(
@@ -84,7 +84,7 @@ async def test_run_agent_forwards_events():
 @pytest.mark.asyncio
 async def test_run_agent_releases_semaphore_on_error():
     """异常时信号量仍释放（async with 保证）：异常后能再进入。"""
-    ts = TaskService()
+    ts = TaskService(max_concurrent=2)
 
     class _FailingAgent:
         async def run(self, user_input, messages, context):

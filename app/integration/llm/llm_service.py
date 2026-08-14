@@ -12,9 +12,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import Any
+from typing import Any, ClassVar
 
-from app.config import settings
 from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm import (
     ClientManager,
@@ -74,12 +73,12 @@ def _build_fallback_fn(
     fallback 是纯兜底：只在 create 阶段由 retry.execute 调用，
     流式中断的整流重试不触发额外 fallback。
     """
-    if not settings.llm_fallback_model_id:
+    if not LLMService._fallback_model_id:
         return None
 
     def fallback_fn() -> Awaitable[Any]:
         fb_kwargs = dict(kwargs)
-        fb_kwargs["model"] = settings.llm_fallback_model_id
+        fb_kwargs["model"] = LLMService._fallback_model_id
         return ClientManager.get_client(model_key).chat.completions.create(**fb_kwargs)
 
     return fallback_fn
@@ -206,6 +205,23 @@ class LLMService:
         2. 生产方式：LLMService() 自动使用 ClientManager（需先注册）
     """
 
+    _fallback_model_id: ClassVar[str] = ""
+    _adaptive_reserve: ClassVar[bool] = False
+    _stream_max_retries: ClassVar[int] = 1
+
+    @classmethod
+    def register_config(
+        cls,
+        *,
+        fallback_model_id: str,
+        adaptive_reserve: bool,
+        stream_max_retries: int,
+    ) -> None:
+        """注入运行期配置（由装配根调用，避免直接依赖 settings）。"""
+        cls._fallback_model_id = fallback_model_id
+        cls._adaptive_reserve = adaptive_reserve
+        cls._stream_max_retries = stream_max_retries
+
     def __init__(
         self,
         api_key: str = "",
@@ -214,11 +230,16 @@ class LLMService:
     ):
         # 如果传入了手动参数，注册为 "main" 配置
         if api_key:
+            if not base_url or not model:
+                raise ValueError(
+                    "手动构造 LLMService 需同时提供 base_url 和 model"
+                    "（或使用装配根 container 装配）"
+                )
             ClientManager.register_config(
                 "main",
                 api_key=api_key,
-                base_url=base_url or settings.llm_base_url,
-                model=model or settings.llm_model_id,
+                base_url=base_url,
+                model=model,
             )
 
     # ==================================================================
@@ -268,7 +289,7 @@ class LLMService:
         # 限流预留量：默认固定形态（prompt + max_tokens）；
         # 开启 llm_adaptive_reserve 时用自适应形态（高分位估算输出，减少占桶）。
         # 结构性解耦：provider 仍收宽裕 max_tokens（不截断输出），只有限流器预留下降。
-        adaptive = settings.llm_adaptive_reserve
+        adaptive = self._adaptive_reserve
         prompt_tokens = 0
         estimated = 0
         if adaptive:
@@ -307,7 +328,7 @@ class LLMService:
             ),
             retry=retry,
             cancel_event=cancel_event,
-            stream_max_retries=settings.llm_stream_max_retries,
+            stream_max_retries=self._stream_max_retries,
             context=rectifier_context,
             fallback_fn=fallback_fn,
         ):
@@ -356,7 +377,7 @@ class LLMService:
         # 客户端限流：reserve/settle 统一闭环（与 async_generate 一致）。
         # 每次真实请求（含 retry 内部重试）都重新 reserve，create 失败全额退。
         # 自适应预留：开启 llm_adaptive_reserve 时用高分位估算输出（结构性解耦）。
-        adaptive = settings.llm_adaptive_reserve
+        adaptive = self._adaptive_reserve
         prompt_tokens = 0
         estimated = 0
         if adaptive:

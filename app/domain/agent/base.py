@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from app.config import settings
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 from app.shared.events import build_error_event, build_info_event
@@ -54,10 +53,10 @@ class AgentContext:
     session_id: str
     user_id: str
 
-    # 参数控制（默认值从配置中心读取）
-    max_iterations: int = settings.agent_max_iterations
-    temperature: float = settings.llm_temperature
-    max_tokens: int = settings.llm_max_tokens
+    # 参数控制（默认值与配置默认一致；生产值由装配根注入，可被调用方覆盖）
+    max_iterations: int = 10
+    temperature: float = 0.2
+    max_tokens: int = 4096
 
     # 扩展字段
     metadata: dict[str, Any] = field(default_factory=dict)

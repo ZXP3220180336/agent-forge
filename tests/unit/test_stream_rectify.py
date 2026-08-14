@@ -191,7 +191,7 @@ def _setup(monkeypatch, script, stream_max_retries=1):
             use_jitter=False,
         ),
     )
-    monkeypatch.setattr(settings, "llm_stream_max_retries", stream_max_retries)
+    monkeypatch.setattr(LLMService, "_stream_max_retries", stream_max_retries)
 
     # 限流 stub：reserve 立即放行，记录调用次数与 estimated_tokens，并统计 settle 退差。
     # 避免真实 Token Bucket 的等待拖慢测试，且能断言整流/重试会重新 reserve。
@@ -322,7 +322,7 @@ async def test_cancel_event_no_rectify(monkeypatch):
             use_jitter=False,
         ),
     )
-    monkeypatch.setattr(settings, "llm_stream_max_retries", 3)  # 即使可重试也不整流
+    monkeypatch.setattr(LLMService, "_stream_max_retries", 3)  # 即使可重试也不整流
 
     completions = fake_client.completions
     llm = LLMService()

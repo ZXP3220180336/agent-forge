@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import (
+    get_agent_params,
     get_context_manager,
     get_current_user,
     get_llm_service,
@@ -34,6 +35,7 @@ async def send_message(
     llm_service: LLMGateway = Depends(get_llm_service),  # noqa: B008
     tool_service: ToolGateway = Depends(get_tool_service),  # noqa: B008
     task_service: TaskService = Depends(get_task_service),  # noqa: B008
+    agent_params: dict = Depends(get_agent_params),  # noqa: B008
 ):
     """
     发送消息，流式返回 AI 回复
@@ -73,7 +75,9 @@ async def send_message(
         ctx = AgentContext(
             session_id=request.session_id,
             user_id=user_id,
-            max_iterations=request.max_iterations,
+            max_iterations=request.max_iterations or agent_params["max_iterations"],
+            temperature=agent_params["temperature"],
+            max_tokens=agent_params["max_tokens"],
         )
         agent = ReActAgent(llm=llm_service, tools=tool_service)
 

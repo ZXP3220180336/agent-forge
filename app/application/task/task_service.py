@@ -15,8 +15,6 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from app.config import settings
-
 if TYPE_CHECKING:
     from app.domain.agent.base import AgentContext
     from app.domain.agent.executor import ReActAgent
@@ -31,10 +29,8 @@ class TaskService:
     前交错进入，信号量失去约束。
     """
 
-    def __init__(self, max_concurrent: int | None = None) -> None:
-        self._semaphore = asyncio.Semaphore(
-            max_concurrent or settings.agent_max_concurrent_tasks
-        )
+    def __init__(self, max_concurrent: int = 10) -> None:
+        self._semaphore = asyncio.Semaphore(max_concurrent)
 
     @property
     def max_concurrent(self) -> int:

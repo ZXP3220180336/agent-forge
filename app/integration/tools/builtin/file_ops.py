@@ -3,16 +3,22 @@
 """
 
 import os
-from typing import Any
+from typing import Any, ClassVar
 
 import aiofiles
 
-from app.config import settings
 from ..base import BaseTool, ToolResult
 
 
 class ReadFileTool(BaseTool):
     """文件读取工具"""
+
+    _max_output_length: ClassVar[int] = 100_000
+
+    @classmethod
+    def register_config(cls, *, max_output_length: int = 100_000, **kwargs: Any) -> None:
+        """注入内容截断配置（由装配根调用，避免直接依赖 settings）。"""
+        cls._max_output_length = max_output_length
 
     @property
     def name(self) -> str:
@@ -46,7 +52,7 @@ class ReadFileTool(BaseTool):
                 content = await file.read()
 
             # 截断过大的文件内容
-            max_len = settings.tool_max_output_length
+            max_len = self._max_output_length
             if len(content) > max_len:
                 content = (
                     content[:max_len]

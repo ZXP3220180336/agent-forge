@@ -27,8 +27,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from app.config import settings
-
 __all__ = [
     "ConsoleFormatter",
     "JsonFormatter",
@@ -90,34 +88,43 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(f"app.{name}")
 
 
-def setup_logging() -> None:
-    """按 settings 配置根 logger 的双 handler（幂等，可重复调用）。
+def setup_logging(
+    level: str = "INFO",
+    log_file: str = "logs/app.log",
+    log_format: str = "json",
+) -> None:
+    """按传入配置初始化根 logger 的双 handler（幂等，可重复调用）。
 
     - 控制台：人类可读文本（ConsoleFormatter）
-    - 文件：JSON 结构化（默认）或文本（settings.log_format == "text"）
+    - 文件：JSON 结构化（默认）或文本（log_format == "text"）
     重复调用会清空现有 handler 重建，支持改配置后重配。
+
+    Args:
+        level: 日志级别（DEBUG/INFO/WARNING/ERROR/CRITICAL）
+        log_file: 日志文件路径
+        log_format: 文件输出格式（json/text）
     """
-    level = getattr(logging, settings.log_level, logging.INFO)
+    log_level = getattr(logging, level, logging.INFO)
     root = logging.getLogger()
 
     # 幂等：清空已有 handler 后重建（close 释放文件句柄）
     for h in list(root.handlers):
         root.removeHandler(h)
         h.close()
-    root.setLevel(level)
+    root.setLevel(log_level)
 
     # 控制台 handler
     console = logging.StreamHandler(sys.stdout)
-    console.setLevel(level)
+    console.setLevel(log_level)
     console.setFormatter(ConsoleFormatter())
     root.addHandler(console)
 
     # 文件 handler（目录不存在则创建）
-    log_path = Path(settings.log_file)
+    log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setLevel(level)
-    formatter = JsonFormatter() if settings.log_format == "json" else ConsoleFormatter()
+    file_handler.setLevel(log_level)
+    formatter = JsonFormatter() if log_format == "json" else ConsoleFormatter()
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
 

@@ -27,10 +27,16 @@ from app.integration.llm import (
     StructuredOutput,
 )
 from app.integration.llm.llm_service import LLMService
+from app.integration.tools.builtin import (
+    CodeExecTool,
+    ReadFileTool,
+    SearchTool,
+    WebBrowseTool,
+)
 from app.integration.tools.tool_service import ToolService
 
 from .config import settings
-from .utils.logger import get_logger
+from .utils.logger import get_logger, setup_logging
 
 logger = get_logger("container")
 
@@ -57,6 +63,8 @@ class Container:
         self.tool_service: ToolService | None = None
         self.task_service: TaskService | None = None
         self.embedding_service: EmbeddingService | None = None
+        # Agent 运行参数（initialize 时从 settings 填充，供 chat 路由构造 AgentContext）
+        self.agent_params: dict = {}
         # 记录初始化状态
         self.initialized = False
         self._errors: list[str] = []
@@ -68,6 +76,13 @@ class Container:
 
         单个基础设施初始化失败不影响整体启动，但会记录警告。
         """
+        # 0. 配置日志框架（装配根唯一读 settings，在此下发日志配置）
+        setup_logging(
+            level=settings.log_level,
+            log_file=settings.log_file,
+            log_format=settings.log_format,
+        )
+
         # 1. 创建 Redis 连接
         try:
             self.redis = Redis.from_url(
@@ -194,10 +209,31 @@ class Container:
             use_jitter=settings.llm_use_jitter,
         )
 
+        # LLM 运行期配置注入（fallback / 自适应预留 / 流式整流次数）
+        LLMService.register_config(
+            fallback_model_id=settings.llm_fallback_model_id,
+            adaptive_reserve=settings.llm_adaptive_reserve,
+            stream_max_retries=settings.llm_stream_max_retries,
+        )
         self.llm_service = LLMService()  # 空构造，通过 ClientManager 获取 client
 
-        # 4. 注册内置工具到全局注册中心
-        self.tool_service = ToolService()
+        # 4. 内置工具配置注入（register_config，随后空构造装配）
+        SearchTool.register_config(
+            api_key=settings.tavily_api_key,
+            search_depth=settings.tavily_search_depth,
+        )
+        WebBrowseTool.register_config(
+            max_content_length=settings.tool_max_content_length
+        )
+        CodeExecTool.register_config(max_output_length=settings.tool_max_output_length)
+        ReadFileTool.register_config(max_output_length=settings.tool_max_output_length)
+
+        # 注册内置工具到全局注册中心
+        self.tool_service = ToolService(
+            max_concurrent_tools=settings.agent_max_concurrent_tools,
+            tool_timeout=settings.tool_timeout,
+            tool_max_retries=settings.tool_max_retries,
+        )
         try:
             registered = self.tool_service.init_default_tools()
             logger.info("已注册工具: %s", registered)
@@ -206,7 +242,9 @@ class Container:
             logger.warning("工具初始化失败（服务降级）: %s", e)
 
         # 5. 任务调度服务（并发 Agent 任务信号量）
-        self.task_service = TaskService()
+        self.task_service = TaskService(
+            max_concurrent=settings.agent_max_concurrent_tasks
+        )
 
         # 6. EmbeddingService
         self.embedding_service = EmbeddingService(
@@ -214,6 +252,13 @@ class Container:
             model=settings.llm_embedding_model_id,
             dimensions=settings.llm_embedding_dimensions,
         )
+
+        # Agent 运行参数（装配根读 settings 后下发，供 chat 路由构造 AgentContext）
+        self.agent_params = {
+            "max_iterations": settings.agent_max_iterations,
+            "temperature": settings.llm_temperature,
+            "max_tokens": settings.llm_max_tokens,
+        }
 
         self.initialized = True
         logger.info("应用初始化完成")
