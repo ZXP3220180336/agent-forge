@@ -1,8 +1,9 @@
 [project]
 name = "agent-forge"
 version = "0.1.0"
-description = "Add your description here"
+description = "工业级 AI Agent 系统：多 Agent 任务执行引擎 + 半导体良率根因分析（Yield RCA）"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.14"
 dependencies = [
     "aiofiles>=25.1.0",

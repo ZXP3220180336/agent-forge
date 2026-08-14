@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **技术栈**：Python ≥ 3.14、uv 包管理、FastAPI、SQLAlchemy(async)、Redis、OpenAI SDK、tiktoken
 - **平台**：Windows 11 开发；控制台默认 GBK 编码（见「已知坑」）
-- **代码规模**：约 5000 行 Python，98 个测试
+- **代码规模**：约 7200 行 Python，214 个测试
 
 ## 常用命令
 
@@ -40,7 +40,7 @@ API 层（app/api/routes/）→ chat(SSE) / session 已实现；admin/agent/tool
     ↓
 服务层（app/services/）
     ├── LLMService（Facade）→ LLM 子包：ClientManager / RetryHandler / StreamParser /
-    │       StructuredOutput / RateLimiter / ReservationLimiter / CostTracker
+    │       StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker
     ├── SessionManager / ContextManager / ToolService / TaskService / EmbeddingService
     └── MemoryService（空文件）
     ↓
@@ -76,8 +76,9 @@ POST /api/chat/send
 - **三个模型配置**：`ClientManager.register_config` 注册 `main` / `reasoning` / `fast` 三个 key，`LLMService` 通过 `model_key` 参数选择；连接池按 key 缓存复用。`app_state.initialize()` 中注册，`settings.llm_fallback_model_id` 配置 fallback 降级。
 - **LLM 可靠性链**（[app/services/llm/](app/services/llm/)）：
   - `retry.py`：滑动窗口熔断 + 错误分类白名单（`classify_error`，未知异常默认 NON_RETRYABLE）+ 半开探针
-  - `reservation_limiter.py`：reserve/settle 形态限流（请求前预留配额、完成后退差；`llm_service` 实际使用它，`rate_limiter.py` 为 acquire 形态备用）
-  - `streaming.py`：流式整流重试（仅首 token 前中断且异常可恢复才整流）
+  - `reservation_limiter.py`：reserve/settle 形态限流（请求前预留配额、完成后退差；`llm_service` 实际使用它，acquire 形态已移除）
+  - `streaming.py`：StreamParser 流式/非流式解析（提取 content / finish_reason / usage / refusal / tool_calls）
+  - `streaming_rectifier.py`：流式整流重试（StreamingRectifier，仅首 token 前中断且异常可恢复才整流）
   - `structured.py`：结构化输出三级降级（JSON Schema strict → JSON Mode → 正则提取）
 - **调度与执行解耦**：TaskService 决定「哪个任务何时执行」，Agent 决定「单个任务如何执行」。
 - **服务实例管理**：所有共享服务在 [app/app_state.py](app/app_state.py) 的 `AppState` 单例中初始化/关闭，经 FastAPI lifespan 触发。单点基础设施失败不影响启动（降级 + 警告）。
@@ -97,7 +98,7 @@ POST /api/chat/send
 
 - [docs/HANDOFF.md](docs/HANDOFF.md) — 顶层交接文档（框架级计划/进度/研发教训）
 - [docs/architecture.md](docs/architecture.md) — 架构分层 + 核心链路 + 模块实现状态总览
-- [docs/config.md](docs/config.md)、[docs/deployment.md](docs/deployment.md) — 配置与部署
+- [docs/config_doc/config.md](docs/config_doc/config.md)、[docs/deployment.md](docs/deployment.md) — 配置与部署
 - LLM 层：`docs/service_doc/llm_doc/`（llm 总览 / client / retry / streaming / structure / limiter）
 - 各模块说明：`docs/core_doc/`、`docs/service_doc/`、`docs/api_doc/`、`docs/tool_doc/`、`docs/model_doc/`、`docs/infrastructure_doc/`
 

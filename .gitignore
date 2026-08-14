@@ -6,11 +6,26 @@ dist/
 wheels/
 *.egg-info
 
+# Python 测试与缓存
+.pytest_cache/
+.python-version
+
 # Virtual environments
 .venv
 
 # Environment / secrets
+# 注意：.env.example 是模板需上传，不在此忽略
 .env
 
-# Logs
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志
 logs/
+*.log
