@@ -1,6 +1,6 @@
 # 架构设计文档
 
-> **更新日期**：2026-08-14
+> **更新日期**：2026-08-15
 > **文档定位**：系统整体架构的**工业级目标蓝图** + 现状对照 + 演进路线。以目标架构为主线；现状耦合作为对照依据；演进路径标注「已实现 / 进行中 / 待规划」。模块级细节见各模块说明文档（见文末「相关文档」）。
 > **状态徽标**：✅ 已实现 ｜ 🔶 进行中 ｜ ⬜ 待规划
 
@@ -34,7 +34,7 @@
 - [现状耦合与差距](#现状耦合与差距)
   - [现状分层](#现状分层)
   - [现状依赖关系图](#现状依赖关系图)
-  - [耦合点证据清单](#耦合点证据清单)
+  - [耦合点状态清单](#耦合点状态清单)
 - [耦合点到目标解法](#耦合点到目标解法)
 - [目标依赖关系图](#目标依赖关系图)
 - [演进路径](#演进路径)
@@ -55,13 +55,13 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 
 ### 现状、目标与演进
 
-| 维度 | 现状（2026-08-14） | 目标（工业级） | 演进 |
+| 维度 | 现状（2026-08-15） | 目标（工业级） | 演进 |
 | --- | --- | --- | --- |
-| 分层 | 7 层「意图分层」，实际**单例总线 + 双向耦合** | 7 层 + 2 横切 + 装配根（Clean Architecture / Hexagonal） | Phase A-D |
-| 依赖方向 | core ⇄ services 双向耦合、基础设施被绕过 | 单向向内 + 依赖倒置（Port / Adapter） | Phase B |
-| 配置 | `settings` 单例被 10 处直接 import | 仅装配根读取，各模块 `register_config` 注入 | Phase B |
-| 装配 | `app_state.py` 兼任装配根 + 基础设施工厂 | `container.py` 唯一组装 | Phase A |
-| 数据访问 | `SessionManager` 三合一（业务 + 缓存 + SQL） | Repository + CachePort 分层 | Phase A |
+| 分层 | 7 层 + 装配根已落地（domain/integration/application/infrastructure/shared） | 7 层 + 2 横切 + 装配根（Clean Architecture / Hexagonal） | Phase C-D |
+| 依赖方向 | ✅ 已切断：domain 依赖 ports，integration 实现端口 | 单向向内 + 依赖倒置（Port / Adapter） | —（已完成） |
+| 配置 | ✅ 已收敛：仅 container 读取（register_config 注入） | 仅装配根读取，各模块 `register_config` 注入 | —（已完成） |
+| 装配 | ✅ `container.py`（Container）唯一组装 | `container.py` 唯一组装 | —（已完成） |
+| 数据访问 | `SessionManager` 三合一（待拆分） | Repository + CachePort 分层 | Phase A |
 | 编排 | 单 Agent ReAct + 并发闸门 | 任务队列 / worker 池 / 多 Agent 主从编排 | Phase C |
 | 可观测 | 仅结构化日志 | 日志 + 指标 + 追踪 + 审计三件套 | Phase D |
 
@@ -159,33 +159,34 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | ① 接入层 | HTTP/SSE/WS 适配；鉴权、限流、错误码映射、关联 ID；请求/响应 DTO | `app/api/routes/`（chat/session/task/agent/admin）+ `middleware/` + `deps.py` + `schemas/` | 🔶 chat/session 已实现；task/agent/admin 与中间件待规划 |
 | ② 应用/编排层 | 用例编排；任务调度（队列/优先级/worker/状态机）；多 Agent 主从编排；Yield RCA 用例 | `app/application/`：用例服务 + `task/`（TaskScheduler/Queue/WorkerPool/State）+ `orchestration/orchestrator.py` + `factories/agent_factory.py` | 🔶 TaskService 并发闸门已实现；队列/编排待规划 |
 | ③ 领域层 | Agent 推理内核、记忆策略、提示词、领域服务与模型。**零外部框架依赖** | `app/domain/`：`agent/` + `memory/` + `prompts/` + `yield_rca/` + `task/` 模型 | ✅ Agent 内核/Events/Prompts 已实现；memory/planner/reasoning 待规划 |
-| ④ 端口层 | 领域依赖的抽象协议（`typing.Protocol`），由领域定义、外部实现 | `app/domain/ports/`：LLMGateway/ToolGateway/TokenCounter/Repository/CachePort/VectorStorePort/EmbeddingPort/EventPublisher | ⬜ 待规划 |
-| ⑤ 能力层 | 实现端口的外向适配器：LLM 网关、工具执行、嵌入、向量 | `app/integration/`：`llm/`（LLMService + 7 组件）、`tools/`（拆分后 Facade + builtin）、`embedding_service.py`、`vector_store/` | ✅ LLM/工具已实现；拆层归位待规划 |
-| ⑥ 基础设施层 | 实现端口 + 底层连接：DB/Redis/MQ/存储/HTTP | `app/infrastructure/`：`db/` + `redis/` + `mq/` + `store/` + `http/` + `models/database/`（ORM） | ⬜ 当前全空，DB/Redis 由 app_state 直接管理 |
-| ⑦ 共享内核 | 无业务公共类型，被所有层引用（不制造环） | `app/shared/`：`events.py` + `exceptions.py` + `types.py` | 🔶 events 目前在 core，待迁入拆分 |
-| 横切-配置 | 配置源 + 注入 | `app/config/settings.py` | ✅ 已实现；「仅装配根读取」待收敛 |
+| ④ 端口层 | 领域依赖的抽象协议（`typing.Protocol`），由领域定义、外部实现 | `app/domain/ports/`：LLMGateway/ToolGateway/TokenCounter/Repository/CachePort/VectorStorePort/EmbeddingPort/EventPublisher | ✅ LLMGateway / ToolGateway + StreamResult / ToolResult 已实现；Repository / CachePort 待规划 |
+| ⑤ 能力层 | 实现端口的外向适配器：LLM 网关、工具执行、嵌入、向量 | `app/integration/`：`llm/`（LLMService + 7 组件）、`tools/`（拆分后 Facade + builtin）、`embedding_service.py`、`vector_store/` | ✅ 已归位 integration；LLM/工具已实现，ToolService 已拆分 Facade |
+| ⑥ 基础设施层 | 实现端口 + 底层连接：DB/Redis/MQ/存储/HTTP | `app/infrastructure/`：`db/` + `redis/` + `mq/` + `store/` + `http/` + `models/database/`（ORM） | 🔶 ORM 已迁入 infrastructure/models；db/redis 仍由 container 管理 |
+| ⑦ 共享内核 | 无业务公共类型，被所有层引用（不制造环） | `app/shared/`：`events.py` + `exceptions.py` + `types.py` | ✅ events 已在 shared |
+| 横切-配置 | 配置源 + 注入 | `app/config/settings.py` | ✅ 已收敛（仅 container 读取） |
 | 横切-可观测/安全 | 日志/指标/追踪/审计/安全 | `app/platform/observability/` + `security/` | ⬜ 仅日志框架部分已实现 |
-| 装配根 | 唯一读 settings、唯一组装、生命周期 | `app/container.py` | 🔶 现为 `app_state.py`，待改造 |
+| 装配根 | 唯一读 settings、唯一组装、生命周期 | `app/container.py` | ✅ container.py（Container 类） |
 
 ### 现状模块归位
 
-当前代码如何映射到目标架构：
+以下归位已于 2026-08-15 全部完成（目录归位 commit `962cb7a`），旧路径已迁移到新分层：
 
-| 现有位置 | 模块 | 目标位置 |
-| --- | --- | --- |
-| `app/core/` | Agent 内核、Prompts、memory/reasoning 策略 | → `app/domain/` |
-| `app/core/events.py` | SSE 事件（跨三层共享） | → `app/shared/events.py`（拆分） |
-| `app/services/` | SessionManager / ContextManager / TaskService | → 拆分：业务归 `app/application/`，数据访问归 `app/infrastructure/` + `app/domain/ports/` |
-| `app/services/llm_service.py` + `llm/` | LLMService + 7 组件 | → `app/integration/llm/` |
-| `app/services/tool_service.py` | ToolService（God Object） | → `app/integration/tools/`（拆分 Facade） |
-| `app/services/embedding_service.py` | EmbeddingService | → `app/integration/`（实现 EmbeddingPort） |
-| `app/services/memory_service.py` | MemoryService（空） | → 策略归 `app/domain/memory/`，实现归 `app/infrastructure/` |
-| `app/infrastructure/` | 空占位文件 | → 转实（db/redis/mq/store） |
-| `app/models/database/` | ORM 模型 | → `app/infrastructure/models/database/` |
-| `app/app_state.py` | 装配根 + 基础设施工厂 | → `app/container.py`（装配根）+ infrastructure 工厂 |
-| `app/dependencies.py` | get_* 服务解析 | → `app/api/deps.py`（薄解析） |
-| `app/utils/logger.py` | 全局日志 | → `app/platform/observability/` |
-| `app/tools/builtin/` | 5 内置工具 | → `app/integration/tools/builtin/` |
+| 原位置 | 模块 | 已迁移至 | 状态 |
+| --- | --- | --- | --- |
+| `app/core/` | Agent 内核、Prompts、memory/reasoning 策略 | `app/domain/` | ✅ |
+| `app/core/events.py` | SSE 事件（跨三层共享） | `app/shared/events.py` | ✅ |
+| `app/services/` | SessionManager / ContextManager / TaskService | 拆分至 `app/application/{session,context,task}/` | ✅ |
+| `app/services/llm_service.py` + `llm/` | LLMService + 7 组件 | `app/integration/llm/` | ✅ |
+| `app/services/tool_service.py` | ToolService（God Object） | `app/integration/tools/`（已拆分 Facade） | ✅ |
+| `app/services/embedding_service.py` | EmbeddingService | `app/integration/embedding_service.py` | ✅ |
+| `app/services/memory_service.py` | MemoryService（空） | `app/domain/memory/memory_service.py` | ✅ |
+| `app/models/database/` | ORM 模型 | `app/infrastructure/models/database/` | ✅ |
+| `app/models/schemas/` | Pydantic DTO | `app/api/schemas/` | ✅ |
+| `app/app_state.py` | 装配根（AppState） | `app/container.py`（Container） | ✅ |
+| `app/dependencies.py` | get_* 服务解析 | `app/api/deps.py`（薄解析） | ✅ |
+| `app/tools/builtin/` | 5 内置工具 | `app/integration/tools/builtin/` | ✅ |
+| `app/infrastructure/` | 空占位文件 | 待转实（db/redis/mq/store） | 🔶 |
+| `app/utils/logger.py` | 全局日志 | 保留 `app/utils/`（待迁 platform） | 🔶 |
 
 ### 目标核心链路
 
@@ -241,7 +242,7 @@ RcaUseCase 受理良率异常报告
 | chat / session 路由 | 交互式聊天 SSE、会话 CRUD | ✅ 已实现 | ✅ | — |
 | task / agent / admin 路由 | 异步任务提交/查询/进度、Agent 管理 | ⬜ 空文件 | 🔶 | Phase C |
 | 中间件（auth / rate_limit / error_handler / correlation） | 鉴权、限流、错误码映射、关联 ID | ⬜ 空文件 | 🔶 | Phase D |
-| deps.py 薄解析 + schemas DTO | Depends → container；请求/响应模型 | 🔶 `app/dependencies.py` | 🔶 | Phase B |
+| deps.py 薄解析 + schemas DTO | Depends → container；请求/响应模型 | ✅ `app/api/deps.py` | ✅ | — |
 
 ### 应用层
 
@@ -267,7 +268,7 @@ RcaUseCase 受理良率异常报告
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
-| LLMGateway / ToolGateway / TokenCounter | 领域依赖的 LLM / 工具 / token 抽象 | ⬜ 未实现 | 🔶 | Phase B |
+| LLMGateway / ToolGateway / TokenCounter | 领域依赖的 LLM / 工具 / token 抽象 | ✅ LLMGateway/ToolGateway + StreamResult/ToolResult 已实现（TokenCounter 待规划） | ✅ | — |
 | Session / Message / Task Repository | 持久化抽象 | ⬜ 未实现 | 🔶 | Phase A |
 | CachePort / VectorStorePort / EmbeddingPort | 缓存 / 向量 / 嵌入抽象 | ⬜ 未实现 | 🔶 | Phase A/B |
 | EventPublisher / IdGenerator | 事件发布、ID 生成 | ⬜ 未实现 | 🔶 | Phase B |
@@ -278,7 +279,7 @@ RcaUseCase 受理良率异常报告
 | --- | --- | --- | --- | --- |
 | LLMService + llm/ 7 组件 | LLM 网关（实现 LLMGateway） | ✅ 已实现 | ✅ | 归位 integration |
 | 可靠性链（重试 / 熔断 / 限流 / 整流 / 结构化降级） | 外部调用可靠性 | ✅ 已实现（llm/ 子包） | ✅ | — |
-| ToolService（拆分 Facade）+ builtin 5 工具 | 工具执行（实现 ToolGateway） | ✅ 已实现（未拆分） | 🔶 | Phase B |
+| ToolService（拆分 Facade）+ builtin 5 工具 | 工具执行（实现 ToolGateway） | ✅ 已拆分（Registry/Executor/Stats/Hooks/Assembler） | ✅ | — |
 | RCA 工具（良率 / 告警 / FDC / wafer / 历史检索） | 良率分析工具链 | ⬜ 未实现 | 🔶 | Phase C/D |
 | EmbeddingService（实现 EmbeddingPort） | 文本向量化 | ✅ 已实现（孤儿） | 🔶 | Phase D |
 | VectorStore adapter（Milvus） | 向量库检索 | ⬜ 空文件 | 🔶 | Phase D |
@@ -297,7 +298,7 @@ RcaUseCase 受理良率异常报告
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
-| events.py（迁移 + 拆分） | 事件类型 / 领域事件 / SSE 序列化 / EventPublisher | 🔶 在 core/ | 🔶 | Phase B |
+| events.py（迁移 + 拆分） | 事件类型 / 领域事件 / SSE 序列化 / EventPublisher | ✅ 已迁 `app/shared/` | ✅ | — |
 | exceptions.py（异常体系 → 错误码） | 统一异常与错误码 | ⬜ `utils/exceptions` 空 | 🔶 | Phase B |
 | types.py | 通用类型 / 标识 | ⬜ 未实现 | 🔶 | Phase B |
 
@@ -305,10 +306,10 @@ RcaUseCase 受理良率异常报告
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
-| 配置：settings + register_config 注入 | 配置源，仅装配根读取 | ✅ 已实现（LLM 子包解耦） | 🔶 | Phase B 推广 |
+| 配置：settings + register_config 注入 | 配置源，仅装配根读取 | ✅ 已收敛（container 唯一读，register_config 全面推广） | ✅ | — |
 | 可观测：日志 / 指标 / 追踪 / 审计 | 可观测三件套 | 🔶 仅日志框架 | 🔶 | Phase D |
 | 安全：鉴权 JWT / 密钥管理 | 认证授权、密钥托管 | ⬜ mock 鉴权 | 🔶 | Phase D |
-| 装配根：container.py | 唯一读 settings + 组装 + 生命周期 | 🔶 现为 app_state.py | 🔶 | Phase A |
+| 装配根：container.py | 唯一读 settings + 组装 + 生命周期 | ✅ container.py（Container 类） | ✅ | — |
 
 ---
 
@@ -372,30 +373,28 @@ tiktoken 计数经 `TokenCounter` 端口在能力层实现；ORM / Redis 经 Rep
 
 ## 现状耦合与差距
 
-> 以下为 2026-08-14 代码级实证。名义上分 7 层，实际存在**单例总线 + 双向耦合**。
+> 以下为 2026-08-15 代码现状。C3 / C4 / C5 / C6 / C8 已通过系列重构解决；C1 / C2 / C7 部分 / C9 仍待处理。
 
 ### 现状分层
 
 ```text
-API 层（FastAPI 路由）                    chat/session ✅；agent/tool/admin ⬜；中间件全空
+接入层 app/api/                        chat/session ✅；deps.py 薄解析 ✅；task/agent/admin + 中间件 ⬜
     ↓
-服务层（app/services/）                   SessionManager 三合一 / ToolService God Object
-    ├── LLM 子包（7 组件）                 ✅ 最成熟（register_config 解耦）
-    └── EmbeddingService                  孤儿（构造后无消费者）
+应用层 app/application/               session / context / task 用例 ✅；TaskScheduler 队列/编排 ⬜
     ↓
-核心层（app/core/）                        Agent 内核 + Events + Prompts
-    ├── Events                            跨三层共享（位置不当）
-    └── memory/reasoning                  全空占位
+领域层 app/domain/                    Agent 内核 ✅（依赖 domain/ports 协议）
+    ├── ports/                        LLMGateway / ToolGateway ✅；Repository / CachePort ⬜
+    └── memory / reasoning / planner  ⬜ 空占位
     ↓
-数据模型层（app/models/）                  Session/Message ORM ✅；task/tool_log ⬜
+能力层 app/integration/               LLMService + llm/ 7 组件 ✅；ToolService（已拆分）✅；EmbeddingService 孤儿
     ↓
-基础设施层（app/infrastructure/）          全空文件 —— 被 app_state 直接绕过
+基础设施层 app/infrastructure/        models/database（ORM）✅；db/redis 仍由 container 管理 ⬜
     ↓
-工具层（app/tools/）                       BaseTool + 5 内置 ✅（工具直接碰外部 API + settings）
+共享内核 app/shared/                  events ✅（跨层共享）
     ↓
-配置层（app/config/settings.py）          单例被 10 处直接 import
-
-装配：app_state.py 兼任装配根 + DB/Redis 工厂 + 配置注册（职责过载）
+配置 app/config/                      settings 仅 container 读取 ✅
+    ↓
+装配根 app/container.py               Container 唯一组装 ✅
 ```
 
 ### 现状依赖关系图
@@ -403,95 +402,84 @@ API 层（FastAPI 路由）                    chat/session ✅；agent/tool/adm
 ```mermaid
 flowchart LR
     subgraph API["接入层 app/api"]
-        CHAT["chat.py<br/>内联编排 + 手动 new ReActAgent"]
+        CHAT["chat.py<br/>手工 new ReActAgent"]
+        DP["deps.py 薄解析"]
     end
-    subgraph ST["装配根 app/app_state.py"]
-        AST["AppState<br/>装配 + DB/Redis 工厂 + 配置注册"]
+    subgraph CR["装配根 app/container.py"]
+        CT["Container 唯一组装"]
     end
-    subgraph CORE["核心层 app/core"]
-        AGENT["agent/base + executor"]
-        EVT["core/events.py<br/>跨三层共享"]
-        PROMPT["prompts（零外部引用）"]
+    subgraph DOM["领域层 app/domain"]
+        AG["agent（依赖 ports）"]
+        PORTS["ports: LLMGateway / ToolGateway"]
     end
-    subgraph SVC["服务层 app/services"]
-        LLM["LLMService + llm/ 7 组件"]
-        SM["SessionManager<br/>ORM + 缓存 + 业务"]
-        CM["ContextManager"]
-        TS["TaskService（并发闸门）"]
-        TOOLS["ToolService（God Object）"]
+    subgraph INT["能力层 app/integration"]
+        LLM["LLMService + llm/7 组件"]
+        TOOLS["ToolService（拆分 Facade）"]
         EMB["EmbeddingService（孤儿）"]
     end
     subgraph INFRA["基础设施层 app/infrastructure"]
-        I1["database/redis/vector/mq（全空）"]
+        ORM["models/database（ORM）"]
+    end
+    subgraph SHARED["共享内核 app/shared"]
+        EVT["events"]
     end
     subgraph CFG["配置 app/config"]
-        S["settings 单例"]
+        S["settings"]
     end
 
-    CHAT --> AGENT
+    CHAT --> AG
     CHAT --> EVT
-    CHAT --> SM
-    CHAT --> CM
     CHAT --> LLM
     CHAT --> TOOLS
-    CHAT --> TS
-    AGENT --> EVT
-    AGENT --> LLM
-    AGENT --> TOOLS
-    LLM --> EVT
-    LLM --> S
-    SM --> S
-    SM -.->|绕过基础设施层| I1
-    CM --> SM
-    TS --> S
-    TOOLS --> S
-    AST --> S
-    AST --> SM
-    AST --> CM
-    AST --> LLM
-    AST --> TOOLS
-    AST --> EMB
-    AST --> I1
+    DP --> CT
+    AG --> PORTS
+    AG --> EVT
+    PORTS -.->|实现| LLM
+    PORTS -.->|实现| TOOLS
     EMB -.->|无消费者| X["·"]
+    CT --> S
+    CT --> LLM
+    CT --> TOOLS
+    CT --> EMB
+    CT --> ORM
+    EVT -.-> CHAT
+    EVT -.-> AG
+    EVT -.-> LLM
 ```
 
-> 图中关键环与孤儿：`AGENT → LLM` 与 `LLM → EVT`（EVT 在 core 下）形成 **core ⇄ services 双向耦合**（C3 + C4）；`settings` 节点入度 10 处（C5）；`EMB` 孤儿（C7）；`SM` 绕过基础设施层（C1 + C2）。
+> 图中关键状态：`domain/agent → ports`（依赖倒置，C3 已解决）；`LLM / TOOLS` 实现 `ports`（C4 双向环已切断）；`settings` 仅 container 读取（C5 已解决）；`EMB` 仍孤儿（C7 未完成）。
 
-### 耦合点证据清单
+### 耦合点状态清单
 
-| # | 耦合问题 | 严重度 | 关键证据 |
-| --- | --- | --- | --- |
-| C1 | 基础设施层形同虚设，DB/Redis 由装配根直接管理 | 🔴 | `app/infrastructure/*.py` 全 0 行；`app/app_state.py:74-107` 直接 `create_async_engine` / `Redis.from_url` |
-| C2 | SessionManager 三合一（业务 + 缓存 + SQL），无 Repository | 🔴 | `app/services/session_manager.py`（454 行）直接写 ORM + Redis，key 硬编码 |
-| C3 | 核心层依赖服务层具体类（依赖倒置反了） | 🔴 | `core/agent/base.py:29`、`executor.py:32-33` `from app.services import LLMService, ToolService` |
-| C4 | 服务层反向依赖核心层，形成双向耦合 | 🟠 | `services/llm/streaming_rectifier.py:42` `from app.core.events import ...` |
-| C5 | settings 单例被 10 处直接 import | 🟠 | `app_state/logger/core/services×3/tools×4`；LLM 子包已解耦，顶层未统一 |
-| C6 | events.py 跨三层共享（共享内核位置不当） | 🟠 | `core/events.py` 被 base/executor/streaming_rectifier/chat 共用 |
-| C7 | DI 不统一：半单例半手工 new | 🟡 | `chat.py:80` 手动 new ReActAgent；`dependencies.py` 5 getter；EmbeddingService 无 getter |
-| C8 | ToolService God Object（容器+执行+统计+钩子+装配） | 🟡 | `tool_service.py`（409 行） |
-| C9 | 大量半成品 / 死代码（37 个空文件占位） | 🟡 | PromptManager 零引用、Embedding 无消费者、memory/vector_store 全空 |
-| C10 | 服务层唯一规范 DI 范例 | ✅ | `context_manager.py:22-28` 构造注入 SessionManager，作为全局规范参照 |
+| # | 耦合问题 | 严重度 | 状态 | 最新证据 / 说明 |
+| --- | --- | --- | --- | --- |
+| C1 | 基础设施层形同虚设，DB/Redis 由装配根直接管理 | 🔴 | ❌ 未解决 | `app/infrastructure/` 仅 `models/database` 有内容；engine/redis 仍由 `container.py` 直接创建 |
+| C2 | SessionManager 三合一（业务 + 缓存 + SQL），无 Repository | 🔴 | ❌ 未解决 | `app/application/session/session_manager.py` 直接写 ORM + Redis，key 硬编码 |
+| C3 | 核心层依赖服务层具体类（依赖倒置反了） | 🔴 | ✅ 已解决 | `domain/agent` 依赖 `domain/ports`（LLMGateway / ToolGateway），零 integration 依赖 |
+| C4 | core ⇄ services 双向耦合 | 🟠 | ✅ 已解决 | events 迁 `app/shared/`；`integration/llm/streaming_rectifier` 依赖 shared 而非 domain |
+| C5 | settings 单例被 10 处直接 import | 🟠 | ✅ 已解决 | 仅 `container.py` 读取；各模块 register_config / 构造注入 |
+| C6 | events.py 跨三层共享（位置不当） | 🟠 | ✅ 已解决 | events 已迁 `app/shared/`（转为合法共享内核） |
+| C7 | DI 不统一：半单例半手工 new | 🟡 | 🔶 部分 | 已解决：container 统一装配、deps 薄解析、AgentContext 注入；未解决：AgentFactory、EmbeddingService 无 getter |
+| C8 | ToolService God Object | 🟡 | ✅ 已解决 | 已拆 Registry / Executor / Stats / Hooks / Assembler + Facade |
+| C9 | 大量半成品 / 死代码 | 🟡 | ❌ 未解决 | MemoryService 空、PromptManager 零引用、Embedding 无消费者、vector_store 空 |
+| C10 | 构造注入规范范例 | ✅ | ✅ 已确立 | ContextManager 构造注入，作为全局 DI 约定（C5 后全面推广） |
 
-**其他隐患**：Redis 假降级（`redis=None` 时 `session_manager.py` 各方法直接 `.set()` 抛 AttributeError）；鉴权为 mock（`dependencies.py:18-26`）；CORS `allow_origins=["*"]` + `allow_credentials=True` 组合不安全。
-
-**项目内样板**：`app/services/llm/` 子包已做到**零 settings 依赖**（`register_config()` 类方法注入），是 C5 收敛的既有范式。
-
----
+**其他隐患**：Redis 假降级（`redis=None` 时 SessionManager 各方法直接 AttributeError）；鉴权为 mock；CORS `allow_origins=["*"]` + `allow_credentials=True` 组合不安全。
 
 ## 耦合点到目标解法
 
-| # | 现状耦合 | 目标解法 | 阶段 |
-| --- | --- | --- | --- |
-| C1 | infrastructure 空；app_state 兼装配根 + 基础设施工厂 | 新建 `container.py` 装配根；`infrastructure/db/engine.py` + `redis/client.py` 承载连接创建 | A |
-| C2 | SessionManager 三合一 | 拆 `SessionRepository` / `MessageRepository`（Port + SQLAlchemy 实现）与 `CachePort`（RedisCache / NullCache）；SessionManager 只留业务；Redis key 常量集中 | A |
-| C3 | core 依赖 services 具体类 | 定义 `LLMGateway` / `ToolGateway` 端口；`BaseAgent(llm, tools)` 依赖抽象；`StreamResult` 迁 ports | B |
-| C4 | services/llm 依赖 core/events | `events.py` 迁 `app/shared/`；core 与 services 不再互引，双向耦合切断 | B |
-| C5 | settings 10 处直接 import | 项目级推广 `register_config` 注入（LLM 子包为样板）；container 唯一读 settings | B |
-| C6 | events.py 跨三层共享 | 按职责拆分入 shared：事件类型 / 领域事件 / SSE 序列化 / EventPublisher 定义 | B |
-| C7 | DI 不统一 | container 统一装配；deps.py 薄解析；`AgentFactory` 创建 Agent；AgentContext 默认值注入 | B/C |
-| C8 | ToolService God Object | 拆 `Registry` / `Executor` / `Stats` / `Hooks` / `Assembler`，ToolService 变 Facade | B |
-| C9 | 半成品 / 死代码 | PromptManager 接 PlannerAgent；StructuredOutput 供 RCA 用例；memory/vector_store 实现；Embedding 接入 RAG | C/D |
-| C10 | 构造注入规范范例 | 保留并升级为全局 DI 约定（构造注入 + 装配根 + 端口抽象） | B |
+| # | 现状耦合 | 目标解法 | 阶段 | 状态 |
+| --- | --- | --- | --- | --- |
+| C1 | infrastructure 空；app_state 兼装配根 + 基础设施工厂 | 新建 `container.py` 装配根；`infrastructure/db/engine.py` + `redis/client.py` 承载连接创建 | A | ❌ 待做 |
+| C2 | SessionManager 三合一 | 拆 `SessionRepository` / `MessageRepository`（Port + SQLAlchemy 实现）与 `CachePort`（RedisCache / NullCache）；SessionManager 只留业务；Redis key 常量集中 | A | ❌ 待做 |
+| C3 | core 依赖 services 具体类 | 定义 `LLMGateway` / `ToolGateway` 端口；`BaseAgent(llm, tools)` 依赖抽象；`StreamResult` 迁 ports | B | ✅ 已完成 |
+| C4 | services/llm 依赖 core/events | `events.py` 迁 `app/shared/`；core 与 services 不再互引，双向耦合切断 | B | ✅ 已完成 |
+| C5 | settings 10 处直接 import | 项目级推广 `register_config` 注入（LLM 子包为样板）；container 唯一读 settings | B | ✅ 已完成 |
+| C6 | events.py 跨三层共享 | 按职责拆分入 shared：事件类型 / 领域事件 / SSE 序列化 / EventPublisher 定义 | B | ✅ 已完成 |
+| C7 | DI 不统一 | container 统一装配；deps.py 薄解析；`AgentFactory` 创建 Agent；AgentContext 默认值注入 | B/C | 🔶 部分（AgentFactory / Embedding 接线待做） |
+| C8 | ToolService God Object | 拆 `Registry` / `Executor` / `Stats` / `Hooks` / `Assembler`，ToolService 变 Facade | B | ✅ 已完成 |
+| C9 | 半成品 / 死代码 | PromptManager 接 PlannerAgent；StructuredOutput 供 RCA 用例；memory/vector_store 实现；Embedding 接入 RAG | C/D | ❌ 待做 |
+| C10 | 构造注入规范范例 | 保留并升级为全局 DI 约定（构造注入 + 装配根 + 端口抽象） | B | ✅ 已确立 |
 
 ---
 
@@ -602,7 +590,8 @@ flowchart TB
 - `container.py`：接管 app_state 装配根职责
 - `SessionManager` 重构：只留业务，注入 Repos + CachePort
 
-架构达成：装配根与基础设施工厂分离；Repository 层落地；Redis 真降级。`⬜ 待规划`
+架构达成：装配根与基础设施工厂分离；Repository 层落地；Redis 真降级。
+当前进度：`container.py` 已接管装配根（✅）；db/redis 迁移、Repository 层、SessionManager 拆分待做（🔶 进行中）。
 
 ### Phase B 解耦改造
 
@@ -614,7 +603,7 @@ flowchart TB
 - LLMService / ToolService 实现端口；配置注入推广（AgentContext / 内置工具 / TaskService / LLMService Facade）
 - ToolService 拆分（Registry/Executor/Stats/Hooks/Assembler）；dependencies.py 薄化；EmbeddingService 补 getter
 
-架构达成：core ⇄ services 双向耦合切断；settings 直接 import 收敛到 container；DI 统一；C10 范例升级为全局规范。**已有基础**：LLM 子包 `register_config` 注入已完成（✅）。`⬜ 待规划`
+架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；DI 统一（C7 部分）；C10 范例升级为全局规范。`✅ 已完成`
 
 ### Phase C 应用与编排层
 
