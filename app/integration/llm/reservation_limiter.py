@@ -372,7 +372,7 @@ class ReservationLimiterManager:
 
     与 ClientManager 同款缓存模式：同一 model_key 复用同一个
     ReservationLimiter（双 Token Bucket 跨请求记账，不能每次 new）。
-    配置（RPM / TPM）由外层 register_config() 注入（AppState 读 settings 后调用），
+    配置（RPM / TPM）由外层 register_config() 注入（Container 读 settings 后调用），
     子模块不再直接依赖 settings；修改配置后 reset() 重建实例生效。
     """
 

@@ -85,7 +85,7 @@ class ClientManager:
                 # 仅在有运行中事件循环时后台关闭（fire-and-forget，不阻塞注册）
                 asyncio.get_running_loop()
             except RuntimeError:
-                # 无运行事件循环（纯注册阶段，如 AppState.initialize 之前）：
+                # 无运行事件循环（纯注册阶段，如 Container.initialize 之前）：
                 # 无法后台关闭，放入待关闭列表由 close_all 统一关闭，
                 # 避免旧连接池泄漏且可追踪（不再静默忽略）。
                 cls._pending_closes.append(old)

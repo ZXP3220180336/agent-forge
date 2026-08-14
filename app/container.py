@@ -32,10 +32,10 @@ from app.integration.tools.tool_service import ToolService
 from .config import settings
 from .utils.logger import get_logger
 
-logger = get_logger("app_state")
+logger = get_logger("container")
 
 
-class AppState:
+class Container:
     """
     应用全局状态容器。
 
@@ -243,4 +243,4 @@ class AppState:
 
 
 # 模块级单例
-app_state = AppState()
+container = Container()

@@ -8,7 +8,7 @@ from fastapi import Header, HTTPException
 from app.application.context.context_manager import ContextManager
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
-from app.container import app_state
+from app.container import container
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 
@@ -32,12 +32,12 @@ async def get_session_manager() -> SessionManager:
     SessionManager 内部维护了 Redis 连接池和数据库连接池，
     这些资源应该在整个应用生命周期内复用。
     """
-    if app_state.session_manager is None:
+    if container.session_manager is None:
         raise RuntimeError(
             "SessionManager 尚未初始化。"
-            "请确保在应用启动时调用了 app_state.initialize()。"
+            "请确保在应用启动时调用了 container.initialize()。"
         )
-    return app_state.session_manager
+    return container.session_manager
 
 
 async def get_context_manager() -> ContextManager:
@@ -47,12 +47,12 @@ async def get_context_manager() -> ContextManager:
     ContextManager 依赖 SessionManager 来获取历史消息，
     并依赖 tiktoken 编码器来计算 Token 数。
     """
-    if app_state.context_manager is None:
+    if container.context_manager is None:
         raise RuntimeError(
             "ContextManager 尚未初始化。"
-            "请确保在应用启动时调用了 app_state.initialize()。"
+            "请确保在应用启动时调用了 container.initialize()。"
         )
-    return app_state.context_manager
+    return container.context_manager
 
 
 async def get_llm_service() -> LLMGateway:
@@ -62,25 +62,25 @@ async def get_llm_service() -> LLMGateway:
     LLMService 封装了 OpenAI SDK 的异步客户端，
     管理 API Key、Base URL 等配置。
     """
-    if app_state.llm_service is None:
+    if container.llm_service is None:
         raise RuntimeError(
-            "LLMService 尚未初始化。请确保在应用启动时调用了 app_state.initialize()。"
+            "LLMService 尚未初始化。请确保在应用启动时调用了 container.initialize()。"
         )
-    return app_state.llm_service
+    return container.llm_service
 
 
 async def get_tool_service() -> ToolGateway:
     """
     获取工具服务（依赖注入）。
 
-    内置工具在 app_state.initialize() 时通过 init_default_tools() 注册到服务实例，
+    内置工具在 container.initialize() 时通过 init_default_tools() 注册到服务实例，
     ReActAgent 通过它获取工具定义并执行工具调用。
     """
-    if app_state.tool_service is None:
+    if container.tool_service is None:
         raise RuntimeError(
-            "ToolService 尚未初始化。请确保在应用启动时调用了 app_state.initialize()。"
+            "ToolService 尚未初始化。请确保在应用启动时调用了 container.initialize()。"
         )
-    return app_state.tool_service
+    return container.tool_service
 
 
 async def get_task_service() -> TaskService:
@@ -90,8 +90,8 @@ async def get_task_service() -> TaskService:
     TaskService 用信号量限制并发 Agent 任务数（agent_max_concurrent_tasks），
     chat 路由通过它在任务级并发约束下运行 Agent。
     """
-    if app_state.task_service is None:
+    if container.task_service is None:
         raise RuntimeError(
-            "TaskService 尚未初始化。请确保在应用启动时调用了 app_state.initialize()。"
+            "TaskService 尚未初始化。请确保在应用启动时调用了 container.initialize()。"
         )
-    return app_state.task_service
+    return container.task_service

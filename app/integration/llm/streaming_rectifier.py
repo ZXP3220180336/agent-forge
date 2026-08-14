@@ -113,7 +113,7 @@ class StreamingRectifier:
 
     管理整流重试循环、判断「首 token 前才可整流」、处理 emitted_any 状态、
     熔断器 feeding。产出 SSE 事件字符串（与 async_generate 的 yield 契约一致）。
-    退避配置由外层 register_config() 注入（AppState 读 settings 后调用），
+    退避配置由外层 register_config() 注入（Container 读 settings 后调用），
     子模块不直接依赖 settings。
     """
 
@@ -130,7 +130,7 @@ class StreamingRectifier:
         max_delay: float,
         use_jitter: bool,
     ) -> None:
-        """注入流式整流退避配置（AppState 读 settings 后调用）。
+        """注入流式整流退避配置（Container 读 settings 后调用）。
 
         Args:
             base_delay: 退避基数（秒）

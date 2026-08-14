@@ -8,7 +8,7 @@
 
 使用方式：
     # 各模块普通日志
-    logger = get_logger("app_state")
+    logger = get_logger("container")
     logger.warning("Redis 不可用，服务降级")
 
     # 业务事件（结构化字段进 JSON 输出）
@@ -85,7 +85,7 @@ def get_logger(name: str) -> logging.Logger:
     """返回 app.* 命名空间下的标准 Logger。
 
     Args:
-        name: 模块名（如 "app_state"）→ 返回 logger "app.container"
+        name: 模块名（如 "container"）→ 返回 logger "app.container"
     """
     return logging.getLogger(f"app.{name}")
 

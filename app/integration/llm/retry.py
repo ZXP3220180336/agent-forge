@@ -584,7 +584,7 @@ class RetryHandlerManager:
     - 同一个 RetryHandler的熔断窗口（滑动窗口错误率）需跨请求积累，每次 new
     会清空窗口、等于熔断永不触发（create 阶段熔断失效的隐性缺陷根源）。
     - main / reasoning / fast 是不同模型/端点，独立熔断（reasoning 故障不熔断 fast）。
-    - 配置（重试/熔断）由外层 register_config() 注入（AppState 读 settings 后调用），
+    - 配置（重试/熔断）由外层 register_config() 注入（Container 读 settings 后调用），
     子模块不再直接依赖 settings；修改配置后 reset() 重建实例生效；现在多实例共享同一份配置。
     """
 

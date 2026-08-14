@@ -8,7 +8,7 @@
     4. 钩子机制：工具执行前后扩展
     5. 内置工具自动装配：init_default_tools（importlib 扫描 builtin 包）
 
-与其它服务保持统一：app_state 持有 ToolService 实例，依赖注入 get_tool_service
+与其它服务保持统一：container 持有 ToolService 实例，依赖注入 get_tool_service
 返回同一实例，Agent / 路由均通过 ToolService 访问工具系统。
 
 工具级并发信号量限制单任务内最大并发工具调用数（agent_max_concurrent_tools），

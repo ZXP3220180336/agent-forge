@@ -244,7 +244,7 @@ class StructuredOutput:
 
     @classmethod
     def register_config(cls, max_tokens: int) -> None:
-        """注入默认输出预算（AppState 读 settings 后调用），替代模块内硬编码。"""
+        """注入默认输出预算（Container 读 settings 后调用），替代模块内硬编码。"""
         cls._default_max_tokens = max_tokens
 
     @staticmethod
@@ -269,7 +269,7 @@ class StructuredOutput:
             schema: JSON Schema 定义
             model_key: 使用的模型标识（默认 fast，低延迟低成本）
             max_tokens: 输出预算上限。None 用 register_config 注入的默认值
-                （AppState 注入 settings.llm_structured_max_tokens，默认 2048）；
+                （Container 注入 settings.llm_structured_max_tokens，默认 2048）；
                 截断时扩 2 倍重试 1 次。
 
         Returns:

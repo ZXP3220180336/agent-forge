@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import chat_router, session_router
-from app.container import app_state
+from app.container import container
 from app.utils.logger import get_logger, setup_logging
 
 # 配置全局日志框架（在 lifespan 与静态目录检查前，确保所有模块日志生效）
@@ -51,14 +51,14 @@ async def lifespan(app: FastAPI):
     """
     # ===== 启动阶段 =====
     logger.info("正在初始化应用服务...")
-    await app_state.initialize()
+    await container.initialize()
     logger.info("应用初始化完成")
 
     yield  # 应用运行中
 
     # ===== 关闭阶段 =====
     logger.info("正在关闭应用服务...")
-    await app_state.shutdown()
+    await container.shutdown()
     logger.info("应用已关闭")
 
 
