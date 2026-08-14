@@ -25,9 +25,9 @@ from enum import Enum
 from typing import Any
 
 from app.config import settings
+from app.domain.ports.llm_gateway import LLMGateway
+from app.domain.ports.tool_gateway import ToolGateway
 from app.shared.events import build_error_event, build_info_event
-from app.integration.llm.llm_service import LLMService
-from app.integration.tools.tool_service import ToolService
 
 
 class AgentState(Enum):
@@ -102,7 +102,7 @@ class BaseAgent(ABC):
             yield event  # 转发 SSE 事件
     """
 
-    def __init__(self, llm: LLMService, tools: ToolService) -> None:
+    def __init__(self, llm: LLMGateway, tools: ToolGateway) -> None:
         self._llm = llm
         self._tools = tools
         self._context: AgentContext | None = None

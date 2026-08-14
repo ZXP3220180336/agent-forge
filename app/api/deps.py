@@ -5,12 +5,12 @@
 
 from fastapi import Header, HTTPException
 
-from app.container import app_state
 from app.application.context.context_manager import ContextManager
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
-from app.integration.llm.llm_service import LLMService
-from app.integration.tools.tool_service import ToolService
+from app.container import app_state
+from app.domain.ports.llm_gateway import LLMGateway
+from app.domain.ports.tool_gateway import ToolGateway
 
 
 async def get_current_user(
@@ -55,7 +55,7 @@ async def get_context_manager() -> ContextManager:
     return app_state.context_manager
 
 
-async def get_llm_service() -> LLMService:
+async def get_llm_service() -> LLMGateway:
     """
     获取大模型服务实例（依赖注入）。
 
@@ -69,7 +69,7 @@ async def get_llm_service() -> LLMService:
     return app_state.llm_service
 
 
-async def get_tool_service() -> ToolService:
+async def get_tool_service() -> ToolGateway:
     """
     获取工具服务（依赖注入）。
 

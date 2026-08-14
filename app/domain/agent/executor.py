@@ -23,15 +23,14 @@ import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from app.domain.ports.llm_gateway import LLMGateway, StreamResult
+from app.domain.ports.tool_gateway import ToolGateway
 from app.shared.events import (
     build_done_event,
     build_info_event,
     build_tool_call_event,
     build_tool_result_event,
 )
-from app.integration.llm.llm_service import LLMService
-from app.integration.tools.tool_service import ToolService
-from app.integration.llm.llm_service import StreamResult
 
 from .base import AgentResult, BaseAgent
 
@@ -49,7 +48,7 @@ class ReActAgent(BaseAgent):
         3. 达到最大迭代次数 → 强制结束
     """
 
-    def __init__(self, llm: LLMService, tools: ToolService) -> None:
+    def __init__(self, llm: LLMGateway, tools: ToolGateway) -> None:
         super().__init__(llm, tools)
         self._tool_call_records: list[dict[str, Any]] = []
 
@@ -189,7 +188,7 @@ class ReActAgent(BaseAgent):
             tool_name = tc["function"]["name"]
             try:
                 tool_args = json.loads(tc["function"]["arguments"])
-            except (json.JSONDecodeError, KeyError):
+            except json.JSONDecodeError, KeyError:
                 tool_args = {}
             start = time.monotonic()
             exec_result = await self._tools.execute(tool_name, tool_args)

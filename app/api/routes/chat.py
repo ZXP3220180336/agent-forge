@@ -5,8 +5,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.domain.agent import AgentContext, ReActAgent
-from app.shared.events import build_error_event
 from app.api.deps import (
     get_context_manager,
     get_current_user,
@@ -17,10 +15,12 @@ from app.api.deps import (
 )
 from app.api.schemas.request import SendMessageRequest
 from app.application.context.context_manager import ContextManager
-from app.integration.llm.llm_service import LLMService
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
-from app.integration.tools.tool_service import ToolService
+from app.domain.agent import AgentContext, ReActAgent
+from app.domain.ports.llm_gateway import LLMGateway
+from app.domain.ports.tool_gateway import ToolGateway
+from app.shared.events import build_error_event
 
 router = APIRouter(prefix="/api", tags=["聊天"])
 
@@ -31,8 +31,8 @@ async def send_message(
     user_id: str = Depends(get_current_user),
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
     context_manager: ContextManager = Depends(get_context_manager),  # noqa: B008
-    llm_service: LLMService = Depends(get_llm_service),  # noqa: B008
-    tool_service: ToolService = Depends(get_tool_service),  # noqa: B008
+    llm_service: LLMGateway = Depends(get_llm_service),  # noqa: B008
+    tool_service: ToolGateway = Depends(get_tool_service),  # noqa: B008
     task_service: TaskService = Depends(get_task_service),  # noqa: B008
 ):
     """

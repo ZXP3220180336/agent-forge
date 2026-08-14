@@ -49,7 +49,7 @@ from app.shared.events import (
 from app.utils.logger import fill_llm_event_fields
 
 if TYPE_CHECKING:
-    from app.integration.llm.llm_service import StreamResult
+    from app.domain.ports.llm_gateway import StreamResult
     from app.integration.llm.reservation_limiter import Reservation
     from app.integration.llm.retry import RetryHandler
 

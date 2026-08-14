@@ -14,7 +14,8 @@ import json
 
 import pytest
 
-from app.integration.llm.llm_service import LLMService, StreamResult
+from app.integration.llm.llm_service import LLMService
+from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm.structured import (
     StructuredRefusalError,
     StructuredTruncationError,

@@ -17,7 +17,7 @@ import pytest
 from app.api.routes.chat import SendMessageRequest, send_message
 from app.integration.tools.tool_service import ToolService
 from app.application.context.context_manager import ContextManager
-from app.integration.llm.llm_service import StreamResult
+from app.domain.ports.llm_gateway import StreamResult
 from app.application.task.task_service import TaskService
 from app.integration.tools.builtin import WriteFileTool
 

@@ -25,7 +25,8 @@ from app.integration.llm import (
     RetryHandlerManager,
 )
 from app.integration.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
-from app.integration.llm.llm_service import LLMService, StreamResult
+from app.integration.llm.llm_service import LLMService
+from app.domain.ports.llm_gateway import StreamResult
 
 
 # =====================================================================

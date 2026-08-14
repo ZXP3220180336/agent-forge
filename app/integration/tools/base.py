@@ -4,35 +4,9 @@
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any
 
-
-@dataclass
-class ToolResult:
-    """
-    工具执行结果
-
-    Attributes:
-        success: 是否执行成功
-        content: 执行结果内容
-        error: 错误信息（如果有）
-        metadata: 额外元数据
-        execution_time: 执行耗时（秒），由注册中心自动填充
-        retry_count: 实际重试次数，由注册中心自动填充
-    """
-
-    success: bool
-    content: str
-    error: str | None = None
-    metadata: dict[str, Any] | None = None
-    execution_time: float | None = None
-    retry_count: int = 0
-
-    def __str__(self) -> str:
-        if self.success:
-            return self.content
-        return f"错误: {self.error}"
+from app.domain.ports.tool_gateway import ToolResult
 
 
 class BaseTool(ABC):

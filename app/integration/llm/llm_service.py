@@ -15,6 +15,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 from app.config import settings
+from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm import (
     ClientManager,
     ReservationLimiterManager,
@@ -32,22 +33,6 @@ from app.utils.logger import fill_llm_event_fields
 # =====================================================================
 # 辅助数据结构
 # =====================================================================
-
-
-class StreamResult:
-    """
-    单轮流式响应的累积结果。
-
-    LLM 层仅组装原始数据，不附加业务判断。
-    """
-
-    def __init__(self) -> None:
-        self.content: str = ""
-        self.reasoning_content: str = ""
-        self.finish_reason: str | None = None
-        self.tool_calls: list[dict] = []
-        self.usage: dict | None = None
-        self.refusal: str | None = None
 
 
 def _build_chat_kwargs(
