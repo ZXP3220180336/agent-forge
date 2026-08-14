@@ -1,8 +1,8 @@
 # 🚩 项目交接文档
 
-> **项目名称**：AI Agent 系统（AsyncioDemo）
+> **项目名称**：AI Agent 系统（agent-forge）
 > **交接时间**：2026-08-14
-> **项目路径**：`e:\MyWorkSpace\Agent\VSCodeDemo\PersonalProject\AsyncioDemo`
+> **项目路径**：`e:\MyWorkSpace\Agent\VSCodeDemo\PersonalProject\agent-forge`
 > **运行方式**：`uv run python -m app.main`（FastAPI 服务）
 > **Python**：3.14 | **包管理**：uv | **平台**：Windows 11
 > **代码规模**：约 7200 行 Python（app/）+ 约 4900 行测试
