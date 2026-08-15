@@ -170,14 +170,13 @@ async def get_current_user(
 | API 说明文档 | [api.md](../api.md) | 认证方式（当前 `get_current_user` 模拟实现）、错误处理约定、预留路由 |
 | LLM 层说明文档 | [llm.md](../../integration_doc/llm_doc/llm.md) | 模块分层设计、限流算法选型、请求日志风格（中间件层可借鉴） |
 | LLM 限流 | [limiter.md](../../integration_doc/llm_doc/limiter.md) | 两种形态：acquire（Token Bucket 双桶）与 reserve/settle（先预留再结算），API 限流实现参考 |
-| 项目总览 | [HANDOFF.md](../../HANDOFF.md) | 项目整体进度与遗留事项 |
 | 项目架构 | [architecture.md](../../architecture.md) | 系统架构与模块边界 |
 
 ---
 
 ## 当前进度与遗留
 
-> 本节记录中间件层的进度与下一步计划（项目整体进度见 [HANDOFF.md](../../HANDOFF.md)）。
+> 本节记录中间件层的进度与下一步计划（项目整体进度见 [architecture.md](../../architecture.md) 演进路径）。
 
 ### 已实现
 

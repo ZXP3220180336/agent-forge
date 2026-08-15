@@ -323,4 +323,3 @@ TaskService 相关配置（`app/config/settings.py`）：
 - [Agent 模块说明](../../domain_doc/agent_doc/agent.md)（Agent 层：单任务执行）
 - [配置管理模块](../../config_doc/config.md)（任务/并发配置）
 - [工具模块](../../integration_doc/tools_doc/tools.md)（工具级并发）
-- [HANDOFF](../../HANDOFF.md)（项目交接）

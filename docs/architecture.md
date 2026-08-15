@@ -458,7 +458,7 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 
 ## 演进路径
 
-> 架构文档为**设计蓝图**，各阶段标注「已实现 / 进行中 / 待规划」，状态随 HANDOFF、service.md 同步更新。
+> 架构文档为**设计蓝图**，各阶段标注「已实现 / 进行中 / 待规划」，状态随 ALIGNMENT.md（逐模块状态）与模块文档同步更新。
 
 ### Phase A 基础设施落地
 
@@ -517,13 +517,12 @@ Phase A ──→ Phase B ──→ Phase C ──→ Phase D
 端口 / 装配根是解耦前提；解耦后编排才不踩双向环；编排稳定后再上可观测与业务域
 ```
 
-每阶段验收 = 214 现有测试保持通过 + 新增该阶段关键路径测试；文档状态徽标同步（HANDOFF / architecture / service.md 同源）。
+每阶段验收 = 现有测试保持通过 + 新增该阶段关键路径测试；文档状态徽标同步（ALIGNMENT / architecture 同源）。
 
 ---
 
 ## 相关文档
 
-- [HANDOFF](HANDOFF.md)（项目交接，顶层计划/进度）
 - [product](product.md)（产品方向）
 - [服务层说明](application_doc/README.md)（服务层模块 + 实现目标 — 对标工业级）
 - [agent 模块](domain_doc/agent_doc/agent.md)

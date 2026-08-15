@@ -163,7 +163,6 @@ await self.redis.ping()
 
 - [配置参考](../config_doc/config.md) — `DATABASE_URL` / `REDIS_URL` / `memory_vector_db` 等基础设施相关配置
 - [系统架构](../architecture.md) — 整体架构中基础设施层的定位
-- [项目整体进度](../HANDOFF.md) — 项目全局状态与待办
 - [LLM 层说明文档](../integration_doc/llm_doc/llm.md) — 同风格的分层文档参考
 - [任务服务说明文档](../application_doc/task_doc/task.md) — 任务调度（潜在依赖消息队列）
 - [记忆系统说明文档](../domain_doc/memory_doc/memory.md) — 依赖 `vector_store` 的记忆实现（目录当前为空）

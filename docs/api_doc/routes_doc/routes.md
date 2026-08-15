@@ -250,13 +250,12 @@ async def get_current_user(authorization: str = Header(None)) -> str:
 | Task 服务说明文档 | [task.md](../../application_doc/task_doc/task.md) | TaskService 任务级并发信号量（`agent_max_concurrent_tasks`） |
 | Tool 模块说明文档 | [tools.md](../../integration_doc/tools_doc/tools.md) | ToolService 工具定义与执行、预留 `tool.py` 参考 |
 | 项目架构 | [architecture.md](../../architecture.md) | 系统架构与模块边界 |
-| 项目总览 | [HANDOFF.md](../../HANDOFF.md) | 项目整体进度与遗留事项 |
 
 ---
 
 ## 当前进度与遗留
 
-> 本节记录路由层的进度与下一步计划（项目整体进度见 [HANDOFF.md](../../HANDOFF.md)）。
+> 本节记录路由层的进度与下一步计划（项目整体进度见 [architecture.md](../../architecture.md) 演进路径）。
 
 ### 已实现
 

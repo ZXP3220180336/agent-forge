@@ -543,7 +543,6 @@ cost = LLMService.calculate_cost(
 
 ## 相关文档
 
-- [HANDOFF](../HANDOFF.md)（项目交接，顶层计划 / 进度）
 - [架构设计](../architecture.md)（分层与核心链路）
 - [LLM 层说明](../integration_doc/llm_doc/llm.md)（LLMService 底层 llm/ 子包详解）
 - [Task 模块](task_doc/task.md)（任务调度顶层计划）

@@ -1229,7 +1229,7 @@ response = await retry.execute(
 
 ## 当前进度与遗留
 
-> 本节记录 LLM 层自身的进度、遗留工作与下一步计划（项目整体进度见 [HANDOFF.md](../../HANDOFF.md)）。
+> 本节记录 LLM 层自身的进度、遗留工作与下一步计划（项目整体进度见 [architecture.md](../../architecture.md) 演进路径）。
 
 ### 已实现
 

@@ -224,7 +224,7 @@ Pydantic Schema 用于 **API 层出入参的校验与文档化**：
 
 ## 设计注意与历史教训
 
-> 以下两条为 HANDOFF.md「研发教训」中标记待数据模型文档的条目（原 `⏳` 标记，本处正式收录）。
+> 以下两条为项目级研发教训中标记待数据模型文档的条目（原 `⏳` 标记，本处正式收录，出处见 [lessons.md](../../lessons.md)）。
 
 ### 两个 declarative_base() 实例
 
@@ -257,7 +257,7 @@ Pydantic Schema 用于 **API 层出入参的校验与文档化**：
 | `task.py`            | ❌   | 预留任务表，待任务落库需求出现后实现                                   |
 | `tool_log.py`        | ❌   | 预留工具调用日志表                                                     |
 | `schemas/`           | ❌   | 预留 Pydantic 模型，待 API 层落地                                       |
-| **DB 运行环境**      | 🔶   | `asyncpg` 驱动未安装，数据库恒降级（HANDOFF 第 4 项）；模型已就绪但未连真库验证 |
+| **DB 运行环境**      | 🔶   | `asyncpg` 驱动未安装，数据库恒降级（项目级遗留）；模型已就绪但未连真库验证 |
 
 **下一步计划**：
 
@@ -305,12 +305,12 @@ Pydantic Schema 用于 **API 层出入参的校验与文档化**：
 
 ## 相关文档
 
-| 文档                         | 关联内容                                     |
-| ---------------------------- | -------------------------------------------- |
-| [架构总览](../../architecture.md) | 数据模型层的分层定位与整体架构               |
-| [项目总览 HANDOFF](../../HANDOFF.md) | 项目整体进度、研发教训（metadata / declarative_base 出处） |
-| [任务模块](../../application_doc/task_doc/task.md)   | `task.py` 预留对应的任务数据结构             |
-| [工具系统](../../integration_doc/tools_doc/tools.md)  | `tool_log.py` 预留对应的工具抽象与内置工具   |
-| [API 层](../../api_doc/api.md)       | `schemas/` 预留对应的请求 / 响应模型         |
-| [配置参考](../../config_doc/config.md)      | `DATABASE_URL` 等数据库连接配置              |
-| [部署文档](../../deployment.md)      | 数据库部署与 `asyncpg` 依赖说明              |
+| 文档                                                 | 关联内容                                           |
+| ----------------------------                         | --------------------------------------------       |
+| [架构总览](../../architecture.md)                    | 数据模型层的分层定位与整体架构                     |
+| [研发教训](../../lessons.md)                         | 项目级研发教训（metadata / declarative_base 出处） |
+| [任务模块](../../application_doc/task_doc/task.md)   | `task.py` 预留对应的任务数据结构                   |
+| [工具系统](../../integration_doc/tools_doc/tools.md) | `tool_log.py` 预留对应的工具抽象与内置工具         |
+| [API 层](../../api_doc/api.md)                       | `schemas/` 预留对应的请求 / 响应模型               |
+| [配置参考](../../config_doc/config.md)               | `DATABASE_URL` 等数据库连接配置                    |
+| [部署文档](../../deployment.md)                      | 数据库部署与 `asyncpg` 依赖说明                    |
