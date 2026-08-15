@@ -50,7 +50,7 @@
 
 - Python ≥ 3.14
 - [uv](https://docs.astral.sh/uv/) 包管理器
-- Redis（会话缓存依赖；缺失时服务降级启动）
+- Redis（会话缓存依赖；缺失时容器降级启动，但聊天/会话接口需要 Redis 可用）
 
 ### 安装与运行
 
@@ -78,7 +78,7 @@ uv run python -m scripts.test_search_tool
 uv run python -m scripts.test_agent
 
 # 验证模块导入
-uv run python -c "from app.core.agent import ReActAgent; print('OK')"
+uv run python -c "from app.domain.agent.executor import ReActAgent; print('OK')"
 ```
 
 ## 配置说明
@@ -108,7 +108,7 @@ uv run python -c "from app.core.agent import ReActAgent; print('OK')"
 ## 测试
 
 ```bash
-uv run pytest            # 全量测试（214 用例）
+uv run pytest            # 全量测试
 ```
 
 pytest 已配置 `asyncio_mode = "auto"`，测试函数无需手动标记 `@pytest.mark.asyncio`。
@@ -117,8 +117,8 @@ pytest 已配置 `asyncio_mode = "auto"`，测试函数无需手动标记 `@pyte
 
 项目在 `docs/` 建立完整中文文档体系：
 
-- [HANDOFF](docs/HANDOFF.md) — 顶层交接文档（框架级计划 / 进度 / 研发教训）
-- [architecture](docs/architecture.md) — 架构分层 + 核心链路 + 模块实现状态
+- [architecture](docs/architecture.md) — 架构蓝图 + 演进路径
+- [ALIGNMENT](docs/ALIGNMENT.md) — 代码 ↔ 文档 ↔ 测试对齐表
 - [product](docs/product.md) — 产品定位与方向（Yield RCA / 工业 RAG / EDA）
 - [deployment](docs/deployment.md) — 部署说明（运行方式 / 环境 / 依赖基础设施）
 - LLM 层：[integration_doc/llm_doc/](docs/integration_doc/llm_doc/)（llm 总览 / client / retry / streaming / structure / limiter）
@@ -126,9 +126,9 @@ pytest 已配置 `asyncio_mode = "auto"`，测试函数无需手动标记 `@pyte
 
 ## 项目状态
 
-- 配置 / 工具 / LLM 服务层 / 核心 Agent 层已完成（Phase 1-3）
-- 基础设施层、MemoryService、admin/agent/tool 路由、中间件为预留（Phase 4-7 进行中）
-- 当前进度与遗留问题见 [docs/HANDOFF.md](docs/HANDOFF.md)
+- 已完成：分层架构 + 装配根（container 唯一组装）、ReAct Agent 闭环、LLM 可靠性链、工具系统
+- 进行中/预留：基础设施落地（Phase A）、TaskService 编排（Phase C）、MemoryService、admin/agent/tool 路由、中间件
+- 当前进度与遗留问题见 [architecture](docs/architecture.md) 演进路径与 [ALIGNMENT](docs/ALIGNMENT.md) 逐模块状态
 
 ## 许可证
 
