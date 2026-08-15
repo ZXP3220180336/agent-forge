@@ -332,7 +332,7 @@ cost = LLMService.calculate_cost(
 
 ### ClientManager — 连接池管理
 
-**文件**：`app/integration/llm/client.py`
+**文件**：`app/integration/llm/client.py`（设计文档见 [client.md](client.md)）
 
 #### 功能
 

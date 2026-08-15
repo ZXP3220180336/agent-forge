@@ -1,9 +1,23 @@
 # StreamingRectifier 设计文档
 
 > **模块**：`app/integration/llm/streaming_rectifier.py`
+> **更新日期**：2026-08-15
 > **职责**：流式整流重试策略——「首 token 前中断 → 重新 create + 重新迭代」，已产出 token 后中断则放弃
+> **状态**：✅ 已实现
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
 > **配套**：`StreamParser`（chunk 解析）、`LLMService.async_generate`（编排）、`RetryHandler`（create 阶段重试/熔断）
+
+---
+
+## 📋 目录
+
+- [设计目标](#设计目标)
+- [核心设计](#核心设计)
+- [关键实现](#关键实现)
+- [配置项](#配置项)
+- [工业级对照](#工业级对照)
+- [测试](#测试)
+- [相关文档](#相关文档)
 
 ---
 
@@ -70,10 +84,11 @@ create_fn（限流闭环 reserve + create）
 流式整流退避配置由外层 `register_config()` 注入（Container 读 settings 后调用），子模块不直接依赖 settings：
 
 ```python
+# 装配根（Container.initialize）读 settings 后调用，子模块零 settings 依赖
 StreamingRectifier.register_config(
-    base_delay=settings.llm_base_delay,
-    max_delay=settings.llm_max_delay,
-    use_jitter=settings.llm_use_jitter,
+    base_delay=base_delay,   # 来自 settings.llm_base_delay
+    max_delay=max_delay,     # 来自 settings.llm_max_delay
+    use_jitter=use_jitter,   # 来自 settings.llm_use_jitter
 )
 ```
 
@@ -89,7 +104,7 @@ async for event in StreamingRectifier.rectified_stream(
     create_fn=lambda: _rate_limited_call(...),   # 每次整流 attempt 重新 reserve + create
     retry=retry,
     cancel_event=cancel_event,
-    stream_max_retries=stream_max_retries,      # 经 register_config 注入（子模块零 settings 依赖）
+    stream_max_retries=stream_max_retries,      # 由 async_generate 传入（llm_stream_max_retries 配置值）
     context=rectifier_context,                    # 会话共享状态
     fallback_fn=fallback_fn,
 ):

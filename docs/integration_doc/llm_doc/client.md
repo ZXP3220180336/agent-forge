@@ -1,11 +1,13 @@
 # ClientManager 设计文档
 
 > **模块**：`app/integration/llm/client.py`
+> **更新日期**：2026-08-15
 > **职责**：全局共享 `AsyncOpenAI` client 实例，支持多模型 key 隔离
+> **状态**：✅ 已实现
 
 ---
 
-## 目录
+## 📋 目录
 
 - [设计目标](#设计目标)
 - [核心概念解释](#核心概念解释)
@@ -160,6 +162,8 @@ class ClientManager:
 
 **类变量即单例存储**：全部为 `ClassVar`，任何模块通过 `ClientManager.xxx` 访问的都是同一份状态——保证 `main` / `reasoning` / `fast` 三个 client 在进程内唯一，跨请求复用连接池。
 
+**方法契约要点**：`get_client` / `get_model` / `get_config` 对未注册 key 抛 `ValueError`；`get_config` 返回配置**副本**（dict 拷贝）；`get_client` 对缺失字段有默认值兜底（`api_key=""`、`base_url="https://api.openai.com/v1"`）。
+
 ### _OPENAI_CLIENT_KWARGS — 参数白名单
 
 `get_client` 从配置中筛选交集的字段传给 `AsyncOpenAI`，白名单外的参数（`model`、`proxy_url`）只存 `_configs` 不透传。**设计意图**：`register_config` 接收业务语义配置（`model` 供 `get_model` 用、`proxy_url` 供代理构建），`AsyncOpenAI` 构造函数只认固定参数集——白名单隔离两套字段，避免非法参数透传给 SDK 抛 TypeError。
@@ -188,7 +192,8 @@ get_client("main")
   │            ├─ 否 → raise ValueError("Client key 'main' 未注册")
   │            └─ 是 → 从 _configs 读取配置
   │                    ├─ 筛选 _OPENAI_CLIENT_KWARGS 交集字段
-  │                    ├─ 有 proxy_url → _build_proxied_client(proxy_url)
+  │                    ├─ 默认值兜底：api_key=""、base_url="https://api.openai.com/v1"
+  │                    ├─ 有 proxy_url → _build_proxied_client(proxy_url)（转 http_client）
   │                    └─ AsyncOpenAI(**client_kwargs) → 存入 _instances 并返回
 ```
 

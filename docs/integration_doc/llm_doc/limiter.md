@@ -1,13 +1,15 @@
 # Limiter 客户端限流设计文档
 
 > **模块**：`app/integration/llm/reservation_limiter.py`（reserve/settle 形态，生产唯一）
+> **更新日期**：2026-08-15
 > **职责**：LLM API 调用的客户端限流（RPM + TPM 双 Token Bucket）
+> **状态**：✅ 已实现
 > **学习参考**：acquire 形态限流（`RateLimiter`/`RateLimiterManager`）与 5 类参考算法（LeakyBucket/FixedWindow/SlidingWindowLog/SlidingWindowCounter/GCRA）已从生产移除，代码作为学习资料完整保留在本文档「组件详解」一栏
 > **配套**：集成于 `LLMService.async_generate()` / `generate()`，见 `llm_service.py`
 
 ---
 
-## 目录
+## 📋 目录
 
 - [Limiter 客户端限流设计文档](#limiter-客户端限流设计文档)
   - [目录](#目录)
@@ -285,44 +287,27 @@ ReservationLimiterManager.get(model_key) ──→ 共享 ReservationLimiter 实
 
 ```python
 class TokenBucket:
-    def __init__(self, capacity, refill_rate):
-        self.capacity = capacity
-        self.refill_rate = refill_rate
-        self._tokens = capacity
-        self._last_refill = time.monotonic()
-        self._lock = asyncio.Lock()
+    """单桶 Token Bucket。完整实现见 reservation_limiter.py::TokenBucket。"""
+
+    def __init__(self, capacity, refill_rate): ...  # 桶状态 + asyncio.Lock
 
     async def acquire(self, tokens=1.0) -> float:
-        # 配置 0 = 禁用限流：refill_rate <= 0 时无限速率直接放行，避免除零崩溃
+        # 配置 0 = 禁用限流：refill_rate <= 0 直接放行（避免除零崩溃）
         if self.refill_rate <= 0:
             return 0.0
-
-        # 锁内计算 → 锁外 sleep → 循环重检（见「已知边界」边界 1）
         total_wait = 0.0
         while True:
-            async with self._lock:
+            async with self._lock:              # 锁内只做计算
                 self._refill()
                 if self._tokens >= tokens:
                     self._tokens -= tokens
                     return total_wait
                 wait_time = (tokens - self._tokens) / self.refill_rate
-
-            # 锁外 sleep：期间其他请求可获取锁、扣减 token
-            await asyncio.sleep(wait_time)
-            total_wait += wait_time
-            # 回到循环顶部重新检查——sleep 期间 token 可能被其他请求抢走
+            await asyncio.sleep(wait_time)      # 锁外 sleep：不持锁、可响应取消
+            total_wait += wait_time             # 循环重检（sleep 期间 token 可能被抢走）
 
     async def refund(self, tokens=1.0) -> None:
-        # reserve/settle 形态独有：退还 token（受 capacity 封顶，best-effort）
-        async with self._lock:
-            self._refill()
-            self._tokens = min(self.capacity, self._tokens + tokens)
-
-    def _refill(self):
-        now = time.monotonic()
-        elapsed = now - self._last_refill
-        self._tokens = min(self.capacity, self._tokens + elapsed * self.refill_rate)
-        self._last_refill = now
+        ...  # 退还配额（capacity 封顶，best-effort），见源码
 ```
 
 **要点**：
@@ -395,7 +380,7 @@ class RateLimiterManager:
 **空对象构造**，由 `ReservationLimiter.reserve()` 逐桶 acquire 扣减后 `add()` 追加条目。以**条目列表**统一单桶 / 多桶组合：`entries: [(bucket, reserved), ...]`。语义约定：**首个条目为按次桶（RPM，settle 不退）**，其余条目为按量桶（TPM，settle 退差）。单桶 = 1 条目，双桶 = 2 条目。
 
 ```python
-class Reservation:
+class Reservation:  # 完整实现见 reservation_limiter.py
     def __init__(self, settle_callback: Callable[[int], None] | None = None) -> None:
         # 空对象，条目由 add() 追加
         # settle_callback: settle(actual) 成功后喂实际消耗给自适应估算器（可选）
@@ -424,7 +409,7 @@ class Reservation:
 **文件**：`reservation_limiter.py`
 
 ```python
-class ReservationLimiter:
+class ReservationLimiter:  # 完整实现见 reservation_limiter.py
     def __init__(self, rpm=60, tpm=100_000, *,
                  quantile=0.95, safety_margin=1.15, min_samples=30, window=256):
         # quantile/safety_margin/min_samples/window: 自适应预留估算器配置（懒创建）
@@ -469,7 +454,7 @@ class ReservationLimiter:
 **作用**：用「历史实际输出的高分位 × 安全系数」预测下一次预留的输出量，替代固定 `max_tokens` 上限——减少预留期间占桶（并发空耗）。Fenic 式设计，详见 [「对比 3.2」](#对比-32自适应预留fenic-式2026-08-06-实现)。
 
 ```python
-class OutputTokenEstimator:
+class OutputTokenEstimator:  # 完整实现见 reservation_limiter.py
     def __init__(self, quantile=0.95, safety_margin=1.15,
                  min_samples=30, window=256): ...
     def record(self, actual_output_tokens: int) -> None   # settle 后喂实际输出
@@ -478,7 +463,7 @@ class OutputTokenEstimator:
 ```
 
 - **滚动样本**：`deque(maxlen=window)`，默认 256 条，超限淘汰最旧（Fenic 同款）
-- **分位数**：`sorted()` 排序取索引（nearest-rank，O(n log n)，n≤256，无 numpy）；普通模型 p95、推理模型 p99（`ReservationLimiterManager` 按 model_key 配置）
+- **分位数**：`sorted()` 排序取索引（nearest-rank，O(n log n)，n≤256，无 numpy）；普通模型 p95、推理模型 p99（`ReservationLimiterManager` 按 model_key 配置）；quantile 先 clamp 到 `[0,1]`（配置异常时不取负索引）
 - **安全系数**：默认 1.15（可配 1.0~4.0），越高越保守、429 风险越低、吞吐越低
 - **冷启动回退**：样本 < `min_samples`（默认 30）返回 0 → `reserve_adaptive` 回退静态 `max_tokens`
 - **无锁**：record/estimate 均无 await 点，asyncio 单线程天然原子（与 TokenBucket 因 acquire 内 sleep 需锁不同）

@@ -1,13 +1,15 @@
 # StructuredOutput 结构化输出设计文档
 
 > **模块**：`app/integration/llm/structured.py`
+> **更新日期**：2026-08-15
 > **职责**：从 LLM 输出中提取结构化数据（三级降级：JSON Schema → JSON Mode → 正则提取）
+> **状态**：✅ 已实现
 > **统一入口**：对外唯一入口为 `LLMService.generate_structured()`，委托 `StructuredOutput.extract()` 三级降级；`StructuredOutput` 为内部实现载体（接收完整 messages）
 > **配套**：集成于 `LLMService.generate_structured()`（`app/integration/llm/llm_service.py`），底层复用 `LLMService.generate()`（重试/熔断/限流）
 
 ---
 
-## 目录
+## 📋 目录
 
 - [StructuredOutput 结构化输出设计文档](#structuredoutput-结构化输出设计文档)
   - [目录](#目录)
@@ -239,45 +241,34 @@ def _build_json_mode_request() -> dict[str, str]:
 
 ```python
 @staticmethod
-async def extract(llm_service, messages, schema, model_key="fast"):
+async def extract(llm_service, messages, schema, model_key="fast", max_tokens=None):
     """三级降级：JSON Schema → JSON Mode → 正则提取。
+    完整实现见 structured.py::StructuredOutput.extract。"""
+    schema = _enforce_no_extra_fields(schema)   # 递归补 additionalProperties:false（问题 4）
+    if max_tokens is None:
+        max_tokens = StructuredOutput._default_max_tokens   # 注入的默认预算
 
-    问题 2 语义：截断（StructuredTruncationError）短路返回 None——
-    不进入降级链（截断与降级正交）。拒答（StructuredRefusalError）向上抛——
-    调用方需区分「三级耗尽返回 None」与「拒答」（拒答需差异化处理）。
-    """
-    # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）
-    schema = _enforce_no_extra_fields(schema)
-
-    # 第一级：原生 JSON Schema（strict）
-    response_format = _build_json_schema_request(schema)
+    # 第一级：原生 JSON Schema（strict）→ 成功即返回
     try:
         result = await StructuredOutput._try_extract(
-            llm_service, messages, response_format, model_key, schema=schema,
+            llm_service, messages, _build_json_schema_request(schema),
+            model_key, schema=schema, max_tokens=max_tokens,
         )
     except StructuredTruncationError:
-        return None  # 截断短路，不降级
+        return None   # 截断短路，不降级
     if result is not None:
         return result
 
-    # 第二级：JSON mode
-    response_format = _build_json_mode_request()
-    try:
-        result = await StructuredOutput._try_extract(
-            llm_service, messages, response_format, model_key, schema=schema,
-        )
-    except StructuredTruncationError:
-        return None  # 截断短路，不降级
-    if result is not None:
-        return result
+    # 第二级：JSON mode（同第一级，response_format 换 _build_json_mode_request()）
+    ...  # 截断短路返回 None，成功即返回
 
     # 第三级：正则提取（无 response_format）
     try:
         return await StructuredOutput._fallback_extract(
-            llm_service, messages, model_key, schema=schema,
+            llm_service, messages, model_key, schema=schema, max_tokens=max_tokens,
         )
     except StructuredTruncationError:
-        return None  # 截断短路
+        return None   # 截断短路
 ```
 
 **要点**：
@@ -293,56 +284,43 @@ async def extract(llm_service, messages, schema, model_key="fast"):
 
 ```python
 @staticmethod
-async def _try_extract(llm_service, messages, response_format, model_key, schema=None):
-    """尝试用指定 response_format 提取（解析前做边界检查 + 错误回喂）。
-
-    问题 2：截断扩 max_tokens 重试 1 次；重试后仍截断/拒答/工具调用 → _raise_boundary 短路。
-    问题 3：正常响应解析/校验失败 → 回喂错误重试 _REASK_MAX_RETRIES 次，
-            耗尽返回 None（触发降级）。
-    """
-    # _call_generate：统一下游异常分类（NON_RETRYABLE raise / 可恢复返回 None）
-    result = await StructuredOutput._call_generate(
+async def _try_extract(llm_service, messages, response_format, model_key, schema=None, max_tokens=None):
+    """单级提取（response_format 形态）。完整实现见 structured.py::StructuredOutput._try_extract。"""
+    result = await StructuredOutput._call_generate(   # 统一下游异常分类（NON_RETRYABLE raise / 可恢复返回 None）
         llm_service, messages, model_key, max_tokens, response_format=response_format,
     )
     if result is None:
-        return None
+        return None   # 下游失败 → 降级
 
-    failure = StructuredOutput._classify_result(result)
+    failure = StructuredOutput._classify_result(result)   # 解析前三态检查
     if failure == "truncated":
-        # 本层扩 max_tokens 重试 1 次（问题 2），按调用方预算 ×2
-        retry = await StructuredOutput._call_generate(
+        retry = await StructuredOutput._call_generate(   # 截断：扩 max_tokens 重试 1 次
             llm_service, messages, model_key,
-            max_tokens * 2 if max_tokens is not None else _default_max_tokens * 2,
+            max_tokens * 2 if max_tokens is not None else StructuredOutput._default_max_tokens * 2,
             response_format=response_format, stage="结构化输出截断重试",
         )
         if retry is None:
-            return None  # 下游失败 → 降级
-        # _raise_boundary：重试后 truncated/refusal/tool_calls 一律短路
-        StructuredOutput._raise_boundary(
-            StructuredOutput._classify_result(retry), retry, "截断重试后"
-        )
+            return None
+        StructuredOutput._raise_boundary(   # 重试后 truncated/refusal/tool_calls 一律短路
+            StructuredOutput._classify_result(retry), retry, "截断重试后")
         result = retry
     else:
-        # 未走截断分支：refusal / tool_calls 短路
-        StructuredOutput._raise_boundary(failure, result, "结构化输出")
+        StructuredOutput._raise_boundary(failure, result, "结构化输出")   # refusal/tool_calls 短路
 
-    # 正常：解析 + 校验（错误回喂，问题 3）
+    # 正常：解析 + 校验（错误回喂 _REASK_MAX_RETRIES 次）
     content = result.content
     for _ in range(_REASK_MAX_RETRIES):
         parsed, errors = _parse_and_validate(content, schema)
         if parsed is not None:
             return parsed
         retry = await StructuredOutput._call_generate(
-            llm_service,
-            _build_reask_messages(messages, content, "\n".join(errors)),
+            llm_service, _build_reask_messages(messages, content, "\n".join(errors)),
             model_key, max_tokens, response_format=response_format, stage="结构化输出回喂",
         )
         if retry is None:
             return None
-        # 回喂内 truncated/refusal/tool_calls 一律短路（截断不扩 token，防 token 爆炸）
-        StructuredOutput._raise_boundary(
-            StructuredOutput._classify_result(retry), retry, "回喂重试后"
-        )
+        StructuredOutput._raise_boundary(   # 回喂内 refusal/tool_calls/truncated 一律短路
+            StructuredOutput._classify_result(retry), retry, "回喂重试后")
         content = retry.content
     return None  # 回喂耗尽 → 降级
 ```
@@ -361,20 +339,18 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
 
 ```python
 @staticmethod
-async def _fallback_extract(llm_service, messages, model_key, schema=None):
-    """纯 prompt 约束降级方案（边界检查 + 正则定位 JSON 块）。"""
+async def _fallback_extract(llm_service, messages, model_key, schema=None, max_tokens=None):
+    """纯 prompt 约束降级方案（边界检查 + 正则定位 JSON 块）。
+    完整实现见 structured.py::StructuredOutput._fallback_extract。"""
     result = await StructuredOutput._call_generate(
         llm_service, messages, model_key, max_tokens, stage="结构化输出 fallback",
     )
     if result is None:
         return None
+    StructuredOutput._raise_boundary(   # 截断/拒答/工具调用一律短路（第三级无降级可走）
+        StructuredOutput._classify_result(result), result, "结构化输出（fallback）")
 
-    # _raise_boundary：truncated / refusal / tool_calls 一律短路（第三级无降级可走）
-    StructuredOutput._raise_boundary(
-        StructuredOutput._classify_result(result), result, "结构化输出（fallback）"
-    )
-
-    # 提取 JSON：剥代码块 → 整体解析失败 → 正则定位 {..} 块（prose 包裹场景）
+    # 提取 JSON：剥 Markdown 代码块 → 整体解析 → 正则定位 {..} 块（prose 包裹场景）
     content = result.content.strip()
     fenced = re.sub(r"^```(?:json)?\s*", "", content, flags=re.MULTILINE)
     fenced = re.sub(r"\s*```$", "", fenced, flags=re.MULTILINE)

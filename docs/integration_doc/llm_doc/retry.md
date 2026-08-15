@@ -1,11 +1,13 @@
 # RetryHandler 设计文档
 
 > **模块**：`app/integration/llm/retry.py`
+> **更新日期**：2026-08-15
 > **职责**：LLM API 调用的重试、熔断与降级
+> **状态**：✅ 已实现
 
 ---
 
-## 目录
+## 📋 目录
 
 - [设计目标](#设计目标)
 - [核心概念解释](#核心概念解释)
@@ -198,6 +200,9 @@ class CircuitBreaker:
 | `record_success()` | 请求成功 | 窗口追加成功；HALF_OPEN 下累计连续成功，达探针阈值才关闭；**OPEN 下 no-op**（见下） |
 | `record_failure()` | 请求失败 | 返回 `bool`；窗口追加失败并评估→OPEN；半开失败→OPEN 并清空成功；OPEN 下 no-op（见下） |
 | `release_probe()` | 探针收到 NON_RETRYABLE | 归还探针槽位（`_half_open_requests` 减 1），状态不变；仅 HALF_OPEN 下有效 |
+| `state`（property） | 随时 | 当前熔断状态（CLOSED / OPEN / HALF_OPEN） |
+| `failure_count`（property） | 随时 | 窗口内当前失败请求数（先清理过期条目） |
+| `reset()` | 手动 | 重置熔断器为 CLOSED，清空窗口与半开计数 |
 
 **状态机细节**：
 

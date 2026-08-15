@@ -1,12 +1,14 @@
 # StreamParser 设计文档
 
 > **模块**：`app/integration/llm/streaming.py`
+> **更新日期**：2026-08-15
 > **职责**：流式 / 非流式 LLM 响应解析（逐 chunk 提取 reasoning / message / tool_calls / usage / refusal）
+> **状态**：✅ 已实现
 > **工业级对照**：增量累积 + 完成后解析（见「设计决策·Q1/Q2」）
 
 ---
 
-## 目录
+## 📋 目录
 
 - [设计目标](#设计目标)
 - [核心概念解释](#核心概念解释)
