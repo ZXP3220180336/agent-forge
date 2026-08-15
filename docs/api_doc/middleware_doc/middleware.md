@@ -133,9 +133,9 @@ async def get_current_user(
 
 #### 设计要点
 
-- **复用 LLM 层限流思路**：LLM 层已实现并验证了 Token Bucket 限流（见 [llm.md](../../service_doc/llm_doc/llm.md) 与 [limiter.md](../../service_doc/llm_doc/limiter.md)），API 中间件限流可直接借鉴：
+- **复用 LLM 层限流思路**：LLM 层已实现并验证了 Token Bucket 限流（见 [llm.md](../../integration_doc/llm_doc/llm.md) 与 [limiter.md](../../integration_doc/llm_doc/limiter.md)），API 中间件限流可直接借鉴：
   - **Token Bucket 算法**：允许突发 + 长期平滑，适合 Agent 场景的短时并发尖峰
-  - **reserve / settle 形态**：LLM 层实际使用 `ReservationLimiter`（reserve/settle），先预留配额再结算，与「请求进入 → 处理 → 放行」的中间件生命周期天然契合，可参考 [limiter.md](../../service_doc/llm_doc/limiter.md)
+  - **reserve / settle 形态**：LLM 层实际使用 `ReservationLimiter`（reserve/settle），先预留配额再结算，与「请求进入 → 处理 → 放行」的中间件生命周期天然契合，可参考 [limiter.md](../../integration_doc/llm_doc/limiter.md)
   - **`Retry-After` 支持**：与 LLM 层处理上游 429 的逻辑对称，中间件在超限时对客户端返回 `Retry-After`
 - **与 LLM 层限流的区别**：LLM 层限流保护**上游模型 API**（防打爆服务商），中间件限流保护**自身服务**（防滥用 / 防 DDoS）。两层各自独立、互不替代
 - **实现形态**：可选择复用 LLM 层的限流组件，或针对中间件场景做轻量封装（按维度建 Token Bucket 实例）
@@ -168,8 +168,8 @@ async def get_current_user(
 | 文档 | 链接 | 关联内容 |
 | ---- | ---- | -------- |
 | API 说明文档 | [api.md](../api.md) | 认证方式（当前 `get_current_user` 模拟实现）、错误处理约定、预留路由 |
-| LLM 层说明文档 | [llm.md](../../service_doc/llm_doc/llm.md) | 模块分层设计、限流算法选型、请求日志风格（中间件层可借鉴） |
-| LLM 限流 | [limiter.md](../../service_doc/llm_doc/limiter.md) | 两种形态：acquire（Token Bucket 双桶）与 reserve/settle（先预留再结算），API 限流实现参考 |
+| LLM 层说明文档 | [llm.md](../../integration_doc/llm_doc/llm.md) | 模块分层设计、限流算法选型、请求日志风格（中间件层可借鉴） |
+| LLM 限流 | [limiter.md](../../integration_doc/llm_doc/limiter.md) | 两种形态：acquire（Token Bucket 双桶）与 reserve/settle（先预留再结算），API 限流实现参考 |
 | 项目总览 | [HANDOFF.md](../../HANDOFF.md) | 项目整体进度与遗留事项 |
 | 项目架构 | [architecture.md](../../architecture.md) | 系统架构与模块边界 |
 

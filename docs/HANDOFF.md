@@ -21,27 +21,31 @@
 ### 架构分层
 
 ```text
-API 层（FastAPI 路由）
+接入层 app/api
     ├── chat / session 路由（已实现）
     └── admin / agent / tool 路由（预留，空文件）
     ↓
-服务层（LLMService / SessionManager / ContextManager / MemoryService / TaskService / ToolService）
-    ├── LLM 子包（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）
-    └── EmbeddingService
+应用层 app/application
+    ├── SessionManager / ContextManager / TaskService
+    └── MemoryService（预留，空文件）
     ↓
-核心层（Agent / Reasoning / Memory / Prompts）
+领域层 app/domain
     ├── BaseAgent.run() → _strategy_cycle()
     ├── ReActAgent（推理 ↔ 工具 ↔ 推理循环）
     ├── 预留策略接口（planner / reasoning，空文件）
-    └── 提示词模板（系统 / 工具 / 规划）
+    ├── 提示词模板（系统 / 工具 / 规划）
+    └── ports（LLMGateway / ToolGateway）
     ↓
-事件层（app/core/events.py）← SSE 事件定义
+集成层 app/integration
+    ├── LLMService + llm/（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）
+    ├── ToolService + builtin（search / readFile / writeFile / code_exec / web_browse）
+    └── EmbeddingService
     ↓
-基础设施层（Database / Redis / VectorStore / MessageQueue）
+共享内核 app/shared/events.py ← SSE 事件定义
     ↓
-工具层（搜索 / 文件 / 代码执行 / 网页抓取）
+基础设施层 app/infrastructure（Database / Redis / VectorStore / MessageQueue 待落地）
     ↓
-配置层（Pydantic Settings）← 全部通过 settings 单例访问
+配置层 app/config（Pydantic Settings）+ 装配根 app/container.py
 ```
 
 ---
@@ -78,18 +82,18 @@ API 层（FastAPI 路由）
 - **需要实现**：统一工具接口、注册中心（参数验证/重试/统计/超时/钩子）、内置工具自动发现。
 - **已经实现**：`BaseTool` 抽象基类、`ToolService` 工具服务（容器+执行+统计+装配，已合并原 ToolRegistry）、5 个内置工具（search / readFile / writeFile / code_exec / web_browse）。
 
-**详见** [tool_doc/tools.md](tool_doc/tools.md) · [tool_doc/builtin_doc/builtin.md](tool_doc/builtin_doc/builtin.md)
+**详见** [integration_doc/tools_doc/tools.md](integration_doc/tools_doc/tools.md) · [integration_doc/tools_doc/builtin_doc/builtin.md](integration_doc/tools_doc/builtin_doc/builtin.md)
 
 ### 3.3 LLM 服务层（Phase 2）✅
 
 - **作用**：系统的模型通信基础设施，统一封装与大语言模型的所有交互。
 - **需要实现**：连接池管理、重试与熔断、流式/非流式解析、结构化输出、请求日志、客户端限流、成本计算、文本向量化。
-- **已经实现**：`LLMService` Facade + `app/services/llm/` 子模块（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）+ `EmbeddingService`。
-  - **限流为 reserve/settle 形态**（`reservation_limiter.py`，llm_service 实际使用，含自适应预留 `reserve_adaptive`）；acquire 形态（`rate_limiter.py`）已于 2026-08-10 移除，代码作为学习参考并入 [limiter.md](service_doc/llm_doc/limiter.md)。
+- **已经实现**：`LLMService` Facade + `app/integration/llm/` 子模块（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）+ `EmbeddingService`。
+  - **限流为 reserve/settle 形态**（`reservation_limiter.py`，llm_service 实际使用，含自适应预留 `reserve_adaptive`）；acquire 形态（`rate_limiter.py`）已于 2026-08-10 移除，代码作为学习参考并入 [limiter.md](integration_doc/llm_doc/limiter.md)。
   - **流式整流重试**已独立为策略类 `streaming_rectifier.py`（`StreamingRectifier` 无状态静态类 + `RectifierContext` 会话状态），`async_generate` 只做编排。
   - **结构化输出**统一入口为 `generate_structured` → 委托 `StructuredOutput.extract` 三级降级（JSON Schema → JSON Mode → 正则提取）；`StructuredOutput` 只保留业务编排与边界决策，纯工具函数已提取模块级。
   - **LLM 调用日志并入全局日志框架**（`app/utils/logger.py`，`fill_llm_event_fields` / `log_event_async("llm_call")`，原 LLMLogger 已移除）。
-  - **配置依赖注入**（2026-08-09）：`RetryConfig` / `CircuitBreakerConfig` / `ReservationLimiterConfig` 纯配置对象 + 各 `Manager.register_config()` 类方法注入，子模块**零 `settings` 依赖**（由 `app_state.initialize()` 读 settings 后统一注册）。
+  - **配置依赖注入**（2026-08-09）：`RetryConfig` / `CircuitBreakerConfig` / `ReservationLimiterConfig` 纯配置对象 + 各 `Manager.register_config()` 类方法注入，子模块**零 `settings` 依赖**（由 `container.initialize()` 读 settings 后统一注册）。
 - **核心改造（2026-08-01，retry.py）**：
   - 熔断判定升级为**滑动窗口错误率模型**（Hystrix 参考），请求级粒度，429 分离
   - 错误分类**白名单映射**（`classify_error`），未知异常默认 NON_RETRYABLE，显式捕获 httpx 网络异常
@@ -104,7 +108,7 @@ API 层（FastAPI 路由）
   - 整流判定 `emitted_any` 累积语义修复（修复 usage-only chunk 冲掉已产出标记的误整流）
   - 结构化输出短路辅助方法抽取 + 纯工具函数提取模块级（2026-08-12）
 
-**详见** [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)（层总览）· [client.md](service_doc/llm_doc/client.md)（ClientManager）· [streaming.md](service_doc/llm_doc/streaming.md)（StreamParser）· [streaming_rectifier.md](service_doc/llm_doc/streaming_rectifier.md)（流式整流）· [retry.md](service_doc/llm_doc/retry.md)（熔断/错误分类/探针）· [limiter.md](service_doc/llm_doc/limiter.md)（限流）· [structure.md](service_doc/llm_doc/structure.md)（结构化输出）
+**详见** [integration_doc/llm_doc/llm.md](integration_doc/llm_doc/llm.md)（层总览）· [client.md](integration_doc/llm_doc/client.md)（ClientManager）· [streaming.md](integration_doc/llm_doc/streaming.md)（StreamParser）· [streaming_rectifier.md](integration_doc/llm_doc/streaming_rectifier.md)（流式整流）· [retry.md](integration_doc/llm_doc/retry.md)（熔断/错误分类/探针）· [limiter.md](integration_doc/llm_doc/limiter.md)（限流）· [structure.md](integration_doc/llm_doc/structure.md)（结构化输出）
 
 ### 3.4 核心 Agent 层（Phase 3）✅
 
@@ -113,13 +117,13 @@ API 层（FastAPI 路由）
 - **已经实现**：`BaseAgent`（`run()` 统一入口 + `_strategy_cycle()` 策略接口）、`ReActAgent` 执行引擎（LLM 推理 → finish_reason 判断 → tool_calls 执行 → 循环）、AgentState/Context/Result 数据结构、事件层 7 种事件类型。**工具调用并行执行**（`asyncio.gather` + ToolService 信号量限并发，2026-08-02）。
 - **预留**：`core/agent/planner.py` / `reasoning.py` 空文件；`core/memory/`（base/long_term/short_term/working）、`core/reasoning/`（chain_of_thought/react/reflection）子包均为空文件。
 
-**详见** [core_doc/agent_doc/agent.md](core_doc/agent_doc/agent.md) · [core_doc/core.md](core_doc/core.md)
+**详见** [domain_doc/agent_doc/agent.md](domain_doc/agent_doc/agent.md) · [domain_doc/README.md](domain_doc/README.md)
 
 ### 3.5 基础设施层（Phase 4）🔶
 
 - **作用**：抽象封装数据库连接池、Redis 客户端、向量数据库、消息队列的底层操作。
 - **需要实现**：Database / Redis / VectorStore / MessageQueue 四类抽象层。
-- **已经实现**：`app/infrastructure/` 下文件均为空（database / redis_client / vector_store / message_queue / vector_store/milvus）；数据库与 Redis 实际由 `app/app_state.py` 直接管理（`create_async_engine` + `Redis.from_url`），未经过此层封装。
+- **已经实现**：`app/infrastructure/` 下文件均为空（database / redis_client / vector_store / message_queue / vector_store/milvus）；数据库与 Redis 实际由 `app/container.py` 直接管理（`create_async_engine` + `Redis.from_url`），未经过此层封装。
 - **遗留**：`asyncpg` 驱动未安装 → DB 恒降级。
 
 **详见**：[infrastructure_doc/infrastructure.md](infrastructure_doc/infrastructure.md)（基础设施层说明）
@@ -129,9 +133,9 @@ API 层（FastAPI 路由）
 - **作用**：业务调度枢纽，串起会话、上下文、记忆、任务、工具等服务。
 - **需要实现**：SessionManager / ContextManager / MemoryService / TaskService / ToolService。
 - **已经实现**：`SessionManager`（会话 CRUD + Redis 缓存 + 分页/搜索/统计）、`ContextManager`（Token 计数 + 超限截断）、`ToolService`（工具注册 + 统计）、`TaskService`（任务级并发信号量，`agent_max_concurrent_tasks`）；`MemoryService` 仍为空文件。
-- **规划**：TaskService 扩展为**完整调度枢纽**（队列/优先级/状态/多 Agent 编排，分阶段 A/B/C），顶层计划见 [service_doc/task_doc/task.md](service_doc/task_doc/task.md)。
+- **规划**：TaskService 扩展为**完整调度枢纽**（队列/优先级/状态/多 Agent 编排，分阶段 A/B/C），顶层计划见 [application_doc/task_doc/task.md](application_doc/task_doc/task.md)。
 
-**详见**：[service_doc/task_doc/task.md](service_doc/task_doc/task.md)（TaskService 顶层计划）· [service_doc/service.md](service_doc/service.md)（服务层说明）
+**详见**：[application_doc/task_doc/task.md](application_doc/task_doc/task.md)（TaskService 顶层计划）· [application_doc/README.md](application_doc/README.md)（服务层说明）
 
 ### 3.7 API 路由（Phase 6）🔶
 
@@ -191,7 +195,7 @@ API 层（FastAPI 路由）
 
 **2026-08-01 轮：**
 
-1. **retry.py 三大改造**：滑动窗口熔断 / 错误分类白名单 / 半开探针按异常类别判定（4xx 不改变状态，2026-08-05 修正，详见 [retry.md](service_doc/llm_doc/retry.md)）
+1. **retry.py 三大改造**：滑动窗口熔断 / 错误分类白名单 / 半开探针按异常类别判定（4xx 不改变状态，2026-08-05 修正，详见 [retry.md](integration_doc/llm_doc/retry.md)）
 2. **流式迭代保护**：`llm_service.py` 流式 chunk 异常捕获
 3. **chat_router → ReActAgent 闭环打通**：`ContextManager.build_messages()` → `ReActAgent.run()` → SSE 事件流 → `agent.result` 保存回复；配套实现 `ToolService`、启动注册 5 个内置工具、新增 `get_tool_registry` 依赖注入
 
@@ -204,7 +208,7 @@ API 层（FastAPI 路由）
 
 **2026-08-03 轮（文档）：**
 
-1. **TaskService 顶层计划**：[service_doc/task_doc/task.md](service_doc/task_doc/task.md)（调度枢纽 + 多 Agent 编排规划）
+1. **TaskService 顶层计划**：[application_doc/task_doc/task.md](application_doc/task_doc/task.md)（调度枢纽 + 多 Agent 编排规划）
 2. **产品方向决策**：[product.md](product.md)（多 Agent 引擎 + 良率 RCA 主方向；工业 RAG 备选；EDA 关闭）
 
 **2026-08-07 轮（结构化输出 + 可靠性）：**
@@ -237,22 +241,22 @@ API 层（FastAPI 路由）
 | #   | 问题                 | 说明                                                                                                                    |
 |---|--------------------|-----------------------------------------------------------------------------------------------------------------------|
 | 1   | **DB 恒降级**        | `asyncpg` 驱动未安装（`No module named 'asyncpg'`），即使有 PostgreSQL 也无法连接 → 需在 pyproject 依赖中加 `asyncpg`   |
-| 2   | **基础设施层空**     | `infrastructure/`（database/redis_client/vector_store/message_queue）全部为空文件；DB/Redis 由 `app_state.py` 直接管理         |
-| 3   | **服务层未补全**     | `MemoryService` 仍为空文件（TaskService 已实现并发信号量，编排规划见 [service_doc/task_doc/task.md](service_doc/task_doc/task.md)）                          |
+| 2   | **基础设施层空**     | `infrastructure/`（database/redis_client/vector_store/message_queue）全部为空文件；DB/Redis 由 `container.py` 直接管理         |
+| 3   | **服务层未补全**     | `MemoryService` 仍为空文件（TaskService 已实现并发信号量，编排规划见 [application_doc/task_doc/task.md](application_doc/task_doc/task.md)）                          |
 | 4   | **API 路由未补全**   | `admin.py` / `agent.py` / `tool.py` 为空文件（tool 路由可基于 ToolService 的 stats 实现；agent 路由可承接 TaskService） |
 | 5   | **中间件未实现**     | `api/middleware/`（auth/rate_limit/error_handler）为空文件，认证为模拟实现                                              |
-| 6   | **TaskService 编排** | 已实现并发闸门；队列/优先级/状态/多 Agent 编排待实现（分阶段 A/B/C，顶层计划见 [service_doc/task_doc/task.md](service_doc/task_doc/task.md)）                              |
+| 6   | **TaskService 编排** | 已实现并发闸门；队列/优先级/状态/多 Agent 编排待实现（分阶段 A/B/C，顶层计划见 [application_doc/task_doc/task.md](application_doc/task_doc/task.md)）                              |
 | 7   | **空测试文件**       | `tests/unit/test_memory.py` / `tests/integration/test_tool_execution.py` / `tests/e2e/test_api.py` 为空文件            |
 
-> **LLM 层自身遗留**（已全部解决/决策保持）：`generate_structured` 已统一为委托 `StructuredOutput` 三级降级；熔断观察盲区已补 + 熔断器按 model_key 跨请求共享；`APIResponseValidationError` 分类决策见 [retry.md](service_doc/llm_doc/retry.md)。见 [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)「当前进度与遗留」。
+> **LLM 层自身遗留**（已全部解决/决策保持）：`generate_structured` 已统一为委托 `StructuredOutput` 三级降级；熔断观察盲区已补 + 熔断器按 model_key 跨请求共享；`APIResponseValidationError` 分类决策见 [retry.md](integration_doc/llm_doc/retry.md)。见 [integration_doc/llm_doc/llm.md](integration_doc/llm_doc/llm.md)「当前进度与遗留」。
 
 ### 5.4 下一步方向（项目级）
 
-- **优先 1**：TaskService 阶段 A —— 按 [service_doc/task_doc/task.md](service_doc/task_doc/task.md) 顶层计划实现队列/优先级/状态/worker 池（阶段 B：Orchestrator 主从并行编排；阶段 C：agent 路由）
+- **优先 1**：TaskService 阶段 A —— 按 [application_doc/task_doc/task.md](application_doc/task_doc/task.md) 顶层计划实现队列/优先级/状态/worker 池（阶段 B：Orchestrator 主从并行编排；阶段 C：agent 路由）
 - **优先 2**：验证基础设施 + 服务层 —— 补依赖 `asyncpg`，补全 `memory_service`
 - **优先 3**：补全缺失模块 —— `api/routes/admin.py` / `agent.py` / `tool.py`（空文件）；`api/middleware/`（auth/rate_limit/error_handler，均空文件）
 
-> **LLM 层内部下一步**（无待办，遗留事项已全部解决/决策保持）：见 [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md)「当前进度与遗留」。
+> **LLM 层内部下一步**（无待办，遗留事项已全部解决/决策保持）：见 [integration_doc/llm_doc/llm.md](integration_doc/llm_doc/llm.md)「当前进度与遗留」。
 
 ---
 
@@ -264,19 +268,19 @@ API 层（FastAPI 路由）
 |-----------------------------------------|---------|-------------------------------------------------------------------------------------|
 | `app/main.py`                             | ⭐⭐⭐    | FastAPI 入口                                                                          |
 | `app/config/settings.py`                  | ⭐⭐⭐    | 全局配置（约 400 行）                                                                 |
-| `app/app_state.py`                        | ⭐⭐⭐    | 应用状态管理（服务初始化/关闭，模型注册）                                             |
-| `app/services/llm_service.py`             | ⭐⭐⭐    | LLM Facade（编排 async_generate/generate/generate_structured + 限流闭环）             |
-| `app/services/llm/`                       | ⭐⭐⭐    | LLM 子包（ClientManager/Retry/Stream/StreamingRectifier/Structured/Reservation/Cost） |
-| `app/services/llm/client.py`              | ⭐⭐⭐    | 连接池管理（register_config 依赖注入）                                                |
-| `app/services/llm/retry.py`               | ⭐⭐⭐    | 重试+熔断（滑动窗口熔断/错误分类/半开探针/RetryHandlerManager）                       |
-| `app/services/llm/reservation_limiter.py` | ⭐⭐⭐    | 限流（reserve/settle 形态 + 自适应预留，llm_service 实际使用）                        |
-| `app/services/llm/structured.py`          | ⭐⭐⭐    | 结构化输出（三级降级 + 模块级工具函数）                                               |
-| `app/services/llm/streaming_rectifier.py` | ⭐⭐⭐    | 流式整流重试策略（StreamingRectifier + RectifierContext）                             |
-| `app/services/task_service.py`            | ⭐⭐⭐    | 任务调度（并发信号量；编排规划见 task.md）                                            |
-| `app/core/agent/base.py`                  | ⭐⭐⭐    | Agent 基类 + 数据结构                                                                 |
-| `app/core/agent/executor.py`              | ⭐⭐⭐    | ReAct 执行引擎                                                                        |
-| `app/core/events.py`                      | ⭐⭐⭐    | SSE 事件定义                                                                          |
-| `app/tools/`                              | ⭐⭐⭐    | 工具系统                                                                              |
+| `app/container.py`                        | ⭐⭐⭐    | 应用状态管理（服务初始化/关闭，模型注册）                                             |
+| `app/integration/llm/llm_service.py`      | ⭐⭐⭐    | LLM Facade（编排 async_generate/generate/generate_structured + 限流闭环）             |
+| `app/integration/llm/`                       | ⭐⭐⭐    | LLM 子包（ClientManager/Retry/Stream/StreamingRectifier/Structured/Reservation/Cost） |
+| `app/integration/llm/client.py`              | ⭐⭐⭐    | 连接池管理（register_config 依赖注入）                                                |
+| `app/integration/llm/retry.py`               | ⭐⭐⭐    | 重试+熔断（滑动窗口熔断/错误分类/半开探针/RetryHandlerManager）                       |
+| `app/integration/llm/reservation_limiter.py` | ⭐⭐⭐    | 限流（reserve/settle 形态 + 自适应预留，llm_service 实际使用）                        |
+| `app/integration/llm/structured.py`          | ⭐⭐⭐    | 结构化输出（三级降级 + 模块级工具函数）                                               |
+| `app/integration/llm/streaming_rectifier.py` | ⭐⭐⭐    | 流式整流重试策略（StreamingRectifier + RectifierContext）                             |
+| `app/application/task/task_service.py`            | ⭐⭐⭐    | 任务调度（并发信号量；编排规划见 task.md）                                            |
+| `app/domain/agent/base.py`                  | ⭐⭐⭐    | Agent 基类 + 数据结构                                                                 |
+| `app/domain/agent/executor.py`              | ⭐⭐⭐    | ReAct 执行引擎                                                                        |
+| `app/shared/events.py`                      | ⭐⭐⭐    | SSE 事件定义                                                                          |
+| `app/integration/tools/`                              | ⭐⭐⭐    | 工具系统                                                                              |
 | `app/utils/logger.py`                     | ⭐⭐⭐    | 全局日志框架（`fill_llm_event_fields` / `log_event_async("llm_call")`）               |
 | `app/api/routes/chat.py`                  | ⭐⭐      | 聊天 API（已接入 ReActAgent）                                                         |
 | `tests/unit/test_retry.py`                | ⭐⭐      | retry 单元测试（35 用例）                                                             |
@@ -294,31 +298,31 @@ API 层（FastAPI 路由）
 | [config_doc/config.md](config_doc/config.md) | ✅ 配置模块 |
 | [architecture.md](architecture.md) | ✅ 架构设计（分层 + 核心链路 + 模块状态总览） |
 | [product.md](product.md) | ✅ 产品定位与方向（良率 RCA 主方向 / 工业 RAG 备选 / EDA 关闭） |
-| [core_doc/agent_doc/agent.md](core_doc/agent_doc/agent.md) | ✅ Agent 模块 |
+| [domain_doc/agent_doc/agent.md](domain_doc/agent_doc/agent.md) | ✅ Agent 模块 |
 | [api_doc/api.md](api_doc/api.md) | ✅ API 说明（chat/session 端点 + SSE 格式） |
 | [api_doc/routes_doc/routes.md](api_doc/routes_doc/routes.md) | ✅ 路由模块（chat/session 路由详解 + 预留） |
-| [tool_doc/tools.md](tool_doc/tools.md) | ✅ 工具模块（ToolService 统一入口） |
-| [tool_doc/builtin_doc/builtin.md](tool_doc/builtin_doc/builtin.md) | ✅ 内置工具详解（BaseTool + 5 个内置工具） |
-| [service_doc/task_doc/task.md](service_doc/task_doc/task.md) | ✅ TaskService 顶层计划（调度枢纽 + 多 Agent 编排规划） |
-| [service_doc/service.md](service_doc/service.md) | ✅ 服务层说明（Session/Context/Tool/Task/Embedding/LLM） |
-| [service_doc/session_doc/session.md](service_doc/session_doc/session.md) | ✅ 会话管理详解（SessionManager） |
-| [service_doc/context_doc/context.md](service_doc/context_doc/context.md) | ✅ 上下文管理详解（ContextManager） |
-| [service_doc/tool_service_doc/tool_service.md](service_doc/tool_service_doc/tool_service.md) | ✅ 工具服务详解（ToolService） |
-| [service_doc/embedding_doc/embedding.md](service_doc/embedding_doc/embedding.md) | ✅ 向量化详解（EmbeddingService） |
-| [core_doc/core.md](core_doc/core.md) | ✅ 核心层说明（Agent/Events/Prompts + 预留 Memory/Reasoning） |
-| [core_doc/prompt_doc/prompts.md](core_doc/prompt_doc/prompts.md) | ✅ 提示词模块（PromptManager + 系统/工具/规划模板） |
-| [core_doc/memory_doc/memory.md](core_doc/memory_doc/memory.md) | ✅ 记忆系统说明（短期/长期/工作记忆，均为预留） |
-| [core_doc/reasoning_doc/reasoning.md](core_doc/reasoning_doc/reasoning.md) | ✅ 推理策略说明（CoT / ReAct / Reflection，均为预留） |
+| [integration_doc/tools_doc/tools.md](integration_doc/tools_doc/tools.md) | ✅ 工具模块（ToolService 统一入口） |
+| [integration_doc/tools_doc/builtin_doc/builtin.md](integration_doc/tools_doc/builtin_doc/builtin.md) | ✅ 内置工具详解（BaseTool + 5 个内置工具） |
+| [application_doc/task_doc/task.md](application_doc/task_doc/task.md) | ✅ TaskService 顶层计划（调度枢纽 + 多 Agent 编排规划） |
+| [application_doc/README.md](application_doc/README.md) | ✅ 服务层说明（Session/Context/Tool/Task/Embedding/LLM） |
+| [application_doc/session_doc/session.md](application_doc/session_doc/session.md) | ✅ 会话管理详解（SessionManager） |
+| [application_doc/context_doc/context.md](application_doc/context_doc/context.md) | ✅ 上下文管理详解（ContextManager） |
+| [integration_doc/tool_service_doc/tool_service.md](integration_doc/tool_service_doc/tool_service.md) | ✅ 工具服务详解（ToolService） |
+| [integration_doc/embedding_doc/embedding.md](integration_doc/embedding_doc/embedding.md) | ✅ 向量化详解（EmbeddingService） |
+| [domain_doc/README.md](domain_doc/README.md) | ✅ 核心层说明（Agent/Events/Prompts + 预留 Memory/Reasoning） |
+| [domain_doc/prompts_doc/prompts.md](domain_doc/prompts_doc/prompts.md) | ✅ 提示词模块（PromptManager + 系统/工具/规划模板） |
+| [domain_doc/memory_doc/memory.md](domain_doc/memory_doc/memory.md) | ✅ 记忆系统说明（短期/长期/工作记忆，均为预留） |
+| [domain_doc/reasoning_doc/reasoning.md](domain_doc/reasoning_doc/reasoning.md) | ✅ 推理策略说明（CoT / ReAct / Reflection，均为预留） |
 | [infrastructure_doc/infrastructure.md](infrastructure_doc/infrastructure.md) | ✅ 基础设施层说明（DB/Redis/向量/消息队列，均为预留） |
-| [model_doc/model.md](model_doc/model.md) | ✅ 数据模型说明（Session/Message ORM + 预留） |
+| [infrastructure_doc/model_doc/model.md](infrastructure_doc/model_doc/model.md) | ✅ 数据模型说明（Session/Message ORM + 预留） |
 | [api_doc/middleware_doc/middleware.md](api_doc/middleware_doc/middleware.md) | ✅ 中间件说明（auth/rate_limit/error_handler，均为预留） |
-| [service_doc/llm_doc/llm.md](service_doc/llm_doc/llm.md) | ✅ LLM 层总览 |
-| [service_doc/llm_doc/client.md](service_doc/llm_doc/client.md) | ✅ ClientManager 设计 |
-| [service_doc/llm_doc/streaming.md](service_doc/llm_doc/streaming.md) | ✅ StreamParser 设计（流式/非流式解析 + 工业级对照） |
-| [service_doc/llm_doc/streaming_rectifier.md](service_doc/llm_doc/streaming_rectifier.md) | ✅ StreamingRectifier 设计（流式整流重试策略 + RectifierContext） |
-| [service_doc/llm_doc/retry.md](service_doc/llm_doc/retry.md) | ✅ RetryHandler 设计（滑动窗口/错误分类/半开探针/修复记录） |
-| [service_doc/llm_doc/limiter.md](service_doc/llm_doc/limiter.md) | ✅ 限流设计（reserve-settle 双形态 + 自适应预留 + 工业级对比） |
-| [service_doc/llm_doc/structure.md](service_doc/llm_doc/structure.md) | ✅ StructuredOutput 设计（三级降级 + 工业级对比 + 审核发现） |
+| [integration_doc/llm_doc/llm.md](integration_doc/llm_doc/llm.md) | ✅ LLM 层总览 |
+| [integration_doc/llm_doc/client.md](integration_doc/llm_doc/client.md) | ✅ ClientManager 设计 |
+| [integration_doc/llm_doc/streaming.md](integration_doc/llm_doc/streaming.md) | ✅ StreamParser 设计（流式/非流式解析 + 工业级对照） |
+| [integration_doc/llm_doc/streaming_rectifier.md](integration_doc/llm_doc/streaming_rectifier.md) | ✅ StreamingRectifier 设计（流式整流重试策略 + RectifierContext） |
+| [integration_doc/llm_doc/retry.md](integration_doc/llm_doc/retry.md) | ✅ RetryHandler 设计（滑动窗口/错误分类/半开探针/修复记录） |
+| [integration_doc/llm_doc/limiter.md](integration_doc/llm_doc/limiter.md) | ✅ 限流设计（reserve-settle 双形态 + 自适应预留 + 工业级对比） |
+| [integration_doc/llm_doc/structure.md](integration_doc/llm_doc/structure.md) | ✅ StructuredOutput 设计（三级降级 + 工业级对比 + 审核发现） |
 | [utils_doc/error_handling.md](utils_doc/error_handling.md) | ✅ 异常处理与传播约定（吞/抛边界 + LLM 模块示例 + 检查清单） |
 | [utils_doc/logging.md](utils_doc/logging.md) | ✅ 全局日志框架（JSON 结构化 + 业务事件） |
 | [utils_doc/class-design.md](utils_doc/class-design.md) | ✅ 类的类型体系与实例形态 |

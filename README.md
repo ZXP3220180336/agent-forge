@@ -29,15 +29,17 @@
 ## 架构概览
 
 ```text
-API 层（FastAPI 路由）→ chat(SSE) / session
+接入层（app/api）→ chat(SSE) / session
     ↓
-服务层（LLMService / SessionManager / ContextManager / TaskService / ToolService）
+应用层（app/application）→ SessionManager / ContextManager / TaskService
     ↓
-核心层（BaseAgent + ReActAgent / Prompts / Events）
+领域层（app/domain）→ BaseAgent + ReActAgent / Prompts / Ports
     ↓
-工具层（search / readFile / writeFile / code_exec / web_browse）
+集成层（app/integration）→ LLMService / ToolService / EmbeddingService / 内置工具
     ↓
-配置层（Pydantic Settings，从 .env 加载）
+基础设施层（app/infrastructure）→ Session / Message ORM
+    ↓
+配置层（app/config）→ Pydantic Settings，从 .env 加载
 ```
 
 完整架构分层、核心调用链路与模块实现状态见 [docs/architecture.md](docs/architecture.md)。
@@ -119,8 +121,8 @@ pytest 已配置 `asyncio_mode = "auto"`，测试函数无需手动标记 `@pyte
 - [architecture](docs/architecture.md) — 架构分层 + 核心链路 + 模块实现状态
 - [product](docs/product.md) — 产品定位与方向（Yield RCA / 工业 RAG / EDA）
 - [deployment](docs/deployment.md) — 部署说明（运行方式 / 环境 / 依赖基础设施）
-- LLM 层：[service_doc/llm_doc/](docs/service_doc/llm_doc/)（llm 总览 / client / retry / streaming / structure / limiter）
-- 各模块：[core_doc](docs/core_doc/) / [service_doc](docs/service_doc/) / [api_doc](docs/api_doc/) / [tool_doc](docs/tool_doc/) / [model_doc](docs/model_doc/) / [infrastructure_doc](docs/infrastructure_doc/) / [config_doc](docs/config_doc/) / [utils_doc](docs/utils_doc/)
+- LLM 层：[integration_doc/llm_doc/](docs/integration_doc/llm_doc/)（llm 总览 / client / retry / streaming / structure / limiter）
+- 各模块：[domain_doc](docs/domain_doc/) / [application_doc](docs/application_doc/) / [integration_doc](docs/integration_doc/) / [infrastructure_doc](docs/infrastructure_doc/) / [shared_doc](docs/shared_doc/) / [api_doc](docs/api_doc/) / [config_doc](docs/config_doc/) / [utils_doc](docs/utils_doc/)
 
 ## 项目状态
 

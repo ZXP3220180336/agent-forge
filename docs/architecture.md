@@ -19,7 +19,7 @@
     - [应用层](#应用层)
     - [领域层](#领域层)
     - [端口层](#端口层)
-    - [能力层](#能力层)
+    - [集成层](#集成层)
     - [基础设施层](#基础设施层)
     - [共享内核](#共享内核)
     - [横切与装配根](#横切与装配根)
@@ -47,7 +47,7 @@
 
 ### 一句话架构
 
-FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域层 Agent 内核推理（ReAct 循环）→ 能力层调用 LLM 网关与工具执行 → 基础设施层持久化与缓存 → 汇总输出带**证据链**的根因报告。产品方向为**多 Agent 任务执行引擎 + 半导体良率异常根因分析（Yield RCA）**。
+FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域层 Agent 内核推理（ReAct 循环）→ 集成层调用 LLM 网关与工具执行 → 基础设施层持久化与缓存 → 汇总输出带**证据链**的根因报告。产品方向为**多 Agent 任务执行引擎 + 半导体良率异常根因分析（Yield RCA）**。
 
 ### 现状、目标与演进
 
@@ -190,7 +190,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | CachePort / VectorStorePort / EmbeddingPort | 缓存 / 向量 / 嵌入抽象 | ⬜ 未实现 | 🔶 | Phase A/B |
 | EventPublisher / IdGenerator | 事件发布、ID 生成 | ⬜ 未实现 | 🔶 | Phase B |
 
-#### 能力层
+#### 集成层
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
@@ -205,7 +205,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
-| db/engine.py + Repository 实现 | 连接池、SQLAlchemy Repository | ⬜ 空文件（app_state 直管） | 🔶 | Phase A |
+| db/engine.py + Repository 实现 | 连接池、SQLAlchemy Repository | ⬜ 空文件（container 直管） | 🔶 | Phase A |
 | redis/client + RedisCache + NullCache | 缓存实现（含真降级） | ⬜ 空文件 | 🔶 | Phase A |
 | mq/（asyncio.Queue / Redis Streams） | 任务队列、事件总线实现 | ⬜ 空文件 | 🔶 | Phase C |
 | store / http | 对象存储、HTTP 客户端封装 | ⬜ 空文件 | 🔶 | Phase D |
@@ -278,7 +278,7 @@ RcaUseCase 受理良率异常报告
 ### 单向依赖规则
 
 ```text
-接入层 → 应用层 → 领域层  ←（依赖倒置） 能力层 / 基础设施层 实现领域端口
+接入层 → 应用层 → 领域层  ←（依赖倒置） 集成层 / 基础设施层 实现领域端口
                                                     ↗
 所有层 → 共享内核（无反向依赖）                    领域层 只依赖 端口层 + 共享内核
 横切关注点：通过注入使用，禁止模块内 import 全局单例
@@ -315,7 +315,7 @@ flowchart TB
         CP["CachePort"]; VP["VectorStorePort"]
         EP["EmbeddingPort"]; TKP["TokenCounter"]; EBP["EventPublisher"]
     end
-    subgraph L5["⑤ 能力层 app/integration"]
+    subgraph L5["⑤ 集成层 app/integration"]
         LLM["LLMService + llm/7 组件"]
         TOOL["ToolService + builtin"]
         EMB["EmbeddingService"]; VEC["VectorStore"]
@@ -376,13 +376,13 @@ flowchart TB
     TOOL -.-> OBS
 ```
 
-> 语义：依赖一律向内（`→`）；领域层只出箭头到端口层；端口层由能力层 / 基础设施层实现；共享内核被各层引用但无反向依赖；装配根 `container` 是唯一入度中心。
+> 语义：依赖一律向内（`→`）；领域层只出箭头到端口层；端口层由集成层 / 基础设施层实现；共享内核被各层引用但无反向依赖；装配根 `container` 是唯一入度中心。
 
 ---
 
 ### 依赖倒置：端口与适配器
 
-领域层定义抽象协议（`typing.Protocol`），能力层 / 基础设施层实现之，装配根在启动时注入：
+领域层定义抽象协议（`typing.Protocol`），集成层 / 基础设施层实现之，装配根在启动时注入：
 
 ```python
 # app/domain/ports/llm_gateway.py —— 领域拥有的端口
@@ -392,7 +392,7 @@ class LLMGateway(Protocol):
     async def async_generate(self, messages, tools=None, model_key="main", **kwargs): ...
     async def generate(self, messages, tools=None, model_key="fast", **kwargs): ...
 
-# app/integration/llm/llm_service.py —— 能力层实现
+# app/integration/llm/llm_service.py —— 集成层实现
 class LLMService:  # implements LLMGateway
     async def async_generate(self, messages, tools=None, model_key="main", **kwargs): ...
 
@@ -411,7 +411,7 @@ def build_agent(llm: LLMGateway, tools: ToolGateway) -> BaseAgent:
 | 端口层 | 标准库（`typing.Protocol`） | 一切外部框架 |
 | 共享内核 | 标准库（可选 Pydantic dataclass） | 业务依赖 |
 
-tiktoken 计数经 `TokenCounter` 端口在能力层实现；ORM / Redis 经 Repository / CachePort 在基础设施层实现。
+tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Repository / CachePort 在基础设施层实现。
 
 ### 装配根
 
@@ -433,7 +433,7 @@ tiktoken 计数经 `TokenCounter` 端口在能力层实现；ORM / Redis 经 Rep
 接入层 app/api              chat/session ✅；deps.py ✅；task/agent/admin + 中间件 ⬜
 应用层 app/application      session/context/task ✅；TaskScheduler 队列/编排 ⬜
 领域层 app/domain           Agent 内核 ✅（依赖 ports）；memory/planner ⬜
-能力层 app/integration      LLM ✅；ToolService（已拆分）✅；Embedding 孤儿
+集成层 app/integration      LLM ✅；ToolService（已拆分）✅；Embedding 孤儿
 基础设施层 app/infrastructure  models/database ✅；db/redis 仍由 container 管 ⬜
 共享内核 app/shared         events ✅
 装配根 app/container        Container 唯一组装 ✅
@@ -464,11 +464,11 @@ tiktoken 计数经 `TokenCounter` 端口在能力层实现；ORM / Redis 经 Rep
 
 目标：C1、C2 主体、假降级。
 
-- `infrastructure/db/engine.py` + `redis/client.py`：engine/factory 从 app_state 迁出
+- `infrastructure/db/engine.py` + `redis/client.py`：engine/factory 从 container 迁出
 - `domain/ports/repositories.py` + `cache.py`：Repository / CachePort 协议
 - `infrastructure/db/repos/`：SqlAlchemy Repository 实现
 - `infrastructure/redis/cache.py`：RedisCache + **NullCache**（修假降级）+ key 常量集中
-- `container.py`：接管 app_state 装配根职责
+- `container.py`：接管 container 装配根职责
 - `SessionManager` 重构：只留业务，注入 Repos + CachePort
 
 架构达成：装配根与基础设施工厂分离；Repository 层落地；Redis 真降级。
@@ -525,14 +525,14 @@ Phase A ──→ Phase B ──→ Phase C ──→ Phase D
 
 - [HANDOFF](HANDOFF.md)（项目交接，顶层计划/进度）
 - [product](product.md)（产品方向）
-- [服务层说明](service_doc/service.md)（服务层模块 + 实现目标 — 对标工业级）
-- [agent 模块](core_doc/agent_doc/agent.md)
+- [服务层说明](application_doc/README.md)（服务层模块 + 实现目标 — 对标工业级）
+- [agent 模块](domain_doc/agent_doc/agent.md)
 - [api 模块](api_doc/api.md)
 - [config 模块](config_doc/config.md)
 - [logging 模块](utils_doc/logging.md)（全局日志框架）
 - [error_handling 模块](utils_doc/error_handling.md)（异常处理与传播约定）
 - [class-design 模块](utils_doc/class-design.md)（类的类型体系与实例形态）
-- [LLM 层](service_doc/llm_doc/llm.md)
-- [task 模块](service_doc/task_doc/task.md)
-- [tool 模块](tool_doc/tools.md)
+- [LLM 层](integration_doc/llm_doc/llm.md)
+- [task 模块](application_doc/task_doc/task.md)
+- [tool 模块](integration_doc/tools_doc/tools.md)
 - [部署](deployment.md)

@@ -31,7 +31,7 @@
 路由层是 API 的**对外暴露层**，位于中间件之后、服务层之前，承担「协议适配」职责：
 
 - **暴露 REST API**：将 HTTP 请求 / 响应与内部领域模型互转，定义请求校验模型（Pydantic）与接口语义
-- **鉴权后驱动 Agent**：通过 `app/dependencies.py` 注入当前用户与各服务单例，在完成会话授权后驱动 Agent 闭环（LLM 思考 → 工具调用 → LLM 总结）
+- **鉴权后驱动 Agent**：通过 `app/api/deps.py` 注入当前用户与各服务单例，在完成会话授权后驱动 Agent 闭环（LLM 思考 → 工具调用 → LLM 总结）
 - **薄路由原则**：路由函数只做「参数校验 → 服务编排 → 响应组装」，业务逻辑下沉到服务层（SessionManager / ContextManager / TaskService 等），不承载领域实现
 
 路由层与相邻层的职责边界：
@@ -40,7 +40,7 @@
 | --- | --- | --- |
 | 中间件（`app/api/middleware/`） | 请求前置横切处理 | 全局生效，不依赖路由显式声明 |
 | 路由层（`app/api/routes/`） | 端点定义、协议适配、服务编排 | 按端点精确控制，显式声明依赖 |
-| 服务层（`app/services/`） | 领域逻辑、数据访问 | 不感知 HTTP，供路由驱动 |
+| 应用层（`app/application/`）与集成层（`app/integration/`） | 领域逻辑、数据访问 | 不感知 HTTP，供路由驱动 |
 
 ### 模块结构
 
@@ -192,22 +192,22 @@ app/api/routes/
 
 **文件**：`app/api/routes/agent.py`（预留）
 
-规划：异步任务受理接口，如 `POST /api/tasks/submit`（提交任务）+ `GET /api/tasks/{id}`（查询任务状态/结果），承接 `TaskService` 的调度能力，将当前 `chat/send` 的「同步 SSE」形态扩展为「提交即返回、异步查结果」的形态。设计时需与 [task 模块](../../service_doc/task_doc/task.md) 的并发信号量约束对齐。
+规划：异步任务受理接口，如 `POST /api/tasks/submit`（提交任务）+ `GET /api/tasks/{id}`（查询任务状态/结果），承接 `TaskService` 的调度能力，将当前 `chat/send` 的「同步 SSE」形态扩展为「提交即返回、异步查结果」的形态。设计时需与 [task 模块](../../application_doc/task_doc/task.md) 的并发信号量约束对齐。
 
 ### tool — 工具管理
 
 **文件**：`app/api/routes/tool.py`（预留）
 
-规划：工具管理接口（如工具列表 / 启用禁用），可基于 `ToolService` 的能力实现。落地时参考 [tool 模块](../../tool_doc/tools.md)。
+规划：工具管理接口（如工具列表 / 启用禁用），可基于 `ToolService` 的能力实现。落地时参考 [tool 模块](../../integration_doc/tools_doc/tools.md)。
 
 ---
 
 ## 依赖注入
 
-路由层通过 `app/dependencies.py` 提供的依赖函数获取服务与用户身份（见 [dependencies.py](../../../app/dependencies.py)），而非在路由内直接实例化，原因：
+路由层通过 `app/api/deps.py` 提供的依赖函数获取服务与用户身份（见 [deps.py](../../../app/api/deps.py)），而非在路由内直接实例化，原因：
 
-1. **单例复用**：`SessionManager` / `ContextManager` / `LLMService` / `ToolService` / `TaskService` 均持有重量级资源（Redis 连接池、数据库连接池、OpenAI 异步客户端），依赖函数返回 `app_state` 中的全局单例，避免每个请求重复创建
-2. **启动期校验**：各 `get_*_service` 在 `app_state` 对应实例为 `None` 时抛 `RuntimeError`，提示「请确保在应用启动时调用了 `app_state.initialize()`」——即服务必须在启动时完成初始化
+1. **单例复用**：`SessionManager` / `ContextManager` / `LLMService` / `ToolService` / `TaskService` 均持有重量级资源（Redis 连接池、数据库连接池、OpenAI 异步客户端），依赖函数返回 `container` 中的全局单例，避免每个请求重复创建
+2. **启动期校验**：各 `get_*_service` 在 `container` 对应实例为 `None` 时抛 `RuntimeError`，提示「请确保在应用启动时调用了 `container.initialize()`」——即服务必须在启动时完成初始化
 3. **测试友好**：路由函数显式声明依赖，便于在测试中替换实现
 
 ### 依赖函数一览
@@ -244,11 +244,11 @@ async def get_current_user(authorization: str = Header(None)) -> str:
 | ---- | ---- | -------- |
 | API 说明文档 | [api.md](../api.md) | 总览：端点清单、SSE 事件格式、认证方式、错误处理约定 |
 | 中间件层说明文档 | [middleware.md](../middleware_doc/middleware.md) | 认证从依赖注入迁移到中间件的规划、限流 / 统一异常 |
-| Agent 层说明文档 | [agent.md](../../core_doc/agent_doc/agent.md) | `ReActAgent` 闭环：LLM 思考 → 工具调用 → LLM 总结 |
-| AgentContext / Agent 上下文 | [core.md](../../core_doc/core.md) | Agent 上下文与迭代上限（`max_iterations`）语义 |
-| LLM 层说明文档 | [llm.md](../../service_doc/llm_doc/llm.md) | LLMService 封装、流式事件产出（reasoning / message） |
-| Task 服务说明文档 | [task.md](../../service_doc/task_doc/task.md) | TaskService 任务级并发信号量（`agent_max_concurrent_tasks`） |
-| Tool 模块说明文档 | [tools.md](../../tool_doc/tools.md) | ToolService 工具定义与执行、预留 `tool.py` 参考 |
+| Agent 层说明文档 | [agent.md](../../domain_doc/agent_doc/agent.md) | `ReActAgent` 闭环：LLM 思考 → 工具调用 → LLM 总结 |
+| AgentContext / Agent 上下文 | [core.md](../../domain_doc/README.md) | Agent 上下文与迭代上限（`max_iterations`）语义 |
+| LLM 层说明文档 | [llm.md](../../integration_doc/llm_doc/llm.md) | LLMService 封装、流式事件产出（reasoning / message） |
+| Task 服务说明文档 | [task.md](../../application_doc/task_doc/task.md) | TaskService 任务级并发信号量（`agent_max_concurrent_tasks`） |
+| Tool 模块说明文档 | [tools.md](../../integration_doc/tools_doc/tools.md) | ToolService 工具定义与执行、预留 `tool.py` 参考 |
 | 项目架构 | [architecture.md](../../architecture.md) | 系统架构与模块边界 |
 | 项目总览 | [HANDOFF.md](../../HANDOFF.md) | 项目整体进度与遗留事项 |
 

@@ -36,23 +36,21 @@ uv run python -m scripts.test_search_tool          # 运行独立验证脚本
 ## 架构分层
 
 ```
-API 层（app/api/routes/）→ chat(SSE) / session 已实现；admin/agent/tool 路由与 middleware 为空文件
+接入层 app/api/ → chat(SSE) / session 已实现；admin/agent/tool 路由与中间件为空文件
     ↓
-服务层（app/services/）
-    ├── LLMService（Facade）→ LLM 子包：ClientManager / RetryHandler / StreamParser /
-    │       StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker
-    ├── SessionManager / ContextManager / ToolService / TaskService / EmbeddingService
-    └── MemoryService（空文件）
+应用层 app/application/ → SessionManager / ContextManager / TaskService
     ↓
-核心层（app/core/）→ Agent（BaseAgent + ReAct executor）、Prompts、Events（SSE 事件定义）；Memory/Reasoning 预留
+领域层 app/domain/ → BaseAgent + ReActAgent / Prompts / Ports；Memory / Reasoning 预留
     ↓
-数据模型层（app/models/）→ Session/Message ORM（共享 base.py 的单一 declarative_base）
+集成层 app/integration/ → LLMService + llm/ 7 组件 / ToolService + 5 内置工具 / EmbeddingService
     ↓
-基础设施层（app/infrastructure/）→ 空文件；DB/Redis 实际由 app/app_state.py 直接管理
+基础设施层 app/infrastructure/ → Session/Message ORM；Database / Redis / VectorStore 待落地（DB/Redis 暂由 container.py 直管）
     ↓
-工具层（app/tools/）→ BaseTool + 5 内置工具（search/readFile/writeFile/code_exec/web_browse）
+共享内核 app/shared/events.py → SSE 事件定义
     ↓
 配置层（app/config/settings.py）→ Pydantic Settings 单例，约 90 配置项，从 .env 加载
+
+装配根 app/container.py → 唯一读 settings，组装各层并注入
 ```
 
 ### 核心调用链路
@@ -72,21 +70,21 @@ POST /api/chat/send
 
 - **策略模式**：`BaseAgent.run()` 统一入口，`_strategy_cycle()` 由子类实现（当前 ReActAgent；Plan-then-Execute / Reflection 预留）。Agent 每次 `run()` 新建无状态实例，上下文经 `AgentContext` 传入。
 - **LLM/Agent 分层**：LLM 层管单轮推理与可靠性，Agent 层管循环编排与工具。
-- **统一事件流**：LLM 层与 Agent 层共用 [app/core/events.py](app/core/events.py) 的 SSE 事件定义（reasoning/message/tool_call/done/error 等）。
-- **三个模型配置**：`ClientManager.register_config` 注册 `main` / `reasoning` / `fast` 三个 key，`LLMService` 通过 `model_key` 参数选择；连接池按 key 缓存复用。`app_state.initialize()` 中注册，`settings.llm_fallback_model_id` 配置 fallback 降级。
-- **LLM 可靠性链**（[app/services/llm/](app/services/llm/)）：
+- **统一事件流**：LLM 层与 Agent 层共用 [app/shared/events.py](app/shared/events.py) 的 SSE 事件定义（reasoning/message/tool_call/done/error 等）。
+- **三个模型配置**：`ClientManager.register_config` 注册 `main` / `reasoning` / `fast` 三个 key，`LLMService` 通过 `model_key` 参数选择；连接池按 key 缓存复用。`container.initialize()` 中注册，`settings.llm_fallback_model_id` 配置 fallback 降级。
+- **LLM 可靠性链**（[app/integration/llm/](app/integration/llm/)）：
   - `retry.py`：滑动窗口熔断 + 错误分类白名单（`classify_error`，未知异常默认 NON_RETRYABLE）+ 半开探针
   - `reservation_limiter.py`：reserve/settle 形态限流（请求前预留配额、完成后退差；`llm_service` 实际使用它，acquire 形态已移除）
   - `streaming.py`：StreamParser 流式/非流式解析（提取 content / finish_reason / usage / refusal / tool_calls）
   - `streaming_rectifier.py`：流式整流重试（StreamingRectifier，仅首 token 前中断且异常可恢复才整流）
   - `structured.py`：结构化输出三级降级（JSON Schema strict → JSON Mode → 正则提取）
 - **调度与执行解耦**：TaskService 决定「哪个任务何时执行」，Agent 决定「单个任务如何执行」。
-- **服务实例管理**：所有共享服务在 [app/app_state.py](app/app_state.py) 的 `AppState` 单例中初始化/关闭，经 FastAPI lifespan 触发。单点基础设施失败不影响启动（降级 + 警告）。
+- **服务实例管理**：所有共享服务在 [app/container.py](app/container.py) 的 `Container` 单例中初始化/关闭，经 FastAPI lifespan 触发。单点基础设施失败不影响启动（降级 + 警告）。
 
 ## 已知坑与约束
 
 - **DB 恒降级**：`asyncpg` 驱动未安装（不在 pyproject 依赖中），即使配置 PostgreSQL 也无法连接，会话/消息无法持久化。
-- **Redis 是 HTTP 闭环硬依赖**：Redis 缺失时 app_state 降级（`redis=None`），但 `SessionManager.create_session()` 直接调 `self.redis.set()` 会抛错——聊天/会话接口需要 Redis 可用。
+- **Redis 是 HTTP 闭环硬依赖**：Redis 缺失时 container 降级（`redis=None`），但 `SessionManager.create_session()` 直接调 `self.redis.set()` 会抛错——聊天/会话接口需要 Redis 可用。
 - **Windows GBK**：日志/控制台含 emoji 或 ⚠✓ 等符号会崩。`main.py` 已统一切 UTF-8；新代码内符号统一用 ASCII 占位（[WARN]/[OK]）。
 - **`except A, B:` 语法**：Python 3.14 下编译通过且语义为 `except (A, B)`，但 3.8~3.13 是 `except A as B`。新代码一律用元组形式。
 - **SQLAlchemy**：ORM 模型 `metadata` 为保留属性，需命名为 `meta`；全部 ORM 模型必须共享 `models/database/base.py` 的同一个 `declarative_base()`，否则 FK 引用 mapper 冲突。
@@ -99,7 +97,7 @@ POST /api/chat/send
 - [docs/HANDOFF.md](docs/HANDOFF.md) — 顶层交接文档（框架级计划/进度/研发教训）
 - [docs/architecture.md](docs/architecture.md) — 架构分层 + 核心链路 + 模块实现状态总览
 - [docs/config_doc/config.md](docs/config_doc/config.md)、[docs/deployment.md](docs/deployment.md) — 配置与部署
-- LLM 层：`docs/service_doc/llm_doc/`（llm 总览 / client / retry / streaming / structure / limiter）
-- 各模块说明：`docs/core_doc/`、`docs/service_doc/`、`docs/api_doc/`、`docs/tool_doc/`、`docs/model_doc/`、`docs/infrastructure_doc/`
+- LLM 层：`docs/integration_doc/llm_doc/`（llm 总览 / client / retry / streaming / structure / limiter）
+- 各模块说明：`docs/domain_doc/`、`docs/application_doc/`、`docs/integration_doc/`、`docs/infrastructure_doc/`、`docs/shared_doc/`、`docs/api_doc/`、`docs/config_doc/`、`docs/utils_doc/`
 
 当前进度与遗留问题（基础设施层空、MemoryService 空、admin/agent/tool 路由空、中间件空、TaskService 编排待实现）见 HANDOFF.md「当前进度」。

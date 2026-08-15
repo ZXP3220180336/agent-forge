@@ -1,7 +1,7 @@
 # 异常处理与传播约定
 
 > **定位**：项目级异常处理规范 —— 跨模块统一的「何时吞异常、何时抛异常、异常如何传播」约定
-> **示例模块**：LLM 服务层（`app/services/llm/` + `app/services/llm_service.py`）—— 项目中最完整的异常处理链路
+> **示例模块**：LLM 服务层（`app/integration/llm/`）—— 项目中最完整的异常处理链路
 > **适用**：所有新增/修改代码，尤其是涉及 API 调用、异步生成、可靠性层（重试/熔断/限流）的模块
 
 ---
@@ -114,7 +114,7 @@
   ├─ 迭代中断（阶段2）     → except Exception → 可整流则重试，不可整流 yield build_error_event(f"流式响应中断: {e!s}") + return
   └─ 硬取消（CancelledError）→ finally 兜底 cancel reservation，异常向上传播
 ```
-> 整流/错误事件/finally 兜底逻辑封装在 `StreamingRectifier`（见 [streaming_rectifier.md](../service_doc/llm_doc/streaming_rectifier.md)），`async_generate` 只做编排。
+> 整流/错误事件/finally 兜底逻辑封装在 `StreamingRectifier`（见 [streaming_rectifier.md](../integration_doc/llm_doc/streaming_rectifier.md)），`async_generate` 只做编排。
 
 **关键**：async_generate 是 **async generator**，异常被捕获后**不是静默吞掉**，而是转成 SSE 错误事件产出。错误通过事件流（`build_error_event`）传达给调用方，错误文案携带异常信息。调用方（Agent 层）收到错误事件即可感知失败。
 
@@ -240,8 +240,8 @@ encoder = tiktoken.encoding_for_model(model)  # 若抛异常，直接向上传�
 
 ## 相关文档
 
-- [LLM 服务层说明](../service_doc/llm_doc/llm.md)（generate / async_generate 的调用契约）
-- [重试与熔断](../service_doc/llm_doc/retry.md)（`classify_error` 错误分类白名单、`CircuitBreakerOpenError`）
-- [结构化输出](../service_doc/llm_doc/structure.md)（四态分类、`StructuredTruncationError`/`RefusalError`/`ToolCallError`）
-- [限流器](../service_doc/llm_doc/limiter.md)（reserve/settle 资源清理、取消兜底）
+- [LLM 服务层说明](../integration_doc/llm_doc/llm.md)（generate / async_generate 的调用契约）
+- [重试与熔断](../integration_doc/llm_doc/retry.md)（`classify_error` 错误分类白名单、`CircuitBreakerOpenError`）
+- [结构化输出](../integration_doc/llm_doc/structure.md)（四态分类、`StructuredTruncationError`/`RefusalError`/`ToolCallError`）
+- [限流器](../integration_doc/llm_doc/limiter.md)（reserve/settle 资源清理、取消兜底）
 - [全局日志框架](logging.md)（`log_event_async("llm_call")` 错误记录）

@@ -675,7 +675,7 @@ api_key = settings.llm_api_key  # ✅ 而不是 os.getenv("LLM_API_KEY")
 **相关文档：**
 
 - [架构设计文档](../architecture.md)
-- [工具模块说明](../tool_doc/tools.md)
+- [工具模块说明](../integration_doc/tools_doc/tools.md)
 - [API 文档](../api_doc/api.md)
 - [部署文档](../deployment.md)
 

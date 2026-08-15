@@ -150,6 +150,6 @@ data: [DONE]
 - [架构设计](../architecture.md)
 - [路由模块](routes_doc/routes.md)（chat/session 路由详解）
 - [中间件模块](middleware_doc/middleware.md)（认证/限流/错误处理）
-- [agent 模块](../core_doc/agent_doc/agent.md)
-- [task 模块](../service_doc/task_doc/task.md)
-- [tool 模块](../tool_doc/tools.md)
+- [agent 模块](../domain_doc/agent_doc/agent.md)
+- [task 模块](../application_doc/task_doc/task.md)
+- [tool 模块](../integration_doc/tools_doc/tools.md)

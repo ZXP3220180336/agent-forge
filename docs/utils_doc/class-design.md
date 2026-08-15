@@ -2,7 +2,7 @@
 
 > **文档定位**：项目代码中各种「类」的设计模式归类 + 单例/实例形态分析。
 > **适用对象**：任何需要理解或新增类的开发者 —— 先判断「这属于哪一类」，再决定「是否实例化、怎么实例化」。
-> **内容来源**：对 `app/services/llm/`、`app/app_state.py`、`app/dependencies.py` 等代码的模式提炼。
+> **内容来源**：对 `app/integration/llm/`、`app/container.py`、`app/dependencies.py` 等代码的模式提炼。
 
 ---
 
@@ -12,7 +12,7 @@
 - [六种类类型](#六种类类型)
 - [判断口诀](#判断口诀)
 - [单例的三种形态](#单例的三种形态)
-- [AppState 容器模式与依赖注入](#appstate-容器模式与依赖注入)
+- [Container 容器模式与依赖注入](#container-容器模式与依赖注入)
 - [三层单例体系](#三层单例体系)
 - [实例方法 / 类方法 / 静态方法](#实例方法--类方法--静态方法)
 - [常见陷阱](#常见陷阱)
@@ -149,7 +149,7 @@ class SendMessageRequest(BaseModel):
 
 ## 判断口诀
 
-> **「一张表管理同类资源」→ 全局管理器（ClientManager）；「一个复杂对象持有异质状态」→ 模块级单例实例（AppState）。**
+> **「一张表管理同类资源」→ 全局管理器（ClientManager）；「一个复杂对象持有异质状态」→ 模块级单例实例（Container）。**
 
 | 问题 | 判断 |
 |---|---|
@@ -167,11 +167,11 @@ class SendMessageRequest(BaseModel):
 ### 形态一：模块级单例实例
 
 ```python
-# app_state.py 底部
-app_state = AppState()
+# container.py 底部
+container = Container()
 ```
 
-**原理**：Python 模块天然是单例 —— import 一次只执行一次类定义 + 实例化，之后所有 `from app.app_state import app_state` 拿到的是同一对象。
+**原理**：Python 模块天然是单例 —— import 一次只执行一次类定义 + 实例化，之后所有 `from app.container import container` 拿到的是同一对象。
 
 **适用场景**：一个复杂对象，有具名状态 + 实例方法。
 
@@ -193,34 +193,34 @@ class ClientManager:
 ### 形态三：容器管理单例
 
 ```python
-# app_state.py initialize() 里
+# container.py initialize() 里
 self.session_manager = SessionManager(...)   # 统一创建
 self.tool_service = ToolService()
 ```
 
-**特征**：服务实例不是在各模块 `xxx = SessionManager()` 创建，而是由 `AppState` **容器**统一创建、持有、分发。
+**特征**：服务实例不是在各模块 `xxx = SessionManager()` 创建，而是由 `Container` **容器**统一创建、持有、分发。
 
 **为什么比模块级单例好**：
-1. **集中创建 + 依赖注入**：`AppState` 统一组装（`SessionManager(redis, db)`），理清依赖图
+1. **集中创建 + 依赖注入**：`Container` 统一组装（`SessionManager(redis, db)`），理清依赖图
 2. **延迟初始化 + 生命周期管理**：启动才创建，关闭时统一清理
-3. **测试友好**：可以替换 `app_state.session_manager` 为 mock，不影响路由
+3. **测试友好**：可以替换 `container.session_manager` 为 mock，不影响路由
 
 ---
 
-## AppState 容器模式与依赖注入
+## Container 容器模式与依赖注入
 
-### 为什么 AppState 不用全局管理器写法
+### 为什么 Container 不用全局管理器写法
 
-**核心区别：AppState 是「一个复杂对象」的实例，不是「多个资源的缓存表」。**
+**核心区别：Container 是「一个复杂对象」的实例，不是「多个资源的缓存表」。**
 
-| 维度 | 全局管理器（ClientManager） | AppState |
+| 维度 | 全局管理器（ClientManager） | Container |
 |---|---|---|
 | 结构 | `dict[str, X]` 一张表，按 key 取 | 具名属性（`redis` / `engine` / `session_manager`） |
 | 状态 | 同类资源 | 异质服务（不同类型，各自独立属性名） |
 | 方法 | 无实例方法，全 `@classmethod` | 有实例方法（`initialize`/`shutdown`） |
-| 单例实现 | `ClassVar` 缓存 + classmethod | 模块级 `app_state = AppState()` |
+| 单例实现 | `ClassVar` 缓存 + classmethod | 模块级 `container = Container()` |
 
-**关键**：`AppState` 持有的是**不同类型**的服务引用（redis/engine/session_manager/tool_service），每个有独立属性名和类型，无法用 `dict[str, X]` 表达。改成 `@classmethod` 后 `self.redis` 全变 `cls.redis`，语义混乱。
+**关键**：`Container` 持有的是**不同类型**的服务引用（redis/engine/session_manager/tool_service），每个有独立属性名和类型，无法用 `dict[str, X]` 表达。改成 `@classmethod` 后 `self.redis` 全变 `cls.redis`，语义混乱。
 
 ### 依赖注入链路
 
@@ -229,17 +229,17 @@ self.tool_service = ToolService()
     │  Depends(get_session_manager)
     ▼
 app/dependencies.py 的 get_session_manager()
-    │  app_state.session_manager
+    │  container.session_manager
     ▼
-AppState.initialize() 统一创建的服务实例
+Container.initialize() 统一创建的服务实例
 ```
 
 ```python
 # dependencies.py
 async def get_session_manager() -> SessionManager:
-    if app_state.session_manager is None:
+    if container.session_manager is None:
         raise RuntimeError("SessionManager 尚未初始化...")
-    return app_state.session_manager
+    return container.session_manager
 ```
 
 ---
@@ -247,17 +247,17 @@ async def get_session_manager() -> SessionManager:
 ## 三层单例体系
 
 ```
-AppState 容器（模块级单例实例）
+Container 容器（模块级单例实例）
     │  initialize() 时创建
     ├── session_manager ──┐
     ├── tool_service      ├─→ 路由经 get_xxx() 依赖注入获取
-    ├── llm_service       │      （从 app_state 取，非自己 new）
+    ├── llm_service       │      （从 container 取，非自己 new）
     └── task_service ─────┘
 
 ClientManager / ReservationLimiterManager   ← 全局管理器类（classmethod，路由不直接碰）
 ```
 
-- **第一层（容器）**：`app_state` —— 模块级单例实例
+- **第一层（容器）**：`container` —— 模块级单例实例
 - **第二层（服务）**：`SessionManager` 等 —— 容器管理的应用级单例，经 DI 分发
 - **第三层（资源管理器）**：`ClientManager` / `ReservationLimiterManager`（及 `RetryHandlerManager`） —— 全局管理器类
 
@@ -328,6 +328,6 @@ def __init__(self):
 ## 相关文档
 
 - [架构设计](../architecture.md)（分层与模块状态）
-- [服务层说明](../service_doc/service.md)（各服务实例归属）
-- [LLM 层](../service_doc/llm_doc/llm.md)（ClientManager / 限流器 / StreamParser 详解）
-- [数据模型](../model_doc/model.md)（BaseModel 契约层）
+- [服务层说明](../application_doc/README.md)（各服务实例归属）
+- [LLM 层](../integration_doc/llm_doc/llm.md)（ClientManager / 限流器 / StreamParser 详解）
+- [数据模型](../infrastructure_doc/model_doc/model.md)（BaseModel 契约层）

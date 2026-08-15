@@ -39,7 +39,7 @@ from app.utils.logger import get_logger, setup_logging, log_event_async
 setup_logging()
 
 # 2. 各模块普通日志
-logger = get_logger("app_state")
+logger = get_logger("container")
 logger.warning("Redis 不可用，服务降级: %s", e)
 
 # 3. 业务事件（结构化字段进 JSON）
@@ -57,11 +57,11 @@ await log_event_async("llm_call", success=True, duration=2.3, total_tokens=120)
 - 控制台：`StreamHandler(sys.stdout)` + `ConsoleFormatter`（人类可读）
 - 文件：`FileHandler(settings.log_file, encoding="utf-8")` + `JsonFormatter`（默认）或 `ConsoleFormatter`（`log_format="text"`）
 
-**时序**：必须在应用入口（`app/main.py`）模块级调用，早于 `AppState.initialize()` 与静态目录检查，否则这些模块的 print→logging 会静默丢失。
+**时序**：必须在应用入口（`app/main.py`）模块级调用，早于 `Container.initialize()` 与静态目录检查，否则这些模块的 print→logging 会静默丢失。
 
 ### `get_logger(name: str) -> logging.Logger`
 
-返回 `app.{name}` 命名空间下的标准 `logging.Logger`，不挂 handler（统一走 root）。示例：`get_logger("app_state")` → `app.app_state`。
+返回 `app.{name}` 命名空间下的标准 `logging.Logger`，不挂 handler（统一走 root）。示例：`get_logger("container")` → `app.container`。
 
 ### `log_event(event_name: str, level=INFO, **fields) -> None`
 
@@ -83,7 +83,7 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 
 ```
 18:42:08 [OK]   app.events: llm_call success=True duration=1.5
-18:42:08 [WARN] app.app_state: Redis 不可用（服务降级）: ...
+18:42:08 [WARN] app.container: Redis 不可用（服务降级）: ...
 ```
 
 - 级别前缀全 ASCII（`[OK]/[WARN]/[ERR]/[DBG]/[CRIT]`），避免非 GBK 字符在 Windows 控制台触发编码错误
@@ -151,17 +151,17 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 | --- | --- | --- |
 | `app/utils/logger.py` | `app.events` | 业务事件（`llm_call` 等） |
 | `app/main.py` | `app.main` | 启动/关闭/静态目录警告 |
-| `app/app_state.py` | `app.app_state` | 基础设施初始化（Redis/DB/工具） |
-| `app/services/session_manager.py` | `app.services.session_manager` | 缓存降级警告 |
-| `app/services/tool_service.py` | `app.services.tool_service` | 工具钩子失败 |
+| `app/container.py` | `app.container` | 基础设施初始化（Redis/DB/工具） |
+| `app/application/session/session_manager.py` | `app.services.session_manager` | 缓存降级警告 |
+| `app/integration/tools/tool_service.py` | `app.services.tool_service` | 工具钩子失败 |
 
-> 早期 `LLMLogger`（`app/services/llm/logger.py`）已移除，其「LLM 调用记录」职责并入本框架的业务事件机制（`log_event_async("llm_call")`），输出通道统一走全局双 handler。
+> 早期 `LLMLogger`（`app/integration/llm/logger.py`）已移除，其「LLM 调用记录」职责并入本框架的业务事件机制（`log_event_async("llm_call")`），输出通道统一走全局双 handler。
 
 ---
 
 ## 相关文档
 
 - [配置管理模块](../config_doc/config.md)（`LOG_*` 配置项）
-- [LLM 服务层说明](../service_doc/llm_doc/llm.md)（LLM 调用业务事件）
-- [服务层说明](../service_doc/service.md)（各模块日志归属）
+- [LLM 服务层说明](../integration_doc/llm_doc/llm.md)（LLM 调用业务事件）
+- [服务层说明](../application_doc/README.md)（各模块日志归属）
 - [架构设计](../architecture.md)

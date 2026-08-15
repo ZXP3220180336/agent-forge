@@ -132,6 +132,6 @@
 ## 相关文档
 
 - [HANDOFF](HANDOFF.md)（项目交接，顶层计划/进度）
-- [task.md](service_doc/task_doc/task.md)（TaskService 调度枢纽 + 多 Agent 编排规划）
-- [agent.md](core_doc/agent_doc/agent.md)（Agent 层：单任务执行）
-- [llm.md](service_doc/llm_doc/llm.md)（LLM 服务层）
+- [task.md](application_doc/task_doc/task.md)（TaskService 调度枢纽 + 多 Agent 编排规划）
+- [agent.md](domain_doc/agent_doc/agent.md)（Agent 层：单任务执行）
+- [llm.md](integration_doc/llm_doc/llm.md)（LLM 服务层）

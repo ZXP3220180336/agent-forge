@@ -79,7 +79,7 @@ curl http://localhost:8000/api/health
 ### Redis（可选）
 
 - 用途：会话热缓存、会话列表缓存、会话统计缓存
-- **当前状态**：Redis 缺失时 `app_state` 降级（`redis=None`），但 `SessionManager.create_session()` 会因 `self.redis.set()` 抛错——**HTTP 闭环依赖 Redis**
+- **当前状态**：Redis 缺失时 `container` 降级（`redis=None`），但 `SessionManager.create_session()` 会因 `self.redis.set()` 抛错——**HTTP 闭环依赖 Redis**
 
 ---
 

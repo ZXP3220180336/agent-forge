@@ -5,7 +5,7 @@
 - [模块概述](#模块概述)
 - [模块实现状态表](#模块实现状态表)
 - [现状说明](#现状说明)
-  - [DB / Redis 由 app_state 直接管理](#db--redis-由-appstate-直接管理)
+  - [DB / Redis 由 container 直接管理](#db--redis-由-container-直接管理)
   - [降级策略](#降级策略)
   - [asyncpg 驱动未安装 → DB 恒降级](#asyncpg-驱动未安装--db-恒降级)
 - [规划说明](#规划说明)
@@ -43,7 +43,7 @@ app/infrastructure/
     └── __init__.py         ← 子包入口
 ```
 
-> **当前状态**：本层所有文件均为空占位，尚未提供实际封装。DB / Redis 实际由 `app/app_state.py` 直接管理（见 [现状说明](#现状说明)）。
+> **当前状态**：本层所有文件均为空占位，尚未提供实际封装。DB / Redis 实际由 `app/container.py` 直接管理（见 [现状说明](#现状说明)）。
 
 ---
 
@@ -63,11 +63,11 @@ app/infrastructure/
 
 ## 现状说明
 
-### DB / Redis 由 app_state 直接管理
+### DB / Redis 由 container 直接管理
 
-当前基础设施资源**未经过** `infrastructure/` 层封装，而是由 `app/app_state.py` 的 `AppState.initialize()` 直接创建：
+当前基础设施资源**未经过** `infrastructure/` 层封装，而是由 `app/container.py` 的 `Container.initialize()` 直接创建：
 
-**数据库**（`app_state.py` L74-93）：
+**数据库**（`container.py` L74-93）：
 
 ```python
 engine = create_async_engine(
@@ -80,7 +80,7 @@ self._engine = engine  # 显式持有引用，shutdown 时 dispose()
 self.db_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 ```
 
-**Redis**（`app_state.py` L59-72）：
+**Redis**（`container.py` L59-72）：
 
 ```python
 self.redis = Redis.from_url(
@@ -92,11 +92,11 @@ self.redis = Redis.from_url(
 await self.redis.ping()
 ```
 
-**调用链**：`AppState` 将 `redis` / `db_session_factory` 直接注入各服务（如 `SessionManager`），服务层拿到的是裸客户端对象，而非经过封装的统一接口。`shutdown()` 时通过 `redis.close()`、`engine.dispose()` 与 `ClientManager.close_all()`（关闭 AsyncOpenAI 底层 httpx 连接池，2026-08-09）显式释放，三者并入 `asyncio.gather(return_exceptions=True)`——单个清理失败不影响整体优雅退出。
+**调用链**：`Container` 将 `redis` / `db_session_factory` 直接注入各服务（如 `SessionManager`），服务层拿到的是裸客户端对象，而非经过封装的统一接口。`shutdown()` 时通过 `redis.close()`、`engine.dispose()` 与 `ClientManager.close_all()`（关闭 AsyncOpenAI 底层 httpx 连接池，2026-08-09）显式释放，三者并入 `asyncio.gather(return_exceptions=True)`——单个清理失败不影响整体优雅退出。
 
 ### 降级策略
 
-`AppState.initialize()` 对每个基础设施采用**独立 try / except + 置空降级**：单个资源初始化失败不影响整体启动，但会：
+`Container.initialize()` 对每个基础设施采用**独立 try / except + 置空降级**：单个资源初始化失败不影响整体启动，但会：
 
 1. 把错误追加到 `self._errors` 列表
 2. 打印 `[WARN] xxx 不可用（服务降级）`
@@ -111,7 +111,7 @@ await self.redis.ping()
 - `pyproject.toml` 依赖中**没有** `asyncpg`（也没有 `psycopg` / `aiosqlite`），只有 `sqlalchemy>=2.0.51`
 - `settings.database_url` 默认值为 `postgresql+asyncpg://user:pass@localhost/db`
 - `create_async_engine()` 在**创建阶段**就会解析 `asyncpg` 方言并 import 驱动，驱动缺失时抛出 `ModuleNotFoundError`
-- 该异常被 `AppState.initialize()` 的 except 捕获 → `self._engine = None`、`self.db_session_factory = None`
+- 该异常被 `Container.initialize()` 的 except 捕获 → `self._engine = None`、`self.db_session_factory = None`
 
 因此当前**数据库连接恒降级**：即使本机有 PostgreSQL 服务，DB 持久化路径也实际不可用（`SessionManager` 等所有依赖 `db_session_factory` 的调用在运行时都会失败）。
 
@@ -125,16 +125,16 @@ await self.redis.ping()
 
 ### database.py
 
-**定位**：数据库访问的统一封装，替代 `app_state` 中的裸 `create_async_engine` 调用。
+**定位**：数据库访问的统一封装，替代 `container` 中的裸 `create_async_engine` 调用。
 
 - 封装 `create_async_engine` + `async_sessionmaker` 的创建逻辑与配置（URL / 池大小 / `pool_pre_ping`）
 - 提供 `engine` / `session_factory` 属性与 `init()` / `dispose()` 生命周期方法
-- 提供健康检查（`ping` 能力），供 `AppState` 与监控复用
+- 提供健康检查（`ping` 能力），供 `Container` 与监控复用
 - **可选**：增加本地降级后端（如 `aiosqlite`），解除「asyncpg 未装 → 恒降级」的现状
 
 ### redis_client.py
 
-**定位**：Redis 客户端的统一封装，替代 `app_state` 中的裸 `Redis.from_url` 调用。
+**定位**：Redis 客户端的统一封装，替代 `container` 中的裸 `Redis.from_url` 调用。
 
 - 统一管理连接参数（URL / decode_responses / 连接与操作超时）
 - 提供键命名空间（prefix）与常用操作的编解码封装
@@ -164,6 +164,6 @@ await self.redis.ping()
 - [配置参考](../config_doc/config.md) — `DATABASE_URL` / `REDIS_URL` / `memory_vector_db` 等基础设施相关配置
 - [系统架构](../architecture.md) — 整体架构中基础设施层的定位
 - [项目整体进度](../HANDOFF.md) — 项目全局状态与待办
-- [LLM 层说明文档](../service_doc/llm_doc/llm.md) — 同风格的分层文档参考
-- [任务服务说明文档](../service_doc/task_doc/task.md) — 任务调度（潜在依赖消息队列）
-- [记忆系统说明文档](../core_doc/memory_doc/memory.md) — 依赖 `vector_store` 的记忆实现（目录当前为空）
+- [LLM 层说明文档](../integration_doc/llm_doc/llm.md) — 同风格的分层文档参考
+- [任务服务说明文档](../application_doc/task_doc/task.md) — 任务调度（潜在依赖消息队列）
+- [记忆系统说明文档](../domain_doc/memory_doc/memory.md) — 依赖 `vector_store` 的记忆实现（目录当前为空）
