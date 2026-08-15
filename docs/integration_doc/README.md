@@ -2,7 +2,7 @@
 
 > **对应代码**：`app/integration/`
 > **更新日期**：2026-08-15
-> **文档定位**：能力/集成层（`app/integration/`）—— 系统与外部世界交互的能力层：LLM 网关、工具系统、文本向量化；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` 的适配器实现方。
+> **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort` 的适配器实现方。
 > **实现状态**：LLM（✅ 已实现）· Tools（✅ 已实现）· Embedding（🔶 已实现，未接线）
 
 ---
@@ -24,11 +24,12 @@
 
 ### 核心功能
 
-集成层是系统的**能力层**，位于领域层之下、基础设施层之旁，负责所有与外部世界的交互：
+集成层是系统的**能力接入层**，负责 Agent 与外部**能力**（模型 / 工具 / 检索）的交互：
 
 - **LLM 网关**（`llm/`）：与大语言模型的全部通信——连接池 / 重试 / 熔断 / 限流 / 流式解析 / 整流重试 / 结构化输出 / 成本计算
 - **工具系统**（`tools/`）：Agent 的可执行能力集合——工具注册 / 执行 / 重试 / 统计 / 钩子 / 内置工具
 - **文本向量化**（`embedding_service.py`）：单条 / 批量嵌入 + 内存缓存
+- **向量检索**（`vector_store/`，待规划）：Milvus 向量库检索，服务 RAG 历史案例（Phase D）
 
 ### 模块结构
 
@@ -63,7 +64,7 @@ app/integration/
 ### 设计原则
 
 1. **Facade 模式**：`LLMService` / `ToolService` 是各自子系统唯一外部入口，内部组件不对外暴露
-2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway`），领域层只依赖抽象；装配根 `container.py` 在启动时注入
+2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort`），领域层只依赖抽象；装配根 `container.py` 在启动时注入
 3. **三权分立（LLM）**：传输层（连接）/ 可靠性层（重试/熔断/限流/降级）/ 数据层（解析）/ 策略层（整流）/ 治理层（日志/成本）各司其职
 4. **God Object 拆分（Tools）**：ToolService 拆为 Registry / Executor / Stats / Hooks / Assembler，Facade 聚合
 5. **纯函数优先**：`StreamParser` 等解析组件为无状态静态方法，便于测试与整流重试幂等
@@ -77,8 +78,9 @@ app/integration/
         └── 装配根 container 注入 ┘
                                  ▼
 app/integration/
-  ├── llm/ ──► AsyncOpenAI（OpenAI 兼容 API，如 DeepSeek）
-  └── tools/ ──► Tavily / httpx / aiofiles / subprocess
+  ├── llm/ ──────────► AsyncOpenAI（OpenAI 兼容 API，如 DeepSeek）
+  ├── tools/ ────────► Tavily / httpx / aiofiles / subprocess
+  └── embedding_service.py ──► AsyncOpenAI（/embeddings 端点，复用连接池）
 ```
 
 - **外部调用方**：领域层 Agent（经端口）；应用层 / 接入层（经 container 依赖注入）
@@ -156,7 +158,7 @@ app/integration/
     → 观察结果回填 → 继续推理 → 最终答案
 ```
 
-集成层是这条链上「与外部世界打交道」的所有环节，决定系统的**健壮性**（重试 / 熔断 / 限流 / 降级）、**可用性**（工具执行 / 并行）与**可观测性**（调用事件日志、工具统计）。
+集成层是这条链上「与外部能力打交道」的所有环节，决定系统的**健壮性**（重试 / 熔断 / 限流 / 降级）、**可用性**（工具执行 / 并行）与**可观测性**（调用事件日志、工具统计）。
 
 ---
 
