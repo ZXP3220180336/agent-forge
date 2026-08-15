@@ -9,9 +9,13 @@ StreamParser — 流式/非流式响应解析
 从 llm_service._process_stream_response 提取并纯化。
 
 用法：
-    parser = StreamParser()
-    async for event in parser.parse_stream(response, result):
-        yield event  # ("reasoning", token) | ("message", token)
+    # 流式：逐 chunk 解析 → ParsedChunk
+    chunk = StreamParser.parse_chunk(raw_chunk)
+    if chunk.tool_call_deltas:
+        tool_calls = StreamParser.merge_tool_calls(chunk.tool_call_deltas)
+
+    # 非流式：一次解析完整响应 → dict
+    result = StreamParser.parse_non_stream(response)
 """
 
 from __future__ import annotations
