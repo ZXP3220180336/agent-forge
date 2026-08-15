@@ -11,7 +11,6 @@
 - [规划说明](#规划说明)
   - [database.py](#databasepy)
   - [redis_client.py](#redis_clientpy)
-  - [vector_store/](#vector_store)
   - [message_queue/](#message_queue)
 - [相关文档链接](#相关文档链接)
 
@@ -19,13 +18,13 @@
 
 ## 模块概述
 
-基础设施层（`app/infrastructure/`）是系统的**底层资源抽象层**，负责对数据库、缓存、向量存储、消息队列等外部基础设施进行统一封装，向上层服务提供稳定的访问接口。
+基础设施层（`app/infrastructure/`）是系统的**底层资源抽象层**，负责对数据库、缓存、消息队列等外部基础设施进行统一封装，向上层服务提供稳定的访问接口。
 
 ### 核心定位
 
 - **抽象封装**：屏蔽具体技术细节（驱动、连接池、协议），上层只依赖本层暴露的接口
 - **生命周期管理**：统一负责资源的创建、初始化、健康检查与释放
-- **可替换性**：通过接口隔离实现可替换（如向量库在 Milvus / Qdrant / Pinecone 之间切换）
+- **可替换性**：通过接口隔离实现可替换（如缓存后端在 Redis / Memcached 之间切换）
 - **解耦**：让服务层不再直接持有具体客户端对象
 
 ### 模块结构
@@ -35,10 +34,6 @@ app/infrastructure/
 ├── __init__.py             ← 包入口，规划导出统一封装接口
 ├── database.py             ← 数据库封装（规划：engine / session factory）
 ├── redis_client.py         ← Redis 封装（规划：连接池 / 编解码 / 重连）
-├── vector_store/           ← 向量存储子包
-│   ├── __init__.py         ← 子包入口，规划按配置选择实现
-│   ├── base.py             ← 向量存储抽象基类
-│   └── milvus.py           ← Milvus 实现
 └── message_queue/          ← 消息队列子包
     └── __init__.py         ← 子包入口
 ```
@@ -54,9 +49,6 @@ app/infrastructure/
 | `app/infrastructure/__init__.py` | 空（0 行） | 基础设施层包入口，规划统一导出封装接口 |
 | `app/infrastructure/database.py` | 空（0 行） | 数据库引擎与会话封装（engine / session factory / 生命周期 / 健康检查） |
 | `app/infrastructure/redis_client.py` | 空（0 行） | Redis 客户端封装（连接池 / 编解码 / 超时 / 重连 / 命名空间） |
-| `app/infrastructure/vector_store/__init__.py` | 空（0 行） | 向量存储子包入口，规划工厂方法按配置选择实现 |
-| `app/infrastructure/vector_store/base.py` | 空（0 行） | 向量存储抽象基类（集合管理 / 写入 / 检索 / 删除的统一接口） |
-| `app/infrastructure/vector_store/milvus.py` | 空（0 行） | Milvus 实现（对应配置 `memory_vector_db="milvus"`） |
 | `app/infrastructure/message_queue/__init__.py` | 空（0 行） | 消息队列子包入口，规划抽象统一消息发布 / 消费接口 |
 
 ---
@@ -141,14 +133,6 @@ await self.redis.ping()
 - 处理连接可用性检测与可选的重连策略
 - 对外暴露统一 `RedisClient`，供 `SessionManager` 等缓存类服务使用
 
-### vector_store/
-
-**定位**：向量存储抽象层，支撑记忆系统（`settings.memory_vector_db="milvus"`）。
-
-- `base.py`：定义抽象基类，统一接口 —— 集合管理（create / drop / 集合信息）、写入（单条 / 批量）、检索（top-k 相似度搜索）、删除；约定向量维度与距离度量（metric）的配置传入方式
-- `milvus.py`：基于 `pymilvus` 的 Milvus 实现，负责集合 schema、索引构建与检索细节
-- `__init__.py`：提供工厂方法，根据 `memory_vector_db` 配置返回对应实现（Milvus / Qdrant / Pinecone），上层不感知具体向量库
-
 ### message_queue/
 
 **定位**：消息队列抽象，用于 Agent 任务分发与模块解耦（当前无实现，`pyproject.toml` 亦无 MQ 客户端依赖）。
@@ -161,8 +145,7 @@ await self.redis.ping()
 
 ## 相关文档链接
 
-- [配置参考](../config_doc/config.md) — `DATABASE_URL` / `REDIS_URL` / `memory_vector_db` 等基础设施相关配置
+- [配置参考](../config_doc/config.md) — `DATABASE_URL` / `REDIS_URL` 等基础设施相关配置
 - [系统架构](../architecture.md) — 整体架构中基础设施层的定位
 - [LLM 层说明文档](../integration_doc/llm_doc/llm.md) — 同风格的分层文档参考
 - [任务服务说明文档](../application_doc/task_doc/task.md) — 任务调度（潜在依赖消息队列）
-- [记忆系统说明文档](../domain_doc/memory_doc/memory.md) — 依赖 `vector_store` 的记忆实现（目录当前为空）

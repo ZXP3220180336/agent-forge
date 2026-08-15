@@ -47,7 +47,7 @@ app/application/
 app/integration/
 ├── llm/                        ← LLMService + 子包（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）
 ├── tools/                      ← ToolService 与 5 个内置工具
-└── embedding_service.py        ← EmbeddingService 文本向量化
+└── embedding/embedding_service.py  ← EmbeddingService 文本向量化
 
 app/domain/memory/memory_service.py  ← MemoryService（❌ 预留，空文件）
 ```
@@ -98,7 +98,7 @@ API 层（chat / session 路由）
 | `context_manager.py` | ✅ 已实现（135 行） | `ContextManager`：`build_messages` / `count_tokens` / `count_messages_tokens` / `_truncate_messages` | 组装 messages + token 计数 + 超限截断 |
 | `tool_service.py` | ✅ 已实现（409 行） | `ToolService`：`register` / `unregister` / `get` / `execute` / `get_stats` / `get_all_stats_summary` / `init_default_tools`；`ToolStats` | 工具容器 / 执行 / 统计 / 钩子 / 装配（已合并原 ToolRegistry） |
 | `task_service.py` | ✅ 已实现（68 行） | `TaskService`：`run_agent` / `max_concurrent` | 任务级并发信号量 + `run_agent()` 流式包装 |
-| `embedding_service.py` | ✅ 已实现（141 行） | `EmbeddingService`：`embed` / `embed_batch` / `clear_cache` / `cache_size` | 文本向量化 + 批量 + 缓存 |
+| `embedding/embedding_service.py` | ✅ 已实现（141 行） | `EmbeddingService`：`embed` / `embed_batch` / `clear_cache` / `cache_size` | 文本向量化 + 批量 + 缓存 |
 | `llm_service.py` | ✅ 已实现（608 行） | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost`；`StreamResult` | LLM 统一 Facade |
 | `memory_service.py` | ❌ 预留（0 行） | — | 记忆服务（短期 + 向量库长期） |
 
@@ -346,7 +346,7 @@ async def handle_chat(user_input, messages, context, agent):
 
 ## EmbeddingService — 文本向量化
 
-**文件**：`app/integration/embedding_service.py`
+**文件**：`app/integration/embedding/embedding_service.py`
 
 ### 核心功能
 

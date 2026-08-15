@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import (
 from app.application.context.context_manager import ContextManager
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
-from app.integration.embedding_service import EmbeddingService
+from app.integration.embedding import EmbeddingService
 from app.integration.llm import (
     CircuitBreakerConfig,
     ClientManager,

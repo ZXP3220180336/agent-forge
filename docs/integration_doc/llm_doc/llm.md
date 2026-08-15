@@ -1,5 +1,13 @@
 # LLM 层说明文档
 
+> **对应代码**：`app/integration/llm/`
+> **更新日期**：2026-08-15
+> **职责**：LLM 网关 —— 与大语言模型的全部通信：连接池 / 重试 / 熔断 / 限流 / 流式解析 / 整流重试 / 结构化输出 / 成本计算
+> **状态**：✅ 已实现
+> **配套**：实现领域端口 `LLMGateway`；`LLMService` 为唯一对外 Facade（各子组件详解见下文与 [client.md](client.md) / [retry.md](retry.md) 等子文档）
+
+---
+
 ## 📋 目录
 
 - [LLM 层说明文档](#llm-层说明文档)
@@ -28,7 +36,6 @@
     - [LLM 调用业务事件（llm\_call）](#llm-调用业务事件llm_call)
     - [限流：reserve/settle 形态](#限流reservesettle-形态)
     - [CostTracker — 成本计算](#costtracker--成本计算)
-    - [EmbeddingService — 向量化](#embeddingservice--向量化)
   - [设计选型对比](#设计选型对比)
     - [连接管理：ClientManager vs 每次新建](#连接管理clientmanager-vs-每次新建)
     - [重试策略：指数退避 + 抖动 vs 固定间隔](#重试策略指数退避--抖动-vs-固定间隔)
@@ -82,13 +89,11 @@ LLM 层是系统的**模型通信基础设施**，负责所有与大语言模型
 - **请求日志**：每次 LLM 调用的元数据记录，JSON 格式输出
 - **客户端限流**：双 Token Bucket 限流（RPM + TPM）
 - **成本计算**：按模型用量估算费用
-- **向量化**：文本嵌入（Embedding），支持批量与缓存
 
 ### 模块结构
 
 ```
 app/integration/
-├── embedding_service.py           ← 文本向量化服务
 └── llm/
     ├── __init__.py                ← 包入口，导出所有子模块
     ├── llm_service.py             ← 统一 Facade（外部模块入口）
@@ -133,8 +138,6 @@ app/integration/
     ├── StreamParser
     ├── ReservationLimiter ───────→ reserve/settle + 自适应预留（Fenic 式）
     └── CostTracker
-
-  EmbeddingService ─── AsyncOpenAI(GET /embeddings)
 ```
 
 ---
@@ -220,15 +223,6 @@ data = await llm.generate_structured(
     schema=schema,
 )
 # → {"name": "张三", "age": 28}
-```
-
-### 向量化
-
-```python
-from app.container import container
-
-vector = await container.embedding_service.embed("你好世界")
-# → [0.012, -0.034, ...] 共 1536 维
 ```
 
 ### 成本计算
@@ -775,60 +769,16 @@ MODEL_PRICING = {
 }
 ```
 
+> 完整定价表（15 条，含 o1 / deepseek-v4-flash / claude-haiku-3-5 等）以源码为准，见 [cost_tracker.md](cost_tracker.md)。
+
 #### 为什么选择前缀匹配
 
-```python
-@staticmethod
-def _find_price(model: str) -> dict:
-    # 1. 精确匹配
-    if model in MODEL_PRICING:
-        return MODEL_PRICING[model]
-    # 2. 前缀匹配（如 deepseek-chat-v2 → deepseek-chat）
-    for key in sorted(MODEL_PRICING.keys(), key=len, reverse=True):
-        if model.startswith(key):
-            return MODEL_PRICING[key]
-    # 3. 默认均价
-    return DEFAULT_PRICE
-```
+`_find_price` 按「精确匹配 → 前缀匹配（按 key 长度降序）→ 默认均价」三级查找，完整实现见 [cost_tracker.md](cost_tracker.md)：
 
 **理由**：
 
 - 模型名经常带版本号后缀（`gpt-4o-2024-08-06`、`deepseek-chat-v2`），精确匹配会 miss
 - 前缀匹配按 key 长度降序，避免 `deepseek-chat` 匹配到 `deepseek-reasoner` 的定价
-
----
-
-### EmbeddingService — 向量化
-
-**文件**：`app/integration/embedding_service.py`
-
-#### 功能
-
-1. 单文本嵌入、批量嵌入（自动分批）
-2. 内存缓存（dict，按 model + 文本 MD5 去重，无容量上限）
-3. 保持输入顺序，缓存穿透只请求未命中项
-
-#### 缓存策略
-
-```python
-def embed_batch(self, texts):
-    results = [None] * len(texts)
-    uncached = []
-
-    # 1. 查缓存
-    for i, t in enumerate(texts):
-        key = self._make_cache_key(t, model)
-        if key in self._cache:
-            results[i] = self._cache[key]
-        else:
-            uncached.append(i)
-
-    # 2. 只请求未命中的
-    for batch in chunk(uncached, max_batch_size):
-        response = await self._client.embeddings.create(input=batch)
-
-    return results
-```
 
 ---
 
@@ -1236,7 +1186,7 @@ response = await retry.execute(
 
 ### 已实现
 
-- 7 个子模块全部落地：ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker + `EmbeddingService`（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
+- 7 个子模块全部落地：ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
 - retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针按异常类别判定、流式迭代保护；**2026-08-05 修正**：4xx 探针不再回 OPEN，改为不改变状态 + 归还槽位 + 抛上层（详见 [retry.md](retry.md)）
 - **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。见 [设计决策记录·流式整流重试](#流式整流重试)
 - **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve

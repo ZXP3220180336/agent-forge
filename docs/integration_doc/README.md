@@ -2,21 +2,27 @@
 
 > **对应代码**：`app/integration/`
 > **更新日期**：2026-08-15
-> **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort` 的适配器实现方。
+> **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort` / `TokenCounter`（待规划）的适配器实现方。
 > **实现状态**：LLM（✅ 已实现）· Tools（✅ 已实现）· Embedding（🔶 已实现，未接线）
 
 ---
 
 ## 📋 目录
 
-- [模块概述](#模块概述)
-- [实现状态总览](#实现状态总览)
-- [LLM 网关](#llm-网关)
-- [工具系统](#工具系统)
-- [Embedding 服务](#embedding-服务)
-- [典型调用链路](#典型调用链路)
-- [配置关联](#配置关联)
-- [相关文档](#相关文档)
+- [集成层说明文档](#集成层说明文档)
+  - [📋 目录](#-目录)
+  - [模块概述](#模块概述)
+    - [核心功能](#核心功能)
+    - [模块结构](#模块结构)
+    - [设计原则](#设计原则)
+    - [依赖关系](#依赖关系)
+  - [实现状态总览](#实现状态总览)
+  - [LLM 网关](#llm-网关)
+  - [工具系统](#工具系统)
+  - [Embedding 服务](#embedding-服务)
+  - [典型调用链路](#典型调用链路)
+  - [配置关联](#配置关联)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -28,14 +34,15 @@
 
 - **LLM 网关**（`llm/`）：与大语言模型的全部通信——连接池 / 重试 / 熔断 / 限流 / 流式解析 / 整流重试 / 结构化输出 / 成本计算
 - **工具系统**（`tools/`）：Agent 的可执行能力集合——工具注册 / 执行 / 重试 / 统计 / 钩子 / 内置工具
-- **文本向量化**（`embedding_service.py`）：单条 / 批量嵌入 + 内存缓存
+- **文本向量化**（`embedding/`）：单条 / 批量嵌入 + 内存缓存
 - **向量检索**（`vector_store/`，待规划）：Milvus 向量库检索，服务 RAG 历史案例（Phase D）
 
 ### 模块结构
 
 ```text
 app/integration/
-├── embedding_service.py          ← EmbeddingService 文本向量化
+├── embedding/                     ← EmbeddingService 文本向量化
+│   └── embedding_service.py       ← EmbeddingService（embed / embed_batch / 缓存）
 ├── llm/                          ← LLM 网关（LLMService Facade + 7 组件）
 │   ├── llm_service.py            ← LLMService（统一 Facade，对外入口）
 │   ├── client.py                 ← ClientManager 连接池管理
@@ -45,7 +52,7 @@ app/integration/
 │   ├── structured.py             ← StructuredOutput 结构化输出
 │   ├── reservation_limiter.py    ← ReservationLimiter 客户端限流
 │   └── cost_tracker.py           ← CostTracker 成本计算
-└── tools/                        ← 工具系统（ToolService Facade + 5 组件 + 内置工具）
+├── tools/                        ← 工具系统（ToolService Facade + 5 组件 + 内置工具）
     ├── base.py                   ← BaseTool / ToolResult
     ├── tool_service.py           ← ToolService（统一 Facade，对外入口）
     ├── registry.py               ← ToolRegistry 工具容器 + Schema 导出
@@ -59,12 +66,16 @@ app/integration/
     │   ├── code_exec.py          ← "code_exec" 终端命令执行
     │   └── web_browse.py         ← "web_browse" 网页抓取
     └── external/                 ← 外部工具（预留）
+
+└── vector_store/                 ← 向量检索（待规划：Milvus，服务 RAG）
+    ├── base.py                   ← 向量库抽象基类
+    └── milvus.py                 ← Milvus 实现
 ```
 
 ### 设计原则
 
 1. **Facade 模式**：`LLMService` / `ToolService` 是各自子系统唯一外部入口，内部组件不对外暴露
-2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort`），领域层只依赖抽象；装配根 `container.py` 在启动时注入
+2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort` / `TokenCounter`），领域层只依赖抽象；装配根 `container.py` 在启动时注入
 3. **三权分立（LLM）**：传输层（连接）/ 可靠性层（重试/熔断/限流/降级）/ 数据层（解析）/ 策略层（整流）/ 治理层（日志/成本）各司其职
 4. **God Object 拆分（Tools）**：ToolService 拆为 Registry / Executor / Stats / Hooks / Assembler，Facade 聚合
 5. **纯函数优先**：`StreamParser` 等解析组件为无状态静态方法，便于测试与整流重试幂等
@@ -80,7 +91,8 @@ app/integration/
 app/integration/
   ├── llm/ ──────────► AsyncOpenAI（OpenAI 兼容 API，如 DeepSeek）
   ├── tools/ ────────► Tavily / httpx / aiofiles / subprocess
-  └── embedding_service.py ──► AsyncOpenAI（/embeddings 端点，复用连接池）
+  ├── embedding/ ──────────► AsyncOpenAI（/embeddings 端点，复用连接池）
+  └── vector_store/ ────────► Milvus（向量库，Phase D）
 ```
 
 - **外部调用方**：领域层 Agent（经端口）；应用层 / 接入层（经 container 依赖注入）
@@ -98,8 +110,9 @@ app/integration/
 | 工具 Facade | `tools/tool_service.py` | ✅ | `ToolService`：注册 / 执行 / 统计 / 钩子 / 装配 / Schema 导出 |
 | 工具子包 | `tools/`（5 组件） | ✅ | Registry / Executor / Stats / Hooks / Assembler |
 | 内置工具 | `tools/builtin/` | ✅ | search / readFile / writeFile / code_exec / web_browse |
-| Embedding | `embedding_service.py` | 🔶 已实现未接线 | `EmbeddingService`：`embed` / `embed_batch` / 内存缓存 |
-| VectorStore adapter | — | ⬜ 待规划 | Milvus 向量库检索（Phase D，规划接入 RAG） |
+| Embedding | `embedding/embedding_service.py` | 🔶 已实现未接线 | `EmbeddingService`：`embed` / `embed_batch` / 内存缓存 |
+| VectorStore adapter | `vector_store/` | ⬜ 待规划 | Milvus 向量库检索（Phase D，规划接入 RAG） |
+| RCA 工具 | — | ⬜ 待规划 | 良率 / 告警 / FDC / wafer / 历史检索（Phase C/D） |
 
 ---
 
@@ -143,7 +156,7 @@ app/integration/
 
 ## Embedding 服务
 
-**代码**：`app/integration/embedding_service.py` · **文档**：[Embedding 详解](embedding_doc/embedding.md)
+**代码**：`app/integration/embedding/` · **文档**：[Embedding 详解](embedding_doc/embedding.md)
 
 文本向量化：`embed()` / `embed_batch()`（自动分批、保持顺序、缓存穿透只请求未命中项），MD5 + 模型名前缀的内存缓存。规划接入长期记忆 / RAG 历史案例检索（Phase D）。
 

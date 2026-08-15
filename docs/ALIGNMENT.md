@@ -51,9 +51,9 @@
 | app/infrastructure/models/database/session.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | Session ORM |
 | app/infrastructure/models/database/task.py | ⬜ | docs/infrastructure_doc/model_doc/model.md | (无) | 空文件待实现 |
 | app/infrastructure/models/database/tool_log.py | ⬜ | docs/infrastructure_doc/model_doc/model.md | (无) | 空文件待实现 |
-| app/infrastructure/vector_store/base.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件待实现 |
-| app/infrastructure/vector_store/milvus.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件待实现 |
-| app/integration/embedding_service.py | 🔶 | docs/integration_doc/embedding_doc/embedding.md | (无) | 已实现未接线；待补测试 |
+| app/integration/vector_store/base.py | ⬜ | docs/integration_doc/README.md | (无) | 空文件待实现 |
+| app/integration/vector_store/milvus.py | ⬜ | docs/integration_doc/README.md | (无) | 空文件待实现 |
+| app/integration/embedding/embedding_service.py | 🔶 | docs/integration_doc/embedding_doc/embedding.md | (无) | 已实现未接线；待补测试 |
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
 | app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪 |
 | app/integration/llm/llm_service.py | 🔶 | docs/integration_doc/llm_doc/llm.md | (无) | Facade；经各子模块测试覆盖，待补专属测试 |
