@@ -93,7 +93,7 @@ app/integration/tools/tool_service.py   ← 工具服务统一入口（ToolServi
 ```python
 import asyncio
 from app.tools.builtin import SearchTool
-from app.services import ToolService
+from app.integration.tools.tool_service import ToolService
 
 async def main():
     reg = ToolService()
@@ -119,7 +119,7 @@ asyncio.run(main())
 ```python
 import asyncio
 from app.tools.builtin import __all__ as builtin_tools
-from app.services import ToolService
+from app.integration.tools.tool_service import ToolService
 from app.tools.base import BaseTool
 
 async def main():

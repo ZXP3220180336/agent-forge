@@ -1265,7 +1265,7 @@ t0+4ε      请求 E 预留 4196 → 不足！等待   0
 
 **我们的选型**（已实现，开关 `llm_adaptive_reserve` 默认关）：
 
-- **`OutputTokenEstimator`**（`reservation_limiter.py`）：滚动样本 deque（上限 256），分位数排序取索引（nearest-rank，无 numpy），普通模型 p95、推理模型 p99（`_QUANTILE_FIELD_BY_KEY` 按 model_key 区分）
+- **`OutputTokenEstimator`**（`reservation_limiter.py`）：滚动样本 deque（上限 256），分位数排序取索引（nearest-rank，无 numpy），普通模型 p95、推理模型 p99（由装配根按 model_key 注入 `ReservationLimiterConfig.quantile`：reasoning 用 `llm_reserve_reasoning_quantile`，其余用 `llm_reserve_quantile`）
 - **安全系数** `llm_reserve_safety_margin`（默认 1.15，校验 [1.0, 4.0]）
 - **冷启动回退**：样本 < `llm_reserve_min_samples`（默认 30）返回 0 → 调用方回退静态 `max_tokens`
 - **clamp 只减不加**：`min(estimate, max_tokens)`

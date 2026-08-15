@@ -144,10 +144,10 @@ app/integration/
 ### 基础用法
 
 ```python
-from app.services import LLMService
+from app.container import container
 
-# 方式一：自动使用 ClientManager（需先注册）
-llm = LLMService()
+# 方式一：装配根注入（空构造，经 ClientManager 取 client，推荐）
+llm = container.llm_service
 
 # 非流式生成（await 返回 StreamResult）
 result = await llm.generate(
@@ -161,8 +161,9 @@ async for event in llm.async_generate(
 ):
     print(event)   # SSE 事件字符串
 
-# 方式二：手动传入参数
-llm = LLMService(api_key="sk-xxx", model="gpt-4")
+# 方式二：手动构造（api_key 时需同时提供 base_url 与 model）
+from app.integration.llm.llm_service import LLMService
+llm = LLMService(api_key="sk-xxx", model="gpt-4", base_url="https://api.openai.com/v1")
 ```
 
 > 所有示例均需在 `async` 函数内运行（`await`/`async for` 只能出现在 async 上下文）。
@@ -170,9 +171,10 @@ llm = LLMService(api_key="sk-xxx", model="gpt-4")
 ### 流式生成
 
 ```python
-from app.services import LLMService, StreamResult
+from app.container import container
+from app.domain.ports.llm_gateway import StreamResult
 
-llm = LLMService()
+llm = container.llm_service
 sr = StreamResult()
 async for event in llm.async_generate(messages, result=sr):
     # event 是 SSE 事件字符串，可直接发送给前端
@@ -185,9 +187,9 @@ print(sr.usage)         # Token 用量
 ### 非流式生成（简单任务）
 
 ```python
-from app.services import LLMService
+from app.container import container
 
-llm = LLMService()
+llm = container.llm_service
 result = await llm.generate(
     messages=[{"role": "user", "content": "分类：今天天气很好"}],
     temperature=0,
@@ -198,9 +200,9 @@ print(result.content)   # → "正面"
 ### 结构化输出
 
 ```python
-from app.services import LLMService
+from app.container import container
 
-llm = LLMService()
+llm = container.llm_service
 schema = {
     "type": "object",
     "properties": {
@@ -606,7 +608,7 @@ async for event in StreamingRectifier.rectified_stream(
     create_fn=lambda: _rate_limited_call(...),   # 每次整流 attempt 重新 reserve + create
     retry=retry,
     cancel_event=cancel_event,
-    stream_max_retries=settings.llm_stream_max_retries,
+    stream_max_retries=stream_max_retries,  # 由装配根 register_config 注入（子模块零 settings 依赖）
     context=rectifier_context,
     fallback_fn=fallback_fn,
 ):
@@ -803,7 +805,7 @@ def _find_price(model: str) -> dict:
 #### 功能
 
 1. 单文本嵌入、批量嵌入（自动分批）
-2. 可选 LRU 缓存（MD5 哈希键）
+2. 内存缓存（dict，按 model + 文本 MD5 去重，无容量上限）
 3. 保持输入顺序，缓存穿透只请求未命中项
 
 #### 缓存策略
@@ -928,6 +930,7 @@ LLM 层所有配置项集中在 `app/config/settings.py`：
 | -------------------------------------- | ----- | ------    | --------------------------------------------------- |
 | `llm_max_retries`                      | int   | `2`       | 最大重试次数                                        |
 | `llm_stream_max_retries`               | int   | `1`       | 流式整流重试次数（首 token 前中断才整流；`0`=禁用） |
+| `llm_timeout`                          | int   | `60`      | 单次 LLM 请求超时（秒）                              |
 | `llm_base_delay`                       | float | `1.0`     | 退避基数（秒）                                      |
 | `llm_max_delay`                        | float | `30.0`    | 退避上限（秒）                                      |
 | `llm_use_jitter`                       | bool  | `True`    | 是否启用随机抖动                                    |
@@ -1138,7 +1141,7 @@ data = await llm.generate_structured(..., model_key="fast")
 
 **实现载体**：`StreamingRectifier.rectified_stream()`（无状态静态类）+ `RectifierContext`（会话共享状态：result/active/event_fields）。`async_generate` 只做编排——构造 `create_fn`（限流闭环）+ 调 `rectified_stream` 产出事件。详见 [streaming_rectifier.md](streaming_rectifier.md)。
 
-**测试**：`tests/unit/test_streaming_rectifier.py`（6 直接用例）+ `tests/unit/test_stream_rectify.py`（21 间接用例）。
+**测试**：`tests/unit/test_streaming_rectifier.py`（7 直接用例，含 emitted_any 累积语义回归）+ `tests/unit/test_stream_rectify.py`（21 间接用例）。
 
 **遗留微调（已解决）**：熔断观察盲区——流式迭代「放弃时」且异常为 RETRYABLE → 喂 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中途断开」。
 
@@ -1241,7 +1244,7 @@ response = await retry.execute(
 - **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」。「实际消耗 > 预留」仍无法补扣（预留-结算模型结构性限制，「宁多勿少」保守取舍，已缓解未消除），详述见 [limiter.md](limiter.md)「对比 3.1·已缓解但未消除」
 - **统一结构化输出入口（2026-08-07）**：`generate_structured` 委托 `StructuredOutput.extract` 三级降级（JSON Schema → JSON Mode → 正则提取），消除双入口；`extract` 签名改为接收完整 messages
 - **补熔断观察盲区 + 熔断器生命周期修复（2026-08-07）**：流式迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，熔断器感知「create 正常但流频繁中断」；新增 `RetryHandlerManager`（按 model_key 跨请求共享熔断器），修复熔断窗口无法跨请求积累的隐性缺陷（create 阶段熔断此前实际失效）
-- **配置对象 + 依赖注入（2026-08-9）**：`RetryConfig` / `CircuitBreakerConfig` / `ReservationLimiterConfig` 纯配置对象 + 各 `Manager.register_config()` 类方法注入，子模块**零 `settings` 依赖**（由 `container.initialize()` 读 settings 后统一注册）
+- **配置对象 + 依赖注入（2026-08-09）**：`RetryConfig` / `CircuitBreakerConfig` / `ReservationLimiterConfig` 纯配置对象 + 各 `Manager.register_config()` 类方法注入，子模块**零 `settings` 依赖**（由 `container.initialize()` 读 settings 后统一注册）
 - **流式整流拆为独立策略类（2026-08-10）**：`StreamingRectifier`（无状态静态类，不实例化）封装整流循环/emitted_any/熔断 feeding/结算闭环/事件日志 + `RectifierContext`（result/active/event_fields 共享状态）；`async_generate` 只做编排（构造 create_fn + 调 `rectified_stream`）。详见 [streaming_rectifier.md](streaming_rectifier.md)
 - **acquire 形态限流移除（2026-08-10）**：`rate_limiter.py` 删除，代码作为学习参考并入 [limiter.md](limiter.md)；llm_service 实际使用 reserve/settle 形态（`reservation_limiter.py`）
 - **整流判定 emitted_any 累积语义修复（2026-08-10）**：`_apply_chunk` 返回「单 chunk 是否产出」改为累积（`emitted_any = emitted_any or chunk_emitted`）——修复中断前最后一个 usage/finish-only chunk 把已产出标记冲成 False、导致误整流（重复输出 + 双倍计费）的缺陷；新增回归测试固化

@@ -302,7 +302,7 @@ OpenAI 流式响应的 usage 只在**最后一个 chunk** 返回（需请求 `st
 
 ## 测试状态
 
-`tests/unit/test_streaming.py`（20 用例）：覆盖
+`tests/unit/test_streaming.py`（21 用例）：覆盖
 
 - **parse_chunk**：content / reasoning / finish_reason / usage / tool_call 提取 / 字段缺失兜底 / 空 chunk / 混合 chunk（content + tool_calls）/ 漏洞回归（delta=None 丢 finish_reason、usage 与空 delta 共存）
 - **merge_tool_calls**：单工具增量拼接 / 多工具交错 / 输出按 index 排序 / 缺 id 按 index 兜底 / id 覆盖策略 / 空列表

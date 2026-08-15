@@ -89,7 +89,7 @@ async for event in StreamingRectifier.rectified_stream(
     create_fn=lambda: _rate_limited_call(...),   # 每次整流 attempt 重新 reserve + create
     retry=retry,
     cancel_event=cancel_event,
-    stream_max_retries=settings.llm_stream_max_retries,
+    stream_max_retries=stream_max_retries,      # 经 register_config 注入（子模块零 settings 依赖）
     context=rectifier_context,                    # 会话共享状态
     fallback_fn=fallback_fn,
 ):
@@ -127,7 +127,7 @@ class RectifierContext:
 
 ## 测试
 
-- `tests/unit/test_streaming_rectifier.py`（6 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / 硬取消 finally cancel
+- `tests/unit/test_streaming_rectifier.py`（7 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / 硬取消 finally cancel
 - `tests/unit/test_stream_rectify.py`（21 用例，经 `LLMService.async_generate` 间接覆盖）：整流/结算/事件/日志/熔断 feeding 全链路断言
 
 ## 相关文档
