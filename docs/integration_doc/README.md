@@ -175,7 +175,7 @@ app/integration/
 - [架构设计](../architecture.md)（集成层在 7 层架构中的位置与演进路径）
 - [应用层说明](../application_doc/README.md)
 - [领域层说明](../domain_doc/README.md)
-- [LLM 层详解](llm_doc/llm.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md)
+- [LLM 层详解](llm_doc/llm.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md)
 - [ToolService 详解](tool_service_doc/tool_service.md) · [工具层详解](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md)
 - [Embedding 详解](embedding_doc/embedding.md)
 - [配置说明](../config_doc/config.md)

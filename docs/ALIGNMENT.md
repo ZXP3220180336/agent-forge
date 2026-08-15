@@ -55,7 +55,7 @@
 | app/infrastructure/vector_store/milvus.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件待实现 |
 | app/integration/embedding_service.py | 🔶 | docs/integration_doc/embedding_doc/embedding.md | (无) | 已实现未接线；待补测试 |
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
-| app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/llm.md | tests/unit/test_cost_tracker.py | 成本追踪 |
+| app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪 |
 | app/integration/llm/llm_service.py | 🔶 | docs/integration_doc/llm_doc/llm.md | (无) | Facade；经各子模块测试覆盖，待补专属测试 |
 | app/integration/llm/reservation_limiter.py | ✅ | docs/integration_doc/llm_doc/limiter.md | tests/unit/test_reservation_limiter.py | reserve/settle 限流 |
 | app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试/错误分类 |

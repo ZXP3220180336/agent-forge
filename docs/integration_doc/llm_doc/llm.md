@@ -752,7 +752,7 @@ await log_event_async("llm_call", **event_fields)
 
 ### CostTracker — 成本计算
 
-**文件**：`app/integration/llm/cost_tracker.py`
+**文件**：`app/integration/llm/cost_tracker.py`（设计文档见 [cost_tracker.md](cost_tracker.md)）
 
 #### 功能
 

@@ -59,5 +59,6 @@ uv run python -m scripts.test_search_tool          # 运行独立验证脚本
   3. **总览 + 导航**：子系统只给「组件表 + 设计要点」，细节链接子文档，不把子文档内容搬进 README（避免双处维护）
   4. 状态徽标对齐架构文档：✅ 已实现 ｜ 🔶 进行中 ｜ ⬜ 待规划
   5. 以实际代码为准：子模块结构以 `app/` 实况为准；旧文档与代码不符时以代码为准并标注
+- **组件级子文档设计规范**：独立子文档（`docs/<layer>_doc/**/*.md`）的创建 / 优化按 [component_doc.md](docs/component_doc.md) 实施——类型分离（Reference / Explanation）、粒度分级（简单组件轻量 Reference ~80 行 / 复杂组件完整设计文档）、契约优先、状态标注、创建后同步父文档链接与 ALIGNMENT 并跑 verify_alignment
 - **计划与研发教训**：归档于 [docs/todo.md](docs/todo.md) / [docs/lessons.md](docs/lessons.md)
 - **硬性约定**：修改模块后必须同步对应模块文档与**该层 README**（新增/重命名/删除子模块、改设计或状态时同步更新；见上方工作流 gate）
