@@ -53,5 +53,11 @@ uv run python -m scripts.test_search_tool          # 运行独立验证脚本
 
 - **关键文档**：[architecture.md](docs/architecture.md)（架构蓝图 + 演进路径）· [ALIGNMENT.md](docs/ALIGNMENT.md)（代码↔文档↔测试对齐表）· [config.md](docs/config_doc/config.md) · [deployment.md](docs/deployment.md)
 - **各层模块说明**：`docs/` 下按模块目录对应（domain/application/integration/infrastructure/api/shared/utils）
+- **模块级 README 写作规范**（每层 `docs/<layer>_doc/README.md` 是该层**总览 + 导航**页，范式见 domain / application / integration 三层）：
+  1. 标准结构（自上而下）：`#` 层标题 → 元信息引用块（`对应代码` / `更新日期` / `文档定位` / `实现状态`）→ `## 📋 目录` → `## 模块概述`（核心功能一句话 + 模块结构树（text 语言代码块） + 设计原则 + 依赖关系）→ `## 实现状态总览`（子模块 × 文件 × 状态 × 核心内容表）→ 各子系统一节（核心功能 + 组件表）→ `## 典型调用链路` → `## 配置关联` → `## 相关文档`
+  2. 结构 / 依赖图代码块一律指定 `text` 语言标识，禁止裸代码块
+  3. **总览 + 导航**：子系统只给「组件表 + 设计要点」，细节链接子文档，不把子文档内容搬进 README（避免双处维护）
+  4. 状态徽标对齐架构文档：✅ 已实现 ｜ 🔶 进行中 ｜ ⬜ 待规划
+  5. 以实际代码为准：子模块结构以 `app/` 实况为准；旧文档与代码不符时以代码为准并标注
 - **计划与研发教训**：归档于 [docs/todo.md](docs/todo.md) / [docs/lessons.md](docs/lessons.md)
-- **硬性约定**：修改模块后必须同步对应模块文档（见上方工作流 gate）
+- **硬性约定**：修改模块后必须同步对应模块文档与**该层 README**（新增/重命名/删除子模块、改设计或状态时同步更新；见上方工作流 gate）
