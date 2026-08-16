@@ -29,6 +29,15 @@
 5. **结算闭环**（reservation）：成功读完 `settle(actual)` 退 TPM 差；迭代中断/用户取消 `settle(actual)`（请求已发出，无论整流与否）；硬取消（CancelledError）`finally` 兜底 `settle(None)` 保留配额 + 标记终态（[LLM-003](../../../issues/integration/llm/2026-08-16-hard-cancel-rpm-refund.md)）。每次整流 attempt 由 `create_fn` 重新 reserve（新请求语义，[LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)）。
 6. **熔断 feeding**：流式迭代「放弃时」（不整流）且异常 RETRYABLE → `circuit_breaker.record_failure()`——让熔断器感知「create 正常但流频繁中途断开」的下游故障；整流成功不喂、NON_RETRYABLE / RATE_LIMITED / cancel 不喂（[LLM-024](../../../issues/integration/llm/2026-08-07-streaming-iteration-unprotected.md)）。
 
+## 工业级参照
+
+| 来源 | 结论 |
+| --- | --- |
+| OpenAI Python SDK | `max_retries` 只覆盖初始 HTTP 请求，不重试 mid-stream——"用户已消费部分输出，mid-stream 重试语义不清晰" |
+| LangChain `langchain-failover` | 只在主模型**产出第一个 token 前**死亡时 failover——"你永远不会得到重复的、半流输出" |
+| awaken 运行时 | 4 级恢复（ContinueText / SynthesizeToolUse / TruncateBeforeTool / WholeRestart），WholeRestart（整流重试）只在无文本、无完整工具调用时用 |
+
+
 ## Consequences
 
 - **正面**：首 token 前中断自动恢复（用户无感，整流不产生重复内容）；已产出 token 后中断不整流（避免重复输出/双倍计费/tool_calls 残缺）；结算闭环无配额泄漏；熔断器感知流级故障（create 正常但流频繁中断）。
