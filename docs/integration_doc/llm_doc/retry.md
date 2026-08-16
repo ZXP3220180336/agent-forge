@@ -1,7 +1,7 @@
 # RetryHandler 设计文档
 
 > **模块**：`app/integration/llm/retry.py`
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-16
 > **职责**：LLM API 调用的重试、熔断与降级
 > **状态**：✅ 已实现
 
@@ -20,10 +20,10 @@
   - [RetryHandlerManager — 重试执行器管理](#retryhandlermanager--重试执行器管理)
   - [classify_error — 错误分类](#classify_error--错误分类)
 - [执行流程](#执行流程)
-- [设计决策](#设计决策)
 - [配置项清单](#配置项清单)
 - [边界情况](#边界情况)
-- [改造记录与工业实践](#改造记录与工业实践)
+- [设计决策](#设计决策)
+- [问题记录](#问题记录)
 
 ---
 
@@ -48,7 +48,8 @@ delay = base_delay × 2^attempt
 
 - attempt=0 → 1s，attempt=1 → 2s，attempt=2 → 4s，attempt=3 → 8s
 - 上限由 `max_delay` 控制（默认 30s）
-- **Retry-After 叠加（2026-08-16 封顶）**：429 时若服务端返回 `Retry-After`，在合理区间 `0 < retry_after ≤ max_delay` 内取 `max(delay, retry_after)`（尊重服务端建议）；超出 `max_delay` 忽略并回退指数退避——`retry-after: 3600` 这类异常/恶意值不会让请求挂死一小时（对齐 OpenAI SDK 的「合理区间」判断，用 `max_delay` 而非魔法数 60）
+- **Retry-After 叠加**：429 时若服务端返回 `Retry-After`，在合理区间 `0 < retry_after ≤ max_delay` 内取 `max(delay, retry_after)`（尊重服务端建议）；超出 `max_delay` 忽略并回退指数退避——`retry-after: 3600` 这类异常/恶意值不会让请求挂死一小时（对齐 OpenAI SDK 的「合理区间」判断，用 `max_delay` 而非魔法数 60）
+- **Retry-After 解析**（`_extract_retry_after`）：从限流异常 `headers` 读取 `retry-after`（兼容 `Retry-After` 大小写两种）；`float()` 解析失败（HTTP-date 形式如 `Wed, 21 Oct 2015 07:28:00 GMT`）返回 `None`，回退指数退避
 
 **直觉**：第一次失败可能是瞬时的，短等即可；连续失败说明问题更严重，给对方更长的恢复时间。
 
@@ -84,7 +85,7 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 
 熔断后，`recovery_timeout` 超时进入半开状态，放行 `half_open_max_requests` 个探针请求验证下游是否恢复。**每个探针都是单次调用**（走 `_probe_attempt`，不进入重试循环）。
 
-探针结果分类（详见「改造记录与工业实践·半开探针」）：
+探针结果分类（半开探针语义完整记录见 [问题 LLM-022](../../../issues/integration/llm/2026-08-05-half-open-probe-semantics.md)）：
 
 | 探针结果 | 分类 | 处理 |
 | --- | --- | --- |
@@ -92,9 +93,9 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 | 429 | 失败 | `record_failure()` 回 OPEN + 冷却重置（下游仍过载，停止探测） |
 | 超时 / 5xx | 失败 | `record_failure()` 回 OPEN + 冷却重置（下游故障证据） |
 | 4xx / 未知 | 无效探测 | **不改变状态 + `release_probe()` 归还槽位 + `raise`**（客户端问题，不算健康探测，等待正常请求探测真实状态） |
-| 协程被取消 / 自定义 `BaseException` | 中断 | `CancelledError` → `record_failure()` 回 OPEN + 立即传播（不尝试 fallback）；其余 `BaseException`（SystemExit 等）→ **finally 兜底归还槽位**（见「改造记录与工业实践·半开探针槽位泄漏」） |
+| 协程被取消 / 自定义 `BaseException` | 中断 | `CancelledError` → `record_failure()` 回 OPEN + 立即传播（不尝试 fallback）；其余 `BaseException`（SystemExit 等）→ **finally 兜底归还槽位**（槽位永不泄漏不变量，见 [LLM-022](../../../issues/integration/llm/2026-08-05-half-open-probe-semantics.md)） |
 
-**探针不重试 + 探针失败仍降级**（决策记录，2026-08-11，对照 Hystrix / Resilience4j 工业实践）：
+**探针不重试 + 探针失败仍降级**（决策依据见 [LLM-022](../../../issues/integration/llm/2026-08-05-half-open-probe-semantics.md)，对照 Hystrix / Resilience4j 工业实践）：
 
 两个问题必须分开看——**探针是否需要重试** 与 **探针失败是否需要降级**：
 
@@ -224,7 +225,7 @@ class CircuitBreaker:
 | 状态项 | 字段 | 更新时机 | 清除时机 |
 | --- | --- | --- | --- |
 | 窗口请求记录 | `_window`（deque） | 每次请求级 `record_success()`/`record_failure()` 追加 `(ts, 成败)`；429 不计入 | 窗口滑动过期剔除；熔断关闭 → `clear()`；`reset()` |
-| 半开探针计数 | `_half_open_requests` | `allow_request()` 放行探针时 +1 | `record_success()` → 0；`OPEN→HALF_OPEN` → 1；`release_probe()` → -1（归还槽位）；**探针失败回 OPEN → 0**（OPEN 不残留半开记账，2026-08-09） |
+| 半开探针计数 | `_half_open_requests` | `allow_request()` 放行探针时 +1 | `record_success()` → 0；`OPEN→HALF_OPEN` → 1；`release_probe()` → -1（归还槽位）；**探针失败回 OPEN → 0**（OPEN 不残留半开记账） |
 | 连续成功计数 | `_consecutive_successes` | 半开下每次 `record_success()` +1 | 熔断关闭时 → 0；半开中失败 → 0 |
 
 ### RetryHandler — 重试执行器
@@ -252,7 +253,7 @@ class RetryHandler:
   - 本次请求**任一次尝试**出现过 `RETRYABLE` 失败（超时/5xx），统一调用一次 `cb.record_failure()`（可能触发 OPEN）
   - 纯 429 / 不可恢复错误不记录
   - 判定看"整个请求是否触及下游故障"，而非最后一次异常——混合 429 与超时的情况下，只要出现过超时就计入窗口
-  - **混合失败（超时/5xx → 4xx）也补记**：若某次尝试是 `NON_RETRYABLE`（4xx）直接抛出，但**此前已出现过** `RETRYABLE` 失败，则在 `raise` 前先 `cb.record_failure()`——4xx 本身不计入（调用方问题），但前期的下游故障信号不能因最后一次是 4xx 而被抹掉（2026-08-10 修正）
+  - **混合失败（超时/5xx → 4xx）也补记**：若某次尝试是 `NON_RETRYABLE`（4xx）直接抛出，但**此前已出现过** `RETRYABLE` 失败，则在 `raise` 前先 `cb.record_failure()`——4xx 本身不计入（调用方问题），但前期的下游故障信号不能因最后一次是 4xx 而被抹掉
 - **fallback 是纯兜底**：成功/失败都不触碰熔断器（熔断器只观察主链路 `call_fn` 的成败）
 
 ### RetryHandlerManager — 重试执行器管理
@@ -276,7 +277,7 @@ class RetryHandlerManager:
         cls._instances.clear()
 ```
 
-**为什么需要按 model_key 共享**（修复熔断失效的隐性缺陷）：
+**为什么需要按 model_key 共享**（熔断窗口必须跨请求积累，完整生命周期见 [LLM-023](../../../issues/integration/llm/2026-08-07-circuit-breaker-lifecycle.md)）：
 
 - **熔断窗口必须跨请求积累**：`CircuitBreaker` 的熔断判定（错误率 / 低流量纯失败保护）依赖**跨请求**的滑动窗口统计（`request_volume_threshold=20` 需要多个请求的样本）。若每次调用新建 `RetryHandler` + `CircuitBreaker`，窗口每次请求清空，`request_volume_threshold` 永远达不到 → **熔断实际永不触发**
 - **按 model_key 隔离**：main / reasoning / fast 是不同模型/端点，应独立熔断（reasoning 故障不应熔断 fast）——与 `ClientManager`（按 key 缓存 client）、限流器 Manager（按 key 缓存桶）架构一致
@@ -287,7 +288,8 @@ class RetryHandlerManager:
 - **懒加载**：首次 `get()` 才创建，按 register_config 注入的配置构建（未注入时用硬编码默认值）
 - **同步无竞态**：`get` 无 await，GIL 下天然原子，不会双实例
 - **`reset()`**：配置变更或测试时清空缓存
-- **配置注入（2026-08-10）**：子模块不直接依赖 settings——`Container.initialize()` 读 settings 调 `register_config()` 注入 `RetryConfig` + `CircuitBreakerConfig`；model_key 由外部传入，不内置白名单（对齐 ClientManager）
+- **配置注入**：子模块不直接依赖 settings——`Container.initialize()` 读 settings 调 `register_config()` 注入 `RetryConfig` + `CircuitBreakerConfig`；model_key 由外部传入，不内置白名单（对齐 ClientManager）
+- **None 保留语义**：`register_config()` 的 `config` / `circuit_breaker_config` 传 `None` 时**不覆盖**现有配置（保持现有或默认），只对传入非 None 的配置项生效
 - **配置全局一致**：当前重试/熔断配置为进程级全局（不按 model_key 差异化），仅熔断状态按 key 隔离；未来若需按模型差异化重试参数，在 `_build` 中按 key 读配置即可
 
 ### classify_error — 错误分类
@@ -491,77 +493,6 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ---
 
-## 设计决策
-
-### Q1: RETRYABLE（超时/5xx）为什么计入滑动窗口的错误率分子？
-
-> RETRYABLE 计入窗口（下游故障直接证据）/ 429 不计入（客户端自身限额，只退避）的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-007](../../../adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md)。
-
-### Q2: Fallback 的成功/失败要反映到滑动窗口吗？
-
-> fallback 成败不触碰窗口（fallback 隔离契约——成功不稀释主链路错误率、失败不改写冷却计时）的完整决策见 [ADR LLM-ADR-007](../../../adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md) 决策 2。
-
-### Q3: max_retries 与熔断参数有什么关系？一般怎么设置？
-
-> 参数关系（max_retries 解耦 / window+threshold 灵敏度 / volume+all_failed 互补 / half_open 权衡）的决策依据见 [ADR LLM-ADR-007](../../../adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md) 决策 4。
-
-各参数在故障生命周期中控制**不同阶段**：
-
-```
-时间轴：  首次失败 → 重试 → 重试 → ... → 熔断开启 → 等待 recovery → 半开探针 → 关闭/继续熔断
-           ├── max_retries 控制 ──┤
-                                          ├ window_seconds + error_threshold 控制 ┤
-                                                                  ├ half_open_max_requests ┤
-```
-
-- **`max_retries`** — 单次请求的"挣扎"次数。控制一个请求在放弃前尝试几次
-- **`window_seconds`** — 熔断评估的时间范围。窗口内累计请求数与失败数，过期记录剔除
-- **`error_threshold`** — 窗口内错误率阈值。总请求达标时，错误率 ≥ 阈值 → 熔断
-- **`request_volume_threshold`** — 最小请求量门槛。窗口内请求数不足时不做错误率评估（防低流量误判）
-- **`all_failed_min`** — 低流量纯失败保护。窗口内**全部失败**且失败数达此值 → 熔断（即使请求量不足门槛）
-- **`half_open_max_requests`** — 恢复时的"验证"数量。控制半开状态下放行几个探针验证下游是否恢复
-
-**关系 1：`max_retries` 与熔断判定解耦**
-
-记录粒度是**请求级**：一次 `execute()` 只向窗口追加一条记录，单请求的多次重试不放大错误率。所以 `max_retries` 与熔断判定**互不影响**。
-
-**关系 2：`window_seconds + error_threshold` 决定熔断灵敏度**
-
-- 窗口越短、错误率阈值越低 → 越敏感，也越易受偶发抖动影响
-- 窗口越长 → 统计越平滑，但对持续故障反应越慢
-- 默认 `10s + 50%` 是工业常用起点
-
-**关系 3：`request_volume_threshold` 与 `all_failed_min` 是防误判的互补机制**
-
-- **高流量**靠 `request_volume_threshold` + `error_threshold`：请求量充足时按错误率判断
-- **低流量**下 `request_volume_threshold` 永远达不到 → 靠 `all_failed_min`：全部失败且达最小样本量即熔断
-- 一个防高流量误判，一个防低流量漏判
-
-**关系 4：`half_open_max_requests` 决定恢复速度 vs 稳定性的权衡**
-
-- **太小（1）**：一个探针成功就恢复，若探针恰好走运（网络抖动），恢复后立刻被正常请求打爆 → 频繁开关
-- **太大（10）**：半开期放行大量探针，若下游仍故障，探针都白费 → 恢复慢 + Token 浪费
-- 一般 3~5 之间
-
-**典型组合策略**：
-
-| 场景 | max_retries | window | error_threshold | volume | all_failed | half_open | 理由 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **默认保守** | 2 | 10 | 0.5 | 20 | 3 | 3 | 高流量按错误率 50% 熔断，低流量全部失败 3 次即熔断 |
-| **高可用/敏感** | 1 | 5 | 0.3 | 10 | 3 | 2 | 窗口短、阈值低 → 快速熔断 |
-| **深度容错** | 3 | 20 | 0.7 | 30 | 5 | 5 | 窗口长、阈值高 → 尽可能多试，大面积故障才熔断 |
-| **不熔断（纯重试）** | 2 | 10 | 0.99 | 1000 | 999 | 3 | 阈值开到不可能触发，等于禁用熔断 |
-
-### Q4: `RetryConfig` 和 `CircuitBreaker` 的配置从哪里来？
-
-> 纯配置对象 + `RetryHandlerManager.register_config()` 注入（子模块零 settings 依赖）的决策见 [ADR LLM-ADR-006](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md) 决策 6。
-
-### Q5: 为什么不引入 `tenacity` 等第三方重试库？
-
-> 自研而非第三方（紧耦合编排 / 跨请求共享状态 / <100 行自实现）的决策见 [ADR LLM-ADR-006](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md) 决策 5。
-
----
-
 ## 配置项清单
 
 所有配置项集中在 `app/config/settings.py`，通过 `.env` 覆盖：
@@ -572,12 +503,12 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | `LLM_BASE_DELAY` | `1.0` | 退避基数（秒） | `RetryConfig.base_delay` |
 | `LLM_MAX_DELAY` | `30.0` | 退避上限（秒） | `RetryConfig.max_delay` |
 | `LLM_USE_JITTER` | `True` | 是否启用随机抖动 | `RetryConfig.use_jitter` |
-| `LLM_CIRCUIT_WINDOW_SECONDS` | `10.0` | 滑动时间窗口长度（秒） | `CircuitBreaker.window_seconds` |
-| `LLM_CIRCUIT_ERROR_THRESHOLD` | `0.5` | 窗口内错误率熔断阈值（50%） | `CircuitBreaker.error_threshold` |
-| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD` | `20` | 窗口内最小请求量，不足则不做错误率评估 | `CircuitBreaker.request_volume_threshold` |
-| `LLM_CIRCUIT_ALL_FAILED_MIN` | `3` | 低流量纯失败保护：全部失败且达此样本量才熔断 | `CircuitBreaker.all_failed_min` |
-| `LLM_CIRCUIT_RECOVERY_TIMEOUT` | `30.0` | 熔断恢复到半开的时间（秒） | `CircuitBreaker.recovery_timeout` |
-| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | `3` | 半开状态最大探针数 | `CircuitBreaker.half_open_max_requests` |
+| `LLM_CIRCUIT_WINDOW_SECONDS` | `10.0` | 滑动时间窗口长度（秒） | `CircuitBreakerConfig.window_seconds` |
+| `LLM_CIRCUIT_ERROR_THRESHOLD` | `0.5` | 窗口内错误率熔断阈值（50%） | `CircuitBreakerConfig.error_threshold` |
+| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD` | `20` | 窗口内最小请求量，不足则不做错误率评估 | `CircuitBreakerConfig.request_volume_threshold` |
+| `LLM_CIRCUIT_ALL_FAILED_MIN` | `3` | 低流量纯失败保护：全部失败且达此样本量才熔断 | `CircuitBreakerConfig.all_failed_min` |
+| `LLM_CIRCUIT_RECOVERY_TIMEOUT` | `30.0` | 熔断恢复到半开的时间（秒） | `CircuitBreakerConfig.recovery_timeout` |
+| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | `3` | 半开状态最大探针数 | `CircuitBreakerConfig.half_open_max_requests` |
 | `LLM_FALLBACK_MODEL_ID` | `""` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `RetryHandler.fallback_fn` |
 
 ---
@@ -591,7 +522,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 2. **请求级熔断记录**：
    - 一次 `execute()` 的多次重试失败只调用一次 `record_failure()`（重试耗尽后统一记录），返回 `True` 表示本次失败把熔断器切到 OPEN（影响后续请求放行）。
    - 429 / 不可恢复错误不记录
-   - **取消路径补记（2026-08-16）**：退避 sleep 期间（或 `call_fn` 执行期间）被硬取消时，若本次请求已触及过 RETRYABLE 故障（5xx/超时），取消路径仍 `record_failure()`——取消是客户端主动终止，不代表下游恢复，故障证据不随取消丢失（此前 CancelledError 直接外传，跳过请求级记账）
+   - **取消路径补记**：退避 sleep 期间（或 `call_fn` 执行期间）被硬取消时，若本次请求已触及过 RETRYABLE 故障（5xx/超时），取消路径仍 `record_failure()`——取消是客户端主动终止，不代表下游恢复，故障证据不随取消丢失
 3. **半开探针耗尽**：拒绝主调用（有 fallback 走纯兜底）但不改变熔断状态，直到现有探针完成。**每个被放行的探针必然推进状态机**（成功→连续成功，失败→回 OPEN 或归还探针槽位），不存在"放行后不记录"的路径，因此无 HALF_OPEN 死锁
 4. **fallback 也失败**：抛出**主调用（call_fn）异常**，fallback 异常以 `__cause__` 链上保留（诊断完整）——熔断窗口记录的是主链路状态，上层需按主异常判定语义；被 fallback 异常覆盖会导致上层拿到的异常类型与熔断器记录不一致。fallback 的成败不进入熔断状态机。此约定对 CLOSED 重试路径与 HALF_OPEN 探针路径一致；熔断 OPEN 的拒绝路径主调用未执行，fallback 异常直接抛
 5. **429 探针回 OPEN、4xx 探针不改变状态**：
@@ -609,9 +540,19 @@ T3 + 30s 后 → 请求 H（探针 #1）
 8. **`max_retries=0`**：不重试，但熔断器仍然生效。首次失败后 `record_failure()` 被调用（请求级 1 次），窗口累积
 9. **流式迭代「放弃时」计入熔断窗口**：流式迭代异常不受 `retry.execute` 保护（响应对象创建后重试循环已退出）。`LLMService.async_generate` 在**最终放弃**（不整流）且异常为 RETRYABLE 时，直接调 `retry.circuit_breaker.record_failure()`——让熔断器感知「create 正常但流频繁中断」的下游故障。整流重试（未放弃）、NON_RETRYABLE / RATE_LIMITED / 用户取消不计入
 10. **熔断状态按 model_key 隔离**：`RetryHandlerManager` 为每个 model_key（main/reasoning/fast）维护独立实例。`reasoning` 的故障只累计 `reasoning` 熔断器窗口，不会熔断 `fast` / `main`
-11. **半开探针 `accounted` 守卫与 finally 兜底的可达性**：`_probe_attempt` 用 `accounted` 标志区分「已作出终态记账」与「未记账退出路径」。三条路径中**两条置 `accounted=True`**，finally 的 `if not accounted` 跳过：正常返回（`record_success`）、`except CancelledError`（`record_failure`）、`except Exception`（`record_failure` / `release_probe`）。**唯一保持 `False` 的路径**是抛出的异常非 `Exception` 且非 `CancelledError`——即 `SystemExit` / `KeyboardInterrupt` / 自定义 `BaseException`，此时所有 except 都不匹配，程序从 `await call_fn()` 直接落到 finally，`if not accounted` 成立 → `release_probe()` 归还槽位。此路径在真实运行中**几乎不可达**（openai/httpx 异常均为 `Exception` 子类；事件循环关闭给任务注入的是 `CancelledError` 已被单独捕获），是**为进程级异常（SystemExit/KeyboardInterrupt）恰好落在探针 await 点**这一理论场景写的防御，成本极低（一个 `if` + 一行），守住「槽位永不泄漏」不变量（2026-08-09 槽位泄漏修复的残余兜底）。删除它会让 `SystemExit` 落在探针点时重新泄漏槽位、卡死 HALF_OPEN 自动恢复。测试 `test_half_open_probe_other_baseexception_releases_slot` 固化此路径
+11. **半开探针 `accounted` 守卫与 finally 兜底的可达性**：`_probe_attempt` 用 `accounted` 标志区分「已作出终态记账」与「未记账退出路径」。三条路径中**两条置 `accounted=True`**，finally 的 `if not accounted` 跳过：正常返回（`record_success`）、`except CancelledError`（`record_failure`）、`except Exception`（`record_failure` / `release_probe`）。**唯一保持 `False` 的路径**是抛出的异常非 `Exception` 且非 `CancelledError`——即 `SystemExit` / `KeyboardInterrupt` / 自定义 `BaseException`，此时所有 except 都不匹配，程序从 `await call_fn()` 直接落到 finally，`if not accounted` 成立 → `release_probe()` 归还槽位。此路径在真实运行中**几乎不可达**（openai/httpx 异常均为 `Exception` 子类；事件循环关闭给任务注入的是 `CancelledError` 已被单独捕获），是**为进程级异常（SystemExit/KeyboardInterrupt）恰好落在探针 await 点**这一理论场景写的防御，成本极低（一个 `if` + 一行），守住「槽位永不泄漏」不变量（槽位归还语义见 [LLM-022](../../../issues/integration/llm/2026-08-05-half-open-probe-semantics.md)）。删除它会让 `SystemExit` 落在探针点时重新泄漏槽位、卡死 HALF_OPEN 自动恢复。测试 `test_half_open_probe_other_baseexception_releases_slot` 固化此路径
 
 ---
+
+## 设计决策
+
+> 设计决策已归档至 ADR，完整决策（Context → Decision → Consequences）见：
+
+- [熔断窗口语义与请求级记账（RETRYABLE 计入 / 429 不计入 / fallback 隔离 / 请求级记账 / 参数关系与组合策略）](../../../adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md)
+- [重试与熔断架构（CircuitBreaker + 指数退避 + 抖动 + fallback 降级 + 配置注入 + 不引入 tenacity）](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md)
+
+---
+
 
 ## 问题记录
 
@@ -625,5 +566,4 @@ T3 + 30s 后 → 请求 H（探针 #1）
 - [流式迭代异常无保护（熔断观察盲区）](../../../issues/integration/llm/2026-08-07-streaming-iteration-unprotected.md)
 - [fallback 隔离（成败不进状态机 / 异常覆盖主调用）](../../../issues/integration/llm/2026-08-09-fallback-isolation.md)
 
-> 正文（组件详解 / 流程图 / 场景推演）已同步到当前状态。
 
