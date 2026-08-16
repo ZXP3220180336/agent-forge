@@ -295,6 +295,7 @@ class TokenBucket:
         # 配置 0 = 禁用限流：refill_rate <= 0 直接放行（避免除零崩溃）
         if self.refill_rate <= 0:
             return 0.0
+        tokens = min(tokens, self.capacity)     # 超容量截断（防 while True 死循环挂起）
         total_wait = 0.0
         while True:
             async with self._lock:              # 锁内只做计算
@@ -315,6 +316,7 @@ class TokenBucket:
 - **时间源**：`time.monotonic()`（单调时钟），不受系统时间调整影响
 - **惰性补充**：`_refill()` 只在 acquire 时调用，无需后台定时器，按经过时间换算补 token
 - **容量封顶**：`min(capacity, ...)`，闲置期间不会无限积累 token，突发上限被约束；`refund` 退款也不突破 capacity（突发上限不被破坏）
+- **超容量截断**：单次 `acquire(tokens)` 的 tokens 超过 `capacity` 时截断到 capacity——`_refill` 把 `_tokens` 封顶于 capacity，超容量请求永远等不满桶（`_tokens >= tokens` 永假），不截断则 `while True` 死循环挂起。截断语义：该请求一次占满桶容量（突发上限），不拒绝不等待，由上层按实际结算退差
 - **互斥**：`asyncio.Lock` 保证桶状态一致性（并发请求同时扣 token 不会超扣）；等待在锁外进行，锁不阻塞其他请求、可响应取消
 - **配置 0 语义**：`refill_rate <= 0` 直接放行（配置 0 = 禁用限流，见「已知边界」边界 4）
 
@@ -424,11 +426,15 @@ class ReservationLimiter:  # 完整实现见 reservation_limiter.py
 
     async def _acquire(self, estimated_tokens, retry_after, settle_callback=None) -> Reservation:
         est = max(estimated_tokens, 1.0)
+        tpm_capacity = self._token_bucket.capacity
+        if est > tpm_capacity:               # 超容量截断（防 acquire 死循环挂起）
+            logger.warning(...)              # 提示检查 llm_*_tpm 配置 / token 预估
+            est = tpm_capacity
         res = Reservation(settle_callback=settle_callback)     # 空对象
         await self._req_bucket.acquire(1.0)                  # RPM 扣 1
         res.add(self._req_bucket, 1.0)                       # 首条目（按次桶，settle 不退）
         try:
-            await self._token_bucket.acquire(est)            # TPM 扣 est
+            await self._token_bucket.acquire(est)            # TPM 扣 est（已截断）
         except BaseException:
             await res.cancel()                               # 防 R5：TPM 预留前取消 → 回退 RPM
             raise
@@ -1090,6 +1096,7 @@ async_generate() / generate()
 4. **配置 0 = 禁用限流**：`register_config()` 注入的 `rpm`/`tpm` 为 0（或未注入该 key 用默认）；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文问题 1（✅ 已修复）。
 5. **cancel/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。
 6. **防 R5（组合两步间硬取消）**：`reserve` 先扣 RPM 再扣 TPM，若 TPM 预留前被硬取消（`CancelledError`），`except BaseException` 回退已扣的 RPM。
+7. **单请求预估超 TPM 桶容量（截断不挂起）**：`reserve`/`reserve_adaptive` 的预估 token 数超过 TPM 桶容量时，`TokenBucket.acquire` 截断到 capacity（否则 `_tokens >= tokens` 永假，`while True` 死循环挂起）。`ReservationLimiter._acquire` 同步显式截断 `est` 到 capacity 并记 warning——保证 `res.add` 记录值与实际扣减一致（settle 退差基础正确），并暴露「llm_*_tpm 配置过小或单请求 token 预估异常」。截断语义：该请求一次占满桶容量，不拒绝不等待。
 
 ---
 

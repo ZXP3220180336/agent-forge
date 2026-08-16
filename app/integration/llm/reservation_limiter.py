@@ -27,6 +27,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar
 
+from app.utils.logger import get_logger
+
+logger = get_logger("llm.reservation_limiter")
+
 
 class TokenBucket:
     """
@@ -63,6 +67,12 @@ class TokenBucket:
         # （capacity 与 refill_rate 同源，rpm/tpm 配置为 0 时两者均为 0）
         if self.refill_rate <= 0:
             return 0.0
+
+        # 单次请求超过桶容量：截断到 capacity，避免 while True 无限等待。
+        # _refill 将 _tokens 封顶于 capacity，tokens > capacity 时 _tokens >= tokens
+        # 永假（桶永远装不满一个超容量请求）——不截断则死循环。截断语义：
+        # 该请求一次占满桶容量（突发上限），不拒绝不等待，由上层按实际结算退差。
+        tokens = min(tokens, self.capacity)
 
         # 锁内计算 → 锁外 sleep → 循环重检。
         # sleep 在锁外进行：等待期间锁不被持有，其他排队请求可并行计算；
@@ -269,6 +279,20 @@ class ReservationLimiter:
             await asyncio.sleep(retry_after)
 
         est = max(estimated_tokens, 1.0)
+
+        # 单请求预估超过 TPM 桶容量：截断到 capacity 并记 warning。
+        # 触发：超长 prompt + 小 tpm 配置（或 llm_adaptive_reserve 的 prompt 无上限）。
+        # 底层 TokenBucket.acquire 已对超容量做截断兜底，此处显式截断是为了让
+        # res.add 记录的实际预留值与扣减一致（settle 退差基础正确），并暴露配置问题。
+        tpm_capacity = self._token_bucket.capacity
+        if est > tpm_capacity:
+            logger.warning(
+                "TPM 预留 %s 超过桶容量 %s，已截断到容量——请检查 llm_*_tpm 配置"
+                "是否过小，或单次请求 token 预估是否异常",
+                est,
+                tpm_capacity,
+            )
+            est = tpm_capacity
 
         res = Reservation(settle_callback=settle_callback)
         # RPM 预留（固定 1）→ 组合预留的首个条目（按次桶，settle 不退）

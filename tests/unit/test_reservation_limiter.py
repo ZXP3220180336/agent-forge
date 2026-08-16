@@ -64,6 +64,23 @@ async def test_bucket_acquire_waits_when_empty():
     assert time.monotonic() - start >= 0.05, "桶空后 acquire 应等待补充"
 
 
+@pytest.mark.asyncio
+async def test_bucket_acquire_oversized_does_not_hang():
+    """tokens > capacity：截断到容量立即放行，不无限等待。
+
+    修复前：_refill 将 _tokens 封顶于 capacity，tokens > capacity 时
+    _tokens >= tokens 永假，while True 永不退出 → 请求永久挂起。
+    修复后：截断到 capacity，桶满立即返回 0.0（wait_for 超时保护兜底）。
+    """
+    b = TokenBucket(capacity=10, refill_rate=10)
+    wait = await asyncio.wait_for(b.acquire(100), timeout=1)
+    assert wait == 0.0, "超容量请求应截断到容量并立即放行"
+    # 截断后桶被扣 capacity：桶空，后续 acquire(1) 需等待补充
+    start = time.monotonic()
+    await asyncio.wait_for(b.acquire(1), timeout=1)
+    assert time.monotonic() - start >= 0.05, "截断扣减后桶空，应等待补充"
+
+
 # =====================================================================
 # Reservation — 预留对象（settle/cancel 语义）
 # =====================================================================
@@ -168,6 +185,37 @@ async def test_reservation_limiter_cancel_refunds_both():
     # 全额退还：RPM 桶满（1000），TPM 桶满（100000）
     await limiter._req_bucket.acquire(1000)
     await limiter._token_bucket.acquire(100000)
+
+
+@pytest.mark.asyncio
+async def test_reservation_limiter_reserve_oversized_clamps():
+    """reserve 预估超 TPM 桶容量：截断到容量，立即返回（不无限等待）。
+
+    修复前：reserve(estimated_tokens=200) 对 tpm=100 的桶 acquire 死循环
+    （_refill 封顶 capacity，_tokens >= tokens 永假），请求永久挂起。
+    修复后：TPM 预留截断到桶容量（100），reserve 立即返回。
+    """
+    limiter = ReservationLimiter(rpm=1000, tpm=100)
+    res = await asyncio.wait_for(limiter.reserve(estimated_tokens=200), timeout=1)
+    # 预留条目应记录截断后的容量（100），而非 200——settle 退差基础一致
+    assert res._entries[-1][1] == 100, (
+        f"超容量预留应截断到桶容量 100，实际 {res._entries[-1][1]}"
+    )
+    await res.cancel()
+
+
+@pytest.mark.asyncio
+async def test_reservation_limiter_reserve_oversized_settle():
+    """超容量截断后 settle 退差正确：reserved=capacity，退 max(0, capacity-actual)。"""
+    limiter = ReservationLimiter(rpm=1000, tpm=100)
+    res = await asyncio.wait_for(limiter.reserve(estimated_tokens=200), timeout=1)
+    await res.settle(30)
+    assert res.settled
+    # 桶扣 100（截断）→ 退 100-30=70 → 剩 70 可立即 acquire，第 71 需等待
+    await limiter._token_bucket.acquire(70)
+    start = time.monotonic()
+    await asyncio.wait_for(limiter._token_bucket.acquire(1), timeout=1)
+    assert time.monotonic() - start >= 0.05, "退款后剩余 70，第 71 个应等待"
 
 
 # =====================================================================
