@@ -415,6 +415,13 @@ class RetryHandler:
                 result = await call_fn()
                 cb.record_success()
                 return result
+            except asyncio.CancelledError:
+                # 退避 sleep 期间被硬取消：本次请求已触及过 RETRYABLE 故障
+                # （5xx/超时）的话，该下游故障信号仍应计入熔断窗口——取消是
+                # 客户端主动终止，不代表下游恢复，故障证据不能随取消丢失。
+                if saw_retryable_failure:
+                    cb.record_failure()
+                raise
             except Exception as e:
                 last_exc = e
                 category = classify_error(e)
@@ -444,7 +451,15 @@ class RetryHandler:
                     else None
                 )
                 delay = self._calculate_delay(attempt, retry_after=retry_after)
-                await asyncio.sleep(delay)
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    # 退避 sleep 期间被硬取消：本次请求已触及过 RETRYABLE 故障
+                    # （5xx/超时）的话，下游故障信号仍应计入熔断窗口——取消是
+                    # 客户端主动终止，不代表下游恢复，故障证据不能随取消丢失。
+                    if saw_retryable_failure:
+                        cb.record_failure()
+                    raise
 
         # --- 请求粒度统一记录主链路最终结果 ---
         # 本次请求只要任一次尝试是 RETRYABLE 故障（超时/5xx），就记录一次失败

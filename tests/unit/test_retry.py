@@ -979,6 +979,45 @@ async def test_half_open_probe_cancelled_no_fallback():
         await task
 
     assert fallback_called[0] is False, "取消探针不应走 fallback"
+
+
+# =====================================================================
+# 重试循环退避期间被取消：已发生的 RETRYABLE 故障仍计入熔断窗口
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_retryable_failure_recorded_when_cancelled_during_backoff():
+    """退避 sleep 期间被取消 → 已发生的 RETRYABLE 故障仍计入熔断窗口。
+
+    修复前：`await asyncio.sleep(delay)` 被 CancelledError 中断时，异常直接
+    向上传播（BaseException 不被 except Exception 捕获），跳过了循环后的
+    `if saw_retryable_failure: cb.record_failure()`——本次请求已触及 5xx 却
+    未计入熔断窗口（故障信号丢失）。
+    修复后：取消路径补记（try/finally 兜底），窗口记录本次请求的下游故障。
+    """
+    calls = [0]
+    cb = _quick_cb()  # 单次失败即可 OPEN 的测试熔断器
+    handler = RetryHandler(
+        config=RetryConfig(max_retries=1, base_delay=60.0, use_jitter=False),
+        circuit_breaker=cb,
+    )
+
+    async def call_fn():
+        calls[0] += 1
+        raise TimeoutError("downstream timeout")  # RETRYABLE
+
+    task = asyncio.create_task(handler.execute(call_fn))
+    await asyncio.sleep(0.05)  # 确保已进入退避 sleep
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert calls[0] == 1, "第一次尝试已抛 RETRYABLE（后续退避被取消）"
+    # 本次请求曾触及下游故障（5xx）→ 即使取消也应计入熔断窗口
+    assert cb.failure_count == 1, (
+        f"退避取消时已发生的 RETRYABLE 故障应计入熔断，实际 {cb.failure_count}"
+    )
     assert cb.state.value == "open", "取消探针应回 OPEN"
 
 
