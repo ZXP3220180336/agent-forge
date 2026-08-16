@@ -146,22 +146,6 @@ def _enforce_no_extra_fields(schema: dict[str, Any]) -> dict[str, Any]:
     return new_schema
 
 
-def _try_parse_json(
-    content: str,
-    schema: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """解析 JSON 并校验 schema；任一失败返回 None（供第三级渐进提取复用）。"""
-    try:
-        parsed = json.loads(content)
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    if schema is not None and not _validate_schema(parsed, schema):
-        return None
-    return parsed
-
-
 def _parse_and_validate(
     content: str,
     schema: dict[str, Any] | None,
@@ -193,12 +177,33 @@ def _collect_schema_errors(parsed: dict[str, Any], schema: dict[str, Any]) -> li
 
     一次收集全部错误（iter_errors 全量，非第一条），让模型一次改完。
     返回空列表 = 校验通过。
+
+    注意：错误文本含 `e.message`（嵌入完整实例值）——用于**回喂模型**（模型
+    需要看到具体错误才能修正）。写入日志需用脱敏版 `_collect_schema_error_summaries`。
     """
     errors = []
     for e in Draft7Validator(schema).iter_errors(parsed):
         path = "/".join(str(p) for p in e.absolute_path) or "<root>"
         errors.append(f"- 字段 `{path}`：{e.message}")
     return errors
+
+
+def _collect_schema_error_summaries(
+    parsed: dict[str, Any], schema: dict[str, Any]
+) -> list[str]:
+    """收集 Schema 校验错误的**脱敏摘要**（字段路径 + validator + 约束值）。
+
+    与 `_collect_schema_errors`（回喂模型，含 `e.message` 嵌入完整实例值）的区别：
+    本函数只含 schema 结构信息（validator 名 / 约束值 / 字段路径），**无实例数据**，
+    可安全写入日志——Yield RCA 场景的敏感数据（良率/晶圆）不因错误日志落盘。
+    """
+    summaries = []
+    for e in Draft7Validator(schema).iter_errors(parsed):
+        path = "/".join(str(p) for p in e.absolute_path) or "<root>"
+        summaries.append(
+            f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}"
+        )
+    return summaries
 
 
 def _build_reask_messages(
@@ -221,6 +226,22 @@ def _build_reask_messages(
     return new_messages
 
 
+def _try_parse_json(
+    content: str,
+    schema: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """解析 JSON 并校验 schema；任一失败返回 None（供第三级渐进提取复用）。"""
+    try:
+        parsed = json.loads(content)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    if schema is not None and not _validate_schema(parsed, schema):
+        return None
+    return parsed
+
+
 def _validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> bool:
     """按 JSON Schema 校验解析结果。
 
@@ -232,11 +253,19 @@ def _validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> bool:
         validate(instance=parsed, schema=schema)
         return True
     except ValidationError as e:
+        # 错误摘要用结构化字段（字段路径 + 校验器 + 约束值）而非 e.message——
+        # e.message 会嵌入完整实例值（如 `'<超长值>' is too long`），是敏感数据
+        # 泄露面；validator/validator_value 只含 schema 结构信息，无实例数据。
+        path = "/".join(str(p) for p in e.absolute_path) or "<root>"
         logger.warning(
-            "结构化输出 Schema 校验失败: %s (schema=%s, parsed=%s)",
-            e.message,
+            "结构化输出 Schema 校验失败: 字段 `%s` 违反 `%s`=%s (schema=%s, parsed=%s)",
+            path,
+            e.validator,
+            e.validator_value,
             json.dumps(schema, ensure_ascii=False),
-            json.dumps(parsed, ensure_ascii=False),
+            # 模型输出可能含业务敏感数据（Yield RCA 场景为良率/晶圆数据），
+            # 只记截断前缀，不把完整 parsed 落盘到日志（泄露面收敛）。
+            _truncate_json_for_log(parsed),
         )
         return False
     except Exception as e:  # schema 本身非法（非标准关键字等）  # noqa: BLE001
@@ -245,6 +274,26 @@ def _validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> bool:
             e,
         )
         return False
+
+
+def _truncate_json_for_log(value: dict[str, Any]) -> str:
+    """将模型输出序列化并截断到安全长度（防业务敏感数据全量落盘）。
+
+    结构化输出可能含业务敏感数据（Yield RCA 场景为良率/晶圆数据），全量写入
+    WARNING 日志是潜在泄露面。截断保留前 N 字符（`_LOG_TRUNCATE_LIMIT`），
+    足以定位解析/校验问题，同时避免敏感内容完整落盘。
+    """
+    return _truncate_text_for_log(json.dumps(value, ensure_ascii=False))
+
+
+_LOG_TRUNCATE_LIMIT = 500  # 模型输出日志截断长度：保留诊断所需前缀，收敛敏感数据泄露面
+
+
+def _truncate_text_for_log(text: str) -> str:
+    """将任意文本截断到安全长度（防业务敏感数据全量落盘）。"""
+    if len(text) > _LOG_TRUNCATE_LIMIT:
+        return f"{text[:_LOG_TRUNCATE_LIMIT]}...（已截断，共 {len(text)} 字符）"
+    return text
 
 
 class StructuredOutput:
@@ -418,10 +467,21 @@ class StructuredOutput:
             if parsed is not None:
                 return parsed
 
+            # 日志脱敏：schema 校验失败的错误文本（`- 字段 …：e.message`）含
+            # `e.message` 嵌入完整实例值——改用结构化字段摘要（validator/约束值，
+            # 无实例数据），防业务敏感数据落盘；解析失败/非 dict 的错误本身
+            # 不含实例值（JSONDecodeError 只报位置），原样记录。
+            if schema is not None and errors and errors[0].startswith("- 字段"):
+                log_errors = _collect_schema_error_summaries(
+                    json.loads(content), schema  # 走到此 content 必为可解析 dict
+                )
+            else:
+                log_errors = errors
+
             logger.warning(
                 "结构化输出解析/校验失败（回喂第 %d 次）: %s",
                 _ + 1,
-                "\n".join(errors),
+                "\n".join(log_errors),
             )
             # 回喂：clone + assistant 失败输出 + user 错误反馈（不污染调用方 messages）
             retry = await StructuredOutput._call_generate(

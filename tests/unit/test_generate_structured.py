@@ -875,3 +875,107 @@ async def test_enforce_nullable_object_type_array():
     }
     enforced = _enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is False
+
+
+# =====================================================================
+# 日志脱敏：_validate_schema 校验失败日志不落完整模型输出（防敏感数据泄露）
+# =====================================================================
+
+
+def test_validate_schema_log_truncates_parsed(caplog):
+    """_validate_schema 校验失败日志截断 parsed——不落完整模型输出。
+
+    修复前：WARNING 日志含 `json.dumps(parsed)` 全量——结构化输出可能含业务
+    敏感数据（Yield RCA 场景为良率/晶圆数据），全量落盘到日志是泄露面。
+    修复后：parsed 截断到安全长度（仅错误摘要 + 前 N 字符），schema 保留完整。
+    """
+    from app.integration.llm.structured import _validate_schema
+
+    # 超长敏感串作为 name 值（模拟良率/晶圆敏感内容），maxLength 约束触发校验失败
+    long_secret = "yield=99.7,wafer=W12345-ABCD," * 50
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string", "maxLength": 10}},
+        "required": ["name"],
+    }
+    parsed = {"name": long_secret}
+
+    with caplog.at_level("WARNING", logger="app.llm.structured"):
+        ok = _validate_schema(parsed, schema)
+    assert not ok, "schema 校验应失败（name 超 maxLength）"
+    assert long_secret not in caplog.text, "日志不应包含完整敏感模型输出"
+    # 校验失败原因（validator 名）仍应保留——可观测性不因脱敏而丢失
+    assert "maxLength" in caplog.text, "错误摘要（校验器 maxLength）应保留"
+
+
+def test_validate_schema_log_keeps_schema(caplog):
+    """schema（接口契约）保留完整——脱敏只针对模型输出，不损诊断。"""
+    from app.integration.llm.structured import _validate_schema
+
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    }
+    parsed = {"name": 123}  # 类型错误触发校验失败
+
+    with caplog.at_level("WARNING", logger="app.llm.structured"):
+        ok = _validate_schema(parsed, schema)
+    assert not ok
+    assert '"name": {"type": "string"}' in caplog.text, "schema 契约应保留在日志"
+
+
+def test_reask_log_truncates_instance_values(caplog):
+    """回喂循环的校验失败日志不落完整实例值（脱敏），回喂模型仍带完整错误。
+
+    修复前：_collect_schema_errors 用 e.message 拼接错误文本，日志（回喂第 N 次）
+    同样嵌入完整实例值——Yield RCA 场景的敏感数据经此落盘。
+    修复后：日志改用结构化字段摘要（路径 + validator + 约束值，无实例数据），
+    回喂模型保留 e.message（模型需要具体错误才能修正）。
+    """
+    from app.integration.llm.structured import _collect_schema_errors
+
+    long_secret = "yield=99.7,wafer=W12345-ABCD," * 50
+    parsed = {"name": long_secret}
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string", "maxLength": 10}},
+        "required": ["name"],
+    }
+    errors = _collect_schema_errors(parsed, schema)
+    # 回喂给模型的错误文本保留 e.message（含实例值，模型需要具体错误修正）
+    assert long_secret in errors[0], "回喂模型的错误应保留 e.message（含实例值）"
+    # 但错误文本本身不应被直接落盘——日志环节走脱敏摘要（见 generate_structured 集成路径）
+
+
+@pytest.mark.asyncio
+async def test_reask_log_path_truncates_instance_values(caplog):
+    """完整 generate_structured 路径：回喂日志不落完整实例值（敏感数据）。
+
+    修复前：_try_extract 的 logger.warning("...回喂第 %d 次: %s", "\n".join(errors))
+    直接把含 e.message（嵌入完整实例值）的 errors 落盘。
+    修复后：日志用脱敏摘要（字段路径 + validator + 约束值），无实例数据。
+    """
+    llm = LLMService()
+    calls = []
+    long_secret = "yield=99.7,wafer=W12345-ABCD," * 50
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        # 第一级 + 回喂 2 次均返回超长敏感值（校验失败）→ 耗尽降级第二级
+        if len(calls) <= 3:
+            return _sr(json.dumps({"name": long_secret}))
+        return _sr(json.dumps({"name": "李四"}, ensure_ascii=False))  # 第二级成功
+
+    llm.generate = fake_generate
+    with caplog.at_level("WARNING", logger="app.llm.structured"):
+        result = await llm.generate_structured(MESSAGES, {
+            "type": "object",
+            "properties": {"name": {"type": "string", "maxLength": 10}},
+            "required": ["name"],
+        })
+    assert result == {"name": "李四"}, "降级到第二级应成功"
+    # 回喂日志不应包含完整敏感串（caplog 聚合全部 WARNING）
+    assert long_secret not in caplog.text, "回喂日志不应包含完整敏感实例值"
+    # 校验错误摘要（validator 名）仍应保留——可观测性不因脱敏而丢失
+    assert "maxLength" in caplog.text, "脱敏摘要（validator 名）应保留在日志"

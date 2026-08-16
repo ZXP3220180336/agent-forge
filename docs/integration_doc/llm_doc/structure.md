@@ -454,6 +454,7 @@ structured.py 的调用参数（W4，2026-08-09 参数化）：
 4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价——换取廉价模型可用性与纠错能力，而非默认接受解析失败。
 5. **输出预算可配置（W4 + 2026-08-10 注入化）**：`max_tokens` 由 `StructuredOutput.register_config()` 注入（Container 读 `settings.llm_structured_max_tokens`，默认 2048），调用方经 `generate_structured(max_tokens=...)` 按业务覆盖；截断时扩 2 倍重试 1 次（随参数缩放，不再硬编码 4096），超限后放弃。
 6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（问题 4 已修复），模型无法扩展接口。显式 `additionalProperties:true` 仍被尊重。
+7. **校验失败日志脱敏（2026-08-16）**：`_validate_schema` 失败日志用**结构化字段摘要**（字段路径 + `validator` + `validator_value`）替代 `e.message`——jsonschema 的 `message` 会嵌入完整实例值（如 `'<超长值>' is too long`），模型输出可能含业务敏感数据（Yield RCA 场景为良率/晶圆数据），全量落盘是泄露面；`parsed` 经 `_truncate_json_for_log` 截断到 `_LOG_TRUNCATE_LIMIT`（500 字符）安全长度，`schema`（接口契约，非业务数据）保留完整。可观测性不因脱敏而丢失（校验器名/字段路径仍在）。**回喂循环日志同源修复**：`_collect_schema_errors` 保留 `e.message` 供**回喂模型**（模型需要具体错误修正），新增 `_collect_schema_error_summaries`（结构化字段摘要）用于 `_try_extract` 回喂日志——回喂模型与日志落盘两套文本，敏感数据不因日志泄露、模型纠错能力不损。
 
 ---
 
@@ -473,6 +474,7 @@ structured.py 的调用参数（W4，2026-08-09 参数化）：
 - **strict 只锁结构，本地校验锁值**：`confidence` 0~1 这类 `minimum`/`maximum` 值约束 strict 不保证，`_validate_schema` 兜底（服务端 strict 锁结构 + 本地 jsonschema 锁值，双保险）
 - **校验失败触发降级**：与现有三级降级链衔接——校验失败先回喂重试（问题 3），耗尽再降级下一级，而非返回坏数据
 - **非法 schema 有防护**：`validate()` 抛非 `ValidationError` 异常（schema 本身非法）也记日志返回 False，不静默穿透
+- **失败日志脱敏（2026-08-16）**：`e.message` 会嵌入完整实例值（敏感数据泄露面），改用结构化字段摘要（路径 + `validator` + `validator_value`）+ `parsed` 截断到 500 字符；schema 契约保留完整。详见[已知边界 7](#已知边界与设计取舍)
 
 **工业级原则**：模型返回之后不能直接进业务逻辑，生产链路必须有 Schema 校验一环：
 
