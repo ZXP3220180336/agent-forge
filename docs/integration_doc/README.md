@@ -118,7 +118,7 @@ app/integration/
 
 ## LLM 网关
 
-**代码**：`app/integration/llm/` · **文档**：[LLM 层详解](llm_doc/llm.md)
+**代码**：`app/integration/llm/` · **文档**：[LLM 层详解](llm_doc/llm.md) · [LLMService 编排](llm_doc/llm_service.md)
 
 负责所有与大语言模型的交互，是系统的**模型通信基础设施**。`LLMService` 是唯一外部入口，内部 7 组件各司其职：
 
