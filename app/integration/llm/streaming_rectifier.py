@@ -180,6 +180,15 @@ class StreamingRectifier:
         event_fields = context.event_fields
         # ----- create 阶段由 retry.execute() 保护，失败直接 raise -----
         for attempt in range(stream_max_retries + 1):
+            # LLM-006：进入整流尝试前先检查取消——取消置位后不再发起真实
+            # reserve + API 请求（create_fn 内），覆盖首次尝试（cancel 已置位
+            # 不发请求）与整流重试入口（上一轮中断后取消不再整流）。与迭代内
+            # 检查、整流退避后检查构成三道守卫，取消信号最快生效。
+            if cancel_event and cancel_event.is_set():
+                context.result.error = "用户取消"
+                yield build_error_event("用户取消了请求")
+                return
+
             attempt_start = time.monotonic()
 
             try:
@@ -249,6 +258,7 @@ class StreamingRectifier:
                     )
                     await asyncio.sleep(_stream_backoff(attempt, retry_after))
                     if cancel_event and cancel_event.is_set():
+                        context.result.error = "用户取消"
                         yield build_error_event("用户取消了请求")
                         return
                     # 清掉死流的元数据残留（usage/finish_reason/refusal 不算

@@ -212,7 +212,11 @@ def test_no_rectify_when_interrupt_after_usage_chunk():
 
 
 def test_cancel_event_no_rectify():
-    """cancel_event 置位 → 中断即返回，不整流（优雅终止）。"""
+    """cancel_event 置位 → 循环入口拦截，不发起请求（LLM-006，优雅终止）。
+
+    修复前：cancel 置位仍执行 create（calls==1），迭代时才终止。
+    修复后：循环顶部检查 cancel，create_fn 不调用（calls==0），不发费不占配额。
+    """
     cancel_event = asyncio.Event()
     cancel_event.set()
     # 即使有 error 触发，cancel 优先终止
@@ -221,7 +225,7 @@ def test_cancel_event_no_rectify():
     ]
     events, result, retry, reservation = _run(streams, cancel_event=cancel_event)
 
-    assert retry.calls == 1, "cancel 置位不应整流"
+    assert retry.calls == 0, "cancel 置位应在循环入口拦截，不发起请求"
     assert any("error" in e for e in events), "应产出 error 事件"
 
 

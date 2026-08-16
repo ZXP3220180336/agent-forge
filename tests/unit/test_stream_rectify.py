@@ -337,9 +337,61 @@ async def test_cancel_event_no_rectify(monkeypatch):
     ):
         events.append(ev)
 
-    assert completions.calls == 1, "取消后不应整流重试"
+    assert completions.calls == 0, "取消置位应在整流循环入口拦截，不发起请求（LLM-006）"
     assert any("用户取消了请求" in e for e in events), f"应有取消错误: {events}"
     assert sr.error == "用户取消", f"取消应标记 result.error，实际: {sr.error}"
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_rectify_stops_new_attempt(monkeypatch):
+    """整流重试期间取消 → 下一轮不发起 create（LLM-006，循环入口守卫）。
+
+    第一轮死流（RETRYABLE）→ 整流退避期间 cancel 置位 → 退避后/循环入口拦截，
+    第二轮 create 不发起（calls==1，不发费不占配额）。
+    """
+    from app.integration.llm import StreamingRectifier
+
+    cancel = asyncio.Event()
+    script = [
+        FakeStream([], fail_at=0),  # 第一轮死流 → 整流
+    ]
+    fake_client = FakeClient(script)
+    monkeypatch.setattr(
+        ClientManager, "get_client", staticmethod(lambda key: fake_client)
+    )
+    monkeypatch.setattr(
+        ClientManager, "get_model", staticmethod(lambda key: "test-model")
+    )
+    # 整流退避固定 0.5s（关闭 jitter），留出外部 set cancel 的窗口
+    monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.5)
+    monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
+    RetryHandlerManager.register_config(
+        config=RetryConfig(
+            max_retries=0, base_delay=0.001, max_delay=0.01, use_jitter=False
+        ),
+    )
+    monkeypatch.setattr(LLMService, "_stream_max_retries", 3)
+
+    llm = LLMService()
+    sr = StreamResult()
+    events = []
+
+    async def collect():
+        async for ev in llm.async_generate(
+            messages=[{"role": "user", "content": "hi"}],
+            result=sr,
+            cancel_event=cancel,
+        ):
+            events.append(ev)
+
+    task = asyncio.create_task(collect())
+    await asyncio.sleep(0.05)  # 第一轮 create + 死流 + 进入整流退避（0.5s）
+    cancel.set()  # 退避期间置位取消
+    await task
+
+    assert fake_client.completions.calls == 1, "整流退避期间取消，第二轮 create 不应发起"
+    assert any("用户取消了请求" in e for e in events), "应产出取消事件"
+    assert sr.error == "用户取消"
 
 
 @pytest.mark.asyncio
