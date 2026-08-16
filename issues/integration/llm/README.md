@@ -46,6 +46,7 @@
 | [LLM-027](2026-08-02-lock-hold-sleep.md) | TokenBucket 持锁 sleep（连带负 token） | P1 | ✅ 已修复 | reservation_limiter | 2026-08-02 | 2026-08-02 |
 | [LLM-028](2026-08-02-tpm-prompt-only.md) | TPM 只算 prompt token（加输出余量） | P1 | ✅ 已修复 | llm_service / reservation_limiter | 2026-08-02 | 2026-08-02 |
 | [LLM-029](2026-08-02-api-clarity-fixes.md) | 限流器 API 清晰性（返回值/async with） | P3 | ✅ 已修复 | reservation_limiter | 2026-08-02 | 2026-08-02 |
+| [LLM-030](2026-08-07-stream-parser-robustness.md) | 流式/非流式解析健壮性 | P1 | ✅ 已修复 | streaming / streaming_rectifier | 2026-08-07 | 2026-08-07 |
 
 ## 新问题登记规范
 

@@ -149,7 +149,7 @@ def parse_chunk(chunk: Any) -> ParsedChunk:
 **提取顺序**（与数据语义相关）：
 
 1. **usage 独立提取**：不依赖 `choices` 为空——usage-only chunk 的 choices 通常为空，但某些代理/适配层可能在带 delta 的 chunk 上也附带 usage，不应静默丢弃
-2. **finish_reason 独立提取**：不依赖 `delta` 是否为空——finish chunk 的 delta 可能为 None 或空对象，但 finish_reason 在 `choices[0]` 上，不能因 delta 为空而丢失（2026-08-07 修复）
+2. **finish_reason 独立提取**：不依赖 `delta` 是否为空——finish chunk 的 delta 可能为 None 或空对象，但 finish_reason 在 `choices[0]` 上，不能因 delta 为空而丢失（见 [问题记录](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）
 3. **无内容增量即返回**：`not chunk.choices or not chunk.choices[0].delta` → 到此为止（usage-only / finish-only chunk）
 4. **有 delta** → 提取 `reasoning_content` / `content` / `refusal` / `tool_calls`（字段缺失用 `hasattr` 守卫，不同 provider/模型的 delta 字段集不同，缺失不崩溃）
 
@@ -169,7 +169,7 @@ def merge_tool_calls(deltas: list[ToolCallDelta]) -> list[dict[str, Any]]:
 def parse_non_stream(response: Any) -> dict[str, Any]:
 ```
 
-直接读取完整响应对象，产出统一 dict：`{"content", "finish_reason", "tool_calls", "usage", "refusal"}`。**空 choices 防护**：某些适配层/异常响应可能返回空 choices（无生成内容），直接 `response.choices[0]` 会抛裸 `IndexError`——返回空结果让调用方按「业务无结果」处理（2026-08-09 修复）。**refusal 保留 None 与空串区分**：`or ""` 会把拒答的 None 抹成空串，下游无法判断「未拒答」与「拒答但文本为空」——直接透传原值。
+直接读取完整响应对象，产出统一 dict：`{"content", "finish_reason", "tool_calls", "usage", "refusal"}`。**空 choices 防护**：某些适配层/异常响应可能返回空 choices（无生成内容），直接 `response.choices[0]` 会抛裸 `IndexError`——返回空结果让调用方按「业务无结果」处理（见 [问题记录](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）。**refusal 保留 None 与空串区分**：`or ""` 会把拒答的 None 抹成空串，下游无法判断「未拒答」与「拒答但文本为空」——直接透传原值。
 
 ---
 
@@ -295,9 +295,9 @@ OpenAI 流式响应的 usage 只在**最后一个 chunk** 返回（需请求 `st
 5. **多工具调用交错**：`merge_tool_calls` 按 index 分组，交错增量正确合并
 6. **空 tool_calls**：`merge_tool_calls([])` 返回空列表
 7. **非流式无 usage**：`parse_non_stream` 对 `response.usage` 为 None 时返回 `usage: None`
-8. **非流式空 choices**：`parse_non_stream` 对空 choices（适配层/异常响应）返回空结果而非抛 `IndexError`（2026-08-09 修复）
-9. **delta=None 的 finish chunk**：finish_reason 独立于 delta 提取，不因 delta 为空丢失（2026-08-07 修复）
-10. **usage 与空 delta 共存**：usage 独立于 choices/delta 提取，代理层违规共存时不静默丢弃（2026-08-07 修复）
+8. **非流式空 choices**：`parse_non_stream` 对空 choices（适配层/异常响应）返回空结果而非抛 `IndexError`（见 [问题记录](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）
+9. **delta=None 的 finish chunk**：finish_reason 独立于 delta 提取，不因 delta 为空丢失（见 [问题记录](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）
+10. **usage 与空 delta 共存**：usage 独立于 choices/delta 提取，代理层违规共存时不静默丢弃（见 [问题记录](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）
 11. **非流式 refusal 空串 vs None**：直接透传原值，保留「未拒答」与「拒答但文本为空」的区分
 
 ---
@@ -314,33 +314,13 @@ OpenAI 流式响应的 usage 只在**最后一个 chunk** 返回（需请求 `st
 
 ---
 
-## 改造记录与工业实践
+## 问题记录
 
-> 本节以审核发现的问题为主线，记录**问题 → 修复 → 工业对照**。
+> 审核发现的问题（2026-08-07 / 08-09）已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
 
-### 2026-08-07 审核修复
+- [流式/非流式解析健壮性（finish_reason 丢失 / usage 丢弃 / tool_deltas 残留 / 空 choices 崩溃）](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)
 
-| 问题 | 修复前 | 修复后 |
-| --- | --- | --- |
-| **delta=None 丢 finish_reason** | `parse_chunk` 原守卫 `not chunk.choices[0].delta` 在 delta=None 的 finish chunk 上提前 return，丢失 finish_reason | 重构为 finish_reason 独立提取，不依赖 delta 是否为空 |
-| **usage 与空 delta 共存时静默丢弃** | usage 提取依赖 choices 为空 | usage 独立于 choices/delta 提取，代理层违规共存时不静默丢弃 |
-| **整流 continue 前未清空 tool_deltas** | 整流重试 `continue` 前未显式清空 | 防御性清空，防未来重构携带脏数据 |
-
-### 2026-08-09 修复
-
-| 问题 | 修复前 | 修复后 |
-| --- | --- | --- |
-| **非流式空 choices 抛 IndexError** | `parse_non_stream` 直接 `response.choices[0]`，空 choices 抛裸 IndexError | 空 choices 防护：返回空结果让调用方按「业务无结果」处理 |
-
-### 工业实践对照
-
-| 议题 | 工业级做法 | 本项目立场 |
-| --- | --- | --- |
-| **tool_call 增量解析** | 增量 concat 累积、`finish_reason` 后才 flush（go-ai / dd-trace-js） | `merge_tool_calls` 按 index 分组 concat，完成后组装 |
-| **缺失 tool id** | 按 index 合成稳定 ID（llm-stream-assemble） | `id` 为空时按 index 兜底 |
-| **状态机解析引擎** | vLLM TokenIDScanner → IncrementalLexer → StreamingParserEngine | 单一 provider 场景不需要；未来多 provider 才引入适配器层 |
-
----
+> 正文（组件详解 / 执行流程 / 设计决策）已同步到当前状态。
 
 ## 相关文档
 
