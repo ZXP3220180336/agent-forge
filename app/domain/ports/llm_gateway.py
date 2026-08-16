@@ -20,6 +20,10 @@ class StreamResult:
         self.tool_calls: list[dict] = []
         self.usage: dict | None = None
         self.refusal: str | None = None
+        # LLM 调用失败原因（create 失败 / 流中断放弃 / 用户取消），None=成功。
+        # 失败信号供编排层（Agent）短路决策——避免把「LLM 失败」当「空输出」空转重试。
+        # 正常空回（stop + 空 content）不置位；整流成功路径不置位（只有最终放弃才置）。
+        self.error: str | None = None
 
 
 @runtime_checkable

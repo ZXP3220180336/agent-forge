@@ -56,6 +56,11 @@ if TYPE_CHECKING:
     from app.domain.ports.llm_gateway import StreamResult
     from app.integration.llm.reservation_limiter import Reservation
 
+# result.error 字段的截断上限：失败原因传给编排层（Agent 短路）后可能进
+# AgentResult.error → API 响应，截断到安全长度（防止异常消息携带 URL 等
+# 内部细节全量透传；日志侧另有 [:200] 截断，两者口径独立）。
+_RESULT_ERROR_LIMIT = 500
+
 
 def _stream_backoff(attempt: int, retry_after: float | None = None) -> float:
     """流式整流重试的退避延迟（配置由 StreamingRectifier.register_config 注入）。
@@ -186,6 +191,9 @@ class StreamingRectifier:
                 await StreamingRectifier._log_failure(
                     context, error=str(e)[:200], attempt_start=attempt_start
                 )
+                # 失败信号传给编排层（Agent 短路）：create 失败 → 本轮 LLM 调用
+                # 无结果，Agent 不应把「失败」当「空输出」继续空转重试。
+                context.result.error = str(e)[:_RESULT_ERROR_LIMIT]
                 yield build_error_event(f"LLM 调用失败: {e!s}")
                 return
 
@@ -196,6 +204,7 @@ class StreamingRectifier:
             try:
                 async for chunk in response:
                     if cancel_event and cancel_event.is_set():
+                        context.result.error = "用户取消"
                         await StreamingRectifier._finish_interrupted(
                             context,
                             error="用户取消",
@@ -255,6 +264,9 @@ class StreamingRectifier:
 
                 if classify_error(e) == ErrorCategory.RETRYABLE:
                     retry.circuit_breaker.record_failure()
+                # 流中断放弃（不整流）→ 失败信号传编排层（Agent 短路）。已产出的
+                # 部分 content 保留在 result 中，Agent 短路时一并带回。
+                context.result.error = str(e)[:_RESULT_ERROR_LIMIT]
                 yield build_error_event(f"流式响应中断: {e!s}")
                 return
 

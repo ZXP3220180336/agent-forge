@@ -91,6 +91,25 @@ class ReActAgent(BaseAgent):
                         k, 0
                     )
 
+            # LLM 调用失败（create 失败 / 流中断放弃 / 用户取消）→ 短路返回失败结果，
+            # 不把「失败」当「空输出」继续空转重试（浪费 LLM 调用 + 错误信息不准确）。
+            # 正常空回（stop + 空 content）error 为 None，仍走下方「空输出重试」逻辑。
+            if stream_result.error:
+                self._result = AgentResult(
+                    success=False,
+                    content=stream_result.content,
+                    reasoning=stream_result.reasoning_content,
+                    iterations=iteration,
+                    total_tokens=total_usage.get("total_tokens", 0),
+                    usage=total_usage or None,
+                    error=stream_result.error,
+                )
+                yield build_done_event(
+                    iterations=iteration,
+                    total_tokens=total_usage.get("total_tokens", 0),
+                )
+                return
+
             full_reasoning = stream_result.reasoning_content
             full_content = stream_result.content
 

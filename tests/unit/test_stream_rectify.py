@@ -297,6 +297,7 @@ async def test_consecutive_interrupt_exhausts_retries(monkeypatch):
     assert completions.calls == 2, "应尝试 2 次（1 次整流 + 1 次原始）"
     assert any("error" in e for e in events), "应产出 error 事件"
     assert sr.content == "", "失败时 content 应为空"
+    assert sr.error is not None, "放弃时（不整流）应标记 result.error（编排层短路信号）"
 
 
 @pytest.mark.asyncio
@@ -338,6 +339,7 @@ async def test_cancel_event_no_rectify(monkeypatch):
 
     assert completions.calls == 1, "取消后不应整流重试"
     assert any("用户取消了请求" in e for e in events), f"应有取消错误: {events}"
+    assert sr.error == "用户取消", f"取消应标记 result.error，实际: {sr.error}"
 
 
 @pytest.mark.asyncio
@@ -352,6 +354,8 @@ async def test_create_failure_no_rectify(monkeypatch):
     assert completions.calls == 1, "create 失败不得整流重试"
     assert any("LLM 调用失败" in e for e in events), "应产出 LLM 调用失败事件"
     assert sr.content == ""
+    assert sr.error is not None, "create 失败应标记 result.error（编排层短路信号）"
+    assert "bad request" in sr.error.lower(), f"error 应含失败原因，实际: {sr.error}"
 
 
 @pytest.mark.asyncio
@@ -384,6 +388,7 @@ async def test_tool_call_delta_counts_as_emitted(monkeypatch):
     assert completions.calls == 1, "已产出 tool_call 增量不应整流"
     assert any("error" in e for e in events), "应产出 error 事件"
     assert sr.tool_calls == [], "失败时不应 merge tool_calls"
+    assert sr.error is not None, "已产出后中断放弃应标记 result.error"
 
 
 @pytest.mark.asyncio

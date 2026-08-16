@@ -1,7 +1,7 @@
 # LLM 层说明文档
 
 > **对应代码**：`app/integration/llm/`
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-16
 > **职责**：LLM 网关 —— 与大语言模型的全部通信：连接池 / 重试 / 熔断 / 限流 / 流式解析 / 整流重试 / 结构化输出 / 成本计算
 > **状态**：✅ 已实现
 > **配套**：实现领域端口 `LLMGateway`；`LLMService` 为唯一对外 Facade（各子组件详解见下文与 [client.md](client.md) / [retry.md](retry.md) 等子文档）
@@ -1200,6 +1200,7 @@ response = await retry.execute(
 - **整流判定 emitted_any 累积语义修复（2026-08-10）**：`_apply_chunk` 返回「单 chunk 是否产出」改为累积（`emitted_any = emitted_any or chunk_emitted`）——修复中断前最后一个 usage/finish-only chunk 把已产出标记冲成 False、导致误整流（重复输出 + 双倍计费）的缺陷；新增回归测试固化
 - **结构化输出调用/短路辅助方法抽取（2026-08-12）**：`StructuredOutput` 新增 `_call_generate`（统一调 generate + 下游异常分类：NON_RETRYABLE raise / 可恢复返回 None，`stage` 参数做日志前缀）与 `_raise_boundary`（统一 refusal / tool_calls / truncated 短路抛异常）——`_try_extract` 主调用/截断重试/回喂三处调用点与 `_fallback_extract` 共用，消除重复 try/except 与短路分支。truncated 为主调用点可选短路（主调用点截断仍需扩 token 重试，用 `else` 隔离）。详见 [structure.md](structure.md)
 - **结构化输出纯工具函数提取模块级（2026-08-12）**：`_build_json_schema_request` / `_build_json_mode_request` / `_enforce_no_extra_fields` / `_try_parse_json` / `_parse_and_validate` / `_collect_schema_errors` / `_build_reask_messages` / `_validate_schema` 提取为模块级私有函数（无类状态、可独立测试）；`StructuredOutput` 只保留业务编排与边界决策（`extract` / `_try_extract` / `_fallback_extract` / `_call_generate` / `_classify_result` / `_raise_boundary` / `register_config`）。详见 [structure.md](structure.md)
+- **流式失败信号透传（LLM-001，2026-08-16）**：`StreamingRectifier` 三个失败出口（create 异常 / 迭代放弃 / 用户取消）除 SSE error 事件外，标记 `StreamResult.error`（截断 500）；`ReActAgent` 检查 error 短路返回失败结果——修复「4xx/认证/熔断开启被静默吞掉、ReAct 空转到 max_iterations、最终错误信息不准确」的缺陷。正常空回（stop + 空 content）不置位、整流成功不置位。详见 [问题文档](../../issues/llm/llm-001-stream-error-propagation.md)
 
 ### 遗留未定事项
 

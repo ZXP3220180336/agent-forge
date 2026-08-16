@@ -1,6 +1,6 @@
 # 领域层说明文档
 
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-16
 > **文档定位**：领域层（`app/domain/`）—— Agent 内核、提示词、记忆与推理策略；事件系统位于共享层 `app/shared/events.py`（见 [events.md](../shared_doc/events.md)）。
 > **实现状态**：Agent（✅）/ Events（✅）/ Prompts（✅）/ Memory（❌ 预留）/ Reasoning（❌ 预留）
 
@@ -80,6 +80,23 @@ Agent 是核心层的**决策与行动核心**，负责编排 LLM 推理与工�
 | `agent_info` | Agent | 状态信息 |
 
 核心函数：`build_sse_event(event_type, content, **extra)` + 7 个便捷构造器。
+
+---
+
+## 领域端口契约（LLM Gateway）
+
+`app/domain/ports/llm_gateway.py` 定义领域层对 LLM 调用的抽象契约（依赖倒置：领域层 Agent 依赖该协议，能力层 `LLMService` 结构实现之）：
+
+- **`LLMGateway`（Protocol）**：`async_generate`（流式）/ `generate`（非流式）/ `generate_structured`（结构化）三个方法签名
+- **`StreamResult`**（单轮 LLM 结果载体）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `content` / `reasoning_content` | 回复 / 推理文本 |
+| `finish_reason` / `tool_calls` / `usage` / `refusal` | 停止原因 / 工具调用 / Token 用量 / 拒答 |
+| `error` | LLM 调用失败原因（create 失败 / 流中断放弃 / 用户取消），`None`=成功；供 `ReActAgent` 短路决策，避免把「失败」当「空输出」空转重试。正常空回（stop + 空 content）不置位（LLM-001，2026-08-16 新增） |
+
+**详见** [LLM 层说明](../integration_doc/llm_doc/llm.md) · [问题文档 LLM-001](../issues/llm/llm-001-stream-error-propagation.md)
 
 ---
 

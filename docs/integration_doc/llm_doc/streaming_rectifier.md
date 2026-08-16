@@ -1,7 +1,7 @@
 # StreamingRectifier 设计文档
 
 > **模块**：`app/integration/llm/streaming_rectifier.py`
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-16
 > **职责**：流式整流重试策略——「首 token 前中断 → 重新 create + 重新迭代」，已产出 token 后中断则放弃
 > **状态**：✅ 已实现
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
@@ -68,6 +68,24 @@
 ### 事件日志
 
 每次尝试独立计时，失败走 `success=False` + error，成功清 `error=None`（整流成功 = 1 条失败 + 1 条成功日志）。日志填充复用 `utils/logger.py` 的 `fill_llm_event_fields`（通用 LLM 事件日志工具）。
+
+### 失败信号透传（result.error，LLM-001）
+
+三个失败出口除了产出 SSE error 事件外，还会在 `StreamResult.error` 标记失败原因——供编排层（`ReActAgent`）短路决策，避免把「LLM 失败」当「空输出」空转重试（详见 [问题文档](../../issues/llm/llm-001-stream-error-propagation.md)）：
+
+| 出口 | `result.error` | SSE 事件 |
+| --- | --- | --- |
+| create 异常（NON_RETRYABLE 等） | `str(e)`（截断 `_RESULT_ERROR_LIMIT`=500） | `LLM 调用失败: ...` |
+| 迭代放弃（不整流） | `str(e)`（同上截断） | `流式响应中断: ...` |
+| 用户取消 | `"用户取消"` | `用户取消了请求` |
+
+**语义边界**：
+
+- 正常空回（`finish_reason="stop"` 且 content 空）→ `error` 保持 `None`（编排层仍走「空输出重试」逻辑，不被误判为失败）
+- 整流成功路径 → `error` 保持 `None`（只有最终放弃才标记）
+- SSE error 事件保留（前端可感知）；`result.error` 是给后端编排层的失败信号，两者独立
+
+`error` 字段截断上限独立于日志 `[:200]`：它可能进 `AgentResult.error` → API 响应，需防异常消息携带 URL 等内部细节全量透传。
 
 ### 数据流
 
@@ -147,6 +165,7 @@ class RectifierContext:
 
 - `tests/unit/test_streaming_rectifier.py`（11 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / 硬取消 finally cancel / settle 中途取消 finally 续退 / 429 整流尊重 Retry-After（封顶到 max_delay）/ **整流清理复位 refusal（拒绝类死流不残留元数据）**
 - `tests/unit/test_stream_rectify.py`（21 用例，经 `LLMService.async_generate` 间接覆盖）：整流/结算/事件/日志/熔断 feeding 全链路断言
+- **LLM-001 失败信号透传**（2026-08-16）：`test_stream_rectify.py` 四个失败出口补 `result.error` 断言（create 失败 / 迭代放弃 / 用户取消）；`test_agent.py` 新增 ReActAgent 遇 LLM 失败第 1 轮短路返回失败结果用例
 
 ## 相关文档
 

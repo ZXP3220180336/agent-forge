@@ -17,6 +17,7 @@ from app.config import settings
 from app.domain.agent import AgentContext, ReActAgent
 from app.integration.tools.tool_service import ToolService
 from app.integration.tools.base import BaseTool, ToolResult
+from app.shared.events import build_error_event
 
 
 class _DelayTool(BaseTool):
@@ -54,6 +55,16 @@ class _NoopLLM:
 
     async def async_generate(self, *args, **kwargs):
         yield ""
+        return
+
+
+class _ErrorLLM:
+    """模拟 LLM 失败：产出一个 SSE error 事件，并在 result 上标记 error（LLM-001）。"""
+
+    async def async_generate(self, *args, result=None, **kwargs):
+        if result is not None:
+            result.error = "401 认证失败"
+        yield build_error_event("LLM 调用失败: 401 认证失败")
         return
 
 
@@ -119,3 +130,28 @@ async def test_execute_tool_calls_parallel_actually_concurrent(monkeypatch):
 
     # 并行执行两个 0.05s 工具，总耗时应 < 串行 0.1s（留余量，断言 < 0.09）
     assert elapsed < 0.09, f"应并行执行（<0.09s），实际 {elapsed:.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_strategy_cycle_short_circuits_on_llm_error():
+    """LLM 失败（StreamResult.error）→ 第 1 轮短路返回失败结果，不空转重试（LLM-001）。
+
+    修复前：LLM create 失败被转成 SSE error 事件后 Agent 不解析事件类型，
+    把「失败」当「空输出」空转到 max_iterations，最终错误信息不准确。
+    修复后：Agent 检查 stream_result.error，非空即短路返回失败 AgentResult。
+    """
+    llm = _ErrorLLM()
+    agent = ReActAgent(llm=llm, tools=None)
+    ctx = AgentContext(session_id="s", user_id="u", max_iterations=3)
+
+    events = []
+    async for ev in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
+        events.append(ev)
+
+    assert agent.result is not None
+    assert agent.result.success is False, "LLM 失败应返回失败结果"
+    assert agent.result.error == "401 认证失败", (
+        f"应携带真实错误原因，实际: {agent.result.error}"
+    )
+    assert agent.result.iterations == 1, "应在第 1 轮短路，不空转重试"
+    assert any('"type": "done"' in e for e in events), "应产出 done 事件"
