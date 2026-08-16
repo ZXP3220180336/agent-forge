@@ -21,6 +21,8 @@
 | [LLM-ADR-003](2026-08-01-streaming-parse-pure-function.md) | 流式解析策略：纯函数无状态 + tool_call 延迟组装 + usage 独立提取 | ✅ 已采纳 | streaming | 2026-08-01 |
 | [LLM-ADR-004](2026-08-01-client-pool-lazy-close-tracking.md) | 连接池管理：懒加载 + 主动关闭 + 热切换关闭追踪 | ✅ 已采纳 | client | 2026-08-01 |
 | [LLM-ADR-005](2026-08-01-streaming-rectification-retry.md) | 流式整流重试策略：首 token 前中断自动恢复 | ✅ 已采纳 | streaming_rectifier / llm_service | 2026-08-01 |
+| [LLM-ADR-006](2026-08-01-retry-circuit-breaker-architecture.md) | 重试与熔断架构：CircuitBreaker + 指数退避 + 抖动 + fallback | ✅ 已采纳 | retry / llm_service | 2026-08-01 |
+| [LLM-ADR-007](2026-08-01-circuit-breaker-window-semantics.md) | 熔断窗口语义与请求级记账（RETRYABLE 计入 / fallback 隔离） | ✅ 已采纳 | retry | 2026-08-01 |
 
 ## 新决策登记规范
 

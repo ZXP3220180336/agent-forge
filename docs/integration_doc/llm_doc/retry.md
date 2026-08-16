@@ -495,24 +495,15 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ### Q1: RETRYABLE（超时/5xx）为什么计入滑动窗口的错误率分子？
 
-**因为超时/5xx 是"下游故障"的直接证据**，熔断器存在的意义就是识别并规避这类故障。
-
-若把 RETRYABLE 排除在错误率之外，窗口内只会统计成功请求，错误率恒为 0——即便下游 5xx 成片，熔断器也不会打开，流量持续打到宕机的服务。
-
-对比而言，**429 不计入窗口**：429 是"客户端触发自身限额"，不是下游故障证据，只退避。
-
-> 相关：`classify_error()` 的 `RETRYABLE` 语义——「计入窗口失败 + 退避重试」；`RATE_LIMITED` 语义——「不计入窗口 + 退避重试」。
+> RETRYABLE 计入窗口（下游故障直接证据）/ 429 不计入（客户端自身限额，只退避）的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-007](../../../adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md)。
 
 ### Q2: Fallback 的成功/失败要反映到滑动窗口吗？
 
-**不要。fallback 的成败完全不触碰滑动窗口**（fallback 隔离契约）。
-
-熔断器只观察主链路（`call_fn`）的健康。fallback 是备用链路，纯兜底：
-
-- **成功**：说明备用链路可用，返回给用户即可。不向窗口追加成功记录——否则会稀释主链路的错误率，导致主链路持续故障也永不熔断
-- **失败**：说明备用链路也不可用。不向窗口追加失败记录、不改写冷却计时——备用链路的故障不是主链路故障的证据
+> fallback 成败不触碰窗口（fallback 隔离契约——成功不稀释主链路错误率、失败不改写冷却计时）的完整决策见 [ADR LLM-ADR-007](../../../adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md) 决策 2。
 
 ### Q3: max_retries 与熔断参数有什么关系？一般怎么设置？
+
+> 参数关系（max_retries 解耦 / window+threshold 灵敏度 / volume+all_failed 互补 / half_open 权衡）的决策依据见 [ADR LLM-ADR-007](../../../adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md) 决策 4。
 
 各参数在故障生命周期中控制**不同阶段**：
 
@@ -563,13 +554,11 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ### Q4: `RetryConfig` 和 `CircuitBreaker` 的配置从哪里来？
 
-**通过 `RetryHandlerManager.register_config()` 注入（2026-08-10）**。`RetryConfig`/`CircuitBreakerConfig` 是纯配置 dataclass（默认值硬编码为合理值），不直接 import settings——`Container.initialize()` 读 settings 组装配置对象后调 `register_config()` 注入，修改 `.env` 重启即生效，无需改代码。子模块零 settings 依赖，测试可经 `register_config()` 隔离注入。
+> 纯配置对象 + `RetryHandlerManager.register_config()` 注入（子模块零 settings 依赖）的决策见 [ADR LLM-ADR-006](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md) 决策 6。
 
 ### Q5: 为什么不引入 `tenacity` 等第三方重试库？
 
-- 本项目需要熔断器 + fallback + 错误分类的紧耦合编排，`tenacity` 的重试装饰器模式不适合这种控制流
-- 熔断器需要跨请求共享状态（类级别），装饰器模式难以表达——本项目通过 `RetryHandlerManager`（按 model_key 缓存共享实例）实现该语义
-- 重试逻辑本身不到 100 行，自实现更透明、易调试
+> 自研而非第三方（紧耦合编排 / 跨请求共享状态 / <100 行自实现）的决策见 [ADR LLM-ADR-006](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md) 决策 5。
 
 ---
 
