@@ -60,33 +60,14 @@
 
 ### LLM 限流：等待 vs 拒绝（2026-08-06 决策）
 
-**结论：LLM 客户端限流应「等待」（排队），而非「拒绝」。**
-
-**为什么拒绝不适合 LLM**：
-
-| 维度 | LLM 调用 | 通用 Web API |
-| --- | --- | --- |
-| 失败成本 | 高（token 白烧、对话中断、用户等待） | 低（前端可重试） |
-| 调用方 | 单个 Agent/用户（同一次对话的连续工具调用） | 大量并发用户 |
-| 突发来源 | 一次 ReAct 循环里连续多次工具调用 | 用户流量高峰 |
-| 语义 | 这次调用必须要完成才能推进对话 | 请求可有可无 |
-
-LLM 场景下，**拒绝 = 一次工具调用失败 → Agent 循环中断 → 用户对话卡住**——不是「少一次请求」，而是「整条推理链断裂」。所以 LLM 客户端限流应该等待（排队），而非拒绝。
-
-**与项目现状一致**：
-
-- `TokenBucket.acquire` / `RateLimiter.acquire`：等待直到配额可用（等待型）
-- `ReservationLimiter.reserve`：预留配额（等待），不是拒绝
-- `retry.py` 对 429：退避等待重试（尊重 Retry-After），不放弃
-- 设计目标第 4 条「透明等待」：限流是排队而非拒绝
-
-**工业级对照**：通用漏桶的「桶满丢弃」语义是给「可丢弃流量」（日志、事件、非关键请求）设计的。LLM 调用是**不可丢弃的关键请求**，丢弃直接损害用户体验。工业 LLM 生态（OpenAI SDK、LiteLLM 等）的客户端限流均为等待型。
-
-**对漏桶实现的含义**：`LeakyBucket` 在 LLM 语境下采用**等待型**（桶满排队等空位）而非标准漏桶的「满则丢弃」——输出仍恒定速率（保留平滑特性），但桶满时排队而非溢出，符合「透明等待」设计目标。
+> Token Bucket 算法选择 + LLM 限流等待语义的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md)。
+> 当前状态：LLM 客户端限流「等待」（排队）而非「拒绝」——`TokenBucket` 桶满排队、`ReservationLimiter.reserve` 预留（等待）、retry 对 429 退避重试（尊重 Retry-After）；`LeakyBucket` 采用等待型变体（桶满排队而非丢弃）。
 
 ---
 
 ## 两种 API 形态：acquire vs reserve/settle
+
+> reserve/settle 预留-结算形态的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-009](../../../adr/integration/llm/2026-08-02-reserve-settle-semantics.md)。
 
 限流模块历史上提供两种 API 形态；**acquire 形态已从生产移除（2026-08-10）**，代码保留在本文档作学习参考，当前生产唯一形态为 reserve/settle：
 
@@ -128,14 +109,7 @@ _tokens       当前剩余 Token（初始 = capacity）
 
 **为什么选 Token Bucket**（对比见 `llm.md`「限流算法」节）：
 
-| 算法 | 突发能力 | 平滑性 | 内存 |
-| --- | --- | --- | --- |
-| **Token Bucket** | ✅ 允许突发 | 长期平滑 | 常数 |
-| 漏桶（Leaky） | ❌ 恒定速率 | 严格整形 | 常数 |
-| 固定窗口 | 窗口边界双倍 | 一般 | 常数 |
-| 滑动窗口日志 | — | 精确 | 随窗口增长 |
-
-Token Bucket 在「允许突发」和「长期平滑」间取得平衡，适合 Agent 的突发调用模式。
+> Token Bucket 算法选择决策（允许突发 + 长期平滑，vs 漏桶/固定窗口/滑动窗口）已归档至 [ADR LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md)。
 
 ### 其他限流算法
 
@@ -455,9 +429,11 @@ class ReservationLimiter:  # 完整实现见 reservation_limiter.py
 
 ### OutputTokenEstimator — 自适应输出估算器
 
+> 自适应预留（Fenic 式）的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-010](../../../adr/integration/llm/2026-08-06-adaptive-reserve-output-estimator.md)。
+
 **文件**：`reservation_limiter.py`
 
-**作用**：用「历史实际输出的高分位 × 安全系数」预测下一次预留的输出量，替代固定 `max_tokens` 上限——减少预留期间占桶（并发空耗）。Fenic 式设计，详见 [「对比 3.2」](#对比-32自适应预留fenic-式2026-08-06-实现)。
+**作用**：用「历史实际输出的高分位 × 安全系数」预测下一次预留的输出量，替代固定 `max_tokens` 上限——减少预留期间占桶（并发空耗）。Fenic 式设计。
 
 ```python
 class OutputTokenEstimator:  # 完整实现见 reservation_limiter.py

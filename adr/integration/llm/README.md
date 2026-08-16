@@ -23,6 +23,9 @@
 | [LLM-ADR-005](2026-08-01-streaming-rectification-retry.md) | 流式整流重试策略：首 token 前中断自动恢复 | ✅ 已采纳 | streaming_rectifier / llm_service | 2026-08-01 |
 | [LLM-ADR-006](2026-08-01-retry-circuit-breaker-architecture.md) | 重试与熔断架构：CircuitBreaker + 指数退避 + 抖动 + fallback | ✅ 已采纳 | retry / llm_service | 2026-08-01 |
 | [LLM-ADR-007](2026-08-01-circuit-breaker-window-semantics.md) | 熔断窗口语义与请求级记账（RETRYABLE 计入 / fallback 隔离） | ✅ 已采纳 | retry | 2026-08-01 |
+| [LLM-ADR-008](2026-08-01-rate-limit-token-bucket-waiting.md) | 客户端限流：Token Bucket 算法 + LLM 等待语义 | ✅ 已采纳 | reservation_limiter / llm_service | 2026-08-01 |
+| [LLM-ADR-009](2026-08-02-reserve-settle-semantics.md) | reserve/settle 预留-结算形态（按实际 usage 退差） | ✅ 已采纳 | reservation_limiter / llm_service | 2026-08-02 |
+| [LLM-ADR-010](2026-08-06-adaptive-reserve-output-estimator.md) | 自适应预留（Fenic 式）：高分位输出估算替代固定 max_tokens | ✅ 已采纳 | reservation_limiter | 2026-08-06 |
 
 ## 新决策登记规范
 
