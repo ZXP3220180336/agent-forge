@@ -20,6 +20,7 @@
 | [LLM-ADR-002](2026-08-15-pricing-prefix-match-fixed-table.md) | 定价查找：最长前缀匹配 + 模块内固定定价表 | ✅ 已采纳 | cost_tracker | 2026-08-15 |
 | [LLM-ADR-003](2026-08-01-streaming-parse-pure-function.md) | 流式解析策略：纯函数无状态 + tool_call 延迟组装 + usage 独立提取 | ✅ 已采纳 | streaming | 2026-08-01 |
 | [LLM-ADR-004](2026-08-01-client-pool-lazy-close-tracking.md) | 连接池管理：懒加载 + 主动关闭 + 热切换关闭追踪 | ✅ 已采纳 | client | 2026-08-01 |
+| [LLM-ADR-005](2026-08-01-streaming-rectification-retry.md) | 流式整流重试策略：首 token 前中断自动恢复 | ✅ 已采纳 | streaming_rectifier / llm_service | 2026-08-01 |
 
 ## 新决策登记规范
 

@@ -35,7 +35,8 @@
 
 ### 为什么需要整流（问题背景）
 
-`retry.execute()` 只保护 `client.chat.completions.create()`（创建响应对象），真正的 `async for chunk in response:` 迭代在重试范围外。流中途断掉（读超时 / 连接重置 / 解析失败）时，旧实现只捕获报错（记日志 + 错误事件），不重试。
+> 整流重试策略的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-005](../../../adr/integration/llm/2026-08-01-streaming-rectification-retry.md)。
+> 当前实现：流式中断按「首 token 是否已产出」分流——首 token 前中断整流重试（重新 create + 重新迭代），已产出后中断不整流。`retry.execute()` 只保护 create 阶段，整流覆盖「已开始流式后的中断」这一重试盲区。
 
 ### 整流条件（`_should_rectify`，全部满足才整流）
 
