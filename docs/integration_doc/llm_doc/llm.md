@@ -1212,6 +1212,7 @@ response = await retry.execute(
 - **settle/cancel 终态互斥（LLM-010，2026-08-16）**：`Reservation` 增加 `asyncio.Lock`，`settle`/`cancel` 的「_settled 检查 + 退款循环」整体放锁内——修复并发调用重复退款（检查与退款间含 await 点）；`capacity` 封顶只防桶超容量、不防容量以下重复虚增，幂等必须靠互斥。详见 [问题文档](../../issues/llm/llm-010-settle-cancel-concurrent-race.md)
 - **整流放弃分支取消守卫（LLM-011，2026-08-16）**：迭代放弃分支喂熔断前加 `cancel_event` 守卫——`_should_rectify` 因用户取消返回 False 时（异常仍 RETRYABLE）不再误喂熔断器（用户取消非下游故障，对齐 `test_cancel_event_not_feeds_breaker` 契约），改走取消路径。详见 [问题文档](../../issues/llm/llm-011-cancel-race-feeds-breaker.md)
 - **fallback 同 provider 约束文档化（LLM-012，2026-08-16）**：fallback 复用主模型 client（仅换 model 参数），文档「备用服务商」表述修正为「同服务商便宜模型」——跨服务商 fallback 需独立 endpoint/key 配置（当前不提供），约束在代码注释 + llm.md/retry.md 配置表明确。详见 [问题文档](../../issues/llm/llm-012-fallback-same-provider.md)
+- **record_failure 返回值契约澄清（LLM-013，2026-08-16）**：`record_failure()` bool 返回值保留作语义标记（当前无调用方消费——请求级记账，单请求内熔断评估在重试结束后统一进行、不打断剩余重试）；retry.md「问题 2」「触发 OPEN 立即 break」表述修正为请求级记账实况。详见 [问题文档](../../issues/llm/llm-013-record-failure-return-contract.md)
 
 ### 遗留未定事项
 
