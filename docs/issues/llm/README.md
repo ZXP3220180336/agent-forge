@@ -30,6 +30,7 @@
 | [LLM-011](llm-011-cancel-race-feeds-breaker.md) | 整流放弃分支 cancel 竞态错误喂熔断器 | P1 | ✅ 已修复 | streaming_rectifier（迭代放弃分支） | 2026-08-16 | 2026-08-16 |
 | [LLM-012](llm-012-fallback-same-provider.md) | fallback 只支持同 provider（文档-实现偏差） | P1 | ✅ 已修复 | llm_service（_build_fallback_fn）+ 文档 | 2026-08-16 | 2026-08-16 |
 | [LLM-013](llm-013-record-failure-return-contract.md) | record_failure bool 契约无人兑现 + retry.md 误导 | P2 | ✅ 已修复 | retry（record_failure）+ 文档 | 2026-08-16 | 2026-08-16 |
+| [LLM-014](llm-014-single-entry-settle-test-false-positive.md) | 单条目 settle 测试假阳性 | P2 | ✅ 已修复 | test_reservation_limiter | 2026-08-16 | 2026-08-16 |
 
 ## 新问题登记规范
 

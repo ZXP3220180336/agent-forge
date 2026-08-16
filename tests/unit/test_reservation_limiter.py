@@ -96,13 +96,24 @@ async def _reserve_single(bucket: TokenBucket, reserved: float) -> Reservation:
 
 @pytest.mark.asyncio
 async def test_reservation_settle_refunds_difference():
-    """settle(actual) 退 max(0, reserved - actual)：多预的退回来。"""
-    b = TokenBucket(capacity=100, refill_rate=100)
-    res = await _reserve_single(b, 10)
+    """settle(actual) 退 max(0, reserved - actual)：多预的退回来。
+
+    LLM-014 修正：原测试用单条目（仅 RPM 桶），settle 只退 entries[1:]（空），
+    实际未退款，断言靠桶 refill 60ms 补满通过——假阳性。改用双条目
+    （RPM 按次桶 + TPM 按量桶）显式验证 TPM 退款。
+    """
+    rpm = _CancelOnRefundBucket()
+    tpm = _CancelOnRefundBucket()
+    await rpm.acquire(1.0)
+    await tpm.acquire(10.0)
+    res = Reservation()
+    res.add(rpm, 1.0)   # 首个条目 = 按次桶（RPM，settle 不退）
+    res.add(tpm, 10.0)  # 按量桶（TPM）
+
     await res.settle(4)
     assert res.settled
-    # 退还 6，桶回到 96 但被 capacity 封顶为 100 → 立即能 acquire 96
-    await b.acquire(96)
+    assert rpm.refunds == 0, "按次桶（RPM）settle 不退"
+    assert tpm.refunds == 1, "按量桶（TPM）应退 max(0, 10-4)=6（1 次 refund）"
 
 
 @pytest.mark.asyncio

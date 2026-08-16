@@ -1213,6 +1213,7 @@ response = await retry.execute(
 - **整流放弃分支取消守卫（LLM-011，2026-08-16）**：迭代放弃分支喂熔断前加 `cancel_event` 守卫——`_should_rectify` 因用户取消返回 False 时（异常仍 RETRYABLE）不再误喂熔断器（用户取消非下游故障，对齐 `test_cancel_event_not_feeds_breaker` 契约），改走取消路径。详见 [问题文档](../../issues/llm/llm-011-cancel-race-feeds-breaker.md)
 - **fallback 同 provider 约束文档化（LLM-012，2026-08-16）**：fallback 复用主模型 client（仅换 model 参数），文档「备用服务商」表述修正为「同服务商便宜模型」——跨服务商 fallback 需独立 endpoint/key 配置（当前不提供），约束在代码注释 + llm.md/retry.md 配置表明确。详见 [问题文档](../../issues/llm/llm-012-fallback-same-provider.md)
 - **record_failure 返回值契约澄清（LLM-013，2026-08-16）**：`record_failure()` bool 返回值保留作语义标记（当前无调用方消费——请求级记账，单请求内熔断评估在重试结束后统一进行、不打断剩余重试）；retry.md「问题 2」「触发 OPEN 立即 break」表述修正为请求级记账实况。详见 [问题文档](../../issues/llm/llm-013-record-failure-return-contract.md)
+- **单条目 settle 测试修正（LLM-014，2026-08-16）**：`test_reservation_settle_refunds_difference` 改用双条目（RPM 按次桶 + TPM 按量桶）+ refund 计数断言——修复单条目（settle 只退 entries[1:] 为空）假阳性：断言靠桶 refill 补满通过，settle 退款从未被真实验证。详见 [问题文档](../../issues/llm/llm-014-single-entry-settle-test-false-positive.md)
 
 ### 遗留未定事项
 
