@@ -47,6 +47,9 @@
 | [LLM-028](2026-08-02-tpm-prompt-only.md) | TPM 只算 prompt token（加输出余量） | P1 | ✅ 已修复 | llm_service / reservation_limiter | 2026-08-02 | 2026-08-02 |
 | [LLM-029](2026-08-02-api-clarity-fixes.md) | 限流器 API 清晰性（返回值/async with） | P3 | ✅ 已修复 | reservation_limiter | 2026-08-02 | 2026-08-02 |
 | [LLM-030](2026-08-07-stream-parser-robustness.md) | 流式/非流式解析健壮性 | P1 | ✅ 已修复 | streaming / streaming_rectifier | 2026-08-07 | 2026-08-07 |
+| [LLM-031](2026-08-09-client-close-tracking.md) | 连接关闭追踪演进（静默忽略/task 泄漏） | P1 | ✅ 已修复 | client（ClientManager） | 2026-08-09 | 2026-08-16 |
+| [LLM-032](2026-08-11-close-all-iteration-safety.md) | close_all 迭代安全（RuntimeError/异常中断） | P1 | ✅ 已修复 | client（close_all） | 2026-08-11 | 2026-08-11 |
+| [LLM-033](2026-08-09-client-kwargs-whitelist.md) | 参数透传白名单（**extra 吞没） | P1 | ✅ 已修复 | client（get_client） | 2026-08-09 | 2026-08-09 |
 
 ## 新问题登记规范
 

@@ -316,19 +316,13 @@ if old is not None:
 
 ---
 
-## 改造记录与工业实践
+## 问题记录
 
-### 改造记录总表
+> 审核发现的问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
 
-| 问题 | 修复前 | 修复后 |
-| --- | --- | --- |
-| **热切换旧 client 静默忽略（2026-08-09）** | `register_config` 只 `_instances.pop(key)`，旧连接泄漏到 GC | 无运行循环时旧 client 进入 `_pending_closes` 由 `close_all` 统一关闭，可追踪 |
-| **后台 close task 无引用（2026-08-11）** | `asyncio.ensure_future(old.close())` 返回值未保存，事件循环先关闭时 "Task was destroyed but it is pending" 警告，旧连接池关闭时机不可控；task 异常无人消费 | 后台 task 记录到 `_closing_tasks`，`close_all()` 开头 `asyncio.gather(*_closing_tasks, return_exceptions=True)` 等待完成并清空 |
-| **后台 close task 累积 + 失败静默（2026-08-16）** | `_closing_tasks` 无完成回调清理，多次热切换累积已完成 task 引用（内存泄漏）；`gather(return_exceptions=True)` 结果丢弃，后台关闭失败静默（与逐 client 关闭失败记日志不对称） | 后台 close task 挂 `add_done_callback(_on_closing_task_done)`——完成自动移除引用 + 消费异常记 `logger.warning`，不依赖 `close_all` 显式检查 |
-| **close_all 迭代共享字典（2026-08-11）** | `for client in _instances.values(): await client.close()` 中 await 让出控制权，并发修改字典抛 `RuntimeError`；单个 close 异常中断整批清理 | 先 `list()` 快照再逐个关闭；每个 close 包 `try/except Exception` + `logger.warning` 隔离 |
+- [热切换旧 client 静默忽略 + 后台关闭 task 无引用/累积/失败静默（连接关闭追踪演进）](../../../issues/integration/llm/2026-08-09-client-close-tracking.md)
+- [close_all 迭代共享字典（并发修改 RuntimeError / 异常中断整批）](../../../issues/integration/llm/2026-08-11-close-all-iteration-safety.md)
+- [`**extra` 参数被静默吞没（get_client 参数透传白名单）](../../../issues/integration/llm/2026-08-09-client-kwargs-whitelist.md)
 
-对应测试：`tests/unit/test_client_manager.py`（8 个用例）。
+> 正文（组件详解 / 执行流程 / 设计决策）已同步到当前状态。
 
-### 工业实践
-
-连接池复用的工业动机：每次创建 `AsyncOpenAI` 会建立 TCP 连接 + TLS 握手（约 1-3 次 RTT）。全局共享 client 跨请求复用 keep-alive 连接池，显著降低延迟与连接开销——与数据库连接池、HTTP 客户端连接池（httpx/requests Session）同一思想。多 key 隔离（`main`/`reasoning`/`fast`）让不同模型各持独立连接池，互不挤占。
