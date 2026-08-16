@@ -48,6 +48,7 @@ delay = base_delay × 2^attempt
 
 - attempt=0 → 1s，attempt=1 → 2s，attempt=2 → 4s，attempt=3 → 8s
 - 上限由 `max_delay` 控制（默认 30s）
+- **Retry-After 叠加（2026-08-16 封顶）**：429 时若服务端返回 `Retry-After`，在合理区间 `0 < retry_after ≤ max_delay` 内取 `max(delay, retry_after)`（尊重服务端建议）；超出 `max_delay` 忽略并回退指数退避——`retry-after: 3600` 这类异常/恶意值不会让请求挂死一小时（对齐 OpenAI SDK 的「合理区间」判断，用 `max_delay` 而非魔法数 60）
 
 **直觉**：第一次失败可能是瞬时的，短等即可；连续失败说明问题更严重，给对方更长的恢复时间。
 
@@ -360,7 +361,7 @@ flowchart TB
     CLASSIFY -- "NON_RETRYABLE<br>(400/401/403/422)" --> THROW["raise e<br>（不重试、不记录）"]
     THROW --> END_FATAL(["❌ 抛出异常，流程结束"])
 
-    CLASSIFY -- "RATE_LIMITED（429）" --> RL_DELAY["退避 delay<br>= max(指数退避, Retry-After)<br>（不计入熔断窗口）"]
+    CLASSIFY -- "RATE_LIMITED（429）" --> RL_DELAY["退避 delay<br>= max(指数退避, 合理 Retry-After)<br>（Retry-After 封顶到 max_delay，不计入熔断）"]
 
     CLASSIFY -- "RETRYABLE<br>（超时/5xx）" --> RL_DELAY
 
@@ -688,7 +689,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
            → OPEN
    ```
 
-4. **429 分离**：CLOSED 下 429 不计入错误率分母或分子，也不计入总请求量；触发退避重试（尊重 `Retry-After`，`_extract_retry_after` + `max(delay, retry_after)`）。CLOSED 假定下游健康，429 更可能是自身配额问题，只退避避免自我惩罚
+4. **429 分离**：CLOSED 下 429 不计入错误率分母或分子，也不计入总请求量；触发退避重试（尊重服务端 `Retry-After`，`_extract_retry_after` + 合理区间内 `max(delay, retry_after)`）。CLOSED 假定下游健康，429 更可能是自身配额问题，只退避避免自我惩罚。**Retry-After 封顶（2026-08-16）**：`retry_after` 仅在 `0 < retry_after ≤ max_delay` 区间内被尊重，超出（异常/恶意大值如 `retry-after: 3600`）忽略并回退指数退避——单次最长等待有界，防挂死（对齐 OpenAI SDK 的合理区间判断，`max_delay` 替代魔法数 60）
 
 原 `LLM_CIRCUIT_FAILURE_THRESHOLD`（连续失败计数）**已移除**。
 

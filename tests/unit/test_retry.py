@@ -787,6 +787,41 @@ async def test_retry_after_respected():
     assert handler.circuit_breaker.state.value == "closed", "429 重试不应熔断"
 
 
+@pytest.mark.asyncio
+async def test_retry_after_capped_by_max_delay():
+    """Retry-After 超过 max_delay 时被忽略（回退指数退避），不无限等待。
+
+    修复前：_calculate_delay 的 `delay = max(delay, retry_after)` 对 retry_after
+    无上限——恶意/异常服务端返回 retry-after=3600 会 sleep 一小时（真实挂起，
+    用 asyncio.wait_for 保护让测试快速失败而非挂死）。
+    修复后：合理区间 `0 < retry_after <= max_delay` 内尊重；超出 max_delay
+    忽略并回退指数退避（本身已被 max_delay 封顶），单次最长等待有界。
+    """
+    calls = [0]
+    handler = RetryHandler(
+        config=RetryConfig(max_retries=1, base_delay=0.01, max_delay=0.05, use_jitter=False),
+        circuit_breaker=CircuitBreaker(),
+    )
+
+    class _RateLimitedWithHeader(_RateLimited):
+        headers = {"retry-after": "3600"}  # 恶意/异常大值，远超 max_delay=0.05
+
+    async def call_fn():
+        calls[0] += 1
+        raise _RateLimitedWithHeader()
+
+    start = time.monotonic()
+    # 修复前会真实 sleep 3600s 挂起；wait_for 保护让测试超时快速失败
+    with pytest.raises(_RateLimitedWithHeader):
+        await asyncio.wait_for(handler.execute(call_fn), timeout=2)
+    elapsed = time.monotonic() - start
+
+    assert calls[0] == 2, "429 应触发重试"
+    # 回退指数退避（base_delay=0.01 × 2^0 = 0.01，被 max_delay=0.05 封顶）
+    assert elapsed < 0.5, f"Retry-After 超 max_delay 应被忽略，不等待 3600s，实际 {elapsed:.3f}s"
+    assert handler.circuit_breaker.state.value == "closed", "429 重试不应熔断"
+
+
 # =====================================================================
 # 混合失败：一次请求含限流 + 可重试失败时，按"是否出现过下游故障"记录
 # =====================================================================

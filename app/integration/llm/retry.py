@@ -547,12 +547,20 @@ class RetryHandler:
         attempt: int,
         retry_after: float | None = None,
     ) -> float:
-        """计算退避延迟（指数 + 可选随机抖动，429 时尊重服务端 Retry-After）。"""
+        """计算退避延迟（指数 + 可选随机抖动，429 时尊重服务端 Retry-After）。
+
+        Retry-After 封顶语义（工业级，对齐 OpenAI SDK 的「合理区间」判断）：
+            合理区间 `0 < retry_after <= max_delay` 内 → 尊重服务端建议
+                （可能比指数退避更长，如服务端要求 10s 就等 10s）；
+            超出 max_delay（异常/恶意大值）→ 忽略并回退指数退避——
+                指数退避本身已被 max_delay 封顶，单次最长等待有界，
+                不会因 `retry-after: 3600` 挂死一小时。
+        """
         delay = self.config.base_delay * (2**attempt)
         delay = min(delay, self.config.max_delay)
         if self.config.use_jitter:
             delay = random.uniform(0, delay)
-        if retry_after is not None:
+        if retry_after is not None and 0 < retry_after <= self.config.max_delay:
             delay = max(delay, retry_after)
         return delay
 

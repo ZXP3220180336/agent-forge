@@ -346,3 +346,100 @@ def test_settle_cancelled_midway_finally_cancels():
     assert reservation.cancel_calls == 1, "settle 中途取消应由 finally 兜底 cancel 续退"
     assert reservation.settled, "cancel 后应标记终态"
     assert "res" not in active, "finally 兜底后 active 不应残留未结算 reservation"
+
+
+# =====================================================================
+# 整流退避：RATE_LIMITED 中断提取 Retry-After（封顶到 max_delay）
+# =====================================================================
+
+_TEST_MAX_DELAY = 0.05
+_TEST_BASE_DELAY = 0.01
+
+
+class _RateLimited429(Exception):
+    """模拟 429 限流异常（RATE_LIMITED，可整流 + 携带 Retry-After 头）。"""
+
+    status_code = 429
+    headers: dict[str, str] = {}
+
+
+def _drive_rectify(streams, monkeypatch):
+    """驱动整流并捕获 asyncio.sleep 时长（monkeypatch 不真实等待）。
+
+    整流退避配置注入小值（base=0.01 / max=0.05 / 无抖动），避免测试真实等待。
+    """
+    result = StreamResult()
+    reservation = _FakeReservation()
+    context = RectifierContext(result, {"res": reservation}, {})
+    retry = _FakeRetry(streams)
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    _base, _max, _jitter = (
+        StreamingRectifier._base_delay,
+        StreamingRectifier._max_delay,
+        StreamingRectifier._use_jitter,
+    )
+    StreamingRectifier._base_delay = _TEST_BASE_DELAY
+    StreamingRectifier._max_delay = _TEST_MAX_DELAY
+    StreamingRectifier._use_jitter = False
+    try:
+        asyncio.run(_collect_events(StreamingRectifier, retry, context))
+    finally:
+        StreamingRectifier._base_delay = _base
+        StreamingRectifier._max_delay = _max
+        StreamingRectifier._use_jitter = _jitter
+    return sleeps
+
+
+async def _collect_events(cls, retry, context):
+    async for _ in cls.rectified_stream(
+        create_fn=lambda: _FakeStream([]),
+        retry=retry,
+        cancel_event=None,
+        stream_max_retries=1,
+        context=context,
+    ):
+        pass
+
+
+def test_rectify_respects_retry_after_normal(monkeypatch):
+    """429 中断整流时尊重合理 Retry-After（≤ max_delay 区间内）。
+
+    修复前：整流退避 `_stream_backoff(attempt)` 只用指数退避，不提取
+    Retry-After——服务端建议被忽略（429 中断不等待服务端退避时间）。
+    """
+    class _Rl(_RateLimited429):
+        headers = {"retry-after": "0.03"}  # 合理值（≤ max_delay=0.05）
+
+    streams = [
+        _FakeStream([], fail_at=0, exc=_Rl()),
+        _FakeStream([_content_chunk("ok"), _usage_chunk(10, 2)]),
+    ]
+    sleeps = _drive_rectify(streams, monkeypatch)
+    assert sleeps, "整流应退避"
+    assert sleeps[0] >= 0.03, f"合理 Retry-After 应被尊重，实际 {sleeps[0]:.3f}s"
+
+
+def test_rectify_retry_after_capped_by_max_delay(monkeypatch):
+    """429 中断整流时 Retry-After 封顶到 max_delay，不无限等待。
+
+    修复后：提取 Retry-After 但封顶——异常大值（3600s）忽略，回退指数退避。
+    """
+    class _Rl(_RateLimited429):
+        headers = {"retry-after": "3600"}  # 异常大值（应被封顶忽略）
+
+    streams = [
+        _FakeStream([], fail_at=0, exc=_Rl()),
+        _FakeStream([_content_chunk("ok"), _usage_chunk(10, 2)]),
+    ]
+    sleeps = _drive_rectify(streams, monkeypatch)
+    assert sleeps, "整流应退避"
+    assert sleeps[0] <= _TEST_MAX_DELAY, (
+        f"Retry-After 超 max_delay 应封顶，实际 {sleeps[0]:.3f}s"
+    )

@@ -95,7 +95,7 @@ StreamingRectifier.register_config(
 )
 ```
 
-退避公式与 create 阶段一致：`base_delay × 2^attempt`，上限 `max_delay`，可选随机抖动。**不新增独立退避配置**。
+退避公式与 create 阶段一致：`base_delay × 2^attempt`，上限 `max_delay`，可选随机抖动。**不新增独立退避配置**。**Retry-After 叠加（2026-08-16）**：RATE_LIMITED（429）中断整流时，提取服务端 `Retry-After` 参与退避，且与 create 阶段同样封顶到 `max_delay`——合理区间 `0 < retry_after ≤ max_delay` 内尊重，超出忽略回退指数退避（防异常大值挂死，对齐 retry.py 的 `_calculate_delay` 语义）。
 
 ### 调用方式
 
@@ -145,7 +145,7 @@ class RectifierContext:
 
 ## 测试
 
-- `tests/unit/test_streaming_rectifier.py`（8 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / 硬取消 finally cancel / **settle 中途取消 finally 续退**
+- `tests/unit/test_streaming_rectifier.py`（10 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / 硬取消 finally cancel / settle 中途取消 finally 续退 / **429 整流尊重 Retry-After（封顶到 max_delay）**
 - `tests/unit/test_stream_rectify.py`（21 用例，经 `LLMService.async_generate` 间接覆盖）：整流/结算/事件/日志/熔断 feeding 全链路断言
 
 ## 相关文档

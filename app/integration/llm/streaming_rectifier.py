@@ -39,7 +39,11 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.integration.llm.retry import ErrorCategory, classify_error
+from app.integration.llm.retry import (
+    ErrorCategory,
+    RetryHandler,
+    classify_error,
+)
 from app.integration.llm.streaming import StreamParser
 from app.shared.events import (
     build_error_event,
@@ -51,14 +55,18 @@ from app.utils.logger import fill_llm_event_fields
 if TYPE_CHECKING:
     from app.domain.ports.llm_gateway import StreamResult
     from app.integration.llm.reservation_limiter import Reservation
-    from app.integration.llm.retry import RetryHandler
 
 
-def _stream_backoff(attempt: int) -> float:
+def _stream_backoff(attempt: int, retry_after: float | None = None) -> float:
     """流式整流重试的退避延迟（配置由 StreamingRectifier.register_config 注入）。
 
     与 create 阶段的指数退避公式一致：base_delay × 2^attempt，
     上限 max_delay，可选随机抖动打散羊群效应。
+
+    Retry-After 封顶语义（与 retry.py 的 _calculate_delay 对齐）：
+        合理区间 `0 < retry_after <= max_delay` 内 → 尊重服务端建议；
+        超出 max_delay（异常/恶意大值）→ 忽略并回退指数退避（本身已封顶），
+        单次最长等待有界。
     """
     delay = min(
         StreamingRectifier._base_delay * (2**attempt),
@@ -66,6 +74,8 @@ def _stream_backoff(attempt: int) -> float:
     )
     if StreamingRectifier._use_jitter:
         delay = random.uniform(0, delay)
+    if retry_after is not None and 0 < retry_after <= StreamingRectifier._max_delay:
+        delay = max(delay, retry_after)
     return delay
 
 
@@ -220,7 +230,15 @@ class StreamingRectifier:
                 if _should_rectify(
                     emitted_any, attempt, stream_max_retries, e, cancel_event
                 ):
-                    await asyncio.sleep(_stream_backoff(attempt))
+                    # RATE_LIMITED（429）中断：提取服务端 Retry-After 参与退避
+                    # （封顶到 max_delay，与 retry.py 的 _calculate_delay 语义一致），
+                    # 其余类别走纯指数退避。
+                    retry_after = (
+                        RetryHandler._extract_retry_after(e)
+                        if classify_error(e) == ErrorCategory.RATE_LIMITED
+                        else None
+                    )
+                    await asyncio.sleep(_stream_backoff(attempt, retry_after))
                     if cancel_event and cancel_event.is_set():
                         yield build_error_event("用户取消了请求")
                         return
