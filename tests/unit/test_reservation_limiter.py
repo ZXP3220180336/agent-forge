@@ -526,3 +526,26 @@ async def test_cancel_cancelled_midway_keeps_unsettled():
     # 全部配额已退还：两个桶都满，可全量 acquire 且无等待
     assert await b1.acquire(100) == 0.0, "桶1应已全额退还"
     assert await b2.acquire(1000) == 0.0, "桶2应已全额退还"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_settle_cancel_mutex_no_double_refund():
+    """并发 settle/cancel → 互斥，不重复退款（LLM-010）。
+
+    修复前：_settled 检查与退款循环之间有 await，并发调用重复退款
+    （settle 退 tpm + cancel 退 rpm+tpm = 3 次 refund）。
+    修复后：asyncio.Lock 保证终态操作互斥，只一个生效（1 或 2 次）。
+    """
+    rpm = _CancelOnRefundBucket()
+    tpm = _CancelOnRefundBucket()
+    res = Reservation()
+    res.add(rpm, 1.0)   # 首个条目 = 按次桶（RPM，settle 不退）
+    res.add(tpm, 10.0)  # 按量桶（TPM）
+
+    await asyncio.gather(res.settle(5), res.cancel())
+
+    assert res.settled, "终态操作完成后应标记终态"
+    total_refunds = rpm.refunds + tpm.refunds
+    # settle 生效 → tpm 退 1 次；cancel 生效 → rpm+tpm 各退 1 次（共 2 次）。
+    # 修复前（无锁）两者都执行 → 3 次（tpm 被 settle 和 cancel 各退一次）。
+    assert total_refunds in (1, 2), f"并发终态操作应只退款一次，实际 {total_refunds} 次"
