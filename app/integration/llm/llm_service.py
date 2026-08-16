@@ -455,19 +455,29 @@ class LLMService:
                 raise
             return None
 
-        # 解析非流式响应
-        parsed = StreamParser.parse_non_stream(response)
+        # 解析非流式响应 + 结算退差（LLM-002：try/finally 兜底，与流式
+        # rectified_stream 的 finally 对齐——解析失败 / settle 被取消时不泄漏配额）。
+        # 正常：finally 内 settle(actual) 退 TPM 差；
+        # 解析抛异常：sr.usage 为 None → settle(None) 保留全部预留 + 标记终态
+        #   （请求已发出，RPM/TPM 是真实消耗，不 cancel 全额退）；
+        # settle 被硬取消：未终态 res cancel() 全额退 + re-raise（不吞取消信号）。
         sr = StreamResult()
-        sr.content = parsed.get("content", "")
-        sr.finish_reason = parsed.get("finish_reason")
-        sr.tool_calls = parsed.get("tool_calls", [])
-        sr.usage = parsed.get("usage")
-        sr.refusal = parsed.get("refusal")
-
-        # 结算退差：实际消耗 = usage.total_tokens，退还预估多余部分
-        res = active.pop("res", None)
-        if res is not None:
-            await res.settle((sr.usage or {}).get("total_tokens"))
+        try:
+            parsed = StreamParser.parse_non_stream(response)
+            sr.content = parsed.get("content", "")
+            sr.finish_reason = parsed.get("finish_reason")
+            sr.tool_calls = parsed.get("tool_calls", [])
+            sr.usage = parsed.get("usage")
+            sr.refusal = parsed.get("refusal")
+        finally:
+            res = active.pop("res", None)
+            if res is not None and not res.settled:
+                try:
+                    await res.settle((sr.usage or {}).get("total_tokens"))
+                except BaseException:
+                    if not res.settled:
+                        await res.cancel()
+                    raise
 
         await fill_llm_event_fields(
             event_fields,

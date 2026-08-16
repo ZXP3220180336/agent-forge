@@ -18,6 +18,7 @@
 | ID | 标题 | 优先级 | 状态 | 涉及模块 | 登记日期 | 修复日期 |
 | --- | --- | --- | --- | --- | --- | --- |
 | [LLM-001](llm-001-stream-error-propagation.md) | 流式 create 阶段失败被 ReActAgent 静默吞掉 | P0 | ✅ 已修复 | streaming_rectifier / domain(StreamResult) / executor | 2026-08-16 | 2026-08-16 |
+| [LLM-002](llm-002-generate-quota-settle-fallback.md) | 非流式 generate() 配额结算无兜底 | P0 | ✅ 已修复 | llm_service（非流式 generate） | 2026-08-16 | 2026-08-16 |
 
 ## 新问题登记规范
 

@@ -8,6 +8,7 @@ LLMService 单元测试（Facade 编排层专属）
 不依赖真实 API：mock ClientManager / RetryHandlerManager，构造假非流式响应。
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -65,6 +66,83 @@ class _FakeRetry:
         self.execute_kwargs = {"call_fn": call_fn, "fallback_fn": fallback_fn}
         # 模拟真实行为：主链路失败（重试耗尽）→ 调用 fallback_fn 兜底
         return await fallback_fn()
+
+
+# =====================================================================
+# 配额结算兜底测试辅助（LLM-002）
+# =====================================================================
+
+
+class _BrokenResponse:
+    """模拟响应形状异常：访问 choices 抛 AttributeError（parse_non_stream 崩溃）。"""
+
+    @property
+    def choices(self):
+        raise AttributeError("malformed response: missing choices")
+
+
+class _TrackingReservation:
+    """记录 settle/cancel 调用的 Reservation 桩（终态语义对齐真实实现）。"""
+
+    def __init__(self) -> None:
+        self.settled = False
+        self.settle_calls = 0
+        self.cancel_calls = 0
+
+    async def settle(self, actual=None):
+        self.settle_calls += 1
+        self.settled = True
+
+    async def cancel(self):
+        self.cancel_calls += 1
+        self.settled = True
+
+
+class _CancelOnSettleReservation(_TrackingReservation):
+    """settle 抛 CancelledError（模拟退款循环中途被取消，未到终态）。"""
+
+    async def settle(self, actual=None):
+        raise asyncio.CancelledError()
+
+
+class _StubLimiter:
+    """限流桩：reserve 返回预置 Reservation（记录结算路径）。"""
+
+    def __init__(self, reservation) -> None:
+        self._reservation = reservation
+
+    async def reserve(self, estimated_tokens=0, retry_after=None):
+        return self._reservation
+
+    async def reserve_adaptive(self, prompt_tokens=0, max_tokens=0):
+        return self._reservation
+
+
+class _FakeRetryDirect:
+    """retry.execute 直接调 call_fn（主链路成功，reserve 进 active）。"""
+
+    async def execute(self, call_fn, fallback_fn=None):
+        return await call_fn()
+
+
+def _patch_generate_env(monkeypatch, client, retry, reservation):
+    """patch 非流式 generate 依赖：ClientManager / RetryHandlerManager / ReservationLimiterManager。"""
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.ClientManager.get_model",
+        staticmethod(lambda key: f"{key}-model"),
+    )
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.ClientManager.get_client",
+        staticmethod(lambda key: client),
+    )
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.RetryHandlerManager.get",
+        staticmethod(lambda key: retry),
+    )
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.ReservationLimiterManager.get",
+        staticmethod(lambda key: _StubLimiter(reservation)),
+    )
 
 
 def _patch_llm_env(monkeypatch, fallback_client, fake_retry):
@@ -193,3 +271,47 @@ def test_count_prompt_tokens_multimodal_list_content(monkeypatch):
     total = _count_prompt_tokens("main", messages, max_tokens=10)
     assert isinstance(total, int), "多模态 list content 不应抛异常"
     assert total > 0, "多模态文本片段应计入 token"
+
+
+# =====================================================================
+# 配额结算兜底（LLM-002）：parse 异常 / settle 取消不泄漏
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_generate_settles_on_parse_error(monkeypatch):
+    """parse 抛异常 → finally 兜底 settle(None)，res 到终态不泄漏（LLM-002）。
+
+    修复前：parse_non_stream 抛异常时 active["res"] 无人清理，配额永久占用。
+    修复后：try/finally 内 settle 兜底；请求已发出 → settle 保留配额（非 cancel 全额退）。
+    """
+    reservation = _TrackingReservation()
+    client = _FakeClient(_FakeCompletions([_BrokenResponse()]))
+    _patch_generate_env(monkeypatch, client, _FakeRetryDirect(), reservation)
+
+    llm = LLMService()
+    with pytest.raises(AttributeError):
+        await llm.generate(messages=[{"role": "user", "content": "hi"}])
+
+    assert reservation.settled, "parse 异常应结算兜底（settle），不泄漏"
+    assert reservation.settle_calls == 1
+    assert reservation.cancel_calls == 0, "请求已发出，应 settle（保留配额）而非 cancel"
+
+
+@pytest.mark.asyncio
+async def test_generate_cancels_when_settle_cancelled(monkeypatch):
+    """settle 被取消 → finally 兜底 cancel 未终态 res，不泄漏 + 传播取消（LLM-002）。
+
+    修复前：settle 期间被硬取消，res 已 pop 且未终态，无人续退 → 配额泄漏。
+    修复后：except 兜底 cancel 未终态 res + re-raise（不吞取消信号）。
+    """
+    reservation = _CancelOnSettleReservation()
+    client = _FakeClient(_FakeCompletions([_FakeResponse("ok")]))
+    _patch_generate_env(monkeypatch, client, _FakeRetryDirect(), reservation)
+
+    llm = LLMService()
+    with pytest.raises(asyncio.CancelledError):
+        await llm.generate(messages=[{"role": "user", "content": "hi"}])
+
+    assert reservation.cancel_calls == 1, "settle 取消后应 cancel 兜底（未终态 res 不泄漏）"
+    assert reservation.settled, "cancel 后应到终态"
