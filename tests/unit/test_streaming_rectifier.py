@@ -291,3 +291,58 @@ def test_cancel_on_hard_interrupt():
 
     assert reservation.cancel_calls == 1, "硬取消应由 finally 兜底 cancel"
     assert reservation.settled, "cancel 后应标记终态"
+
+
+class _CancelOnSettleReservation:
+    """settle 中途抛 CancelledError 的 Reservation（模拟退款 await 期间被硬取消）。
+
+    与真实 Reservation 行为一致：settle 未完成保持 settled=False（reservation_limiter
+    的终态标记设计），供外层兜底 cancel 续退。
+    """
+
+    def __init__(self):
+        self.settled = False
+        self.settle_calls = 0
+        self.cancel_calls = 0
+
+    async def settle(self, actual=None):
+        self.settle_calls += 1
+        raise asyncio.CancelledError()
+
+    async def cancel(self):
+        self.cancel_calls += 1
+        self.settled = True
+
+
+def test_settle_cancelled_midway_finally_cancels():
+    """settle 退款中途被取消 → 未终态 res 塞回 active → finally 兜底 cancel。
+
+    修复前：_settle_active 先 pop("res") 再 await settle()，settle 被取消时
+    res 已从 active 弹出，finally pop 到 None 无法续退 → 配额永久泄漏。
+    修复后：settle 异常把未终态 res 塞回 active，finally 兜底 cancel 续退。
+    """
+    streams = [_FakeStream([_content_chunk("ok"), _usage_chunk(10, 2)])]
+    result = StreamResult()
+    reservation = _CancelOnSettleReservation()
+    active = {"res": reservation}
+    context = RectifierContext(result, active, {})
+    retry = _FakeRetry(streams)
+
+    async def collect():
+        try:
+            async for _ in StreamingRectifier.rectified_stream(
+                create_fn=lambda: _FakeStream([]),
+                retry=retry,
+                cancel_event=None,
+                stream_max_retries=1,
+                context=context,
+            ):
+                pass
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(collect())
+
+    assert reservation.cancel_calls == 1, "settle 中途取消应由 finally 兜底 cancel 续退"
+    assert reservation.settled, "cancel 后应标记终态"
+    assert "res" not in active, "finally 兜底后 active 不应残留未结算 reservation"

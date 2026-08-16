@@ -290,10 +290,21 @@ class StreamingRectifier:
 
     @staticmethod
     async def _settle_active(context: RectifierContext) -> None:
-        """结算退差：请求已发出（create 成功）→ settle（退 TPM 差），非 cancel。"""
+        """结算退差：请求已发出（create 成功）→ settle（退 TPM 差），非 cancel。
+
+        settle 退款 await 期间被硬取消（CancelledError）时，reservation 保持
+        未终态（reservation_limiter 的终态标记设计），必须塞回 active 交给
+        rectified_stream 的 finally 兜底 cancel 续退——否则 res 已从 active 弹出、
+        finally pop 到 None，配额永久泄漏。
+        """
         res = context.active.pop("res", None)
         if res is not None:
-            await res.settle((context.result.usage or {}).get("total_tokens"))
+            try:
+                await res.settle((context.result.usage or {}).get("total_tokens"))
+            except BaseException:
+                # settle 中途被取消 → 未终态 res 塞回 active，由 finally 兜底续退
+                context.active["res"] = res
+                raise
 
     @staticmethod
     async def _finish_interrupted(
