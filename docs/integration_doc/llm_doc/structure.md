@@ -336,6 +336,7 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
 - **解析前三态检查**：`_classify_result` 区分截断/拒答/正常（问题 2）——截断扩 token 重试 1 次、拒答短路，均不进入降级链
 - **错误回喂**：解析/校验失败回喂错误重试 `_REASK_MAX_RETRIES=2` 次，耗尽返回 None 触发降级（问题 3）。**终态解析**（2026-08-16）：循环退出补一次解析——最后一次回喂请求的输出（循环「解析→失败→再请求」以请求收尾）必须被解析，否则模型在最后一次修正成功的结果被静默丢弃 + 白付一次调用
 - **下游失败降级（B3，2026-08-09）**：`generate` 对**可恢复错误**（超时/5xx/429）重试耗尽返回 None → 降级到下一级；对**不可恢复错误**（4xx/认证/熔断开启）抛异常 → structured 记录 ERROR 日志后 re-raise，不再白打降级请求。与截断/拒答短路区分（审核修复）
+- **response_format 400 降级（2026-08-16）**：`_call_generate` 识别「明确因 response_format 不被支持而 400」（`_is_unsupported_response_format_error`：状态码 400 + 错误信息含 response_format/json_schema）→ 记 WARNING 后返回 None 触发降级，而非当致命错误上抛——兑现「模型不支持 strict JSON Schema 时降级到 JSON Mode」的降级链契约（如 DeepSeek 等不支持 `json_schema` 类型的兼容网关）；**其余 NON_RETRYABLE 400 仍上抛**（调用方 bug 不静默吞掉）
 - **回喂内截断一律短路**：不与扩 token 逻辑组合，防 token 爆炸（审核修复，对齐顶层「截断与降级正交」）
 
 ### _fallback_extract — 正则兜底提取（无 response_format）
@@ -655,7 +656,7 @@ def validate_llm_output(raw_json: str) -> IntentResult:
 
 **两个附带发现**：
 
-- **DeepSeek 官方 API 不支持 `json_schema` 类型**（返回 400），本项目第一级（strict json_schema）对 DeepSeek 每次都白打一次请求——可选优化：按 model_key/provider 预判跳过第一级直接进 json_mode。
+- **DeepSeek 官方 API 不支持 `json_schema` 类型**（返回 400）：第一级（strict json_schema）对 DeepSeek 白打一次请求，但 `_call_generate` 已识别「response_format 不被支持的 400」并降级到 JSON mode（2026-08-16 修复，见 `_try_extract` 要点）——不再收到裸 API 错误。可选优化仍成立：按 model_key/provider 预判跳过第一级直接进 json_mode，省一次白打。
 - **DeepSeek 无 refusal 字段**，拒答形态是「content 空 + finish_reason 异常」——拒答判定必须覆盖「content 为空且非截断」这一形态，不能只查字段。
 
 **信息来源**：
@@ -799,6 +800,7 @@ for retry in 1..MAX_RETRIES:              # MAX_RETRIES = 2 或 3
 | JSON mode 不做 Schema 保证 | ✅ 定位为第二级降级 |
 | repair 只修语法不修事实 | ✅ 第三级仅剥 Markdown 代码块，未引入 json-repair 库 |
 | API 边界失败（超时/429/5xx） | ✅ 可靠性层（retry/限流/熔断）透明覆盖 |
+| **模型不支持 response_format（400）** | ✅ `_call_generate` 识别「response_format 不被支持的 400」→ 降级到 JSON mode（2026-08-16） |
 | 审计日志 | ✅ `llm_call` 业务事件（请求/用量/耗时，generate 内部） |
 | 模型输出当不可信输入 | ✅ 三级降级 + 重试 + 熔断的整体设计意图 |
 | **程序校验（Schema）** | ✅ `_validate_schema`（jsonschema）本地校验，三级降级全覆盖（问题 1） |

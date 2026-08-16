@@ -645,6 +645,74 @@ async def test_reask_does_not_pollute_caller_messages():
     assert seen["caller_messages_at_first"] == original_messages
 
 
+class _UnsupportedResponseFormat400(Exception):
+    """模拟模型/网关不支持 response_format 的 400 错误（openai.BadRequestError 形态）。
+
+    status_code=400 → classify_error 判 NON_RETRYABLE；错误信息含 response_format，
+    供 _call_generate 识别「明确因 response_format 不被支持而 400」。
+    """
+
+    status_code = 400
+
+
+class _GenericBadRequest400(Exception):
+    """模拟非 response_format 的普通 400 错误（应仍上抛，不降级）。"""
+
+    status_code = 400
+
+
+@pytest.mark.asyncio
+async def test_json_schema_unsupported_400_degrades_to_json_mode():
+    """模型不支持 json_schema response_format（400）→ 降级到第二级 JSON Mode。
+
+    修复前：_build_json_schema_request 无条件发 strict json_schema，模型/网关
+    不支持时 API 返回 400 → classify_error 判 NON_RETRYABLE → generate re-raise
+    → _call_generate re-raise → extract 只捕获截断异常 → 文档承诺的「不支持时
+    降级到 JSON Mode」永远走不到，调用方收到裸 API 错误。
+    修复后：_call_generate 识别「response_format 不被支持而 400」→ 返回 None
+    触发降级到下一级。
+    """
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) == 1:
+            raise _UnsupportedResponseFormat400(
+                "Unsupported response_format: json_schema"
+            )
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA)
+    assert result == {"name": "张三"}, (
+        f"不支持 json_schema 应降级到 JSON Mode 成功，实际 {result!r}"
+    )
+    assert calls[0]["type"] == "json_schema"
+    assert calls[1]["type"] == "json_object"  # 降级到第二级
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_generic_bad_request_400_still_propagates():
+    """非 response_format 的 400（消息格式错）→ 仍上抛，不降级。
+
+    保护：识别仅针对「明确因 response_format 不被支持」的 400，
+    其余 NON_RETRYABLE 400（调用方 bug）仍向上抛，不静默吞掉。
+    """
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        raise _GenericBadRequest400("Invalid messages format")
+
+    llm.generate = fake_generate
+    with pytest.raises(_GenericBadRequest400):
+        await llm.generate_structured(MESSAGES, SCHEMA)
+    assert len(calls) == 1, "普通 400 应上抛，不触发降级"
+
+
 @pytest.mark.asyncio
 async def test_reask_truncation_does_not_enter_loop():
     """回喂循环内截断 → 不进入回喂循环、不扩 token 组合 → 降级。"""
