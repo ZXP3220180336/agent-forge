@@ -180,12 +180,20 @@ def _collect_schema_errors(parsed: dict[str, Any], schema: dict[str, Any]) -> li
 
     注意：错误文本含 `e.message`（嵌入完整实例值）——用于**回喂模型**（模型
     需要看到具体错误才能修正）。写入日志需用脱敏版 `_collect_schema_error_summaries`。
+
+    LLM-007：schema 非法（UnknownType / SchemaError / TypeError 等）时
+    Draft7Validator(schema) 构造或 iter_errors 抛异常——捕获并返回错误信息
+    （按校验失败处理触发降级），不崩溃（与 _validate_schema 的 except 兜底一致）。
     """
-    errors = []
-    for e in Draft7Validator(schema).iter_errors(parsed):
-        path = "/".join(str(p) for p in e.absolute_path) or "<root>"
-        errors.append(f"- 字段 `{path}`：{e.message}")
-    return errors
+    try:
+        errors = []
+        for e in Draft7Validator(schema).iter_errors(parsed):
+            path = "/".join(str(p) for p in e.absolute_path) or "<root>"
+            errors.append(f"- 字段 `{path}`：{e.message}")
+        return errors
+    except Exception as e:  # noqa: BLE001  schema 非法（UnknownType / SchemaError / TypeError）
+        logger.error("Schema 校验器异常（schema 可能非法）: %s", e)
+        return [f"- Schema 校验器异常（schema 可能非法）：{e}"]
 
 
 def _collect_schema_error_summaries(
@@ -196,12 +204,18 @@ def _collect_schema_error_summaries(
     与 `_collect_schema_errors`（回喂模型，含 `e.message` 嵌入完整实例值）的区别：
     本函数只含 schema 结构信息（validator 名 / 约束值 / 字段路径），**无实例数据**，
     可安全写入日志——Yield RCA 场景的敏感数据（良率/晶圆）不因错误日志落盘。
+
+    LLM-007：schema 非法时捕获并返回错误信息（与 _collect_schema_errors 一致）。
     """
-    summaries = []
-    for e in Draft7Validator(schema).iter_errors(parsed):
-        path = "/".join(str(p) for p in e.absolute_path) or "<root>"
-        summaries.append(f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}")
-    return summaries
+    try:
+        summaries = []
+        for e in Draft7Validator(schema).iter_errors(parsed):
+            path = "/".join(str(p) for p in e.absolute_path) or "<root>"
+            summaries.append(f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}")
+        return summaries
+    except Exception as e:  # noqa: BLE001  schema 非法（UnknownType / SchemaError / TypeError）
+        logger.error("Schema 校验器异常（schema 可能非法）: %s", e)
+        return [f"- Schema 校验器异常（schema 可能非法）：{e}"]
 
 
 def _build_reask_messages(

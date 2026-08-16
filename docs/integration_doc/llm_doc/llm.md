@@ -1206,6 +1206,7 @@ response = await retry.execute(
 - **空 content 分类修正（LLM-004，2026-08-16）**：`_classify_result` 空 content 分支区分 finish_reason——无 finish_reason + content 空 → 新增 `"empty"` 分类（`_try_extract`/`_fallback_extract` 返回 None 触发降级），修复适配层空响应被误判为安全拒答抛 `StructuredRefusalError`；有 finish_reason（如 stop）+ content 空 → 保持 `refusal`（DeepSeek 拒答形态保留）。拒答应基于显式信号（refusal 字段 / content_filter），不靠「content 空」推断。详见 [问题文档](../../issues/llm/llm-004-empty-content-refusal-misjudge.md)
 - **熔断器并发测试补齐（LLM-005，2026-08-16）**：`test_retry.py` 新增 4 条并发用例守护「无锁安全」不变量——并发放行槽位上限、探针失败回 OPEN 后迟到 success no-op、并发窗口记账无丢失、4xx 释放槽位补位（`asyncio.gather` + `Event` 确定性交错）。熔断器方法同步无 await → 单方法原子（GIL），测试验证方法序列交错语义。详见 [问题文档](../../issues/llm/llm-005-circuit-breaker-concurrency-tests.md)
 - **整流入口取消守卫（LLM-006，2026-08-16）**：`rectified_stream` 整流循环顶部加 `cancel_event` 检查——取消置位后不再发起真实 reserve + API 请求（对齐工业界「取消后不发新副作用」）；与迭代内检查、整流退避后检查构成三道守卫；整流退避后检查补 `result.error` 标记（与取消路径一致）。详见 [问题文档](../../issues/llm/llm-006-rectify-entry-cancel-check.md)
+- **非法 schema 崩溃防护（LLM-007，2026-08-16）**：`_collect_schema_errors` / `_collect_schema_error_summaries` 包 try/except——非法 schema（UnknownType/SchemaError/TypeError）记 ERROR + 返回错误列表（按校验失败触发降级），与 `_validate_schema` 兜底一致（修复两套路径防护不一致、非法 schema 崩溃穿透）。详见 [问题文档](../../issues/llm/llm-007-invalid-schema-crash.md)
 
 ### 遗留未定事项
 

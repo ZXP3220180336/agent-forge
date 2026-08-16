@@ -782,6 +782,31 @@ async def test_reask_empty_response_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_invalid_schema_returns_none_not_crash():
+    """非法 schema（UnknownType / TypeError / SchemaError）→ 返回 None 不崩溃（LLM-007）。
+
+    修复前：`_collect_schema_errors` 的 `Draft7Validator(schema).iter_errors` 对非法
+    schema 抛异常穿透崩溃；`_validate_schema` 却有 except 兜底（两套路径不一致）。
+    修复后：捕获记日志 + 返回错误 → 按校验失败处理触发降级 → 最终 None。
+    """
+    llm = LLMService()
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        return _sr('{"name": "张三"}')
+
+    llm.generate = fake_generate
+
+    invalid_schemas = [
+        {"type": "object", "properties": 5},  # properties 非法类型
+        {"type": 123},  # type 非法
+        {"type": "nonexistent_type"},  # 未知 type → UnknownType
+    ]
+    for schema in invalid_schemas:
+        result = await llm.generate_structured(MESSAGES, schema)
+        assert result is None, f"非法 schema 应返回 None（触发降级），而非崩溃: {schema}"
+
+
+@pytest.mark.asyncio
 async def test_reask_refusal_short_circuits():
     """回喂循环内拒答 → 抛 StructuredRefusalError（不降级、不继续回喂）。"""
     llm = LLMService()
