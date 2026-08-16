@@ -1207,6 +1207,7 @@ response = await retry.execute(
 - **熔断器并发测试补齐（LLM-005，2026-08-16）**：`test_retry.py` 新增 4 条并发用例守护「无锁安全」不变量——并发放行槽位上限、探针失败回 OPEN 后迟到 success no-op、并发窗口记账无丢失、4xx 释放槽位补位（`asyncio.gather` + `Event` 确定性交错）。熔断器方法同步无 await → 单方法原子（GIL），测试验证方法序列交错语义。详见 [问题文档](../../issues/llm/llm-005-circuit-breaker-concurrency-tests.md)
 - **整流入口取消守卫（LLM-006，2026-08-16）**：`rectified_stream` 整流循环顶部加 `cancel_event` 检查——取消置位后不再发起真实 reserve + API 请求（对齐工业界「取消后不发新副作用」）；与迭代内检查、整流退避后检查构成三道守卫；整流退避后检查补 `result.error` 标记（与取消路径一致）。详见 [问题文档](../../issues/llm/llm-006-rectify-entry-cancel-check.md)
 - **非法 schema 崩溃防护（LLM-007，2026-08-16）**：`_collect_schema_errors` / `_collect_schema_error_summaries` 包 try/except——非法 schema（UnknownType/SchemaError/TypeError）记 ERROR + 返回错误列表（按校验失败触发降级），与 `_validate_schema` 兜底一致（修复两套路径防护不一致、非法 schema 崩溃穿透）。详见 [问题文档](../../issues/llm/llm-007-invalid-schema-crash.md)
+- **拒答日志截断（LLM-008，2026-08-16）**：`_raise_boundary` refusal 日志经 `_truncate_text_for_log` 截断落盘——修复拒答文本完整落日志违反「模型输出不完整落盘」安全基线（拒答常引用触发内容，Yield RCA 含晶圆/良率数据）；异常 message 与日志分离（message 简洁、日志截断前缀供诊断）。详见 [问题文档](../../issues/llm/llm-008-refusal-log-truncation.md)
 
 ### 遗留未定事项
 

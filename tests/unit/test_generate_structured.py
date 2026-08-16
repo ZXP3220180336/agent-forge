@@ -11,6 +11,7 @@ LLMService.generate_structured 单元测试
 """
 
 import json
+import logging
 
 import pytest
 
@@ -804,6 +805,29 @@ async def test_invalid_schema_returns_none_not_crash():
     for schema in invalid_schemas:
         result = await llm.generate_structured(MESSAGES, schema)
         assert result is None, f"非法 schema 应返回 None（触发降级），而非崩溃: {schema}"
+
+
+@pytest.mark.asyncio
+async def test_refusal_log_truncated(caplog):
+    """拒答文本落日志截断（LLM-008）：超长 refusal 不完整落盘。
+
+    修复前：`_raise_boundary` 日志 `refusal=%r` 完整落盘，违反「模型输出不完整
+    落盘」安全基线（拒答常引用触发内容，Yield RCA 含晶圆/良率数据）。
+    修复后：拒答文本经 `_truncate_text_for_log` 截断，日志含截断标记。
+    """
+    llm = LLMService()
+    long_refusal = "敏感数据" * 400  # 1600 字符，超过 _LOG_TRUNCATE_LIMIT=500
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        return _sr("", refusal=long_refusal)
+
+    llm.generate = fake_generate
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(StructuredRefusalError):
+            await llm.generate_structured(MESSAGES, SCHEMA)
+
+    assert "已截断" in caplog.text, "超长拒答应被截断标记"
+    assert long_refusal not in caplog.text, "完整拒答文本不应落盘"
 
 
 @pytest.mark.asyncio

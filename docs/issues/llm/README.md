@@ -24,6 +24,7 @@
 | [LLM-005](llm-005-circuit-breaker-concurrency-tests.md) | retry 熔断器并发路径零测试覆盖 | P2 | ✅ 已修复 | retry（CircuitBreaker 并发） | 2026-08-16 | 2026-08-16 |
 | [LLM-006](llm-006-rectify-entry-cancel-check.md) | 整流重试前不检查 cancel_event，取消后仍发真实请求 | P1 | ✅ 已修复 | streaming_rectifier（整流循环入口） | 2026-08-16 | 2026-08-16 |
 | [LLM-007](llm-007-invalid-schema-crash.md) | 非法 schema 使 iter_errors 崩溃，防护不一致 | P1 | ✅ 已修复 | structured（_collect_schema_errors） | 2026-08-16 | 2026-08-16 |
+| [LLM-008](llm-008-refusal-log-truncation.md) | 拒答文本完整落日志，违反安全基线 | P0 | ✅ 已修复 | structured（_raise_boundary 日志） | 2026-08-16 | 2026-08-16 |
 
 ## 新问题登记规范
 

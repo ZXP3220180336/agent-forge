@@ -671,9 +671,12 @@ class StructuredOutput:
         """
         if failure == "refusal":
             logger.warning(
-                "%s拒答: refusal=%r, finish_reason=%s",
+                "%s拒答: refusal=%s, finish_reason=%s",
                 stage,
-                getattr(result, "refusal", None),
+                # LLM-008：拒答文本经截断落盘（「模型输出不完整落盘」安全基线）——
+                # 拒答常引用触发内容（Yield RCA 晶圆/良率数据），不能完整落日志。
+                # 异常 message 保持简洁（不含拒答文本），日志保留截断前缀供诊断。
+                _truncate_text_for_log(str(getattr(result, "refusal", "") or "")),
                 result.finish_reason,
             )
             raise StructuredRefusalError(
