@@ -277,8 +277,10 @@ class LLMService:
         # client 由 ClientManager 连接池按 key 缓存复用，与整流 attempt 无关，
         # 提到循环外，避免循环内定义闭包引用循环变量（Pylance 警告）。
         client = ClientManager.get_client(model_key)
+
         # 准备重试执行器 + fallback 函数 + 日志记录（辅助函数统一构建）
         retry = RetryHandlerManager.get(model_key)
+
         # 客户端限流：reserve/settle 统一闭环。
         # estimated_tokens 用 tiktoken 实时数当前 messages（含此前各轮工具结果）。
         # 限流只保护主模型链路：retry.execute 内部每次重试 call_fn 都重新 reserve；
@@ -367,12 +369,11 @@ class LLMService:
             response_format=response_format,
         )
 
-        retry = RetryHandlerManager.get(model_key)
-        event_fields = _build_event_fields(
-            model_key, messages, temperature, bool(tools), stream=False
-        )
+        fallback_fn = _build_fallback_fn(kwargs, model_key)
+
         client = ClientManager.get_client(model_key)
-        start_time = time.monotonic()
+
+        retry = RetryHandlerManager.get(model_key)
 
         # 客户端限流：reserve/settle 统一闭环（与 async_generate 一致）。
         # 每次真实请求（含 retry 内部重试）都重新 reserve，create 失败全额退。
@@ -392,6 +393,12 @@ class LLMService:
         # 但 retry 内部重试会多次调用 call_fn，需用同一 dict 让成功路径读到。
         active: dict[str, Reservation] = {}
 
+        event_fields = _build_event_fields(
+            model_key, messages, temperature, bool(tools), stream=False
+        )
+
+        start_time = time.monotonic()
+
         try:
             response = await retry.execute(
                 call_fn=lambda: _rate_limited_call(
@@ -404,6 +411,7 @@ class LLMService:
                     estimated=estimated,
                     max_tokens=max_tokens,
                 ),
+                fallback_fn=fallback_fn,
             )
         except Exception as e:
             await fill_llm_event_fields(
