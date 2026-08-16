@@ -71,7 +71,7 @@
 
 ### 失败信号透传（result.error，LLM-001）
 
-三个失败出口除了产出 SSE error 事件外，还会在 `StreamResult.error` 标记失败原因——供编排层（`ReActAgent`）短路决策，避免把「LLM 失败」当「空输出」空转重试（详见 [问题文档](../../../issues/integration/llm/llm-001-stream-error-propagation.md)）：
+三个失败出口除了产出 SSE error 事件外，还会在 `StreamResult.error` 标记失败原因——供编排层（`ReActAgent`）短路决策，避免把「LLM 失败」当「空输出」空转重试（详见 [问题文档](../../../issues/integration/llm/2026-08-16-stream-error-propagation.md)）：
 
 | 出口 | `result.error` | SSE 事件 |
 | --- | --- | --- |

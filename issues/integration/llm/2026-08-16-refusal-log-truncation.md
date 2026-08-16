@@ -4,7 +4,7 @@
 > **优先级**：P0（合并前必修，安全）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 7）
 > **涉及模块**：`app/integration/llm/structured.py`（`_raise_boundary` refusal 日志）
-> **关联文档**：[structure.md](../../../docs/integration_doc/llm_doc/structure.md) · [llm-004](llm-004-empty-content-refusal-misjudge.md)（模型输出截断基线）
+> **关联文档**：[structure.md](../../../docs/integration_doc/llm_doc/structure.md) · [llm-004](2026-08-16-empty-content-refusal-misjudge.md)（模型输出截断基线）
 
 ---
 

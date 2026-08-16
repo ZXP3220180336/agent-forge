@@ -96,7 +96,7 @@ Agent 是核心层的**决策与行动核心**，负责编排 LLM 推理与工�
 | `finish_reason` / `tool_calls` / `usage` / `refusal` | 停止原因 / 工具调用 / Token 用量 / 拒答 |
 | `error` | LLM 调用失败原因（create 失败 / 流中断放弃 / 用户取消），`None`=成功；供 `ReActAgent` 短路决策，避免把「失败」当「空输出」空转重试。正常空回（stop + 空 content）不置位（LLM-001，2026-08-16 新增） |
 
-**详见** [LLM 层说明](../integration_doc/llm_doc/llm.md) · [问题文档 LLM-001](../../issues/integration/llm/llm-001-stream-error-propagation.md)
+**详见** [LLM 层说明](../integration_doc/llm_doc/llm.md) · [问题文档 LLM-001](../../issues/integration/llm/2026-08-16-stream-error-propagation.md)
 
 ---
 

@@ -17,20 +17,20 @@
 
 | ID | 标题 | 优先级 | 状态 | 涉及模块 | 登记日期 | 修复日期 |
 | --- | --- | --- | --- | --- | --- | --- |
-| [LLM-001](llm-001-stream-error-propagation.md) | 流式 create 阶段失败被 ReActAgent 静默吞掉 | P0 | ✅ 已修复 | streaming_rectifier / domain(StreamResult) / executor | 2026-08-16 | 2026-08-16 |
-| [LLM-002](llm-002-generate-quota-settle-fallback.md) | 非流式 generate() 配额结算无兜底 | P0 | ✅ 已修复 | llm_service（非流式 generate） | 2026-08-16 | 2026-08-16 |
-| [LLM-003](llm-003-hard-cancel-rpm-refund.md) | 流式硬取消对已发出请求退回 RPM 配额 | P1 | ✅ 已修复 | streaming_rectifier（迭代 finally） | 2026-08-16 | 2026-08-16 |
-| [LLM-004](llm-004-empty-content-refusal-misjudge.md) | 空 content 一律归 refusal，适配层空响应误判拒答 | P1 | ✅ 已修复 | structured（_classify_result） | 2026-08-16 | 2026-08-16 |
-| [LLM-005](llm-005-circuit-breaker-concurrency-tests.md) | retry 熔断器并发路径零测试覆盖 | P2 | ✅ 已修复 | retry（CircuitBreaker 并发） | 2026-08-16 | 2026-08-16 |
-| [LLM-006](llm-006-rectify-entry-cancel-check.md) | 整流重试前不检查 cancel_event，取消后仍发真实请求 | P1 | ✅ 已修复 | streaming_rectifier（整流循环入口） | 2026-08-16 | 2026-08-16 |
-| [LLM-007](llm-007-invalid-schema-crash.md) | 非法 schema 使 iter_errors 崩溃，防护不一致 | P1 | ✅ 已修复 | structured（_collect_schema_errors） | 2026-08-16 | 2026-08-16 |
-| [LLM-008](llm-008-refusal-log-truncation.md) | 拒答文本完整落日志，违反安全基线 | P0 | ✅ 已修复 | structured（_raise_boundary 日志） | 2026-08-16 | 2026-08-16 |
-| [LLM-009](llm-009-strict-additional-properties-true.md) | strict + additionalProperties:true 必然 400 | P1 | ✅ 已修复 | structured（_build_json_schema_request） | 2026-08-16 | 2026-08-16 |
-| [LLM-010](llm-010-settle-cancel-concurrent-race.md) | settle/cancel 终态幂等并发竞态 | P1 | ✅ 已修复 | reservation_limiter（Reservation） | 2026-08-16 | 2026-08-16 |
-| [LLM-011](llm-011-cancel-race-feeds-breaker.md) | 整流放弃分支 cancel 竞态错误喂熔断器 | P1 | ✅ 已修复 | streaming_rectifier（迭代放弃分支） | 2026-08-16 | 2026-08-16 |
-| [LLM-012](llm-012-fallback-same-provider.md) | fallback 只支持同 provider（文档-实现偏差） | P1 | ✅ 已修复 | llm_service（_build_fallback_fn）+ 文档 | 2026-08-16 | 2026-08-16 |
-| [LLM-013](llm-013-record-failure-return-contract.md) | record_failure bool 契约无人兑现 + retry.md 误导 | P2 | ✅ 已修复 | retry（record_failure）+ 文档 | 2026-08-16 | 2026-08-16 |
-| [LLM-014](llm-014-single-entry-settle-test-false-positive.md) | 单条目 settle 测试假阳性 | P2 | ✅ 已修复 | test_reservation_limiter | 2026-08-16 | 2026-08-16 |
+| [LLM-001](2026-08-16-stream-error-propagation.md) | 流式 create 阶段失败被 ReActAgent 静默吞掉 | P0 | ✅ 已修复 | streaming_rectifier / domain(StreamResult) / executor | 2026-08-16 | 2026-08-16 |
+| [LLM-002](2026-08-16-generate-quota-settle-fallback.md) | 非流式 generate() 配额结算无兜底 | P0 | ✅ 已修复 | llm_service（非流式 generate） | 2026-08-16 | 2026-08-16 |
+| [LLM-003](2026-08-16-hard-cancel-rpm-refund.md) | 流式硬取消对已发出请求退回 RPM 配额 | P1 | ✅ 已修复 | streaming_rectifier（迭代 finally） | 2026-08-16 | 2026-08-16 |
+| [LLM-004](2026-08-16-empty-content-refusal-misjudge.md) | 空 content 一律归 refusal，适配层空响应误判拒答 | P1 | ✅ 已修复 | structured（_classify_result） | 2026-08-16 | 2026-08-16 |
+| [LLM-005](2026-08-16-circuit-breaker-concurrency-tests.md) | retry 熔断器并发路径零测试覆盖 | P2 | ✅ 已修复 | retry（CircuitBreaker 并发） | 2026-08-16 | 2026-08-16 |
+| [LLM-006](2026-08-16-rectify-entry-cancel-check.md) | 整流重试前不检查 cancel_event，取消后仍发真实请求 | P1 | ✅ 已修复 | streaming_rectifier（整流循环入口） | 2026-08-16 | 2026-08-16 |
+| [LLM-007](2026-08-16-invalid-schema-crash.md) | 非法 schema 使 iter_errors 崩溃，防护不一致 | P1 | ✅ 已修复 | structured（_collect_schema_errors） | 2026-08-16 | 2026-08-16 |
+| [LLM-008](2026-08-16-refusal-log-truncation.md) | 拒答文本完整落日志，违反安全基线 | P0 | ✅ 已修复 | structured（_raise_boundary 日志） | 2026-08-16 | 2026-08-16 |
+| [LLM-009](2026-08-16-strict-additional-properties-true.md) | strict + additionalProperties:true 必然 400 | P1 | ✅ 已修复 | structured（_build_json_schema_request） | 2026-08-16 | 2026-08-16 |
+| [LLM-010](2026-08-16-settle-cancel-concurrent-race.md) | settle/cancel 终态幂等并发竞态 | P1 | ✅ 已修复 | reservation_limiter（Reservation） | 2026-08-16 | 2026-08-16 |
+| [LLM-011](2026-08-16-cancel-race-feeds-breaker.md) | 整流放弃分支 cancel 竞态错误喂熔断器 | P1 | ✅ 已修复 | streaming_rectifier（迭代放弃分支） | 2026-08-16 | 2026-08-16 |
+| [LLM-012](2026-08-16-fallback-same-provider.md) | fallback 只支持同 provider（文档-实现偏差） | P1 | ✅ 已修复 | llm_service（_build_fallback_fn）+ 文档 | 2026-08-16 | 2026-08-16 |
+| [LLM-013](2026-08-16-record-failure-return-contract.md) | record_failure bool 契约无人兑现 + retry.md 误导 | P2 | ✅ 已修复 | retry（record_failure）+ 文档 | 2026-08-16 | 2026-08-16 |
+| [LLM-014](2026-08-16-single-entry-settle-test-false-positive.md) | 单条目 settle 测试假阳性 | P2 | ✅ 已修复 | test_reservation_limiter | 2026-08-16 | 2026-08-16 |
 
 ## 新问题登记规范
 

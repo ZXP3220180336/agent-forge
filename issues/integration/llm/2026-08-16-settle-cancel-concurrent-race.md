@@ -4,7 +4,7 @@
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 9）
 > **涉及模块**：`app/integration/llm/reservation_limiter.py`（`Reservation.settle` / `cancel`）
-> **关联文档**：[limiter.md](../../../docs/integration_doc/llm_doc/limiter.md) · [llm-005](llm-005-circuit-breaker-concurrency-tests.md)（asyncio 同步原语）
+> **关联文档**：[limiter.md](../../../docs/integration_doc/llm_doc/limiter.md) · [llm-005](2026-08-16-circuit-breaker-concurrency-tests.md)（asyncio 同步原语）
 
 ---
 

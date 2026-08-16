@@ -4,7 +4,7 @@
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 4）
 > **涉及模块**：`app/integration/llm/streaming_rectifier.py`（`rectified_stream` 整流循环）
-> **关联文档**：[streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md) · [llm-001](llm-001-stream-error-propagation.md)（取消信号语义）
+> **关联文档**：[streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md) · [llm-001](2026-08-16-stream-error-propagation.md)（取消信号语义）
 
 ---
 
