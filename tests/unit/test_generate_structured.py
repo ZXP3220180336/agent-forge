@@ -831,6 +831,39 @@ async def test_refusal_log_truncated(caplog):
 
 
 @pytest.mark.asyncio
+async def test_strict_schema_normalizes_additional_properties_true():
+    """strict 请求把 additionalProperties: true 归一为 false（LLM-009）。
+
+    修复前：strict 固定 true，显式 additionalProperties: true 必然 400 且被
+    `_is_unsupported_response_format_error` 误判「模型不支持」白打调用。
+    修复后：strict 请求 schema 递归归一 true→false（副本），本地校验仍用原 schema。
+    """
+    llm = LLMService()
+    calls = []
+
+    schema = {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+        "additionalProperties": True,  # strict 不支持
+    }
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr('{"name": "张三"}')
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, schema)
+    assert result == {"name": "张三"}
+    assert calls[0]["type"] == "json_schema"
+    req_schema = calls[0]["json_schema"]["schema"]
+    assert req_schema["additionalProperties"] is False, (
+        "strict 请求应把 additionalProperties: true 归一为 false"
+    )
+    assert schema["additionalProperties"] is True, "调用方 schema 不应被污染"
+
+
+@pytest.mark.asyncio
 async def test_reask_refusal_short_circuits():
     """回喂循环内拒答 → 抛 StructuredRefusalError（不降级、不继续回喂）。"""
     llm = LLMService()

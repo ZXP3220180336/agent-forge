@@ -84,6 +84,29 @@ def _is_unsupported_response_format_error(exc: Exception) -> bool:
     return "response_format" in lowered or "json_schema" in lowered
 
 
+def _strict_compliant(schema: dict[str, Any]) -> dict[str, Any]:
+    """递归归一 additionalProperties: true → false（strict JSON Schema 要求）。
+
+    OpenAI strict 模式要求每个 object 节点 additionalProperties: false（递归），
+    显式 true 会 400（LLM-009）。对齐 LangChain `_recursive_set_additional_properties_false`。
+    返回深拷贝副本，不污染调用方 schema；本地校验仍用原 schema（保留「允许扩展」意图）。
+    """
+    new_schema = copy.deepcopy(schema)
+    stack = [new_schema]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        if node.get("additionalProperties") is True:
+            node["additionalProperties"] = False
+        for value in node.values():
+            if isinstance(value, dict):
+                stack.append(value)
+            elif isinstance(value, list):
+                stack.extend(v for v in value if isinstance(v, dict))
+    return new_schema
+
+
 def _build_json_schema_request(
     schema: dict[str, Any],
 ) -> dict[str, Any]:
@@ -104,7 +127,10 @@ def _build_json_schema_request(
         "json_schema": {
             "name": "structured_output",
             "strict": True,
-            "schema": schema,
+            # LLM-009：strict 下 additionalProperties: true → false 归一（副本）——
+            # strict 模式禁止 true（必然 400 且被误判「模型不支持」），归一避免
+            # 白打调用；本地校验仍用原 schema（保留允许扩展意图）。
+            "schema": _strict_compliant(schema),
         },
     }
 
