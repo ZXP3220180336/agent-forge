@@ -127,3 +127,69 @@ async def test_generate_passes_fallback_fn(monkeypatch):
         LLMService._fallback_model_id = ""
         LLMService._adaptive_reserve = False
         LLMService._stream_max_retries = 1
+
+
+# =====================================================================
+# _count_prompt_tokens content 归一化：None / 多模态 list 不抛 TypeError
+# =====================================================================
+
+
+class _FakeEncoder:
+    """模拟 tiktoken 编码器：encode 只接受 str，非 str 抛 TypeError（对齐真实行为）。"""
+
+    def encode(self, text):
+        if not isinstance(text, str):
+            raise TypeError(f"expected str, got {type(text).__name__}")
+        return list(text)
+
+
+def test_count_prompt_tokens_none_content(monkeypatch):
+    """content 为 None（工具报错场景）→ 不抛 TypeError，按空串计数。
+
+    修复前：msg.get("content", "") 在 content 键存在但值为 None 时返回
+    None → encoder.encode(None) 抛 TypeError，限流预留阶段崩溃整次调用。
+    """
+    from app.integration.llm.llm_service import _count_prompt_tokens
+
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service._get_encoder",
+        staticmethod(lambda model: _FakeEncoder()),
+    )
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.ClientManager.get_model",
+        staticmethod(lambda key: "main-model"),
+    )
+
+    messages = [{"role": "user", "content": None}]  # 工具报错场景 content 为 None
+    total = _count_prompt_tokens("main", messages, max_tokens=10)
+    assert isinstance(total, int), "None content 不应抛异常，应返回 token 计数"
+
+
+def test_count_prompt_tokens_multimodal_list_content(monkeypatch):
+    """content 为多模态 list（[{"type":"text","text":...}]）→ 不抛 TypeError。
+
+    修复前：encoder.encode(list) 抛 TypeError。修复后：归一化只取文本片段。
+    """
+    from app.integration.llm.llm_service import _count_prompt_tokens
+
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service._get_encoder",
+        staticmethod(lambda model: _FakeEncoder()),
+    )
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.ClientManager.get_model",
+        staticmethod(lambda key: "main-model"),
+    )
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "分析这张图"},
+                {"type": "image_url", "image_url": {"url": "..."}},
+            ],
+        }
+    ]
+    total = _count_prompt_tokens("main", messages, max_tokens=10)
+    assert isinstance(total, int), "多模态 list content 不应抛异常"
+    assert total > 0, "多模态文本片段应计入 token"

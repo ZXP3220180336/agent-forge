@@ -166,6 +166,34 @@ def _get_encoder(model: str) -> Any:
     return encoder
 
 
+def _content_to_text(content: Any) -> str:
+    """将消息 content 归一化为可编码文本（供 token 估算）。
+
+    - None（工具报错等缺 content 场景）→ 空串
+    - str → 原样
+    - 多模态 list（OpenAI 格式 `[{"type": "text", "text": ...}, ...]`）→
+      只取文本片段拼接；图片等非文本条目不参与 token 估算
+
+    修复前 `encoder.encode(msg.get("content", ""))`：content 键存在但为
+    None（`or ""` 兜不住，list 是 truthy 也不触发）时 encode 抛 TypeError，
+    限流预留阶段崩溃整次调用。
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+        return " ".join(parts)
+    # 非 str/list 的异常形状：不崩，保守回退空串（宁可低估不崩）
+    return ""
+
+
 def _count_prompt_tokens(
     model_key: str,
     messages: list[dict],
@@ -185,7 +213,7 @@ def _count_prompt_tokens(
     total = 0
     for msg in messages:
         total += 4
-        total += len(encoder.encode(msg.get("content", "")))
+        total += len(encoder.encode(_content_to_text(msg.get("content"))))
         if msg.get("name"):
             total += 1
     return total + 2 + max_tokens
