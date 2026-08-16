@@ -42,6 +42,10 @@
 | [LLM-023](2026-08-07-circuit-breaker-lifecycle.md) | 熔断器生命周期共享（每次 new 熔断失效） | P0 | ✅ 已修复 | retry（RetryHandlerManager） | 2026-08-07 | 2026-08-07 |
 | [LLM-024](2026-08-07-streaming-iteration-unprotected.md) | 流式迭代异常无保护（熔断观察盲区） | P1 | ✅ 已修复 | llm_service / streaming_rectifier | 2026-08-07 | 2026-08-07 |
 | [LLM-025](2026-08-09-fallback-isolation.md) | fallback 隔离（成败不进状态机） | P1 | ✅ 已修复 | retry（fallback 路径） | 2026-08-09 | 2026-08-09 |
+| [LLM-026](2026-08-02-zero-refill-crash.md) | 配置为 0 时除零崩溃（限流禁用表达） | P0 | ✅ 已修复 | reservation_limiter | 2026-08-02 | 2026-08-02 |
+| [LLM-027](2026-08-02-lock-hold-sleep.md) | TokenBucket 持锁 sleep（连带负 token） | P1 | ✅ 已修复 | reservation_limiter | 2026-08-02 | 2026-08-02 |
+| [LLM-028](2026-08-02-tpm-prompt-only.md) | TPM 只算 prompt token（加输出余量） | P1 | ✅ 已修复 | llm_service / reservation_limiter | 2026-08-02 | 2026-08-02 |
+| [LLM-029](2026-08-02-api-clarity-fixes.md) | 限流器 API 清晰性（返回值/async with） | P3 | ✅ 已修复 | reservation_limiter | 2026-08-02 | 2026-08-02 |
 
 ## 新问题登记规范
 
