@@ -4,7 +4,7 @@
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 8）
 > **涉及模块**：`app/integration/llm/structured.py`（`_build_json_schema_request` / `_enforce_no_extra_fields`）
-> **关联文档**：[structure.md](../../integration_doc/llm_doc/structure.md)
+> **关联文档**：[structure.md](../../../docs/integration_doc/llm_doc/structure.md)
 
 ---
 
@@ -60,7 +60,7 @@ strict 请求未对 `additionalProperties: true` 做归一处理——strict 模
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `app/integration/llm/structured.py` | 新增 `_strict_compliant`（递归 true→false 副本）；`_build_json_schema_request` 用它构建 strict 请求 | `test_generate_structured.py` 新增 `test_strict_schema_normalizes_additional_properties_true` |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-009 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-009 条目） | — |
 
 ---
 

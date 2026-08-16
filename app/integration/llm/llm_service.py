@@ -77,7 +77,7 @@ def _build_fallback_fn(
     （主模型 client）发请求，复用主模型 base_url/密钥——仅支持「同服务商便宜模型」
     降级（如 deepseek-chat → deepseek-reasoner）。跨服务商 fallback 需独立
     base_url/api_key 配置（当前不提供），配置跨 provider 模型会打到主端点带
-    备用模型名 → 400/404，fallback 静默失效。约束详见 docs/issues/llm/llm-012。
+    备用模型名 → 400/404，fallback 静默失效。约束详见 issues/integration/llm/llm-012。
     """
     if not LLMService._fallback_model_id:
         return None

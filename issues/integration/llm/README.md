@@ -2,7 +2,7 @@
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/` 及其跨模块关联方）审查/审核发现的问题，追踪从发现 → 分析 → 修复 → 验证的完整生命周期。
 > **更新日期**：2026-08-16
-> **关联**：[LLM 层说明文档](../../integration_doc/llm_doc/llm.md) · [领域端口契约](../../domain_doc/README.md)
+> **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [领域端口契约](../../../docs/domain_doc/README.md)
 
 ## 状态图例
 

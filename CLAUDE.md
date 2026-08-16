@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **改代码前**：先读 [docs/architecture.md](docs/architecture.md) 与相关模块文档
 - **改代码后**：同步 [docs/](docs/) 对应模块文档，参考 [docs/ALIGNMENT.md](docs/ALIGNMENT.md) 校验（`scripts/verify_alignment.py`）
-- **问题记录（Problem/Issue Log）**：审查/审核发现问题后，先调研工业级修复方案并确立本项目采用方案，再修复；修复后记录到 `docs/issues/<模块名>/<问题文件名>`（一个问题一个文件，记录生命周期：发现 → 分析 → 修复 → 验证 → 教训）。关联的说明文档只链接到该问题文件，不展开描述
+- **问题记录（Problem/Issue Log）**：审查/审核发现问题后，先调研工业级修复方案并确立本项目采用方案，再修复；修复后记录到 `issues/<模块名>/<问题文件名>`（一个问题一个文件，记录生命周期：发现 → 分析 → 修复 → 验证 → 教训）。关联的说明文档只链接到该问题文件，不展开描述
 - **决策记录（ADR）**：每次结构性/契约性设计决策，先调研工业级决策方案并确立本项目采用方案，实施后记录到 `docs/adr/<模块名>/<决策文件名>`（一个决策一个文件，记录为什么做这个决策：Context → Decision → Consequences）
 
 ## 项目通用规则（Writer、Reviewer 共用）
@@ -22,7 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 文档组织硬性规则
 
 1. **一个事实一个家**：同一进度/机制/问题只在最该出现的一处文档描述，其他文档只链接过去，禁止复述（双处维护必然漂移）
-2. **写当前状态，不写历史**：文档只描述当前状态，禁止 "previously / no longer / 修复前 / 原实现" 这类演进叙事；历史演进归 git commit 与 Problem/Issue Log（`docs/issues/`）与 ADR（`docs/adr/`）
+2. **写当前状态，不写历史**：文档只描述当前状态，禁止 "previously / no longer / 修复前 / 原实现" 这类演进叙事；历史演进归 git commit 与 Problem/Issue Log（`issues/`）与 ADR（`docs/adr/`）
 
 ## 文档体系
 

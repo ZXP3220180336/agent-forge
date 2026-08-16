@@ -4,7 +4,7 @@
 > **优先级**：P2（测试）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 14）
 > **涉及模块**：`tests/unit/test_reservation_limiter.py`（`test_reservation_settle_refunds_difference`）
-> **关联文档**：[limiter.md](../../integration_doc/llm_doc/limiter.md)
+> **关联文档**：[limiter.md](../../../docs/integration_doc/llm_doc/limiter.md)
 
 ---
 
@@ -52,7 +52,7 @@
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `tests/unit/test_reservation_limiter.py` | `test_reservation_settle_refunds_difference` 改双条目（RPM 按次桶 + TPM 按量桶）+ refund 计数断言（`rpm.refunds==0` / `tpm.refunds==1`） | 修正 1 用例 |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-014 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-014 条目） | — |
 
 ---
 

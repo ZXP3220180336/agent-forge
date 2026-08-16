@@ -4,7 +4,7 @@
 > **优先级**：P2（质量/测试缺口）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 5）
 > **涉及模块**：`app/integration/llm/retry.py`（`CircuitBreaker` / `RetryHandler`）· `tests/unit/test_retry.py`
-> **关联文档**：[retry.md](../../integration_doc/llm_doc/retry.md)
+> **关联文档**：[retry.md](../../../docs/integration_doc/llm_doc/retry.md)
 
 ---
 
@@ -58,7 +58,7 @@
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `tests/unit/test_retry.py` | 新增并发测试区 4 用例：并发放行槽位上限 / Event 探针交错（迟到 success no-op）/ 并发窗口记账无丢失 / 4xx 释放补位 | 新增 4 用例（`test_concurrent_*`） |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-005 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-005 条目） | — |
 
 ---
 

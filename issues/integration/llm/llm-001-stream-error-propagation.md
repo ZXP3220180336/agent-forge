@@ -4,7 +4,7 @@
 > **优先级**：P0（合并前必修）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 1）
 > **涉及模块**：`app/integration/llm/streaming_rectifier.py`（主因）· `app/domain/ports/llm_gateway.py`（契约）· `app/domain/agent/executor.py`（消费方）
-> **关联文档**：[llm.md](../../integration_doc/llm_doc/llm.md) · [streaming_rectifier.md](../../integration_doc/llm_doc/streaming_rectifier.md) · [domain_doc/README.md](../../domain_doc/README.md)
+> **关联文档**：[llm.md](../../../docs/integration_doc/llm_doc/llm.md) · [streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md) · [domain_doc/README.md](../../../docs/domain_doc/README.md)
 
 ---
 
@@ -64,7 +64,7 @@
 | `app/domain/ports/llm_gateway.py` | `StreamResult` 增加 `error: str \| None = None`（领域契约） | — |
 | `app/integration/llm/streaming_rectifier.py` | 三个失败出口 mark `context.result.error`（create 异常 / 迭代放弃 / 用户取消），保留 SSE error 事件 | `test_stream_rectify.py` 四出口补 `result.error` 断言 |
 | `app/domain/agent/executor.py` | `async for` 消费后检查 `stream_result.error`，非空则短路返回失败 `AgentResult`（`success=False`，content 保留已产出部分） | `test_agent.py` 新增 `test_strategy_cycle_short_circuits_on_llm_error` |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表）/ [streaming_rectifier.md](../../integration_doc/llm_doc/streaming_rectifier.md)（失败信号透传小节）/ [domain_doc/README.md](../../domain_doc/README.md)（StreamResult.error 契约） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表）/ [streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md)（失败信号透传小节）/ [domain_doc/README.md](../../../docs/domain_doc/README.md)（StreamResult.error 契约） | — |
 
 ---
 

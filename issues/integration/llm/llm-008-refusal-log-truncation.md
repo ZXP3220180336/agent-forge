@@ -4,7 +4,7 @@
 > **优先级**：P0（合并前必修，安全）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 7）
 > **涉及模块**：`app/integration/llm/structured.py`（`_raise_boundary` refusal 日志）
-> **关联文档**：[structure.md](../../integration_doc/llm_doc/structure.md) · [llm-004](llm-004-empty-content-refusal-misjudge.md)（模型输出截断基线）
+> **关联文档**：[structure.md](../../../docs/integration_doc/llm_doc/structure.md) · [llm-004](llm-004-empty-content-refusal-misjudge.md)（模型输出截断基线）
 
 ---
 
@@ -52,7 +52,7 @@ refusal 日志未复用本模块已建立的 `_truncate_text_for_log` 截断机�
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `app/integration/llm/structured.py` | `_raise_boundary` refusal 日志用 `_truncate_text_for_log` 截断 | `test_generate_structured.py` 新增 `test_refusal_log_truncated`（超长拒答截断标记 + 完整文本不落盘） |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-008 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-008 条目） | — |
 
 ---
 

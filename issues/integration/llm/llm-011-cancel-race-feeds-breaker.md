@@ -4,7 +4,7 @@
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 10）
 > **涉及模块**：`app/integration/llm/streaming_rectifier.py`（迭代放弃分支）
-> **关联文档**：[streaming_rectifier.md](../../integration_doc/llm_doc/streaming_rectifier.md) · [llm-001](llm-001-stream-error-propagation.md)（取消不计入熔断）
+> **关联文档**：[streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md) · [llm-001](llm-001-stream-error-propagation.md)（取消不计入熔断）
 
 ---
 
@@ -58,7 +58,7 @@
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `app/integration/llm/streaming_rectifier.py` | 放弃分支喂熔断前加 `cancel_event` 守卫（取消 → 取消事件 + `result.error`，不喂熔断） | `test_streaming_rectifier.py` 新增 `test_cancel_during_iteration_with_retryable_exc_does_not_feed_breaker` |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-011 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-011 条目） | — |
 
 ---
 

@@ -4,7 +4,7 @@
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 3）
 > **涉及模块**：`app/integration/llm/streaming_rectifier.py`（迭代阶段 `finally` 兜底）· `app/integration/llm/llm_service.py`（`_rate_limited_call` 契约）
-> **关联文档**：[streaming_rectifier.md](../../integration_doc/llm_doc/streaming_rectifier.md) · [limiter.md](../../integration_doc/llm_doc/limiter.md)（reserve/settle 语义）
+> **关联文档**：[streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md) · [limiter.md](../../../docs/integration_doc/llm_doc/limiter.md)（reserve/settle 语义）
 
 ---
 
@@ -66,7 +66,7 @@ RPM 桶被虚增 → 客户端以为还有配额 → 突发请求超过服务端
 | --- | --- | --- |
 | `app/integration/llm/streaming_rectifier.py` | 迭代阶段 `finally` 兜底 `cancel()` → `settle(None)`（保留配额 + 终态） | `test_streaming_rectifier.py` 硬取消 + settle 中途取消用例改为断言 `settle(None)`（`cancel_calls==0`） |
 | `app/integration/llm/llm_service.py` | `generate()` finally 的 settle 取消兜底 `cancel()` → `settle(None)`（全项目统一「已发出请求保留配额」） | `test_llm_service.py` 新增 `test_generate_settles_when_settle_cancelled` |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表 + 修正 LLM-002 条目）/ [streaming_rectifier.md](../../integration_doc/llm_doc/streaming_rectifier.md)（结算闭环表 + R2 注释） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表 + 修正 LLM-002 条目）/ [streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md)（结算闭环表 + R2 注释） | — |
 
 ---
 

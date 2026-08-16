@@ -4,7 +4,7 @@
 > **优先级**：P0（合并前必修）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 2）
 > **涉及模块**：`app/integration/llm/llm_service.py`（非流式 `generate()`）
-> **关联文档**：[llm.md](../../integration_doc/llm_doc/llm.md) · [streaming_rectifier.md](../../integration_doc/llm_doc/streaming_rectifier.md)（对称的 finally 兜底模式）
+> **关联文档**：[llm.md](../../../docs/integration_doc/llm_doc/llm.md) · [streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md)（对称的 finally 兜底模式）
 
 ---
 
@@ -19,7 +19,7 @@
 
 ### 影响
 
-TPM/RPM 配额永久占用，长期可导致本地限流饿死；与流式 [rectified_stream 的 finally 兜底](../../integration_doc/llm_doc/streaming_rectifier.md)（`streaming_rectifier.py:261-265`）行为不对称。
+TPM/RPM 配额永久占用，长期可导致本地限流饿死；与流式 [rectified_stream 的 finally 兜底](../../../docs/integration_doc/llm_doc/streaming_rectifier.md)（`streaming_rectifier.py:261-265`）行为不对称。
 
 ### 根因
 
@@ -61,7 +61,7 @@ Python asyncio 官方推荐协程用 `try/finally` 保证 `CancelledError` 时�
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `app/integration/llm/llm_service.py` | `generate()` 解析 + 结算放 `try/finally`；finally 内 settle，except 兜底 cancel + re-raise | `test_llm_service.py` 新增 `test_generate_settles_on_parse_error` + `test_generate_cancels_when_settle_cancelled` |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-002 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-002 条目） | — |
 
 ---
 

@@ -4,7 +4,7 @@
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 9）
 > **涉及模块**：`app/integration/llm/reservation_limiter.py`（`Reservation.settle` / `cancel`）
-> **关联文档**：[limiter.md](../../integration_doc/llm_doc/limiter.md) · [llm-005](llm-005-circuit-breaker-concurrency-tests.md)（asyncio 同步原语）
+> **关联文档**：[limiter.md](../../../docs/integration_doc/llm_doc/limiter.md) · [llm-005](llm-005-circuit-breaker-concurrency-tests.md)（asyncio 同步原语）
 
 ---
 
@@ -58,7 +58,7 @@
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `app/integration/llm/reservation_limiter.py` | `Reservation` 加 `_lock`（`__slots__` + `asyncio.Lock`）；`settle`/`cancel` 检查 + 退款循环放 `async with self._lock` | `test_reservation_limiter.py` 新增 `test_concurrent_settle_cancel_mutex_no_double_refund` |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-010 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-010 条目） | — |
 
 ---
 

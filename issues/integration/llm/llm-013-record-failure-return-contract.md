@@ -4,7 +4,7 @@
 > **优先级**：P2（文档-实现偏差）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 12）
 > **涉及模块**：`app/integration/llm/retry.py`（`CircuitBreaker.record_failure`）· `docs/integration_doc/llm_doc/retry.md`
-> **关联文档**：[retry.md](../../integration_doc/llm_doc/retry.md)
+> **关联文档**：[retry.md](../../../docs/integration_doc/llm_doc/retry.md)
 
 ---
 

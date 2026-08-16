@@ -4,7 +4,7 @@
 > **优先级**：P1（近期，文档-实现偏差）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 11）
 > **涉及模块**：`app/integration/llm/llm_service.py`（`_build_fallback_fn`）· 文档（llm.md / retry.md / config）
-> **关联文档**：[llm.md](../../integration_doc/llm_doc/llm.md) · [retry.md](../../integration_doc/llm_doc/retry.md)
+> **关联文档**：[llm.md](../../../docs/integration_doc/llm_doc/llm.md) · [retry.md](../../../docs/integration_doc/llm_doc/retry.md)
 
 ---
 
@@ -12,7 +12,7 @@
 
 ### 现象
 
-`_build_fallback_fn`（llm_service.py:64-84）用主模型 client（`ClientManager.get_client(model_key)`）发 fallback 请求，**仅替换 `model` 参数**。配置仅 `llm_fallback_model_id` 一个字段，无独立 `base_url`/`api_key`。而 [llm.md](../../integration_doc/llm_doc/llm.md) 宣称「降级到便宜模型或**备用服务商**」——按此配置跨服务商 fallback（如主 OpenAI、备 DeepSeek），fallback 请求会打到主 provider 端点带备用模型名 → 400/404，**fallback 永远失败**，主模型故障时系统反而不可用。
+`_build_fallback_fn`（llm_service.py:64-84）用主模型 client（`ClientManager.get_client(model_key)`）发 fallback 请求，**仅替换 `model` 参数**。配置仅 `llm_fallback_model_id` 一个字段，无独立 `base_url`/`api_key`。而 [llm.md](../../../docs/integration_doc/llm_doc/llm.md) 宣称「降级到便宜模型或**备用服务商**」——按此配置跨服务商 fallback（如主 OpenAI、备 DeepSeek），fallback 请求会打到主 provider 端点带备用模型名 → 400/404，**fallback 永远失败**，主模型故障时系统反而不可用。
 
 ### 影响
 

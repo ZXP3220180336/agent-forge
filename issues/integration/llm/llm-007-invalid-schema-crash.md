@@ -4,7 +4,7 @@
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 6）
 > **涉及模块**：`app/integration/llm/structured.py`（`_collect_schema_errors` / `_collect_schema_error_summaries`）
-> **关联文档**：[structure.md](../../integration_doc/llm_doc/structure.md)
+> **关联文档**：[structure.md](../../../docs/integration_doc/llm_doc/structure.md)
 
 ---
 
@@ -52,7 +52,7 @@
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `app/integration/llm/structured.py` | `_collect_schema_errors` / `_collect_schema_error_summaries` 包 try/except，非法 schema 记 ERROR + 返回错误列表 | `test_generate_structured.py` 新增 `test_invalid_schema_returns_none_not_crash`（3 种非法 schema） |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-007 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-007 条目） | — |
 
 ---
 

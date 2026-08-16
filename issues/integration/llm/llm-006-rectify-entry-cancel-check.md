@@ -4,7 +4,7 @@
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 4）
 > **涉及模块**：`app/integration/llm/streaming_rectifier.py`（`rectified_stream` 整流循环）
-> **关联文档**：[streaming_rectifier.md](../../integration_doc/llm_doc/streaming_rectifier.md) · [llm-001](llm-001-stream-error-propagation.md)（取消信号语义）
+> **关联文档**：[streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md) · [llm-001](llm-001-stream-error-propagation.md)（取消信号语义）
 
 ---
 
@@ -60,7 +60,7 @@
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `app/integration/llm/streaming_rectifier.py` | `for attempt` 循环顶部加 `cancel_event` 检查（置位 → 取消事件 + return）；整流退避后检查补 `result.error = "用户取消"`（与取消路径一致） | `test_stream_rectify.py` 更新 `test_cancel_event_no_rectify`（calls 1→0）+ 新增 `test_cancel_during_rectify_stops_new_attempt`；`test_streaming_rectifier.py` 更新 `test_cancel_event_no_rectify` |
-| 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-006 条目） | — |
+| 文档 | [llm.md](../../../docs/integration_doc/llm_doc/llm.md)（已实现列表加 LLM-006 条目） | — |
 
 ---
 
