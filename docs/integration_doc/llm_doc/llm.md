@@ -37,13 +37,6 @@
     - [限流：reserve/settle 形态](#限流reservesettle-形态)
     - [CostTracker — 成本计算](#costtracker--成本计算)
   - [设计选型对比](#设计选型对比)
-    - [连接管理：ClientManager vs 每次新建](#连接管理clientmanager-vs-每次新建)
-    - [重试策略：指数退避 + 抖动 vs 固定间隔](#重试策略指数退避--抖动-vs-固定间隔)
-    - [熔断：CircuitBreaker vs 无熔断](#熔断circuitbreaker-vs-无熔断)
-    - [限流算法：Token Bucket vs 漏桶 vs 队列](#限流算法token-bucket-vs-漏桶-vs-队列)
-    - [结构化输出：三级降级 vs 单一方式](#结构化输出三级降级-vs-单一方式)
-    - [流式解析：纯函数 vs 有状态类](#流式解析纯函数-vs-有状态类)
-    - [日志：JSON 结构化 vs 文本](#日志json-结构化-vs-文本)
   - [配置参考](#配置参考)
     - [模型配置](#模型配置)
     - [嵌入配置](#嵌入配置)
@@ -355,16 +348,8 @@ class ClientManager:
 
 #### 为什么选择「懒加载 + 全局缓存」
 
-| 维度     | 当前做法                     | 替代方案           |
-| -------- | ---------------------------- | ------------------ |
-| 创建时机 | 第一次 `get_client` 时懒加载 | 初始化时全部创建   |
-| 复用粒度 | 按 key 缓存实例              | 每次请求创建新实例 |
+> 连接池管理决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-01-client-pool-lazy-close-tracking.md)。
 
-**选择理由**：
-
-- 懒加载避免冷启动时创建不需要的 client（如果只用到 main，reasoning 就不需要初始化）
-- 全局缓存复用 TCP 连接，减少握手开销 —— 一个 AsyncOpenAI 实例内部维护连接池
-- 按 key 隔离不同模型的配置，但共享连接池资源
 
 #### 代理支持
 
@@ -475,18 +460,8 @@ HALF_OPEN（半开探针）
 
 #### 为什么选择「CircuitBreaker + 指数退避 + 抖动」
 
-| 特性     | 当前做法                | 替代方案                   |
-| -------- | ----------------------- | -------------------------- |
-| 退避算法 | 指数 × 2，加随机抖动    | 固定间隔、线性增加、无抖动 |
-| 熔断     | 滑动窗口错误率 + 探针   | 无熔断 / 连续失败计数      |
-| 降级     | 一个 fallback 函数      | 无降级 / 多级降级链        |
+> 重试与熔断架构决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md)。
 
-**选择理由**：
-
-- **指数退避**是 API 调用的标准做法 —— 快失败、慢重试，给服务端恢复时间
-- **随机抖动**防止多个请求在同一个时刻重试（羊群效应），这在多个 Agent 并发时尤其重要
-- **CircuitBreaker** 让系统在 API 不可用时快速失败而不是空等，同时通过探针自动恢复
-- **fallback 降级**保证主模型故障时系统仍可用（降级到**同服务商**便宜模型——fallback 复用主模型端点/密钥，**须与主模型同 provider**；跨服务商需独立配置，见 [LLM-012](../../../issues/integration/llm/2026-08-16-fallback-same-provider.md)）
 
 #### 其他可选的方法
 
@@ -554,17 +529,8 @@ def parse_chunk(chunk) -> ParsedChunk:
 
 #### 为什么选择「静态方法 + 纯函数」
 
-| 维度 | 当前做法               | 替代方案                 |
-| ---- | ---------------------- | ------------------------ |
-| 设计 | 纯静态方法，无状态     | 有状态类，维护内部缓冲区 |
-| 产出 | `ParsedChunk` 数据对象 | SSE 事件字符串           |
+> 流式解析策略决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-01-streaming-parse-pure-function.md)。
 
-**选择理由**：
-
-- **纯函数**便于测试 —— 输入一个 mock chunk，输出 `ParsedChunk`，无需 mock 内部状态
-- **与事件层解耦** —— `StreamParser` 不知道 `build_message_event()` 的存在，调用方决定如何渲染
-- **同时支持流式与非流式** —— `parse_non_stream()` 复用同一个数据模型
-- **与整流重试契合** —— 无状态解析器天然幂等，整流重试重新迭代时无残留缓冲
 
 #### 其他可选的方法
 
@@ -631,17 +597,8 @@ async for event in StreamingRectifier.rectified_stream(
 
 #### 为什么选择「三级降级」
 
-| 级别 | 方法                                           | 可靠性 | 模型要求           |
-| ---- | ---------------------------------------------- | ------ | ------------------ |
-| 1    | `response_format={"type": "json_schema", ...}` | 最高   | gpt-4o-mini 以上   |
-| 2    | `response_format={"type": "json_object"}`      | 中     | gpt-3.5-turbo 以上 |
-| 3    | Prompt + 正则                                  | 低     | 所有模型           |
+> 统一结构化输出入口 + 三级降级策略决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-07-unified-structured-entry-degradation.md)。
 
-**选择理由**：
-
-- 不同模型对结构化输出的支持差异很大 —— gpt-4o 支持 `strict=True` 的 JSON Schema，但 deepseek-chat 可能只支持 `json_object`
-- 三级降级让结构化输出在廉价模型（fast）上也能工作，只是在必要时用主模型
-- 降级是透明的 —— 调用方无需知道底层用了哪种方式
 
 #### 其他可选的方法
 
@@ -681,17 +638,7 @@ async for event in StreamingRectifier.rectified_stream(
 
 #### 为什么选「全局框架 + 业务事件」
 
-| 维度     | 当前做法                                        | 替代方案           |
-| -------- | ----------------------------------------------- | ------------------ |
-| 格式     | 全局框架 JSON（文件）/ 人类可读（控制台）       | 纯文本、CSV        |
-| 记录方式 | `log_event_async` → `asyncio.to_thread`         | 同步写入、异步队列 |
-| 归属     | 全局日志框架（横切关注点，各模块统一）          | LLM 层私有         |
-
-**选择理由**：
-
-- **全局统一**：日志是横切关注点，所有模块（LLM/服务/Agent/API）走同一双 handler，消费端（ELK/Datadog/Graylog）无需分模块解析
-- **异步写入**：`asyncio.to_thread` 不阻塞 LLM 调用主流程
-- **结构化可检索**：事件名即 `message`，字段进 JSON，可按事件/字段查询
+> 全局 JSON 结构化日志 + llm_call 业务事件的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-011](../../../adr/integration/llm/2026-08-04-llm-event-logging.md)。
 
 #### 输出示例（文件 JSON）
 
@@ -773,78 +720,24 @@ MODEL_PRICING = {
 
 #### 为什么选择前缀匹配
 
-`_find_price` 按「精确匹配 → 前缀匹配（按 key 长度降序）→ 默认均价」三级查找，完整实现见 [cost_tracker.md](cost_tracker.md)：
+> 定价查找策略决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-15-pricing-prefix-match-fixed-table.md)。
 
-**理由**：
-
-- 模型名经常带版本号后缀（`gpt-4o-2024-08-06`、`deepseek-chat-v2`），精确匹配会 miss
-- 前缀匹配按 key 长度降序，避免 `deepseek-chat` 匹配到 `deepseek-reasoner` 的定价
 
 ---
 
 ## 设计选型对比
 
-### 连接管理：ClientManager vs 每次新建
+> 各设计选型的完整决策（Context → Decision → Consequences）已归档至对应 ADR，此处仅列决策链接：
 
-| 维度       | ClientManager（当前）      | 每次新建 AsyncOpenAI     |
-| ---------- | -------------------------- | ------------------------ |
-| TCP 连接   | 复用（keep-alive）         | 每次新建                 |
-| 资源开销   | 低（N 个 key 共享连接池）  | 高（每个请求独立连接池） |
-| 配置变更   | `register_config()` 后重建 | 直接修改参数             |
-| 实现复杂度 | 中等（全局字典）           | 低                       |
-
-### 重试策略：指数退避 + 抖动 vs 固定间隔
-
-| 维度         | 指数退避 + 抖动        | 固定间隔               | 线性增加 |
-| ------------ | ---------------------- | ---------------------- | -------- |
-| 服务端压力   | 低（重试越晚间隔越大） | 高（所有重试间隔相同） | 中       |
-| 羊群效应防护 | 有（随机抖动）         | 无                     | 无       |
-| 平均等待时间 | 短                     | 取决于固定值           | 中       |
-| 适用场景     | LLM API（多并发）      | 本地服务（单请求）     | 批处理   |
-
-### 熔断：CircuitBreaker vs 无熔断
-
-| 维度         | CircuitBreaker（当前） | 无熔断           |
-| ------------ | ---------------------- | ---------------- |
-| API 不可用时 | 快速拒绝（秒级）       | 反复重试直到超时 |
-| 下游保护     | 是（减少无用请求）     | 否               |
-| 自动恢复     | 是（半开探针）         | 否（需手动介入） |
-| 实现开销     | 几十行状态维护         | 0                |
-
-### 限流算法：Token Bucket vs 漏桶 vs 队列
-
-| 维度       | Token Bucket（当前） | 漏桶               | asyncio.Queue  |
-| ---------- | -------------------- | ------------------ | -------------- |
-| 突发处理   | 允许（桶容量积攒）   | 不允许（恒定速率） | 允许但排队     |
-| 实现复杂度 | 低                   | 低                 | 低             |
-| 精度       | 中（连续速率）       | 高（严格整形）     | 中（队列大小） |
-| 适用场景   | 多数 API 限流        | 视频流、IoT        | 任务调度       |
-
-### 结构化输出：三级降级 vs 单一方式
-
-| 维度       | 三级降级（当前） | 仅 JSON Schema    | 仅 Prompt  |
-| ---------- | ---------------- | ----------------- | ---------- |
-| 兼容性     | 所有模型         | strict 支持的模型 | 所有模型   |
-| 可靠性     | 高（自动降级）   | 最高              | 低         |
-| 实现复杂度 | 中               | 低                | 最低       |
-| 失败率     | 低               | 低（仅适用模型）  | 高（30%+） |
-
-### 流式解析：纯函数 vs 有状态类
-
-| 维度     | 纯函数（当前）                    | 有状态类                                 |
-| -------- | --------------------------------- | ---------------------------------------- |
-| 测试     | 直接 mock chunk，无副作用         | 需要 reset 状态                          |
-| 并发安全 | 天然安全                          | 需要注意状态清理                         |
-| 使用方式 | `StreamParser.parse_chunk(chunk)` | `parser.feed(chunk)` → `parser.result()` |
-| 灵活性   | 高（调用方控制流程）              | 中（内部控制流程）                       |
-
-### 日志：JSON 结构化 vs 文本
-
-| 维度     | JSON（当前）       | 纯文本         |
-| -------- | ------------------ | -------------- |
-| 可解析性 | 高（自动消费）     | 低（需要正则） |
-| 可读性   | 低（视觉噪音）     | 高（终端友好） |
-| 查询能力 | 强（任意字段过滤） | 弱（全文搜索） |
+| 选型 | 当前做法 | 决策 |
+| --- | --- | --- |
+| 连接管理 | ClientManager 连接池（懒加载 + 主动关闭 + 关闭追踪） | [LLM-ADR-004](../../../adr/integration/llm/2026-08-01-client-pool-lazy-close-tracking.md) |
+| 重试策略 | 指数退避 + 抖动（CircuitBreaker + fallback） | [LLM-ADR-006](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md) |
+| 熔断 | CircuitBreaker 滑动窗口 + 半开探针 | [LLM-ADR-006](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md) |
+| 限流算法 | Token Bucket（等待型） | [LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md) |
+| 结构化输出 | 三级降级（JSON Schema → JSON Mode → 正则提取） | [LLM-ADR-001](../../../adr/integration/llm/2026-08-07-unified-structured-entry-degradation.md) |
+| 流式解析 | 纯函数无状态 | [LLM-ADR-003](../../../adr/integration/llm/2026-08-01-streaming-parse-pure-function.md) |
+| 日志 | 全局 JSON 结构化 + llm_call 业务事件 | [LLM-ADR-011](../../../adr/integration/llm/2026-08-04-llm-event-logging.md) |
 
 ---
 
@@ -1078,24 +971,8 @@ data = await llm.generate_structured(..., model_key="fast")
 
 ### 流式整流重试
 
-> 整流重试策略已独立为 `StreamingRectifier` 模块，完整设计见 [streaming_rectifier.md](streaming_rectifier.md)。本节保留决策摘要。
-
-**核心决策**（2026-08-01 实施，2026-08-10 拆为独立策略类）：
-
-1. **首 token 前中断 → 整流重试**（重新 create + 重新迭代）：用户没看到任何输出，整流不会产生重复内容
-2. **已产出 token 后中断 → 不整流**：避免重复输出 / token 双倍计费 / tool_calls 残缺
-3. **新增独立配置 `llm_stream_max_retries`**（默认 1），不复用 `llm_max_retries`——create 重试（HTTP 请求级）与整流重试（已开始流式后重启）属不同故障阶段，需独立调优；设为 `0` 即禁用整流
-4. **整流条件复用 `classify_error`**：只有 RETRYABLE / RATE_LIMITED 的迭代异常才整流
-5. **create 阶段异常绝不整流**：`retry.execute` 已决定重试/熔断/fallback
-6. **cancel_event 置位永不整流**：迭代内取消检查 + 整流分支退避前后各一道守卫
-
-**实现载体**：`StreamingRectifier.rectified_stream()`（无状态静态类）+ `RectifierContext`（会话共享状态：result/active/event_fields）。`async_generate` 只做编排——构造 `create_fn`（限流闭环）+ 调 `rectified_stream` 产出事件。详见 [streaming_rectifier.md](streaming_rectifier.md)。
-
-**测试**：`tests/unit/test_streaming_rectifier.py`（7 直接用例，含 emitted_any 累积语义回归）+ `tests/unit/test_stream_rectify.py`（21 间接用例）。
-
-**遗留微调（已解决）**：熔断观察盲区——流式迭代「放弃时」且异常为 RETRYABLE → 喂 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中途断开」。
-
----
+> 整流重试策略的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-005](../../../adr/integration/llm/2026-08-01-streaming-rectification-retry.md)。
+> 实现载体：`StreamingRectifier`（无状态静态类）+ `RectifierContext`（result/active/event_fields 共享状态），设计见 [streaming_rectifier.md](streaming_rectifier.md)。
 
 ### 配额缺口：重试/降级不计入限流申请
 

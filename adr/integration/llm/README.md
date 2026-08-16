@@ -26,6 +26,7 @@
 | [LLM-ADR-008](2026-08-01-rate-limit-token-bucket-waiting.md) | 客户端限流：Token Bucket 算法 + LLM 等待语义 | ✅ 已采纳 | reservation_limiter / llm_service | 2026-08-01 |
 | [LLM-ADR-009](2026-08-02-reserve-settle-semantics.md) | reserve/settle 预留-结算形态（按实际 usage 退差） | ✅ 已采纳 | reservation_limiter / llm_service | 2026-08-02 |
 | [LLM-ADR-010](2026-08-06-adaptive-reserve-output-estimator.md) | 自适应预留（Fenic 式）：高分位输出估算替代固定 max_tokens | ✅ 已采纳 | reservation_limiter | 2026-08-06 |
+| [LLM-ADR-011](2026-08-04-llm-event-logging.md) | LLM 层日志：全局 JSON 结构化 + llm_call 业务事件 | ✅ 已采纳 | utils(logger) / llm | 2026-08-04 |
 
 ## 新决策登记规范
 
