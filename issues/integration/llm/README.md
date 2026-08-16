@@ -31,6 +31,10 @@
 | [LLM-012](2026-08-16-fallback-same-provider.md) | fallback 只支持同 provider（文档-实现偏差） | P1 | ✅ 已修复 | llm_service（_build_fallback_fn）+ 文档 | 2026-08-16 | 2026-08-16 |
 | [LLM-013](2026-08-16-record-failure-return-contract.md) | record_failure bool 契约无人兑现 + retry.md 误导 | P2 | ✅ 已修复 | retry（record_failure）+ 文档 | 2026-08-16 | 2026-08-16 |
 | [LLM-014](2026-08-16-single-entry-settle-test-false-positive.md) | 单条目 settle 测试假阳性 | P2 | ✅ 已修复 | test_reservation_limiter | 2026-08-16 | 2026-08-16 |
+| [LLM-015](2026-08-08-no-schema-validation.md) | 解析后无 Schema 校验 | P0 | ✅ 已修复 | structured（_validate_schema） | 2026-08-08 | 2026-08-08 |
+| [LLM-016](2026-08-08-finish-reason-refusal-unchecked.md) | 不检查 finish_reason/refusal | P1 | ✅ 已修复 | structured（_classify_result） | 2026-08-08 | 2026-08-08 |
+| [LLM-017](2026-08-08-degrade-instead-of-error-reask.md) | 降级而非错误感知重试 | P1 | ✅ 已修复 | structured（_try_extract 回喂） | 2026-08-08 | 2026-08-08 |
+| [LLM-018](2026-08-08-extra-fields-not-rejected.md) | 额外字段不拒绝 | P2 | ✅ 已修复 | structured（_enforce_no_extra_fields） | 2026-08-08 | 2026-08-08 |
 
 ## 新问题登记规范
 
