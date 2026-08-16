@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import chat_router, session_router
 from app.container import container
-from app.utils.logger import get_logger
+from app.platform.observability.logger import get_logger
 
 logger = get_logger("main")
 

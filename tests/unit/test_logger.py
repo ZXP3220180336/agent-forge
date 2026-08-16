@@ -1,5 +1,5 @@
 """
-全局日志框架单元测试（app/utils/logger.py）
+全局日志框架单元测试（app/platform/observability/logger.py）
 
 覆盖：
     get_logger             app.* 命名空间 + 标准 Logger
@@ -18,7 +18,7 @@ import logging
 import pytest
 
 from app.config import settings
-from app.utils.logger import (
+from app.platform.observability.logger import (
     ConsoleFormatter,
     JsonFormatter,
     get_logger,

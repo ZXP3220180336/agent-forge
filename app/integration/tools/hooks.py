@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.domain.ports.tool_gateway import ToolResult
-from app.utils.logger import get_logger
+from app.platform.observability.logger import get_logger
 
 logger = get_logger("services.tool_service")
 

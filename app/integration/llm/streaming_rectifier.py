@@ -50,7 +50,7 @@ from app.shared.events import (
     build_message_event,
     build_reasoning_event,
 )
-from app.utils.logger import fill_llm_event_fields
+from app.platform.observability.logger import fill_llm_event_fields
 
 if TYPE_CHECKING:
     from app.domain.ports.llm_gateway import StreamResult

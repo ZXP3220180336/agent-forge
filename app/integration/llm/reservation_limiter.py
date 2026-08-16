@@ -27,7 +27,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar
 
-from app.utils.logger import get_logger
+from app.platform.observability.logger import get_logger
 
 logger = get_logger("llm.reservation_limiter")
 

@@ -23,7 +23,7 @@ from typing import Any, ClassVar
 
 from openai import AsyncOpenAI
 
-from app.utils.logger import get_logger
+from app.platform.observability.logger import get_logger
 
 logger = get_logger("llm.client")
 

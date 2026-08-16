@@ -27,7 +27,7 @@ from app.integration.llm.cost_tracker import CostTracker
 from app.integration.llm.reservation_limiter import Reservation
 from app.integration.llm.retry import ErrorCategory, classify_error
 from app.integration.llm.streaming_rectifier import RectifierContext
-from app.utils.logger import fill_llm_event_fields
+from app.platform.observability.logger import fill_llm_event_fields
 
 # =====================================================================
 # 辅助数据结构

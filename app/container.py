@@ -36,7 +36,7 @@ from app.integration.tools.builtin import (
 from app.integration.tools.tool_service import ToolService
 
 from .config import settings
-from .utils.logger import get_logger, setup_logging
+from .platform.observability.logger import get_logger, setup_logging
 
 logger = get_logger("container")
 

@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 import redis.asyncio as redis
 
-from app.utils.logger import get_logger
+from app.platform.observability.logger import get_logger
 
 logger = get_logger("services.session_manager")
 from sqlalchemy import (
