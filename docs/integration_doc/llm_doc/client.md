@@ -231,56 +231,8 @@ close_all()
 
 ## 设计决策
 
-### Q1: 只清理引用 vs 主动关闭连接
-
-| 操作                | 行为                                             | 适用场景                      |
-| ------------------- | ------------------------------------------------ | ----------------------------- |
-| `remove(key)`       | 仅从字典中弹出，不关闭连接，依赖 GC 回收         | 进程退出、测试临时使用        |
-| `close_client(key)` | 先 `await client.close()` 再弹出，立即释放连接池 | Server 运行时热切换、优雅关闭 |
-
-**关键区别**：`AsyncOpenAI` 内部持有 `httpx.AsyncClient` 维护 TCP keep-alive 连接池。只清理引用不会发送 FIN，端口和 socket 资源要等 GC。在长驻进程（FastAPI Server）中应始终使用 `close_client()`。
-
-### Q2: `register_config` 热切换时要不要关闭旧 client？
-
-**要。** 当初次实现时，`register_config` 只做 `cls._instances.pop(key, None)`——新配置进来只是弹出旧引用，旧连接泄漏到 GC。
-
-修复方案（2026-08-09 增强：无 loop 不再静默忽略，进入 `_pending_closes` 追踪；2026-08-11 增强：有 loop 的后台 task 记录到 `_closing_tasks`）：
-
-```python
-old = cls._instances.pop(key, None)
-if old is not None:
-    try:
-        asyncio.get_running_loop()  # 仅判断是否有运行中事件循环
-    except RuntimeError:
-        cls._pending_closes.append(old)  # 无 loop：登记待关闭，close_all 统一关
-    else:
-        # 有 loop：后台异步关闭，task 记录到 _closing_tasks 由 close_all 等待
-        cls._closing_tasks.append(asyncio.ensure_future(old.close()))
-```
-
-- 使用 `asyncio.ensure_future` 而非 `await`，因为 `register_config` 不是 async 方法，有运行循环时后台关闭不阻塞注册
-- 用 `asyncio.get_running_loop()` 显式判断而非依赖 `ensure_future` 抛异常：无运行循环（纯注册阶段，如 Container.initialize 之前）时旧 client 放入 `_pending_closes` 列表，由 `close_all()` 统一关闭——**不再静默忽略**，避免旧连接池泄漏且可追踪
-- **有 loop 的后台 task 必须被追踪**（2026-08-11）：`asyncio.ensure_future(old.close())` 的返回值存入 `_closing_tasks` 类变量。原因：① 无引用的 task 在事件循环先关闭、task 未完成时产生 "Task was destroyed but it is pending" 警告，旧连接池关闭时机不可控；② task 异常无人消费产生 "Task exception was never retrieved"；③ `close_all()` 需 `asyncio.gather(*_closing_tasks, return_exceptions=True)` 等待其完成，避免与后台关闭并行竞态。`close_all()` 在清理前先等待并清空 `_closing_tasks`
-
-**`_pending_closes` 的释放时机**：无运行事件循环阶段积累的旧 client 不会自我关闭，必须由 `close_all()` 显式触发，否则旧 `AsyncOpenAI` 的 httpx 连接池泄漏。`close_all()` 的调用方约定：
-
-- **正常路径**：`Container.shutdown()`（FastAPI lifespan 关闭事件）调用 `ClientManager.close_all()`，应用退出即统一关闭 `_closing_tasks`（后台 task）+ `_instances` + `_pending_closes`
-- **兜底路径**：无 lifespan 的场景（测试 tearDown、独立脚本）必须显式 `await ClientManager.close_all()`——测试用 `autouse` fixture 清理状态时不只要 `clear()` 字典，还应关闭 `_pending_closes` 中的旧 client，否则测试进程内连接池残留
-- **`close_all()` 的等待顺序**（2026-08-11）：先 `asyncio.gather(*_closing_tasks, return_exceptions=True)` 等待后台 close task（异常隔离）并清空，再快照遍历 `_instances` 与 `_pending_closes` 逐个关闭——避免与后台关闭并行竞态、task 泄漏与异常无人消费
-
-**有/无事件循环分支的调用场景辨析**：
-
-- `register_config` 是同步方法，但 `asyncio.get_running_loop()` 检测的是「当前线程是否存在运行中的事件循环」，与函数自身是否含 `await` 无关。
-- `Container.initialize()` 是 `async def`，运行在 FastAPI lifespan 事件循环中，因此其中调用的 `register_config` 属于「有事件循环」上下文（首次注册时 `_instances` 为空、`old is None`，两个分支实际都不执行）。
-- 「无事件循环」分支针对事件循环外的调用：单元测试同步上下文（`test_client_manager.py` 覆盖）、独立脚本启动阶段、同步构造 `LLMService(api_key=...)` 触发 `llm_service.py` 内注册等；此时 `asyncio.ensure_future` 会抛 `RuntimeError`，只能登记到 `_pending_closes` 由 `close_all` 兜底。
-- 分类的意义：有 loop 时旧连接池在热重配后立即后台关闭，避免长驻进程多次热重配累积泄漏；无 loop 时无法创建 task，只能延迟到 `close_all` 统一关闭。两者最终都会被 `close_all` 等待，区别是「关闭动作何时开始」。
-
-### Q3: `**extra` 被静默吞没了
-
-旧实现中 `get_client` 只取了 `api_key` 和 `base_url`，调用方传入的 `organization`、`timeout`、`max_retries` 等参数虽存入了 `_configs`，但永远不会传给 `AsyncOpenAI`。
-
-修复：定义 `_OPENAI_CLIENT_KWARGS` 白名单，`get_client` 从配置中筛选交集的字段。
-
+> 连接池管理决策（懒加载 + 主动关闭 + 热切换关闭追踪，Context → Decision → Consequences）已归档至 [ADR LLM-ADR-004](../../../adr/integration/llm/2026-08-01-client-pool-lazy-close-tracking.md)。
+> Q3（`**extra` 参数白名单）为问题记录，完整生命周期见 [LLM-033](../../../issues/integration/llm/2026-08-09-client-kwargs-whitelist.md)。
 ---
 
 ## 配置项清单
