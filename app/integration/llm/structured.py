@@ -507,6 +507,13 @@ class StructuredOutput:
                 return None  # 下游失败 → 降级
 
             failure = StructuredOutput._classify_result(retry)
+
+            if failure == "empty":
+                # 适配层空响应 / 流中断无结果（无 refusal、无 finish_reason、content 空）→
+                # 业务无结果，返回 None 触发降级（LLM-004）；不短路拒答、不进回喂
+                # （空 content 回喂无意义，白打调用）。
+                return None
+
             # 回喂循环内截断 → 一律短路（与顶层「截断与降级正交」一致），
             # 不与扩 token 逻辑组合，防 token 爆炸。
             StructuredOutput._raise_boundary(failure, retry, "回喂重试后")

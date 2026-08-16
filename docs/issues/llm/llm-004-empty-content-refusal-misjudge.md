@@ -61,14 +61,15 @@
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
 | `app/integration/llm/structured.py` | `_classify_result` content 空分支区分 finish_reason（空 → `"empty"`）；`_try_extract` / `_fallback_extract` 对 `"empty"` 返回 None（触发降级） | `test_generate_structured.py` 新增 `test_empty_content_no_finish_treated_as_no_result` |
+| `app/integration/llm/structured.py`（2026-08-16 补充） | **回喂循环**对 retry 分类 `"empty"` → 返回 None（LLM-004 遗漏处：回喂空响应不进回喂白打调用；修正变量名笔误 `retry_failure`→`failure` 避免正常路径 NameError） | `test_generate_structured.py` 新增 `test_reask_empty_response_returns_none` |
 | 文档 | [llm.md](../../integration_doc/llm_doc/llm.md)（已实现列表加 LLM-004 条目） | — |
 
 ---
 
 ## 验证
 
-- `tests/unit/test_generate_structured.py` **45 passed**（含新增 1 条；DeepSeek 拒答用例 `test_empty_content_normal_finish_treated_as_refusal` 不破坏）
-- 全量测试 **353 passed**（43.92s），无回归
+- `tests/unit/test_generate_structured.py` **46 passed**（含空响应降级 + 回喂空响应降级 2 条；DeepSeek 拒答用例不破坏）
+- 全量测试 **358 passed**（42.37s），无回归
 - `scripts/verify_alignment.py`：ALIGNMENT 校验通过
 
 ---

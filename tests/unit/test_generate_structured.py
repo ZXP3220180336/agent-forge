@@ -758,6 +758,30 @@ async def test_reask_truncation_does_not_enter_loop():
 
 
 @pytest.mark.asyncio
+async def test_reask_empty_response_returns_none():
+    """回喂响应为空响应（无 finish_reason + content 空）→ 返回 None 触发降级（LLM-004）。
+
+    修复前（LLM-004 补充）：回喂循环未处理 empty 分类，空响应进回喂白打调用；
+    且变量名笔误 `retry_failure` 在正常路径（未走截断分支）未定义抛 NameError。
+    修复后：回喂空响应 → "empty" → 返回 None 降级，不抛异常。
+    """
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) == 1:
+            return _sr("bad json")  # 首次：无效 JSON → 进回喂
+        return _sr("", finish_reason=None)  # 回喂：适配层空响应
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA)
+    assert result is None, "回喂空响应应返回 None（降级），不抛 NameError"
+    # 一级首次(无效 JSON) + 一级回喂(空) + 二级(空) + 三级 fallback(空) = 4 次调用
+    assert len(calls) == 4
+
+
+@pytest.mark.asyncio
 async def test_reask_refusal_short_circuits():
     """回喂循环内拒答 → 抛 StructuredRefusalError（不降级、不继续回喂）。"""
     llm = LLMService()
