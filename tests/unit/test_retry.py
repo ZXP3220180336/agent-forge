@@ -1045,3 +1045,111 @@ async def test_half_open_probe_other_baseexception_releases_slot():
     assert cb._half_open_requests == 0, "BaseException 中断应由 finally 归还槽位"
     assert cb.state.value == "half_open", "BaseException 中断不改变熔断状态"
     assert cb.allow_request() is True, "槽位归还后可继续放行探测真实状态"
+
+
+# =====================================================================
+# 并发路径：「无锁安全」不变量守护（LLM-005）
+# 熔断器方法全部同步无 await → 单方法调用在 asyncio 单线程下原子执行（GIL）。
+# 以下验证「方法序列交错」的语义正确性——并发放行槽位 / 迟到成功 no-op /
+# 窗口记账无丢失 / 4xx 释放补位。
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_concurrent_allow_request_caps_half_open_slots():
+    """并发 allow_request：HALF_OPEN 放行的探针数不超过 half_open_max_requests。
+
+    「无锁安全」不变量 1：并发放行时槽位计数正确，不多放（熔断保护不削弱）。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+
+    async def try_allow():
+        return cb.allow_request()
+
+    results = await asyncio.gather(*[try_allow() for _ in range(10)])
+
+    assert sum(results) == 3, f"并发 allow_request 应恰好放行 3 个探针，实际 {sum(results)}"
+    assert cb._half_open_requests == 3, "槽位计数应与放行数一致"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_probe_failure_reopens_late_success_noop():
+    """并发探针交错：探针 A 失败回 OPEN 后，探针 B 迟到 success 不被误关闭。
+
+    「无锁安全」不变量 2：探针失败回 OPEN 是终态（新一轮冷却），迟到成功的
+    record_success 在 OPEN 下是 no-op——不得据此关闭熔断器。
+    """
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+
+    a_entered = asyncio.Event()
+    b_entered = asyncio.Event()
+
+    async def probe(fail: bool, entered: asyncio.Event):
+        allowed = cb.allow_request()  # 占用探针槽位
+        entered.set()
+        # 等待两个探针都占用槽位后再推进——构造确定性交错（asyncio 让出点）
+        await a_entered.wait()
+        await b_entered.wait()
+        assert allowed, "HALF_OPEN 槽位未满，应放行"
+        if fail:
+            cb.record_failure()  # 探针 A 失败 → OPEN
+        else:
+            cb.record_success()  # 探针 B 迟到成功（A 已回 OPEN → no-op）
+
+    await asyncio.gather(
+        probe(fail=True, entered=a_entered),
+        probe(fail=False, entered=b_entered),
+    )
+
+    assert cb.state == CircuitState.OPEN, "探针失败回 OPEN 后，迟到成功不得关闭熔断器"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_records_window_no_loss():
+    """并发 record_success/failure：CLOSED 窗口记录无丢失。
+
+    「无锁安全」不变量 3：并发记账时窗口 total == 调用次数（无丢失/重复）。
+    """
+    cb = CircuitBreaker(
+        config=CircuitBreakerConfig(request_volume_threshold=200, all_failed_min=200)
+    )
+
+    async def do_success():
+        cb.record_success()
+
+    async def do_failure():
+        cb.record_failure()
+
+    await asyncio.gather(
+        *[do_success() for _ in range(50)],
+        *[do_failure() for _ in range(50)],
+    )
+
+    total, failures = cb._window_stats()
+    assert total == 100, f"并发记录无丢失，实际 total={total}"
+    assert failures == 50, f"失败数正确，实际 {failures}"
+    assert cb.state == CircuitState.CLOSED, "错误率 0.5、volume 100<200 未达熔断条件"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_probe_release_then_followup():
+    """并发探针 4xx 释放槽位后，后续请求能补位探测。
+
+    「无锁安全」不变量 4：槽位释放与补位计数正确（不泄漏、不虚增）。
+    """
+    cb = _quick_cb(half_open_max_requests=2)
+    _force_half_open_fresh(cb)
+
+    async def request():
+        return cb.allow_request()
+
+    # 并发 5 个请求，槽位上限 2 → 恰好 2 个放行
+    results = await asyncio.gather(*[request() for _ in range(5)])
+    assert results.count(True) == 2, f"槽位上限 2，应恰好 2 个放行，实际 {results}"
+    assert cb._half_open_requests == 2
+
+    cb.release_probe()  # 探针 4xx 释放一个槽位
+    assert cb.allow_request() is True, "释放槽位后应能补位"
+    assert cb._half_open_requests == 2, f"补位后槽位计数应恢复 2，实际 {cb._half_open_requests}"
