@@ -272,6 +272,14 @@ class StreamingRectifier:
                     tool_deltas.clear()
                     continue
 
+                # LLM-011：放弃分支先判取消——_should_rectify 可能因用户取消返回
+                # False（且取消后异常仍是 RETRYABLE），用户取消非下游故障，不喂
+                # 熔断器（与 test_cancel_event_not_feeds_breaker 契约一致）。
+                if cancel_event and cancel_event.is_set():
+                    context.result.error = "用户取消"
+                    yield build_error_event("用户取消了请求")
+                    return
+
                 if classify_error(e) == ErrorCategory.RETRYABLE:
                     retry.circuit_breaker.record_failure()
                 # 流中断放弃（不整流）→ 失败信号传编排层（Agent 短路）。已产出的

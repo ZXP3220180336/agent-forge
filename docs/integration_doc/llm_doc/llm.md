@@ -1210,6 +1210,7 @@ response = await retry.execute(
 - **拒答日志截断（LLM-008，2026-08-16）**：`_raise_boundary` refusal 日志经 `_truncate_text_for_log` 截断落盘——修复拒答文本完整落日志违反「模型输出不完整落盘」安全基线（拒答常引用触发内容，Yield RCA 含晶圆/良率数据）；异常 message 与日志分离（message 简洁、日志截断前缀供诊断）。详见 [问题文档](../../issues/llm/llm-008-refusal-log-truncation.md)
 - **strict schema 归一（LLM-009，2026-08-16）**：新增 `_strict_compliant` 递归把 `additionalProperties: true` 归一为 false 副本，`_build_json_schema_request` 用它构建 strict 请求——修复显式 true 导致 strict 必然 400 且被误判「模型不支持」白打调用（对齐 LangChain `_recursive_set_additional_properties_false`）；本地校验仍用原 schema（保留允许扩展意图）。详见 [问题文档](../../issues/llm/llm-009-strict-additional-properties-true.md)
 - **settle/cancel 终态互斥（LLM-010，2026-08-16）**：`Reservation` 增加 `asyncio.Lock`，`settle`/`cancel` 的「_settled 检查 + 退款循环」整体放锁内——修复并发调用重复退款（检查与退款间含 await 点）；`capacity` 封顶只防桶超容量、不防容量以下重复虚增，幂等必须靠互斥。详见 [问题文档](../../issues/llm/llm-010-settle-cancel-concurrent-race.md)
+- **整流放弃分支取消守卫（LLM-011，2026-08-16）**：迭代放弃分支喂熔断前加 `cancel_event` 守卫——`_should_rectify` 因用户取消返回 False 时（异常仍 RETRYABLE）不再误喂熔断器（用户取消非下游故障，对齐 `test_cancel_event_not_feeds_breaker` 契约），改走取消路径。详见 [问题文档](../../issues/llm/llm-011-cancel-race-feeds-breaker.md)
 
 ### 遗留未定事项
 

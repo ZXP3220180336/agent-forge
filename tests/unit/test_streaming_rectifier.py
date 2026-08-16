@@ -229,6 +229,48 @@ def test_cancel_event_no_rectify():
     assert any("error" in e for e in events), "应产出 error 事件"
 
 
+def test_cancel_during_iteration_with_retryable_exc_does_not_feed_breaker():
+    """迭代中 cancel 置位 + 流抛 RETRYABLE → 放弃但不喂熔断器（LLM-011）。
+
+    竞态：cancel 在循环顶部检查后、迭代阶段置位，流同时抛 RETRYABLE——
+    修复前 `_should_rectify` 因 cancel 返回 False 后统一走放弃分支喂熔断
+    （用户取消被计入熔断窗口）；修复后放弃分支先判取消，不喂熔断 + 取消事件。
+    """
+    cancel_event = asyncio.Event()
+
+    class _CancelThenRaiseStream(_FakeStream):
+        async def __anext__(self):
+            cancel_event.set()  # 迭代中置位取消
+            return await super().__anext__()  # 抛 TimeoutError（RETRYABLE）
+
+    streams = [_CancelThenRaiseStream([], fail_at=0, exc=TimeoutError("reset"))]
+    result = StreamResult()
+    reservation = _FakeReservation()
+    context = RectifierContext(result, {"res": reservation}, {})
+    retry = _FakeRetry(streams)
+
+    async def collect():
+        events = []
+        try:
+            async for event in StreamingRectifier.rectified_stream(
+                create_fn=lambda: _FakeStream([]),
+                retry=retry,
+                cancel_event=cancel_event,
+                stream_max_retries=1,
+                context=context,
+            ):
+                events.append(event)
+        except asyncio.CancelledError:
+            pass
+        return events
+
+    events = asyncio.run(collect())
+
+    assert retry.circuit_breaker.failures == 0, "用户取消不得喂熔断器"
+    assert any("用户取消了请求" in e for e in events), "应产出取消事件"
+    assert result.error == "用户取消"
+
+
 # =====================================================================
 # 整流上限耗尽
 # =====================================================================

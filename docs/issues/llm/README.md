@@ -27,6 +27,7 @@
 | [LLM-008](llm-008-refusal-log-truncation.md) | 拒答文本完整落日志，违反安全基线 | P0 | ✅ 已修复 | structured（_raise_boundary 日志） | 2026-08-16 | 2026-08-16 |
 | [LLM-009](llm-009-strict-additional-properties-true.md) | strict + additionalProperties:true 必然 400 | P1 | ✅ 已修复 | structured（_build_json_schema_request） | 2026-08-16 | 2026-08-16 |
 | [LLM-010](llm-010-settle-cancel-concurrent-race.md) | settle/cancel 终态幂等并发竞态 | P1 | ✅ 已修复 | reservation_limiter（Reservation） | 2026-08-16 | 2026-08-16 |
+| [LLM-011](llm-011-cancel-race-feeds-breaker.md) | 整流放弃分支 cancel 竞态错误喂熔断器 | P1 | ✅ 已修复 | streaming_rectifier（迭代放弃分支） | 2026-08-16 | 2026-08-16 |
 
 ## 新问题登记规范
 
