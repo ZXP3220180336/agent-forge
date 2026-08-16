@@ -51,22 +51,8 @@
 
 ### 统一入口决策：generate_structured 委托 extract（2026-08-07）
 
-**结论：`generate_structured` 是唯一入口，内部委托 `StructuredOutput.extract` 三级降级；`StructuredOutput` 是内部实现载体。**
-
-**背景**：此前结构化输出存在两个入口（`generate_structured` 内部自行处理 + `StructuredOutput.extract` 直接可调），职责重叠、语义不一。
-
-| 维度 | 统一前（双入口） | 统一后（委托） |
-| --- | --- | --- |
-| 入口数 | 2（generate_structured 自处理 + extract） | 1（generate_structured） |
-| messages 语义 | generate_structured 内部拼接 prompt | extract 接收完整 messages，透传 |
-| 降级逻辑 | 分散 | 收敛到 extract 单点 |
-| 调用方 | 需区分用哪个入口 | 永远用 generate_structured |
-
-**决策依据**：
-
-- 与 `RetryHandlerManager` 等「统一入口 + 内部实现」模式一致——调用方只面对 `LLMService`，不直接触碰内部组件
-- `extract` 接收完整 messages：prompt 拼接是调用方职责，结构化模块不再假设 prompt 形状
-- 降级链单点维护：未来加错误感知重试 / Schema 校验，只改 `extract` 一处
+> 完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-001](../../../adr/integration/llm/2026-08-07-unified-structured-entry-degradation.md)。
+> 当前状态：`generate_structured` 为唯一入口，内部委托 `StructuredOutput.extract` 三级降级（JSON Schema strict → JSON Mode → 正则提取）；调用方只面对 `LLMService`，不直接触碰内部组件。
 
 ---
 
@@ -146,7 +132,7 @@
 第三级：纯 Prompt + 正则提取（无 schema）  —— 兼容所有模型，可靠性最低
 ```
 
-**为何降级而非「只用最高级」**：不同模型对结构化输出的支持差异很大。三级降级让结构化输出在廉价模型（fast）上也能工作，只是在必要时才走更低级。代价是每级失败多一次模型调用，加上错误回喂（[问题 3](../../../issues/integration/llm/2026-08-08-degrade-instead-of-error-reask.md)）每级最多 2 次回喂，三级全失败最多 7 次调用（token 消耗）。
+**为何降级而非「只用最高级」**：不同模型对结构化输出的支持差异很大。三级降级让结构化输出在廉价模型（fast）上也能工作，只是在必要时才走更低级。代价是每级失败多一次模型调用，加上错误回喂（[问题 3](../../../issues/integration/llm/2026-08-08-degrade-instead-of-error-reask.md)）每级最多 2 次回喂，三级全失败最多 7 次调用（token 消耗）。（决策记录见 [ADR LLM-ADR-001](../../../adr/integration/llm/2026-08-07-unified-structured-entry-degradation.md)）
 
 ---
 
