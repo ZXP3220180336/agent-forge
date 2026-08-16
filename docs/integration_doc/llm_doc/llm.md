@@ -1203,6 +1203,7 @@ response = await retry.execute(
 - **流式失败信号透传（LLM-001，2026-08-16）**：`StreamingRectifier` 三个失败出口（create 异常 / 迭代放弃 / 用户取消）除 SSE error 事件外，标记 `StreamResult.error`（截断 500）；`ReActAgent` 检查 error 短路返回失败结果——修复「4xx/认证/熔断开启被静默吞掉、ReAct 空转到 max_iterations、最终错误信息不准确」的缺陷。正常空回（stop + 空 content）不置位、整流成功不置位。详见 [问题文档](../../issues/llm/llm-001-stream-error-propagation.md)
 - **非流式配额结算兜底（LLM-002，2026-08-16）**：`generate()` 解析 + 结算阶段放 `try/finally`——成功路径 `settle(actual)` 退 TPM 差；解析抛异常 → `settle(None)` 保留配额、settle 被取消 → `settle(None)` 兜底 + re-raise（LLM-003 统一「已发出请求保留配额」），与流式 `rectified_stream` finally 对称（修复非流式配额泄漏）。详见 [问题文档](../../issues/llm/llm-002-generate-quota-settle-fallback.md)
 - **流式硬取消保留配额（LLM-003，2026-08-16）**：`rectified_stream` 迭代阶段 finally 兜底由 `cancel()`（全额退含 RPM）改为 `settle(None)`（保留配额 + 标记终态），非流式 `generate()` 的 settle 取消兜底同步统一——「已发出的请求」是不可回滚的已提交副作用（对齐 SQLAlchemy 事务语义），`cancel()` 退回 RPM 导致客户端配额虚增 → 服务端 429 风暴；`settle(None)` 内部无退款 await，规避取消态 finally 多 await 被再次打断的 asyncio 陷阱。详见 [问题文档](../../issues/llm/llm-003-hard-cancel-rpm-refund.md)
+- **空 content 分类修正（LLM-004，2026-08-16）**：`_classify_result` 空 content 分支区分 finish_reason——无 finish_reason + content 空 → 新增 `"empty"` 分类（`_try_extract`/`_fallback_extract` 返回 None 触发降级），修复适配层空响应被误判为安全拒答抛 `StructuredRefusalError`；有 finish_reason（如 stop）+ content 空 → 保持 `refusal`（DeepSeek 拒答形态保留）。拒答应基于显式信号（refusal 字段 / content_filter），不靠「content 空」推断。详见 [问题文档](../../issues/llm/llm-004-empty-content-refusal-misjudge.md)
 
 ### 遗留未定事项
 

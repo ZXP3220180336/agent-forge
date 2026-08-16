@@ -20,6 +20,7 @@
 | [LLM-001](llm-001-stream-error-propagation.md) | 流式 create 阶段失败被 ReActAgent 静默吞掉 | P0 | ✅ 已修复 | streaming_rectifier / domain(StreamResult) / executor | 2026-08-16 | 2026-08-16 |
 | [LLM-002](llm-002-generate-quota-settle-fallback.md) | 非流式 generate() 配额结算无兜底 | P0 | ✅ 已修复 | llm_service（非流式 generate） | 2026-08-16 | 2026-08-16 |
 | [LLM-003](llm-003-hard-cancel-rpm-refund.md) | 流式硬取消对已发出请求退回 RPM 配额 | P1 | ✅ 已修复 | streaming_rectifier（迭代 finally） | 2026-08-16 | 2026-08-16 |
+| [LLM-004](llm-004-empty-content-refusal-misjudge.md) | 空 content 一律归 refusal，适配层空响应误判拒答 | P1 | ✅ 已修复 | structured（_classify_result） | 2026-08-16 | 2026-08-16 |
 
 ## 新问题登记规范
 

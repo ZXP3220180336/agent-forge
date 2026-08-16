@@ -200,9 +200,7 @@ def _collect_schema_error_summaries(
     summaries = []
     for e in Draft7Validator(schema).iter_errors(parsed):
         path = "/".join(str(p) for p in e.absolute_path) or "<root>"
-        summaries.append(
-            f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}"
-        )
+        summaries.append(f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}")
     return summaries
 
 
@@ -431,6 +429,12 @@ class StructuredOutput:
 
         failure = StructuredOutput._classify_result(result)
 
+        if failure == "empty":
+            # 适配层空响应 / 流中断无结果（无 refusal、无 finish_reason、content 空）→
+            # 业务无结果，返回 None 触发降级（LLM-004）；不短路拒答、不进回喂
+            # （空 content 回喂无意义，白打调用）。
+            return None
+
         if failure == "truncated":
             logger.warning(
                 "结构化输出截断: finish_reason=%s, 扩 max_tokens 重试 1 次",
@@ -451,6 +455,12 @@ class StructuredOutput:
                 return None  # 下游失败 → 降级，与首次调用语义一致
 
             retry_failure = StructuredOutput._classify_result(retry)
+
+            if retry_failure == "empty":
+                # 适配层空响应 / 流中断无结果（无 refusal、无 finish_reason、content 空）→
+                # 业务无结果，返回 None 触发降级（LLM-004）；不短路拒答、不进回喂
+                # （空 content 回喂无意义，白打调用）。
+                return None
 
             StructuredOutput._raise_boundary(retry_failure, retry, "截断重试后")
             result = retry
@@ -473,7 +483,8 @@ class StructuredOutput:
             # 不含实例值（JSONDecodeError 只报位置），原样记录。
             if schema is not None and errors and errors[0].startswith("- 字段"):
                 log_errors = _collect_schema_error_summaries(
-                    json.loads(content), schema  # 走到此 content 必为可解析 dict
+                    json.loads(content),
+                    schema,  # 走到此 content 必为可解析 dict
                 )
             else:
                 log_errors = errors
@@ -532,6 +543,9 @@ class StructuredOutput:
             return None
 
         failure = StructuredOutput._classify_result(result)
+        if failure == "empty":
+            # 空响应无结果（LLM-004）：第三级已无降级可走，返回 None（业务无结果）
+            return None
 
         StructuredOutput._raise_boundary(failure, result, "结构化输出（fallback）")
 
@@ -614,7 +628,12 @@ class StructuredOutput:
             # 输出 JSON，进回喂/降级只会浪费调用），交回调用方按工具调用处理。
             return "tool_calls"
         if not result.content:
-            # content 空 + 正常结束 = 拒答/空回（DeepSeek 无 refusal 字段形态）
+            if not result.finish_reason:
+                # 无 refusal、无 finish_reason、content 空 = 适配层空响应 / 流中断无结果，
+                # 非拒答/截断/工具调用（LLM-004）→ 独立分类 empty → 触发降级（返回 None），
+                # 不短路为拒答（空 content 不是可靠拒答信号，工业界按生成失败处理）。
+                return "empty"
+            # content 空 + 有 finish_reason（如 stop）= DeepSeek 拒答形态（无 refusal 字段）
             return "refusal"
         return "ok"
 

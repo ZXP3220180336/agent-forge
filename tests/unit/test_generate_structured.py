@@ -501,6 +501,28 @@ async def test_empty_content_normal_finish_treated_as_refusal():
 
 
 @pytest.mark.asyncio
+async def test_empty_content_no_finish_treated_as_no_result():
+    """content 空 + 无 finish_reason（适配层空响应）→ 返回 None 触发降级，不抛拒答（LLM-004）。
+
+    修复前：`_classify_result` 把一切 content 空归 refusal，适配层空响应（无 refusal、
+    无 finish_reason）被误判为安全拒答抛 StructuredRefusalError。
+    修复后：无 refusal、无 finish_reason、content 空 → "empty" → 返回 None（业务无结果，
+    触发降级）；DeepSeek 拒答（finish_reason=stop + 空 content）仍短路拒答（上一用例）。
+    """
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr("", finish_reason=None)  # 适配层空响应形态（parse_non_stream 空 choices）
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA)
+    assert result is None, "空响应应返回 None（触发降级耗尽），而非抛 StructuredRefusalError"
+    assert len(calls) == 3, "三级均空响应 → 三级降级各调 1 次"
+
+
+@pytest.mark.asyncio
 async def test_tool_calls_finish_not_treated_as_refusal():
     """finish_reason=tool_calls + content 空 → 短路抛 StructuredToolCallError。
 
