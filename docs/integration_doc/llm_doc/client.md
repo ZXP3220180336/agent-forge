@@ -178,6 +178,8 @@ class ClientManager:
 2. task 异常无人消费产生 "Task exception was never retrieved"
 3. `close_all()` 需 `asyncio.gather(*_closing_tasks, return_exceptions=True)` 等待其完成，避免与后台关闭并行竞态
 
+**完成回调清理（2026-08-16）**：每个后台 close task 挂 `add_done_callback(_on_closing_task_done)`——task 完成后**自动从 `_closing_tasks` 移除**（多次热切换不累积已完成 task 引用）+ **消费 task 异常记 `logger.warning`**（后台关闭失败不静默，与 `close_all` 对 `_instances`/`_pending_closes` 逐 client 关闭失败记日志对称）。`close_all` 的 `gather` 在参数展开时已快照列表，回调移除不破坏等待。
+
 ---
 
 ## 执行流程
@@ -322,6 +324,7 @@ if old is not None:
 | --- | --- | --- |
 | **热切换旧 client 静默忽略（2026-08-09）** | `register_config` 只 `_instances.pop(key)`，旧连接泄漏到 GC | 无运行循环时旧 client 进入 `_pending_closes` 由 `close_all` 统一关闭，可追踪 |
 | **后台 close task 无引用（2026-08-11）** | `asyncio.ensure_future(old.close())` 返回值未保存，事件循环先关闭时 "Task was destroyed but it is pending" 警告，旧连接池关闭时机不可控；task 异常无人消费 | 后台 task 记录到 `_closing_tasks`，`close_all()` 开头 `asyncio.gather(*_closing_tasks, return_exceptions=True)` 等待完成并清空 |
+| **后台 close task 累积 + 失败静默（2026-08-16）** | `_closing_tasks` 无完成回调清理，多次热切换累积已完成 task 引用（内存泄漏）；`gather(return_exceptions=True)` 结果丢弃，后台关闭失败静默（与逐 client 关闭失败记日志不对称） | 后台 close task 挂 `add_done_callback(_on_closing_task_done)`——完成自动移除引用 + 消费异常记 `logger.warning`，不依赖 `close_all` 显式检查 |
 | **close_all 迭代共享字典（2026-08-11）** | `for client in _instances.values(): await client.close()` 中 await 让出控制权，并发修改字典抛 `RuntimeError`；单个 close 异常中断整批清理 | 先 `list()` 快照再逐个关闭；每个 close 包 `try/except Exception` + `logger.warning` 隔离 |
 
 对应测试：`tests/unit/test_client_manager.py`（8 个用例）。

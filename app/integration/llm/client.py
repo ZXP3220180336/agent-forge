@@ -55,8 +55,27 @@ class ClientManager:
     # 放入此列表由 close_all 统一关闭，避免旧连接池泄漏且可追踪）
     _pending_closes: ClassVar[list[AsyncOpenAI]] = []
     # 有事件循环时后台关闭旧 client 的 task（close_all 等待其完成，避免
-    # task 泄漏、竞态与 "Task was destroyed but it is pending" 警告）
+    # task 泄漏、竞态与 "Task was destroyed but it is pending" 警告）。
+    # 完成回调 _on_closing_task_done 自动移除已完成的 task + 消费异常记日志
+    # （不依赖 close_all 显式检查，热切换后台关闭失败也不静默）。
     _closing_tasks: ClassVar[list[asyncio.Task]] = []
+
+    @classmethod
+    def _on_closing_task_done(cls, task: asyncio.Task) -> None:
+        """后台关闭 task 完成回调：移除引用 + 消费异常（不静默、不泄漏）。
+
+        - 从 _closing_tasks 移除已完成 task：多次热切换（register_config 反复
+          注册）后列表不累积已完成引用，避免内存泄漏与事件循环关闭时
+          "Task was destroyed but it is pending" 警告。
+        - 消费 task 异常并记日志：后台关闭失败不静默消失——与 close_all 对
+          _instances/_pending_closes 逐 client 关闭失败记日志的处理对称。
+        """
+        if task in cls._closing_tasks:
+            cls._closing_tasks.remove(task)
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("后台关闭旧 LLM client 失败", exc_info=exc)
 
     @classmethod
     def register_config(
@@ -92,7 +111,11 @@ class ClientManager:
             else:
                 # 后台关闭 task 记录到 _closing_tasks，由 close_all 统一等待，
                 # 避免 task 泄漏（无引用）与事件循环先关闭时 pending task 警告。
-                cls._closing_tasks.append(asyncio.ensure_future(old.close()))
+                # 挂完成回调：task 结束后自动从列表移除（热切换不累积）+
+                # 消费异常记日志（后台关闭失败不静默）。
+                task = asyncio.ensure_future(old.close())
+                task.add_done_callback(cls._on_closing_task_done)
+                cls._closing_tasks.append(task)
 
     @classmethod
     def get_client(cls, key: str = "main") -> AsyncOpenAI:

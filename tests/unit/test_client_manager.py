@@ -215,3 +215,47 @@ async def test_close_all_isolates_single_close_failure():
     assert pending.closed == 1, "异常后 _pending_closes 应继续被关闭"
     assert ClientManager._instances == {}, "close_all 后清空实例缓存"
     assert ClientManager._pending_closes == [], "close_all 后清空待关闭列表"
+
+
+# =====================================================================
+# 后台关闭 task：完成回调清理引用 + 失败记日志（不静默）
+# =====================================================================
+
+
+async def test_closing_tasks_cleaned_after_completion():
+    """后台关闭 task 完成后从 _closing_tasks 移除——热切换不累积已完成引用。
+
+    修复前：register_config 每次 append task 到 _closing_tasks，无完成回调清理，
+    多次热切换（注册新配置替换旧实例）后累积已完成 task 引用 → 内存泄漏 +
+    事件循环关闭时 pending task 警告。
+    修复后：add_done_callback 在 task 完成时自动从列表移除。
+    """
+    # 多次热切换：每次注册新配置替换旧实例 → 触发旧 client 后台关闭 task
+    for _ in range(3):
+        _register_with_old_client("main")
+        ClientManager.register_config("main", api_key="k", base_url="http://x", model="m")
+        await asyncio.sleep(0.01)  # 让后台关闭 task 完成
+
+    assert ClientManager._closing_tasks == [], (
+        f"已完成的后台关闭 task 应被清理，实际残留 {len(ClientManager._closing_tasks)}"
+    )
+
+
+async def test_background_close_failure_logged(caplog):
+    """后台关闭 task 抛异常 → 记 WARNING 日志（不静默消失）。
+
+    修复前：close_all 的 gather(return_exceptions=True) 结果被丢弃，后台关闭
+    失败静默——与 _instances/_pending_closes 逐 client 关闭失败记日志不对称。
+    修复后：done 回调消费 task 异常并记日志，不依赖 close_all 显式检查。
+    """
+    bad = _SlowThrowCloseClient()
+    ClientManager._instances["main"] = bad
+    ClientManager.register_config("main", api_key="k", base_url="http://x", model="m")
+    # 不调 close_all，模拟热切换后台关闭失败（task 独立运行）
+    with caplog.at_level("WARNING", logger="app.llm.client"):
+        await asyncio.sleep(0.1)  # 等后台关闭 task 完成 + 回调执行
+
+    assert bad.closed == 1, "后台关闭 task 应执行 close"
+    assert any("LLM client" in r.message and "失败" in r.message for r in caplog.records), (
+        f"后台关闭失败应记 WARNING 日志，实际: {[r.message for r in caplog.records]}"
+    )
