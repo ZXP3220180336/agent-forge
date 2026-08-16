@@ -53,6 +53,7 @@
 | [LLM-034](2026-08-02-quota-gap-retry-degradation-not-limited.md) | 配额缺口：重试/降级不计入限流申请 | P0 | ✅ 已修复 | reservation_limiter / retry / llm_service | 2026-08-02 | 2026-08-02 |
 | [LLM-035](2026-08-10-rectify-emitted-any-marker-reset.md) | emitted_any 累积语义缺失（误整流重复输出） | P1 | ✅ 已修复 | streaming_rectifier | 2026-08-10 | 2026-08-10 |
 | [LLM-036](2026-08-16-generate-structured-model-key-param.md) | generate_structured 参数名契约（model_key） | P3 | ✅ 已修复 | llm_service / structured | 2026-08-16 | — |
+| [LLM-037](2026-08-16-schema-validation-log-redaction.md) | 校验失败日志未脱敏（jsonschema e.message 嵌入完整实例值） | P0 | ✅ 已修复 | structured（_validate_schema / _collect_schema_error_summaries） | 2026-08-16 | 2026-08-16 |
 
 ## 新问题登记规范
 
