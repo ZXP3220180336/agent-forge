@@ -68,8 +68,7 @@ for usage in all_usages:
 
 ## 设计决策
 
-- **前缀匹配按 key 长度降序**（`sorted(keys, key=len, reverse=True)`）：保证**最长前缀优先**且结果不依赖字典插入顺序。未来定价表出现互为前缀的 key（如 `gpt-4o` / `gpt-4o-mini`）时行为仍确定。
-- **定价表为模块内固定表**：改价 / 新增 key 走代码变更，由 `tests/unit/test_cost_tracker.py`（6 用例）回归防护（精确匹配优先 / 最长前缀 / 不依赖插入序 / 未知回退默认）。
+> 定价查找决策（最长前缀匹配 + 模块内固定表，Context → Decision → Consequences）已归档至 [ADR LLM-ADR-002](../../../adr/integration/llm/2026-08-15-pricing-prefix-match-fixed-table.md)。
 
 ## 测试
 

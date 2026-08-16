@@ -17,6 +17,7 @@
 | ID | 决策 | 状态 | 涉及模块 | 决策日期 |
 | --- | --- | --- | --- | --- |
 | [LLM-ADR-001](2026-08-07-unified-structured-entry-degradation.md) | 统一结构化输出入口 + 三级降级策略 | ✅ 已采纳 | llm_service / structured | 2026-08-07 |
+| [LLM-ADR-002](2026-08-15-pricing-prefix-match-fixed-table.md) | 定价查找：最长前缀匹配 + 模块内固定定价表 | ✅ 已采纳 | cost_tracker | 2026-08-15 |
 
 ## 新决策登记规范
 
