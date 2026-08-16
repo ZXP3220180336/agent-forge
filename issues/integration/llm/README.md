@@ -50,6 +50,9 @@
 | [LLM-031](2026-08-09-client-close-tracking.md) | 连接关闭追踪演进（静默忽略/task 泄漏） | P1 | ✅ 已修复 | client（ClientManager） | 2026-08-09 | 2026-08-16 |
 | [LLM-032](2026-08-11-close-all-iteration-safety.md) | close_all 迭代安全（RuntimeError/异常中断） | P1 | ✅ 已修复 | client（close_all） | 2026-08-11 | 2026-08-11 |
 | [LLM-033](2026-08-09-client-kwargs-whitelist.md) | 参数透传白名单（**extra 吞没） | P1 | ✅ 已修复 | client（get_client） | 2026-08-09 | 2026-08-09 |
+| [LLM-034](2026-08-02-quota-gap-retry-degradation-not-limited.md) | 配额缺口：重试/降级不计入限流申请 | P0 | ✅ 已修复 | reservation_limiter / retry / llm_service | 2026-08-02 | 2026-08-02 |
+| [LLM-035](2026-08-10-rectify-emitted-any-marker-reset.md) | emitted_any 累积语义缺失（误整流重复输出） | P1 | ✅ 已修复 | streaming_rectifier | 2026-08-10 | 2026-08-10 |
+| [LLM-036](2026-08-16-generate-structured-model-key-param.md) | generate_structured 参数名契约（model_key） | P3 | ✅ 已修复 | llm_service / structured | 2026-08-16 | — |
 
 ## 新问题登记规范
 

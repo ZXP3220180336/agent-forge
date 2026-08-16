@@ -1068,7 +1068,7 @@ data = await llm.generate_structured(..., model="fast")
 data = await llm.generate_structured(..., model_key="fast")
 ```
 
-历史上曾因方法签名用 `model`、调用时用 `model_key=` 导致运行时 TypeError。
+> 历史问题记录见 [LLM-036](../../../issues/integration/llm/2026-08-16-generate-structured-model-key-param.md)。
 
 ---
 
@@ -1099,84 +1099,9 @@ data = await llm.generate_structured(..., model_key="fast")
 
 ### 配额缺口：重试/降级不计入限流申请
 
-> 本节记录「限流申请量 vs 实际请求量」不一致的问题（2026-08-02 调研并实施）。跨模块：涉及限流（RateLimiter）与重试（RetryHandler）的配合。
+> 完整问题生命周期（背景 → 原因 → 工业调研 → 决策 → 实现 → 测试）已归档至问题文档 [LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)。
 >
-> **术语说明**：本节为历史决策记录，采用当时的 `acquire` 术语。当前实现已改为 **`reserve/settle` 形态**（`reservation_limiter.py`，llm_service 实际使用；acquire 形态的 `rate_limiter.py` 已移除，代码作为学习参考并入 [limiter.md](limiter.md)）。语义对照：`acquire` ≈ `reserve`（预留配额），「重试/降级不计入限流申请」的结论与实施要点在 `reserve/settle` 下同样成立——重试经 `call_fn` 内重新 `reserve`、fallback 不参与 `reserve`。
-
-#### 配额缺口：问题背景
-
-当前集成中，`async_generate()` / `generate()` 在**进入** `retry.execute()` 前 `acquire` 一次限流（RPM 桶 1 个 + TPM 桶 estimated_tokens 个）。放行后进入重试/熔断/降级阶段——若调用失败会重试、多次失败会降级到备用模型。**这些后续真实发出的 API 请求，都发生在限流申请之后**。
-
-用户的疑问（原文概括）：
-> 我们在限流器处设定为获取 1 个请求和固定 token，限流器放行后进入重试/熔断阶段。一次调用不成功会重试，多次重试失败后降级调用——这期间产生的 token 和向底层接口请求的次数，是不是超过了向限流器申请的量？
-
-**结论：是。** 实际请求数可能远超限流器放行的量。
-
-#### 配额缺口：问题原因
-
-以默认配置（`llm_max_retries=2`，retry 循环最多 3 次 call_fn）为例：
-
-| 路径 | 是否重新 acquire | 真实请求数 |
-| --- | --- | --- |
-| 原始调用 | ✅ acquire 了 | 1 |
-| retry 内部重试（×2） | ❌ **不 acquire** | +2 |
-| fallback 降级（备用模型） | ❌ **不 acquire** | +1 |
-
-**一次 `async_generate` 最多可发 4 次真实请求，但只申请了 1 次限流**。
-
-具体影响：
-
-- **RPM 桶低估**：实际放行速率 = `rpm × (1 + 重试率 + 降级率)`。下游越不稳定，放大越严重（失败率 50% 时实际请求约是 RPM 的 2 倍）。
-- **TPM 桶低估**：重试时同样的 prompt 重新发送，token 消耗翻倍，但 TPM 桶只在第一次 acquire 扣过一次。
-- **fallback 零限流保护**：备用模型（`llm_fallback_model_id`）有自己的配额，当前 fallback 完全不 acquire，**无任何限流**。
-- **整流重试是例外**：首 token 前中断的整流每轮都重新 acquire，此路径无缺口。
-
-#### 配额缺口：工业调研结论（决策依据）
-
-1. **中间件链布局决定答案**：工业界把限流器和重试做成中间件链，**限流器在重试外层**——每次真实请求（含重试）都重新穿过限流器、消耗 token（如 Go 的 `tgcp`：`"Each request consumes 1 token"`，重试也计）。这是主流做法——**重试天然计入配额**。参考：[Rethinking HTTP API Rate Limiting（IEEE/arXiv）](https://ieeexplore.ieee.org/document/11366354)、[tgcp 中间件链](https://pkg.go.dev/github.com/yogirk/tgcp@v0.4.0/internal/core)
-2. **IETF 留白**：RateLimit Header Fields 草案明确「规范不规定非 2xx 响应是否消耗配额」，留给服务端/客户端设计决策。无唯一正确答案，但工业实现主流倾向是**外层包裹**。[IETF 草案](https://datatracker.ietf.org/meeting/109/agenda/httpapi-drafts.pdf)
-3. **重要澄清**：客户端限流的第一目的是**防突发**（别瞬间打爆服务端），不是精确记账到每一分服务端配额。服务端还有第二道闸（429 + `Retry-After`），重试请求即使客户端没 acquire，服务端可能再 429 兜底。**但当重试原因是 5xx/超时（下游故障）时，重试请求会真实打到服务端并消耗 token——客户端不 acquire 就是超额**。
-4. **LLM 生态实践**：客户端 Token Bucket 限流器（如 [plsno429](https://github.com/appleparan/plsno429)）作为 **proactive** 手段在请求前限流；重试（**reactive**）走指数退避 + jitter + 尊重 `Retry-After`。两者是互补的两层，不是同一件事。参考：[OpenAI 429 官方指南](https://help.openai.com/en/articles/5955604-how-can-i-solve-429-too-many-requests-errors)
-
-#### 配额缺口：决策（用户确认）
-
-**acquire 移入 call_fn，但 fallback 不参与 acquire。**
-
-- **重试计入配额**：retry.execute 内部每次重试都重新 acquire（重试=新请求，扣配额合理）。
-- **fallback 不参与 acquire**：客户端限流防的是**主模型**的突发，备用模型（降级路径）无需限流保护，且独立于主模型配额。
-
-#### 配额缺口：实现要点
-
-- `_rate_limited_call` 为模块级辅助函数（`llm_service.py`），接收 `adaptive`/`limiter`/`client`/`kwargs`/`active`/`estimated` 等参数——限流闭环被 async_generate 和 generate 共用，不再闭包内联。
-- `estimated` 在循环外计算一次（messages 在一次 `async_generate` 内不变），避免每次重试重复 tiktoken 计数。
-- **整流重试**：整流循环（`StreamingRectifier`）每轮重新 `execute`，`create_fn` 内部再次 reserve——「新请求」语义正确。
-- **代价**：重试前会先 acquire，等待与退避叠加，延迟可能增大；但语义正确（重试=新请求，扣配额合理）。
-
-```python
-async def _rate_limited_call(adaptive, limiter, client, kwargs, active, estimated=0, ...):
-    res = await limiter.reserve(estimated_tokens=estimated)   # 或 reserve_adaptive
-    active["res"] = res
-    try:
-        return await client.chat.completions.create(**kwargs)
-    except BaseException:
-        await res.cancel()
-        active.pop("res", None)
-        raise
-
-response = await retry.execute(
-    call_fn=lambda: _rate_limited_call(adaptive, limiter, client, kwargs, active, ...),
-    fallback_fn=fallback_fn,           # fallback 不参与 reserve
-)
-```
-
-#### 配额缺口：测试
-
-`tests/unit/test_stream_rectify.py`：
-
-- `test_rate_limiter_acquire_before_each_attempt`：整流 2 轮，每轮 call_fn 都 acquire（`calls == 2`）。
-- `test_rate_limiter_acquire_on_retry_inside_execute`：retry.execute 内部重试也 acquire（create 第 1 次抛 RETRYABLE → 重试第 2 次，`calls == 2`）。
-
-> **状态**：✅ 已实施（2026-08-02）。
+> 当前实现状态：**`reserve` 移入 call_fn（重试每轮重新 reserve = 新请求扣配额），fallback 不参与 reserve**（独立于主模型配额）。
 
 ---
 
@@ -1187,17 +1112,17 @@ response = await retry.execute(
 ### 已实现
 
 - 7 个子模块全部落地：ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
-- retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针按异常类别判定、流式迭代保护；**2026-08-05 修正**：4xx 探针不再回 OPEN，改为不改变状态 + 归还槽位 + 抛上层（详见 [retry.md](retry.md)）
+- retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针按异常类别判定（4xx 探针不改变状态 + 归还槽位 + 抛上层）、流式迭代保护（详见 [retry.md](retry.md)）
 - **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。见 [设计决策记录·流式整流重试](#流式整流重试)
 - **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
-- **配额缺口闭环（2026-08-02）**：acquire 移入 call_fn，重试计入配额、fallback 不参与（见 [设计决策记录·配额缺口](#配额缺口重试降级不计入限流申请)）
+- **配额缺口闭环（2026-08-02）**：reserve 移入 call_fn，重试计入配额、fallback 不参与（见 [问题文档 LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)）
 - **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」。「实际消耗 > 预留」仍无法补扣（预留-结算模型结构性限制，「宁多勿少」保守取舍，已缓解未消除），详述见 [limiter.md](limiter.md)「对比 3.1·已缓解但未消除」
 - **统一结构化输出入口（2026-08-07）**：`generate_structured` 委托 `StructuredOutput.extract` 三级降级（JSON Schema → JSON Mode → 正则提取），消除双入口；`extract` 签名改为接收完整 messages
-- **补熔断观察盲区 + 熔断器生命周期修复（2026-08-07）**：流式迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，熔断器感知「create 正常但流频繁中断」；新增 `RetryHandlerManager`（按 model_key 跨请求共享熔断器），修复熔断窗口无法跨请求积累的隐性缺陷（create 阶段熔断此前实际失效）
+- **熔断观察盲区补齐 + 熔断器生命周期（2026-08-07）**：流式迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，熔断器感知「create 正常但流频繁中断」；`RetryHandlerManager`（按 model_key 跨请求共享熔断器）让熔断窗口跨请求积累（见 [LLM-023](../../../issues/integration/llm/2026-08-07-circuit-breaker-lifecycle.md) · [LLM-024](../../../issues/integration/llm/2026-08-07-streaming-iteration-unprotected.md)）
 - **配置对象 + 依赖注入（2026-08-09）**：`RetryConfig` / `CircuitBreakerConfig` / `ReservationLimiterConfig` 纯配置对象 + 各 `Manager.register_config()` 类方法注入，子模块**零 `settings` 依赖**（由 `container.initialize()` 读 settings 后统一注册）
 - **流式整流拆为独立策略类（2026-08-10）**：`StreamingRectifier`（无状态静态类，不实例化）封装整流循环/emitted_any/熔断 feeding/结算闭环/事件日志 + `RectifierContext`（result/active/event_fields 共享状态）；`async_generate` 只做编排（构造 create_fn + 调 `rectified_stream`）。详见 [streaming_rectifier.md](streaming_rectifier.md)
 - **acquire 形态限流移除（2026-08-10）**：`rate_limiter.py` 删除，代码作为学习参考并入 [limiter.md](limiter.md)；llm_service 实际使用 reserve/settle 形态（`reservation_limiter.py`）
-- **整流判定 emitted_any 累积语义修复（2026-08-10）**：`_apply_chunk` 返回「单 chunk 是否产出」改为累积（`emitted_any = emitted_any or chunk_emitted`）——修复中断前最后一个 usage/finish-only chunk 把已产出标记冲成 False、导致误整流（重复输出 + 双倍计费）的缺陷；新增回归测试固化
+- **整流判定 emitted_any 累积语义（2026-08-10）**：`_apply_chunk` 返回「单 chunk 是否产出」，整流循环入口累积（`emitted_any = emitted_any or chunk_emitted`）——已产出标记单调递增，元数据 chunk 不冲掉历史产出（见 [LLM-035](../../../issues/integration/llm/2026-08-10-rectify-emitted-any-marker-reset.md)）
 - **结构化输出调用/短路辅助方法抽取（2026-08-12）**：`StructuredOutput` 新增 `_call_generate`（统一调 generate + 下游异常分类：NON_RETRYABLE raise / 可恢复返回 None，`stage` 参数做日志前缀）与 `_raise_boundary`（统一 refusal / tool_calls / truncated 短路抛异常）——`_try_extract` 主调用/截断重试/回喂三处调用点与 `_fallback_extract` 共用，消除重复 try/except 与短路分支。truncated 为主调用点可选短路（主调用点截断仍需扩 token 重试，用 `else` 隔离）。详见 [structure.md](structure.md)
 - **结构化输出纯工具函数提取模块级（2026-08-12）**：`_build_json_schema_request` / `_build_json_mode_request` / `_enforce_no_extra_fields` / `_try_parse_json` / `_parse_and_validate` / `_collect_schema_errors` / `_build_reask_messages` / `_validate_schema` 提取为模块级私有函数（无类状态、可独立测试）；`StructuredOutput` 只保留业务编排与边界决策（`extract` / `_try_extract` / `_fallback_extract` / `_call_generate` / `_classify_result` / `_raise_boundary` / `register_config`）。详见 [structure.md](structure.md)
 - **流式失败信号透传（LLM-001，2026-08-16）**：`StreamingRectifier` 三个失败出口（create 异常 / 迭代放弃 / 用户取消）除 SSE error 事件外，标记 `StreamResult.error`（截断 500）；`ReActAgent` 检查 error 短路返回失败结果——修复「4xx/认证/熔断开启被静默吞掉、ReAct 空转到 max_iterations、最终错误信息不准确」的缺陷。正常空回（stop + 空 content）不置位、整流成功不置位。详见 [问题文档](../../../issues/integration/llm/2026-08-16-stream-error-propagation.md)
