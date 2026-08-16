@@ -22,7 +22,6 @@
     - [流式生成](#流式生成)
     - [非流式生成（简单任务）](#非流式生成简单任务)
     - [结构化输出](#结构化输出)
-    - [向量化](#向量化)
     - [成本计算](#成本计算)
   - [架构设计](#架构设计)
     - [调用流程](#调用流程)
@@ -544,21 +543,7 @@ def parse_chunk(chunk) -> ParsedChunk:
 
 **文件**：`app/integration/llm/streaming_rectifier.py`（设计文档见 [streaming_rectifier.md](streaming_rectifier.md)）
 
-#### 功能
-
-1. 首 token 前中断 → 整流重试（重新 create + 重新迭代），用户没看到输出，无重复内容
-2. 已产出 token 后中断 → 不整流（避免重复输出 / token 双倍计费 / tool_calls 残缺）
-3. 中断放弃且异常 RETRYABLE → 喂熔断器（感知「create 正常但流频繁中断」）
-4. 结算闭环：create 成功后 settle / 硬取消 finally cancel
-
-#### 为什么需要独立策略类
-
-`LLMService.async_generate` 原内联约 150 行整流循环，是**独立策略**（整流条件/emitted_any/熔断 feeding），与 Facade 编排职责正交。拆为 `StreamingRectifier`（无状态静态类，不实例化）后：
-
-- `async_generate` 只做编排——构造 `create_fn`（限流闭环）+ 调 `rectified_stream` 产出事件
-- `RectifierContext` 封装会话共享状态（`result`/`active`/`event_fields`），`rectified_stream` 参数从 8 降到 6
-- 退避配置经 `register_config()` 注入（子模块零 settings 依赖）
-- 直接可测（`tests/unit/test_streaming_rectifier.py`，不经 LLMService 间接覆盖）
+**设计要点**：首 token 前流中断自动整流（重新 create + 重新迭代），已产出后放弃（避免重复输出 / 双倍计费 / tool_calls 残缺）；中断放弃且异常 RETRYABLE 喂熔断器；结算闭环（settle/cancel）；`StreamingRectifier` 无状态静态类 + `RectifierContext` 会话共享状态，`async_generate` 只做编排。完整机制 / 边界 / 测试见 [streaming_rectifier.md](streaming_rectifier.md)，决策见 [ADR LLM-ADR-005](../../../adr/integration/llm/2026-08-01-streaming-rectification-retry.md)。
 
 #### 调用方式
 
