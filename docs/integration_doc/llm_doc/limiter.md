@@ -1,7 +1,7 @@
 # Limiter 客户端限流设计文档
 
 > **模块**：`app/integration/llm/reservation_limiter.py`（reserve/settle 形态，生产唯一）
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-16
 > **职责**：LLM API 调用的客户端限流（RPM + TPM 双 Token Bucket）
 > **状态**：✅ 已实现
 > **学习参考**：acquire 形态限流（`RateLimiter`/`RateLimiterManager`）与 5 类参考算法（LeakyBucket/FixedWindow/SlidingWindowLog/SlidingWindowCounter/GCRA）已从生产移除，代码作为学习资料完整保留在本文档「组件详解」一栏
@@ -12,10 +12,8 @@
 ## 📋 目录
 
 - [Limiter 客户端限流设计文档](#limiter-客户端限流设计文档)
-  - [目录](#目录)
+  - [目录](#-目录)
   - [设计目标](#设计目标)
-    - [LLM 限流：等待 vs 拒绝（2026-08-06 决策）](#llm-限流等待-vs-拒绝2026-08-06-决策)
-  - [两种 API 形态：acquire vs reserve/settle](#两种-api-形态acquire-vs-reservesettle)
   - [核心概念解释](#核心概念解释)
     - [限流（Rate Limiting）](#限流rate-limiting)
     - [Token Bucket 算法](#token-bucket-算法)
@@ -40,14 +38,8 @@
     - [RPM / TPM（双 Token Bucket）](#rpm--tpm双-token-bucket)
     - [自适应预留（Fenic 式，开关默认关）](#自适应预留fenic-式开关默认关)
   - [已知边界与设计取舍](#已知边界与设计取舍)
-  - [代码审核与工业级对比（问题 → 修复 → 工业对照）](#代码审核与工业级对比问题--修复--工业对照)
-    - [问题 1（严重）：配置为 0 时除零崩溃 ✅](#问题-1严重配置为-0-时除零崩溃-)
-    - [问题 2（中）：持锁 sleep ✅](#问题-2中持锁-sleep-)
-    - [问题 3（中）：TPM 桶只算 prompt token ✅](#问题-3中tpm-桶只算-prompt-token-)
-    - [问题 4（低）：`acquire` 返回值表述不准确 ✅](#问题-4低acquire-返回值表述不准确-)
-    - [问题 5（低）：`async with` 用法误导 ✅](#问题-5低async-with-用法误导-)
-    - [问题 6（低）：`_tokens` 可轻微为负 ✅](#问题-6低_tokens-可轻微为负-)
-    - [速查表](#速查表)
+  - [设计决策](#设计决策)
+  - [问题记录](#问题记录)
 
 ---
 
@@ -58,18 +50,9 @@
 3. **按模型独立**：main / reasoning / fast 三套模型配额不同，各自独立记账
 4. **透明等待**：限流是排队而非拒绝——请求等待配额，不失败，对上层无感
 
-### LLM 限流：等待 vs 拒绝（2026-08-06 决策）
-
-> Token Bucket 算法选择 + LLM 限流等待语义的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md)。
-> 当前状态：LLM 客户端限流「等待」（排队）而非「拒绝」——`TokenBucket` 桶满排队、`ReservationLimiter.reserve` 预留（等待）、retry 对 429 退避重试（尊重 Retry-After）；`LeakyBucket` 采用等待型变体（桶满排队而非丢弃）。
-
----
-
 ## 两种 API 形态：acquire vs reserve/settle
 
-> reserve/settle 预留-结算形态的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-009](../../../adr/integration/llm/2026-08-02-reserve-settle-semantics.md)。
-
-限流模块历史上提供两种 API 形态；**acquire 形态已从生产移除（2026-08-10）**，代码保留在本文档作学习参考，当前生产唯一形态为 reserve/settle：
+生产唯一形态为 **reserve/settle**（按实际 usage 结算退差）；acquire 形态已移除，代码保留作学习参考：
 
 | 维度 | acquire 形态（已移除，学习参考） | reserve/settle 形态（生产唯一） |
 | --- | --- | --- |
@@ -77,9 +60,6 @@
 | 结算能力 | 无（一次性扣减，不退款） | ✅ 结算退差（settle）/ 全额退（cancel） |
 | 适用场景 | 不关心退差的简单调用 | 需按实际 usage 退还未用 TPM 配额 |
 | 生产使用者 | 无（学习参考） | ✅ `llm_service.py` |
-
-**为何要结算退差**：TPM 桶按 `prompt + max_tokens` 预留，实际输出往往远小于 `max_tokens`，长期偏保守低估可用量。reserve/settle 在请求完成后把未用完的配额退还给桶。工业级参照：Go `x/time/rate` Reservation、LiteLLM/Fenic 预留-结算协议。
-
 ---
 
 ## 核心概念解释
@@ -107,9 +87,7 @@ _tokens       当前剩余 Token（初始 = capacity）
   桶里不够 → 等待 (needed / refill_rate) 秒补足，再扣
 ```
 
-**为什么选 Token Bucket**（对比见 `llm.md`「限流算法」节）：
-
-> Token Bucket 算法选择决策（允许突发 + 长期平滑，vs 漏桶/固定窗口/滑动窗口）已归档至 [ADR LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md)。
+**为什么选 Token Bucket**：在「允许突发」和「长期平滑」间取得平衡，适合 Agent 的突发调用模式（算法选择与限流语义决策见 [设计决策](#设计决策)）。
 
 ### 其他限流算法
 
@@ -298,7 +276,7 @@ class TokenBucket:
 
 ### RateLimiter — 双桶组合（acquire 形态，学习参考）
 
-> 已从生产移除（2026-08-10）：生产唯一限流形态为 reserve/settle。以下代码作为学习资料保留——理解「一次性扣减不退款」的 acquire 语义与双桶组合。
+> 已从生产移除：生产唯一限流形态为 reserve/settle。以下代码作为学习资料保留——理解「一次性扣减不退款」的 acquire 语义与双桶组合。
 
 ```python
 class RateLimiter:
@@ -323,7 +301,7 @@ class RateLimiter:
 
 ### RateLimiterManager — 实例管理（学习参考）
 
-> 已从生产移除（2026-08-10）：随 `RateLimiter` 一并移入文档，作为学习参考。
+> 已从生产移除：随 `RateLimiter` 一并移入文档，作为学习参考。
 
 ```python
 class RateLimiterManager:
@@ -378,7 +356,7 @@ class Reservation:  # 完整实现见 reservation_limiter.py
 - `settle(None)`：无 usage 时的保守路径——保留全部预留，但**标记终态**（闭环不泄漏）
 - `cancel()`：请求未发出（create 失败/取消）时**所有桶全额退还**
 - **终态幂等**：settle/cancel 任一调用后，再次调用为 no-op
-- **取消泄漏防护（2026-08-09）**：终态标记 `_settled` 在**全部退款完成后**才置位——若退款循环中途被取消（`CancelledError` 向上传播），保持未终态，外层兜底（`llm_service` 的 `cancel`/`finally`）可续退剩余条目，避免部分桶配额永久泄漏。`TokenBucket.refund` 的 capacity 封顶保证重复退款不超发，兜底续退安全幂等
+- **取消泄漏防护**：终态标记 `_settled` 在**全部退款完成后**才置位——若退款循环中途被取消（`CancelledError` 向上传播），保持未终态，外层兜底（`llm_service` 的 `cancel`/`finally`）可续退剩余条目，避免部分桶配额永久泄漏。`TokenBucket.refund` 的 capacity 封顶保证重复退款不超发，兜底续退安全幂等
 
 ### ReservationLimiter — 双桶组合（reserve/settle 形态）
 
@@ -429,8 +407,6 @@ class ReservationLimiter:  # 完整实现见 reservation_limiter.py
 
 ### OutputTokenEstimator — 自适应输出估算器
 
-> 自适应预留（Fenic 式）的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-010](../../../adr/integration/llm/2026-08-06-adaptive-reserve-output-estimator.md)。
-
 **文件**：`reservation_limiter.py`
 
 **作用**：用「历史实际输出的高分位 × 安全系数」预测下一次预留的输出量，替代固定 `max_tokens` 上限——减少预留期间占桶（并发空耗）。Fenic 式设计。
@@ -475,7 +451,7 @@ res = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
 
 ### 其他限流算法组件（参考实现）
 
-> 以下为 Token Bucket 之外的主流限流算法组件（原 `rate_limiter.py`，已随模块移除，2026-08-10），接口与 `TokenBucket` 对齐（`acquire(tokens) -> float` 等待型 + `refund(tokens)` 退还），**未接入调用链**，供对比与按需选用。
+> 以下为 Token Bucket 之外的主流限流算法组件（源于已移除的 `rate_limiter.py`），接口与 `TokenBucket` 对齐（`acquire(tokens) -> float` 等待型 + `refund(tokens)` 退还），**未接入调用链**，供对比与按需选用。
 
 #### LeakyBucket — 漏桶
 
@@ -965,7 +941,7 @@ TAT = 上次请求的理论到达时间
 
 **优点**：**内存常数**（只存一个 TAT）+ **精确节流**（无边界双倍）；单桶即可同时表达速率与突发上限。**缺点**：概念较抽象。**适用**：Ruby `rack/rate-limit`、部分 API Gateway；`x/time/rate` 的 `advance` 本质等价。
 
-**接口统一说明**：以上 5 类组件接口与 `TokenBucket` 对齐（`acquire(tokens)` 返回等待秒数 + `refund(tokens)` 退还），可互换使用。**未接入 `llm_service` 调用链**——当前生产链路走 `reservation_limiter.py`（reserve/settle 形态）；acquire 形态代码已移入本文档作学习参考（2026-08-10）。
+**接口统一说明**：以上 5 类组件接口与 `TokenBucket` 对齐（`acquire(tokens)` 返回等待秒数 + `refund(tokens)` 退还），可互换使用。**未接入 `llm_service` 调用链**——当前生产链路走 `reservation_limiter.py`（reserve/settle 形态）；acquire 形态代码已移入本文档作学习参考。
 
 ---
 
@@ -1076,6 +1052,21 @@ async_generate() / generate()
 
 ---
 
+## 设计决策
+
+> 各设计决策的完整前因后果（Context → Decision → Consequences）已归档至对应 ADR，此处仅列决策链接与结论：
+
+| 决策 | 结论 | ADR |
+| --- | --- | --- |
+| 限流算法选择 | Token Bucket（允许突发 + 长期平滑，vs 漏桶/固定窗口/滑动窗口） | [LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md) |
+| 限流语义 | 等待（排队）而非拒绝——LLM 请求不可丢弃，拒绝 = Agent 循环中断 | [LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md) |
+| 预留结算形态 | reserve/settle（按实际 usage 退差）为生产唯一，acquire 已移除 | [LLM-ADR-009](../../../adr/integration/llm/2026-08-02-reserve-settle-semantics.md) |
+| 自适应预留 | 高分位输出估算替代固定 max_tokens（Fenic 式，开关默认关） | [LLM-ADR-010](../../../adr/integration/llm/2026-08-06-adaptive-reserve-output-estimator.md) |
+
+**为何要结算退差**（reserve/settle 决策补充）：TPM 桶按 `prompt + max_tokens` 预留，实际输出往往远小于 `max_tokens`，长期偏保守低估可用量——reserve/settle 在请求完成后把未用完的配额退还给桶。工业级参照：Go `x/time/rate` Reservation、LiteLLM/Fenic 预留-结算协议。
+
+---
+
 ## 问题记录
 
 > 代码审核（2026-08-01）发现的 6 个问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
@@ -1085,5 +1076,4 @@ async_generate() / generate()
 - [问题 3：TPM 桶只算 prompt token（加 max_tokens 余量 + 自适应预留）](../../../issues/integration/llm/2026-08-02-tpm-prompt-only.md)
 - [问题 4/5：限流器 API 清晰性（acquire 返回值 / async with 误导）](../../../issues/integration/llm/2026-08-02-api-clarity-fixes.md)
 
-> 正文（组件详解 / 调用流程 / 配置项）已同步到当前状态。
 
