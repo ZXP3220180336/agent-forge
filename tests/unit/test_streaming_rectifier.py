@@ -244,6 +244,43 @@ def test_rectify_exhausts_max_retries():
     assert any("error" in e for e in events), "应产出 error 事件"
 
 
+def test_rectify_clears_refusal_from_dead_stream():
+    """整流清理应复位 result.refusal——拒绝类死流不残留元数据。
+
+    修复前：整流清理块复位 finish_reason/usage/tool_deltas 但漏了 refusal。
+    refusal 不置 emitted_any（纯拒绝流可整流），成功尝试会残留上一死流的
+    refusal 元数据（StreamResult.refusal 非空 → 下游误判为拒答）。
+    修复后：整流清理一并 result.refusal = None。
+    """
+    # 尝试 1：refusal chunk（无 message token，emitted_any=False）+ 中断 → 可整流
+    refusal_chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    reasoning_content=None,
+                    content=None,
+                    tool_calls=None,
+                    refusal="抱歉，无法处理",
+                ),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+    )
+    streams = [
+        _FakeStream([refusal_chunk], fail_at=1, exc=TimeoutError("reset")),
+        _FakeStream([_content_chunk("你好"), _usage_chunk(10, 2)]),
+    ]
+    events, result, retry, reservation = _run(streams)
+
+    assert retry.calls == 2, "refusal 死流首 token 前中断应整流"
+    assert result.content == "你好", "第 2 次尝试应产出完整内容"
+    assert result.refusal is None, (
+        f"整流后不应残留死流 refusal，实际 {result.refusal!r}"
+    )
+    assert reservation.settle_calls == 1, "成功路径应 settle"
+
+
 # =====================================================================
 # 结算闭环
 # =====================================================================

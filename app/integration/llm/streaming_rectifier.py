@@ -242,11 +242,14 @@ class StreamingRectifier:
                     if cancel_event and cancel_event.is_set():
                         yield build_error_event("用户取消了请求")
                         return
-                    # 清掉死流的元数据残留（usage/finish_reason 不算"首 token"，但整流后
-                    # 不能带入下一尝试；content/reasoning/tool_calls 因 emitted_any=False
-                    # 本就为空，整流幂等安全）
+                    # 清掉死流的元数据残留（usage/finish_reason/refusal 不算
+                    # "首 token"，但整流后不能带入下一尝试；content/reasoning/
+                    # tool_calls 因 emitted_any=False 本就为空，整流幂等安全）。
+                    # refusal 不置 emitted_any（纯拒绝流可整流），不清理则成功
+                    # 尝试残留死流拒答元数据 → 下游误判为拒答。
                     result.finish_reason = None
                     result.usage = None
+                    result.refusal = None
                     tool_deltas.clear()
                     continue
 

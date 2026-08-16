@@ -145,7 +145,7 @@ class RectifierContext:
 
 ## 测试
 
-- `tests/unit/test_streaming_rectifier.py`（10 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / 硬取消 finally cancel / settle 中途取消 finally 续退 / **429 整流尊重 Retry-After（封顶到 max_delay）**
+- `tests/unit/test_streaming_rectifier.py`（11 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / 硬取消 finally cancel / settle 中途取消 finally 续退 / 429 整流尊重 Retry-After（封顶到 max_delay）/ **整流清理复位 refusal（拒绝类死流不残留元数据）**
 - `tests/unit/test_stream_rectify.py`（21 用例，经 `LLMService.async_generate` 间接覆盖）：整流/结算/事件/日志/熔断 feeding 全链路断言
 
 ## 相关文档
