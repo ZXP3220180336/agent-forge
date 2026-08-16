@@ -624,128 +624,17 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ---
 
-## 改造记录与工业实践
+## 问题记录
 
-> 本节记录 2026-08-01 的工业级改造（问题 1/2/4）与工业实践调查。正文（组件详解 / 流程图 / 场景推演）已同步到新模型。
+> 工业级改造（2026-08-01~08-12）发现的问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
 
-### 改造记录总表
+- [滑动窗口熔断改造（计数粒度/时间维度/429 分离 + OPEN 冻结）](../../../issues/integration/llm/2026-08-01-sliding-window-circuit-breaker.md)
+- [请求级记账（熔断触发后仍重试 / 混合失败丢失信号）](../../../issues/integration/llm/2026-08-01-request-level-accounting.md)
+- [错误分类白名单（未知默认 NON_RETRYABLE）](../../../issues/integration/llm/2026-08-01-error-classification-whitelist.md)
+- [半开探针语义（进重试/OPEN 误关/死锁/429/4xx/槽位泄漏/取消）](../../../issues/integration/llm/2026-08-05-half-open-probe-semantics.md)
+- [熔断器生命周期共享（每次 new 熔断失效）](../../../issues/integration/llm/2026-08-07-circuit-breaker-lifecycle.md)
+- [流式迭代异常无保护（熔断观察盲区）](../../../issues/integration/llm/2026-08-07-streaming-iteration-unprotected.md)
+- [fallback 隔离（成败不进状态机 / 异常覆盖主调用）](../../../issues/integration/llm/2026-08-09-fallback-isolation.md)
 
-| 问题 | 修复前 | 修复后 |
-| --- | --- | --- |
-| **问题 1：计数粒度错位，熔断极易触发** | 计数单位是单次 `call_fn()`，一次请求的多次重试被放大累计（`threshold=5, max_retries=2` 时约 2 次请求即熔断） | **请求级粒度**：一次 `execute()` 只记录一次结果，避免单请求重试放大窗口统计 |
-| **问题 1：无时间维度，连续失败永久累计** | 失败计数从 CLOSED 起只增不减，5 次失败分布在 1 秒或 10 分钟同样熔断 | **滑动时间窗口**（默认 10s）：窗口内统计请求数与错误率，过期记录惰性剔除，错误率随窗口自然回落 |
-| **问题 1：429 混入熔断判据** | `RATE_LIMITED` 计入 `_failure_count`，限流期误熔断 | **429 分离**：不计入窗口，只退避（尊重服务端 `Retry-After`） |
-| **问题 2：熔断触发后仍继续剩余重试** | `record_failure()` 触发 OPEN 后重试循环照常跑完剩余 attempt，浪费配额、延迟放大 | **请求级记账（LLM-013 修正）**：熔断评估在重试循环结束后统一进行（一次 `execute()` 只记一次），单请求内不打断剩余重试——请求级粒度避免单请求重试放大窗口统计；`record_failure()` 保留 bool 返回值作语义标记，当前无调用方消费 |
-| **问题 4a：半开探针进入重试循环** | 探针失败 → OPEN → 继续重试，把一次探测放大成多次调用，干扰恢复判断 | 半开状态走 `_probe_attempt`：单次调用，失败（429/超时/5xx）即确认未恢复 |
-| **问题 4b：OPEN 下 `record_success()` 误关熔断** | OPEN 下收到成功（重试泄漏 / fallback）走"重置为 CLOSED"兜底分支，熔断器被误关 | OPEN 下 `record_success()` 为 no-op |
-| **修复补充：`_last_failure_time` 被延续失败反复刷新** | 任何失败都刷新 `_last_failure_time`，OPEN 下 fallback 兜底失败把冷却期无限推迟，熔断器永远无法进入 HALF_OPEN | `_last_failure_time` 仅在熔断器进入 OPEN 时更新（冷却期起点）；OPEN 下延续失败不改写，探针失败（新一轮故障）重置 |
-| **问题 4 深化：fallback 成败不进入熔断状态机** | fallback 成功清零熔断计数（主链路持续故障永不熔断）；fallback 失败累计熔断计数；熔断 OPEN 期 fallback 被当作主链路传入单次调用路径 | fallback 纯兜底：成功直接返回、失败自然抛出，不调用 `record_success`/`record_failure`，熔断器只观察主链路 `call_fn` |
-| **审核补充：OPEN 下 `record_failure()` 未冻结计数** | OPEN 守卫在 `_failure_count += 1` **之后**，外部误调用会继续累加计数、破坏"熔断期间冻结"语义 | OPEN 守卫前置到累加之前：OPEN 下不追加窗口、不改写 `_last_failure_time`，返回 `False` |
-| **半开死锁：探针 429/4xx 不推进状态机，槽位永久占用** | 探针被放行（`_half_open_requests` 递增）但 429/4xx 既不 `record_success` 也不 `record_failure` → `_half_open_requests` 耗尽后 `allow_request()` 永远返回 False，熔断器卡死在 HALF_OPEN | 任何探针结果必然推进状态机：成功→连续成功计数；失败（429/超时/5xx）→回 OPEN；4xx/未知→`release_probe()` 归还槽位（推进 `_half_open_requests`）。不存在"放行后不推进"路径，杜绝死锁 |
-| **半开语义深化：429 不应计为探针成功，也不应持续探测** | 曾尝试将 429 计为成功（可达性）→ 误关闭熔断器流量涌入过载下游；后改为中性归还槽位 → 每个请求都变探针持续压过载下游 | 429 探针→回 OPEN + 冷却（停止探测让下游喘息）；关闭熔断器必须凑齐 `half_open_max_requests` 次**真实成功** |
-| **半开探针 4xx 误回 OPEN（2026-08-05）** | 4xx/未知探针一律 `record_failure()` 回 OPEN + 冷却重置 → 半开阶段客户端错误把熔断器反复打回 OPEN，下游即使恢复也永远无法完成健康探测（`HALF_OPEN→OPEN` 反复横跳） | 4xx/未知探针不 record_failure、不改变状态，`release_probe()` 归还槽位 + 抛上层；熔断器保持 HALF_OPEN 等待正常请求探测真实状态 |
-| **错误分类：未知/未覆盖异常默认 RETRYABLE，盲目重试** | 只显式分类 400/401/403/422/429/5xx/超时，其余（404/405/413 等 4xx、非 HTTP 异常、裸 httpx 网络异常）落入 RETRYABLE 兜底 → 重试无效的错误白打下游 N 次并计入熔断窗口 | 白名单映射：4xx 全部 NON_RETRYABLE；显式捕获 openai 网络异常 + 裸 httpx 异常 → RETRYABLE；`APIResponseValidationError`/`LengthFinishReasonError`/`ContentFilterFinishReasonError` → NON_RETRYABLE；**未知异常默认 NON_RETRYABLE** |
-| **流式迭代异常无保护** | `llm_service.py` 的 `async for chunk` 不在任何 try/except 内 → 流中断/解析失败时异常泄漏到调用方，不重试不熔断不记录日志 | 流式迭代包进 try/except：失败时记录日志 + 产出错误事件（不重试，符合流式语义）；**2026-08-07 补熔断观察盲区**：迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，让熔断器感知「create 正常但流频繁中断」 |
-| **熔断器生命周期：每次调用新建导致窗口无法跨请求积累（2026-08-07）** | `_build_retry_handler()` 在每次 `async_generate`/`generate` 新建 `RetryHandler` + `CircuitBreaker` → 熔断窗口每次请求清空，`request_volume_threshold=20` 永远达不到 → **create 阶段熔断实际失效**（与「熔断器需要跨请求共享状态」设计意图矛盾） | 新增 `RetryHandlerManager`：按 model_key 缓存共享 RetryHandler（内含跨请求共享 CircuitBreaker），main/reasoning/fast 独立熔断；`LLMService` 改用 `RetryHandlerManager.get(model_key)` |
-| **审核补充：半开探针槽位泄漏——取消/`BaseException` 中断（2026-08-09）** | `_probe_attempt()` 仅 `except Exception`：协程被 `CancelledError`/`SystemExit`/自定义 `BaseException` 中断时绕过 `release_probe()`/`record_failure()`，`_half_open_requests` 被永久占用 → 多次取消后 `allow_request()` 恒为 False，熔断器卡死 HALF_OPEN，自动恢复失效 | `_probe_attempt()` 改 `try/finally` + `accounted` 标志兜底：任何未记账退出路径由 finally `release_probe()` 归还槽位（槽位永不泄漏）；`CancelledError` 单独捕获 → 按探针失败回 OPEN + 立即传播（**不尝试 fallback**，外部取消不应继续发请求）；附带语义修正：探针失败回 OPEN 时同步清零 `_half_open_requests`（OPEN 不残留半开记账） |
-| **异常覆盖：fallback 失败覆盖主调用异常（2026-08-09）** | fallback 也失败时 `last_exc = e` 被 fallback 异常覆盖，最终抛 fallback 异常——熔断窗口记录的是主链路，上层按异常类型判定重试/降级/日志时与熔断器记录不一致 | fallback 失败时 `raise last_exc from fallback_exc`：**主调用异常为主**（上层按它判定语义），fallback 异常链为 `__cause__` 保留诊断；CLOSED 重试路径与 HALF_OPEN 探针路径同改，熔断 OPEN 拒绝路径主调用未执行不改 |
-| **混合失败丢失熔断信号（2026-08-10）** | 一次 `execute()` 先出现 `RETRYABLE`（超时/5xx）、后出现 `NON_RETRYABLE`（4xx）时，`NON_RETRYABLE` 处直接 `raise` 绕过请求级统一记录 → 前期反映的下游故障信号丢失（与「只要任一次尝试是超时/5xx 就应计入窗口」设计意图相悖） | `NON_RETRYABLE` `raise` 前判断 `saw_retryable_failure`，曾为 True 先 `cb.record_failure()` 再抛——4xx 本身仍不计入（调用方问题），仅补记前期的下游故障；新增回归测试 `test_mixed_failures_timeout_then_bad_request_counts_once` |
+> 正文（组件详解 / 流程图 / 场景推演）已同步到当前状态。
 
-对应测试：`tests/unit/test_retry.py`（35 个用例）+ `tests/unit/test_classify_error.py`（22 个用例）+ `tests/unit/test_retry_handler_manager.py`（6 个用例）。
-
-> **坑：测试构造 openai 异常** —— 构造 `openai.APIStatusError` 子类（如 `BadRequestError`/`InternalServerError`/`RateLimitError`）需要 `message` + `response` 两个参数（`InternalServerError` 无字面量 status_code，值来自传入的 `httpx.Response`）。`LengthFinishReasonError` 需要真实 `ChatCompletion` 对象（访问 `.usage`），不能传 None。**构造测试异常统一用 `httpx.Response(status_code, request=...)` 传参。**
-
-### 问题 1 详述：滑动窗口熔断改造（Hystrix 参考）
-
-**改造背景**：改造前熔断判据是 `_failure_count ≥ failure_threshold`（连续失败次数）。问题有三：
-
-| # | 问题 | 后果 |
-| --- | --- | --- |
-| 1 | **计数粒度错位**：计数单位是单次 `call_fn()`，而一次 `execute()` 会多次调用（重试循环） | 一次请求的重试失败被当作多次独立失败累计，熔断极易触发 |
-| 2 | **无时间维度**：失败计数从 CLOSED 起只增不减，无窗口约束 | 5 次失败分布在 1 秒或 10 分钟同样触发熔断——低流量误熔断，高流量反应过慢 |
-| 3 | **429 混入熔断判据**：`RATE_LIMITED` 也计入 `_failure_count` | 429 是"客户触发自身限流"，不是"下游故障"证据，限流期误熔断 |
-
-**Hystrix 工业标准参考**：
-
-| 维度 | 当前实现 | Hystrix 工业标准 |
-| --- | --- | --- |
-| 判据 | 连续失败计数 | **错误率**（失败 / 窗口内总请求 ≥ 阈值，默认 50%） |
-| 时间 | 无窗口 | **滑动时间窗口**（默认 10s） |
-| 防误触发 | 无 | **最小请求量门槛**（默认 20/窗口）——窗口内请求量不足则不做熔断评估 |
-| 计数粒度 | 单次 `call_fn()` | 单次命令执行（请求粒度） |
-| 429 | 计入熔断 | 单独处理（只退避，不计入错误率） |
-
-**改造方案（已实施）**：
-
-1. **记录粒度**：每个 `execute()` 只向窗口汇报一条结果——成功在循环内 `record_success()`；失败在重试耗尽后统一 `record_failure()` 一次；429 / 不可恢复错误不记录
-2. **滑动时间窗口**：`collections.deque` 记录 `(timestamp, is_success)`，O(1) 追加，`_prune_window()` 惰性清理过期条目；窗口统计当前请求的成败，作为后续请求是否放行的依据
-3. **熔断判定**：
-
-   ```text
-   CLOSED 下每次请求完成后：
-       if 窗口内全部失败 and 失败数 ≥ all_failed_min:   # 低流量纯失败保护
-           → OPEN
-       elif 窗口内总请求 ≥ request_volume_threshold      # 最小请求量，防低流量误判
-            and 窗口内错误率 ≥ error_threshold:           # 默认 50%
-           → OPEN
-   ```
-
-4. **429 分离**：CLOSED 下 429 不计入错误率分母或分子，也不计入总请求量；触发退避重试（尊重服务端 `Retry-After`，`_extract_retry_after` + 合理区间内 `max(delay, retry_after)`）。CLOSED 假定下游健康，429 更可能是自身配额问题，只退避避免自我惩罚。**Retry-After 封顶（2026-08-16）**：`retry_after` 仅在 `0 < retry_after ≤ max_delay` 区间内被尊重，超出（异常/恶意大值如 `retry-after: 3600`）忽略并回退指数退避——单次最长等待有界，防挂死（对齐 OpenAI SDK 的合理区间判断，`max_delay` 替代魔法数 60）
-
-原 `LLM_CIRCUIT_FAILURE_THRESHOLD`（连续失败计数）**已移除**。
-
-**行为对比（示意）**：
-
-```
-熔断器状态：CLOSED
-
-请求 A（窗口内第 1~3 次）→ 3 次失败，全部失败且 ≥ all_failed_min(3) → 熔断
-                         （低流量纯失败保护；修复前需满 5 次才熔断）
-请求 B（窗口内第 20~25 次）→ 20 次请求中 15 次失败 → 错误率 75% ≥ 50% → 熔断
-请求 C（窗口内 429 增多）→ 429 不计入错误率 → 不熔断，仅退避重试
-```
-
-**决策结论（用户 2026-08-01 确认）**：① 移除 `failure_threshold`，由滑动窗口错误率 + 低流量纯失败保护完全替代；② 429 退避尊重服务端 `Retry-After`；③ 低流量纯失败保护：窗口内全部失败且失败数 ≥ `all_failed_min`（默认 3）时熔断。
-
-### 半开探针成功/失败判定（工业实践调查）
-
-**为什么需要专门设计**：半开探针每次被放行都占用一个探针槽位（`_half_open_requests`），其结果必须推进状态机——成功→连续成功计数，失败→回 OPEN 或归还探针槽位。若探针收到某类错误后既不记录成败、也不推进状态机，槽位会被永久占用，`allow_request()` 永远返回 False，熔断器卡死在 HALF_OPEN（本项目曾遇到并修复的死锁问题）。
-
-因此"什么情况归为成功、什么归为失败"直接决定：① **正确性**（429 误记为成功会误关熔断器，流量涌入过载下游）；② **不死锁**（任何探针结果必须推进状态机）；③ **下游压力**（429 探针若只归还槽位不冷却，每个请求都变探针持续压过载下游——回 OPEN 停止探测才能给下游喘息）。
-
-**工业实践调查**：
-
-| 议题 | 调查结论 | 本项目立场 |
-| --- | --- | --- |
-| **resilience4j 半开** | 用独立环形缓冲统计探针错误率：≥ failureRateThreshold（默认 50%）→ 回 OPEN，< 50% → 回 CLOSED；环形缓冲必须满才决策；记录二元强制，不存在"放行不记录"路径 | 保留"全部成功才恢复"的严格语义（探针数少、验证更谨慎），主动设计不在本次改造范围 |
-| **429 处理** | 多数派（cc-orchestrator/TYPO3/ofetch）计为失败触发熔断；少数派（Fedify/llm_circuit_breaker）不计熔断、尊重 Retry-After | **CLOSED 下排除 429**（只退避），走少数派路线（避免客户端自限流误触发熔断）；**但半开探针下 429 是下游过载信号**，多数派直觉成立，429 探针不得计为成功 |
-| **4xx 处理** | 中性（ofetch 默认）：4xx 是调用方 bug，不算 provider 故障；可达即算成功（Fedify） | **CLOSED 下 4xx 不计入熔断窗口**（与 ofetch 中性一致）；**半开探针下 4xx 是客户端问题**：不 record_failure（不误判下游故障）、不 record_success（不算健康探测），`release_probe()` 归还槽位 + 抛上层；熔断器保持 HALF_OPEN，等待正常请求探测真实状态 |
-| **探针失败是否降级** | fallback 是**方法级包装**（Resilience4j/Hystrix），触发条件是「主调用抛异常/超时」或「熔断器拒绝」两个独立事件——HALF_OPEN 探针失败 = 主调用抛异常，**必然触发 fallback**；Netflix `getFallback()` 在请求被拒绝/失败/超时/短路时都执行 | **探针失败仍降级**（fallback 纯兜底，不进入熔断状态机）：探针的目的只是探测恢复，不代表这次用户请求该被牺牲，应拿到降级响应而非裸异常。探针本身**不重试**（单次探测，重试会放大探测失败干扰恢复判断）——与 Hystrix「only the first request after sleep window」、Resilience4j 半开直打主服务一致 |
-
-**最终方案**（2026-08-05 修正）：三分类处理——
-
-| 探针结果 | 处理 |
-| --- | --- |
-| 成功（2xx） | `record_success()` 累计，达阈值关闭熔断器 |
-| 429 / 超时 / 5xx | `record_failure()` 回 OPEN + 新一轮冷却（下游过载/故障） |
-| 4xx / 未知（NON_RETRYABLE） | 不 record_failure、不 record_success，`release_probe()` 归还槽位 + 异常抛上层（保持 HALF_OPEN） |
-
-> **修正说明（2026-08-05）**：早期方案「探针失败一律回 OPEN，4xx 抛给上层」中，4xx 也执行 `record_failure()` 回 OPEN。后发现缺陷：半开阶段客户端错误（4xx）不断出现时，熔断器 `HALF_OPEN→OPEN` 反复横跳，下游即使恢复也永远无法完成健康探测。修正为 4xx 探针不改变状态、归还槽位。
-
-**探针被取消的语义**（决策记录，2026-08-12，对照 Hystrix / Resilience4j）：
-
-| 议题 | Hystrix | Resilience4j | 本项目立场 |
-| --- | --- | --- | --- |
-| **探针取消/中断** | 「if the executing command gets unsubscribed, the status will transition to OPEN」——**取消 = 探针失败回 OPEN**（[issue #1723 引用的 HystrixCircuitBreakerImpl 源码注释](https://github.com/Netflix/Hystrix/issues/1723)） | 用 `maxWaitDurationInHalfOpenState` 约束半开超时——探针卡住不返回时强制回 OPEN；不区分「超时取消」与「外部取消」，半开探针只有成功/失败两终态 | **取消 → `record_failure()` 回 OPEN**（与 Hystrix 一致）：取消的探针**没有证明下游恢复**，若归还槽位让它「当没发生」，熔断器误以为探针还在飞而继续等，是「槽位泄漏卡死 HALF_OPEN」的变体 |
-| **取消是否影响并发请求** | 半开探针各自独立 | 半开放行多探针，各自独立计数，单探针取消不影响其余 | **单探针取消只影响自身**——回 OPEN 是整个熔断器的冷却决策，不针对并发请求；回 OPEN 反而给下游冷却喘息，避免取消风暴持续消耗探针槽位 |
-| **取消风暴反复重置冷却** | 无此防护 | `maxWaitDurationInHalfOpenState` 给半开总时长设上限 | **已识别为残余风险**：高频取消会反复重置冷却计时，可能无限推迟恢复探测。当前未采纳 `max_wait_in_half_open`（对齐 Resilience4j 的防御），因取消风暴在 LLM 调用场景罕见（多为单用户主动取消）——若未来观测到频繁取消导致恢复探测迟迟不触发，再引入半开超时上限 |
-
-> **辨析**：为什么「CLOSED 请求取消归还资源」而「HALF_OPEN 探针取消回 OPEN」？CLOSED 下取消是客户自身决定、不代表下游状态；半开探针的每一票都构成「下游是否恢复」的证据采样——探针没跑完 = 无法得出成功结论 = 按失败处理。这不是「请求维度」的错误，而是「熔断器统计维度」的规则：探针要么成功关闭熔断，要么不成功就继续熔断。
-
-**备选方案（未采纳，记录在案）**：
-
-1. **resilience4j 错误率模型**：半开也按错误率判定（10 个探针中失败 < 50% 即关闭）。优点是与 CLOSED 判定统一、更宽松；缺点是需要环形缓冲 + 满窗才决策，探针数少时语义复杂，且"少数失败仍关闭"与"全部成功才恢复"的严格验证目标冲突。**若未来探针数配置变大（≥10），可考虑迁移**
-2. **Fedify 可达性模型**：429/4xx 计入成功（收到响应证明在线）。优点是无死锁、恢复判定简单；缺点是 429 被当作成功会误关熔断器，流量涌入过载下游。**被否决：429 的过载语义比"可达"语义更值得保护**
-3. **中性归还槽位**（曾实施后回退）：429/4xx 探针 `abandon_probe()` 归还槽位、不计成败。缺点：**每个请求都变探针持续压过载下游**——429 返回后槽位归还、请求立即再来探测，下游被满负荷探测压着，更不易恢复。**被否决（针对 429）**：过载下游需要的是停止探测（冷却），而非归还槽位后继续探测。
-   > **本次仅对 4xx 采纳归还槽位**（2026-08-05）：4xx 说明下游可达且能处理请求（给了响应），让新探针继续探测是安全的，不属于"满负荷压过载下游"——与 429 的过载语义不同，故对 4xx 归还槽位是合理选择
-4. **多数派 429 计失败 + 不抛 4xx**：429 探针回 OPEN（与本方案一致），但 4xx 探针不计失败。缺点：4xx 探针既不推进状态机也不被上层感知，要么死锁要么持续探测；且客户端错误应暴露给上层修复，而非沉默处理

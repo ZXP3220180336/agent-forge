@@ -35,6 +35,13 @@
 | [LLM-016](2026-08-08-finish-reason-refusal-unchecked.md) | 不检查 finish_reason/refusal | P1 | ✅ 已修复 | structured（_classify_result） | 2026-08-08 | 2026-08-08 |
 | [LLM-017](2026-08-08-degrade-instead-of-error-reask.md) | 降级而非错误感知重试 | P1 | ✅ 已修复 | structured（_try_extract 回喂） | 2026-08-08 | 2026-08-08 |
 | [LLM-018](2026-08-08-extra-fields-not-rejected.md) | 额外字段不拒绝 | P2 | ✅ 已修复 | structured（_enforce_no_extra_fields） | 2026-08-08 | 2026-08-08 |
+| [LLM-019](2026-08-01-sliding-window-circuit-breaker.md) | 滑动窗口熔断改造（计数/时间/429） | P0 | ✅ 已修复 | retry（CircuitBreaker） | 2026-08-01 | 2026-08-01 |
+| [LLM-020](2026-08-01-request-level-accounting.md) | 请求级记账（触发后仍重试/混合失败） | P1 | ✅ 已修复 | retry（RetryHandler） | 2026-08-01 | 2026-08-01 |
+| [LLM-021](2026-08-01-error-classification-whitelist.md) | 错误分类白名单（未知默认不可重试） | P1 | ✅ 已修复 | retry（classify_error） | 2026-08-01 | 2026-08-01 |
+| [LLM-022](2026-08-05-half-open-probe-semantics.md) | 半开探针语义演进（死锁/429/4xx/取消） | P0 | ✅ 已修复 | retry（_probe_attempt） | 2026-08-05 | 2026-08-05 |
+| [LLM-023](2026-08-07-circuit-breaker-lifecycle.md) | 熔断器生命周期共享（每次 new 熔断失效） | P0 | ✅ 已修复 | retry（RetryHandlerManager） | 2026-08-07 | 2026-08-07 |
+| [LLM-024](2026-08-07-streaming-iteration-unprotected.md) | 流式迭代异常无保护（熔断观察盲区） | P1 | ✅ 已修复 | llm_service / streaming_rectifier | 2026-08-07 | 2026-08-07 |
+| [LLM-025](2026-08-09-fallback-isolation.md) | fallback 隔离（成败不进状态机） | P1 | ✅ 已修复 | retry（fallback 路径） | 2026-08-09 | 2026-08-09 |
 
 ## 新问题登记规范
 
