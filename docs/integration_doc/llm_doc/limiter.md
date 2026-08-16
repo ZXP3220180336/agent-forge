@@ -70,7 +70,7 @@
 
 令牌桶：桶里攒 Token，请求取走 Token，Token 以固定速率补充。
 
-```
+```text
 capacity      桶容量 = 最大突发量
 refill_rate   每秒补充速率
 _tokens       当前剩余 Token（初始 = capacity）
@@ -86,7 +86,7 @@ _tokens       当前剩余 Token（初始 = capacity）
 
 限流算法不止 Token Bucket 一种。按「是否允许突发、是否精确、实现复杂度」的维度，主流算法可归为几类：
 
-```
+```text
                允许突发？      平滑性        内存/复杂度       典型实现
 Token Bucket     ✅             长期平滑        常数           x/time/rate, Bucket4j
 漏桶 Leaky       ❌（恒定速率）   严格整形        常数           queue + 定时出队
@@ -102,7 +102,7 @@ GCRA             ✅             精确            常数           rate-limit �
 
 按固定时间窗（如 1 分钟）计数，窗口内计数达到上限即拒绝。
 
-```
+```text
 窗口 [0,60) 计数 55 → 剩余 5
 窗口 [60,120) 计数 40 → 剩余 20   ← 窗口切换，计数清零
 ```
@@ -115,7 +115,7 @@ GCRA             ✅             精确            常数           rate-limit �
 
 记录窗口内每次请求的时间戳，查询时剔除过期时间戳后计数。
 
-```
+```text
 窗口 [T-60, T)：每个请求一个时间戳，滑动删除超窗的
 请求到来 → 删除 < T-60 的 → 计数 → 超限拒绝
 ```
@@ -128,7 +128,7 @@ GCRA             ✅             精确            常数           rate-limit �
 
 固定窗口 + 细粒度分桶的折中：把窗口切成 N 个小桶，滑动时按比例加权历史桶计数。
 
-```
+```text
 窗口 = 4 个 15s 小桶，当前桶按剩余时间加权：
 current + 上一桶 × (剩余比例) = 近似窗口计数
 ```
@@ -141,7 +141,7 @@ current + 上一桶 × (剩余比例) = 近似窗口计数
 
 恒定速率流出：请求先入队（桶），以固定速率逐出执行；桶满则拒绝（或丢弃）。
 
-```
+```text
          ┌──────────────┐
  请求 →  │   漏桶（队列）  │ → 恒定速率流出
          └──────────────┘
@@ -156,7 +156,7 @@ current + 上一桶 × (剩余比例) = 近似窗口计数
 
 以「理论到达时间（TAT）」为核心的精确节流算法，常被视为 Token Bucket 的一种精确等价格式。
 
-```
+```text
 TAT = 上次请求的理论到达时间
 新请求 → TAT' = max(now, TAT) + 1/rate
   若 TAT' - now > burst   → 拒绝（超出突发容忍）
@@ -195,7 +195,7 @@ Token Bucket 的本质特征：
 
 ## 架构总览
 
-```
+```text
 LLMService（async_generate / generate）
         │
         ▼  每个 create 前
@@ -532,7 +532,7 @@ class LeakyBucket:
 
 **可视化示例**（容量 8，恒定速率 2 QPS = 每 500ms 处理 1 个，全部同时到达模拟突发）：
 
-```
+```text
 1. 设定参数
    桶容量       8 个请求
    恒定流出速率  2 请求/秒 → 每 500ms 处理 1 个请求
@@ -629,7 +629,7 @@ class FixedWindowLimiter:
 
 **可视化示例**（rate=5 请求/窗口，window=60s，请求稀疏分布）：
 
-```
+```text
 1. 设定参数
    窗口长度      60 秒
    每窗口上限    5 个请求
@@ -717,7 +717,7 @@ class SlidingWindowLogLimiter:
 
 **可视化示例**（rate=3 请求/窗口，window=60s）：
 
-```
+```text
 1. 设定参数
    窗口长度      60 秒
    窗口内上限    3 个请求
@@ -828,7 +828,7 @@ class SlidingWindowCounterLimiter:
 
 **可视化示例**（window=60s, buckets=4 → 每桶 15s）：
 
-```
+```text
 1. 设定参数
    窗口长度      60 秒
    分桶数        4 桶 → 每桶 15s
@@ -905,7 +905,7 @@ class GCRALimiter:
 
 **核心思想**：
 
-```
+```text
 TAT = 上次请求的理论到达时间
 新请求 → 等待 max(0, TAT - now)；TAT' = max(now, TAT) + 1/rate
   若 TAT' - now > burst/rate → 超出突发容忍（保守等待）
@@ -914,7 +914,7 @@ TAT = 上次请求的理论到达时间
 
 **可视化示例**（rate=2 请求/秒，burst=3，即间隔 500ms、可突发 3 个）：
 
-```
+```text
 1. 设定参数
    速率        2 请求/秒 → 每 500ms 一个
    突发容忍    3 个请求（可连续放行的最大数）
@@ -953,7 +953,7 @@ TAT = 上次请求的理论到达时间
 
 `llm_service.py` 集成的是 reserve/settle 形态（`ReservationLimiterManager`）：
 
-```
+```text
 async_generate() / generate()
     │
     ├─ limiter = ReservationLimiterManager.get(model_key)
@@ -982,7 +982,7 @@ async_generate() / generate()
 
 **acquire 形态流程**（学习参考，已从生产移除）：
 
-```
+```text
 async_generate() / generate()
     │
     ├─ estimated = _count_prompt_tokens(model_key, messages, max_tokens)  # 循环外一次
@@ -1003,7 +1003,7 @@ async_generate() / generate()
 | --- | --- | --- |
 | `ReservationLimiter.reserve(estimated_tokens=0, retry_after=None) -> Reservation` | 异步方法 | 预留配额（RPM+TPM，排队等待） |
 | `ReservationLimiter.reserve_adaptive(prompt_tokens, max_tokens, retry_after=None) -> Reservation` | 异步方法 | 自适应预留（高分位估算输出，clamp 到上限） |
-| `Reservation.settle(actual: int | None)` | 异步方法 | 按实际消耗结算（退 TPM 差 / None 保留配额） |
+| `Reservation.settle(actual: int \| None)` | 异步方法 | 按实际消耗结算（退 TPM 差 / None 保留配额） |
 | `Reservation.cancel()` | 异步方法 | 全额退还（请求未确认发出时） |
 | `TokenBucket.acquire(tokens=1.0) -> float` | 异步方法 | 获取 token（返回桶内等待秒数） |
 | `TokenBucket.refund(tokens=1.0)` | 异步方法 | 退还 token（capacity 封顶） |
@@ -1071,7 +1071,7 @@ async_generate() / generate()
 
 ## 与重试/熔断的分层配合
 
-```
+```text
  reserve()       create()       429 时 retry 内部
 客户端预限流      正式请求      服务端反馈限流
 ```
@@ -1082,7 +1082,7 @@ async_generate() / generate()
 
 **注意**：reserve/acquire 的 `retry_after` 与 retry 层的 `Retry-After` 是两条独立路径——前者是调用方显式传入的等待，后者是 429 异常响应头内提取的退避。
 
-**跨模块问题**：限流与重试的配合（重试/降级是否计入限流申请）详见 [llm.md「配额缺口」章节](llm.md#配额缺口重试降级不计入限流申请)。
+**跨模块问题**：限流与重试的配合（重试/降级是否计入限流申请）完整生命周期见 [LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)。
 
 ---
 

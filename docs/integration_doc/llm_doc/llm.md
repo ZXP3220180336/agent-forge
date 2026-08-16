@@ -1,68 +1,32 @@
-# LLM 层说明文档
+# LLM 网关对外接口文档
 
 > **对应代码**：`app/integration/llm/`
 > **更新日期**：2026-08-16
-> **职责**：LLM 网关 —— 与大语言模型的全部通信：连接池 / 重试 / 熔断 / 限流 / 流式解析 / 整流重试 / 结构化输出 / 成本计算
-> **状态**：✅ 已实现
-> **配套**：实现领域端口 `LLMGateway`；`LLMService` 为唯一对外 Facade（各子组件详解见下文与 [client.md](client.md) / [retry.md](retry.md) 等子文档）
+> **文档定位**：LLM 模块（`app/integration/llm/`）对外接口文档——`LLMService` Facade
+> 的接口契约 + 内部组件导航；服务对象为 LLM 网关的**外部调用方**（领域层 / 应用层 /
+> API 层）
+> **实现状态**：✅ 已实现
+> **配套**：实现领域端口 `LLMGateway`（`app/domain/ports/llm_gateway.py`，领域层
+> 对模型调用的唯一依赖面）；`LLMService` 为唯一对外 Facade，内部组件不对外暴露
 
 ---
 
 ## 📋 目录
 
-- [LLM 层说明文档](#llm-层说明文档)
+- [LLM 网关对外接口文档](#llm-网关对外接口文档)
   - [📋 目录](#-目录)
   - [模块概述](#模块概述)
     - [核心功能](#核心功能)
     - [模块结构](#模块结构)
     - [设计原则](#设计原则)
     - [依赖关系](#依赖关系)
-  - [快速开始](#快速开始)
-    - [基础用法](#基础用法)
-    - [流式生成](#流式生成)
-    - [非流式生成（简单任务）](#非流式生成简单任务)
-    - [结构化输出](#结构化输出)
-    - [成本计算](#成本计算)
-  - [架构设计](#架构设计)
-    - [调用流程](#调用流程)
-    - [数据流](#数据流)
-  - [核心模块详解](#核心模块详解)
-    - [ClientManager — 连接池管理](#clientmanager--连接池管理)
-    - [RetryHandler — 重试与熔断](#retryhandler--重试与熔断)
-    - [StreamParser — 流式解析](#streamparser--流式解析)
-    - [StreamingRectifier — 流式整流重试策略](#streamingrectifier--流式整流重试策略)
-    - [StructuredOutput — 结构化输出](#structuredoutput--结构化输出)
-    - [LLM 调用业务事件（llm\_call）](#llm-调用业务事件llm_call)
-    - [限流：reserve/settle 形态](#限流reservesettle-形态)
-    - [CostTracker — 成本计算](#costtracker--成本计算)
-  - [设计选型对比](#设计选型对比)
-  - [配置参考](#配置参考)
-    - [模型配置](#模型配置)
-    - [嵌入配置](#嵌入配置)
-    - [高级配置](#高级配置)
-  - [最佳实践](#最佳实践)
-    - [1. 模型选择原则](#1-模型选择原则)
-    - [2. 结构化输出](#2-结构化输出)
-    - [3. 流式 vs 非流式](#3-流式-vs-非流式)
-    - [4. 成本控制](#4-成本控制)
-    - [5. 异常处理](#5-异常处理)
-    - [6. 日志利用](#6-日志利用)
-  - [常见问题](#常见问题)
-    - [Q: `LLMService` 和 `ClientManager` 的关系是什么？](#q-llmservice-和-clientmanager-的关系是什么)
-    - [Q: 什么时候用 `async_generate`，什么时候用 `generate`？](#q-什么时候用-async_generate什么时候用-generate)
-    - [Q: CircuitBreaker 开了怎么恢复？](#q-circuitbreaker-开了怎么恢复)
-    - [Q: 如何切换不同模型（GPT-4 → DeepSeek）？](#q-如何切换不同模型gpt-4--deepseek)
-    - [Q: 结构化的三级降级什么时候会触发？](#q-结构化的三级降级什么时候会触发)
-    - [Q: 如何增加一个新的模型种类（如超高速模型）？](#q-如何增加一个新的模型种类如超高速模型)
-    - [Q: 如何接入非 OpenAI 兼容的 API？](#q-如何接入非-openai-兼容的-api)
-    - [Q: 调用 `generate_structured` 报 TypeError？](#q-调用-generate_structured-报-typeerror)
-  - [设计决策记录](#设计决策记录)
-    - [流式整流重试](#流式整流重试)
-    - [配额缺口：重试/降级不计入限流申请](#配额缺口重试降级不计入限流申请)
-  - [当前进度与遗留](#当前进度与遗留)
-    - [已实现](#已实现)
-    - [遗留未定事项](#遗留未定事项)
-    - [下一步计划](#下一步计划)
+  - [对外接口](#对外接口)
+    - [LLMService 方法表](#llmservice-方法表)
+    - [对外异常契约](#对外异常契约)
+    - [最小调用示例](#最小调用示例)
+  - [内部实现组织](#内部实现组织)
+  - [配置关联](#配置关联)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -70,942 +34,179 @@
 
 ### 核心功能
 
-LLM 层是系统的**模型通信基础设施**，负责所有与大语言模型的交互：
-
-- **连接管理**：全局共享 AsyncOpenAI 连接池，支持 main / reasoning / fast 三种模型按需切换
-- **重试与熔断**：指数退避 + 随机抖动 + CircuitBreaker 熔断器 + fallback 降级链
-- **流式解析**：逐 chunk 解析流式响应，提取 reasoning / message / finish_reason / usage / refusal / tool_calls
-- **流式整流重试**：首 token 前流中断自动整流（重新 create + 重新迭代），已产出后放弃
-- **非流式通道**：适合简单任务的低延迟通道（分类、提取、标签）
-- **结构化输出**：三级降级策略（JSON Schema → JSON Mode → 正则提取）
-- **请求日志**：每次 LLM 调用的元数据记录，JSON 格式输出
-- **客户端限流**：双 Token Bucket 限流（RPM + TPM）
-- **成本计算**：按模型用量估算费用
+LLM 模块是系统的**模型通信基础设施**，负责与大语言模型的全部交互：连接池 /
+重试 / 熔断 / 限流 / 流式解析 / 整流重试 / 结构化输出 / 成本计算。对外只暴露
+`LLMService` 一个 Facade（实现 `LLMGateway` 端口）。
 
 ### 模块结构
 
-```
-app/integration/
-└── llm/
-    ├── __init__.py                ← 包入口，导出所有子模块
-    ├── llm_service.py             ← 统一 Facade（外部模块入口）
-    ├── client.py                  ← ClientManager 连接池管理
-    ├── retry.py                   ← RetryHandler + CircuitBreaker
-    ├── streaming.py               ← StreamParser 流式/非流式解析
-    ├── streaming_rectifier.py     ← StreamingRectifier 流式整流重试策略
-    ├── structured.py              ← StructuredOutput 结构化输出
-    ├── reservation_limiter.py     ← ReservationLimiter 客户端限流（reserve/settle + 自适应预留，生产唯一）
-    └── cost_tracker.py            ← CostTracker 成本计算
+```text
+app/integration/llm/
+├── __init__.py                ← 包入口，导出所有子模块
+├── llm_service.py             ← LLMService（唯一对外 Facade，实现 LLMGateway）
+├── client.py                  ← ClientManager 连接池管理
+├── retry.py                   ← RetryHandler + CircuitBreaker
+├── streaming.py               ← StreamParser 流式/非流式解析
+├── streaming_rectifier.py     ← StreamingRectifier 流式整流重试
+├── structured.py              ← StructuredOutput 结构化输出
+├── reservation_limiter.py     ← ReservationLimiter 客户端限流
+└── cost_tracker.py            ← CostTracker 成本计算
 ```
 
 ### 设计原则
 
-1. **Facade 模式**：`LLMService` 是唯一的外部入口，`llm/` 子包的内部组件不对外暴露
-2. **纯化职责**：每个模块只做一件事 —— `StreamParser` 只解析 chunk，不构造事件；`StreamingRectifier` 只做整流策略，不编排请求
-3. **三权分立**：逻辑拆分遵循以下边界：
-
-| 层次     | 职责                   | 对应模块                                                      |
-| -------- | ---------------------- | ------------------------------------------------------------- |
-| 传输层   | 连接、代理、认证       | `ClientManager`                                               |
-| 可靠性层 | 重试、熔断、限流、降级 | `RetryHandler`, `ReservationLimiter`, `CircuitBreaker`        |
-| 数据层   | 流式/非流式解析        | `StreamParser`, `StructuredOutput`                            |
-| 策略层   | 流式整流重试           | `StreamingRectifier`                                          |
-| 治理层   | 日志、成本             | `fill_llm_event_fields("llm_call")`, `CostTracker`            |
-| 服务层   | 统一对外接口           | `LLMService`（Facade）                                        |
-
-> 限流为 reserve/settle 形态（`reservation_limiter.py`，llm_service 实际使用）；acquire 形态（`rate_limiter.py`）已移除，代码作为学习参考并入 [limiter.md](limiter.md)。
+1. **Facade 模式**：`LLMService` 是唯一外部入口，`llm/` 子包内部组件不对外暴露
+2. **依赖倒置**：实现领域端口 `LLMGateway`（协议），领域层 Agent 只依赖抽象，
+   装配根 `container.py` 注入实现
+3. **三权分立**：逻辑拆分按职责分层——传输层（连接）/ 可靠性层（重试/熔断/限流/降级）/
+   数据层（解析）/ 策略层（整流）/ 治理层（日志/成本），每模块只做一件事
+4. **零 settings 依赖**：各子模块配置经 `register_config()` 注入（装配根读 settings
+   后统一注册），子模块不直接依赖配置
 
 ### 依赖关系
 
-```
-外部调用方（Agent / Chat Router 等）
-        │
+```text
+外部调用方（ReActAgent 领域层 / 应用层 / API 层）
+        │  依赖倒置：经 LLMGateway 端口（app/domain/ports/llm_gateway.py）
         ▼
-  LLMService（Facade）
-    ├── ClientManager ──────────→ AsyncOpenAI(OpenAI SDK)
+  LLMService（Facade，实现 LLMGateway）
+    ├── ClientManager ──────→ AsyncOpenAI（OpenAI 兼容 API，如 DeepSeek）
     ├── RetryHandler
     │     ├── RetryConfig
     │     └── CircuitBreaker
-    ├── StreamingRectifier ──────→ 流式整流重试策略（RectifierContext 会话状态）
+    ├── StreamingRectifier ──→ RectifierContext（会话共享状态）
     ├── StreamParser
-    ├── ReservationLimiter ───────→ reserve/settle + 自适应预留（Fenic 式）
+    ├── StructuredOutput
+    ├── ReservationLimiter ──→ reserve/settle + 自适应预留
     └── CostTracker
 ```
 
+可靠性链（每次调用依次经过）：限流（reserve/settle）→ 重试/熔断/降级 →
+流式整流 → 解析 → 事件日志（`llm_call`）。
+
 ---
 
-## 快速开始
+## 对外接口
 
-### 基础用法
+### LLMService 方法表
 
-```python
-from app.container import container
+> 对外接口 = 被外部文件（领域层 / 应用层 / API 层 / 装配根）依赖的接口。`LLMService`
+> 是 LLM 模块对外的全部依赖面；内部组件接口（`ClientManager` / `RetryHandler` 等）
+> 由 Facade 内部依赖，不属对外接口，见「内部实现组织」。
 
-# 方式一：装配根注入（空构造，经 ClientManager 取 client，推荐）
-llm = container.llm_service
+| 方法 | 同步/异步 | 说明 |
+| --- | --- | --- |
+| `register_config(*, fallback_model_id, adaptive_reserve, stream_max_retries)` | 同步类方法 | 注入运行期配置（装配根 `container.initialize()` 调用，零 settings 依赖） |
+| `__init__(api_key="", model="", base_url="")` | 构造 | 空构造走 `ClientManager`（需先注册配置）；手动构造须 api_key / model / base_url 齐备 |
+| `async_generate(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None)` | 异步生成器 | 流式生成，yield SSE 事件字符串（Agent 专用）；`cancel_event` 置位优雅终止 |
+| `generate(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast") -> StreamResult \| None` | 异步方法 | 非流式单轮生成（简单任务）；可恢复失败返回 None，不可恢复错误上抛 |
+| `generate_structured(messages, schema, model_key="fast", max_tokens=None) -> dict \| None` | 异步方法 | 结构化输出三级降级（JSON Schema → JSON Mode → 正则）；拒答/工具调用抛异常 |
+| `calculate_cost(usage, model="") -> dict` | 同步静态 | 按模型用量估算成本（代理 `CostTracker`） |
 
-# 非流式生成（await 返回 StreamResult）
-result = await llm.generate(
-    messages=[{"role": "user", "content": "你好"}],
-)
-print(result.content)
+**返回 / 异常语义**：
 
-# 流式生成（async generator，需 async for 消费）
-async for event in llm.async_generate(
-    messages=[{"role": "user", "content": "你好"}],
-):
-    print(event)   # SSE 事件字符串
+- `generate`：成功返回 `StreamResult`（含 content / reasoning_content / finish_reason /
+  tool_calls / usage / refusal / error）；**可恢复错误**（超时 / 5xx / 429）可靠性层重试
+  耗尽返回 `None`（调用方按「业务无结果」处理）；**不可恢复错误**（4xx / 认证 / 熔断开启）
+  向上抛（降级无意义，调用方需感知）
+- `generate_structured`：成功返回 `dict`，三级降级耗尽返回 `None`；拒答抛
+  `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`（需差异化处理）
+- `async_generate`：产出 SSE 事件字符串（`StreamParser` 逐 chunk 解析的增量事件）；
+  失败信号透传 `StreamResult.error`（供编排层短路决策，见 [LLM-001](../../../issues/integration/llm/2026-08-16-stream-error-propagation.md)）
 
-# 方式二：手动构造（api_key 时需同时提供 base_url 与 model）
-from app.integration.llm.llm_service import LLMService
-llm = LLMService(api_key="sk-xxx", model="gpt-4", base_url="https://api.openai.com/v1")
-```
+### 对外异常契约
 
-> 所有示例均需在 `async` 函数内运行（`await`/`async for` 只能出现在 async 上下文）。
+> 以下异常经 `LLMService` 向上抛，外部调用方需捕获并差异化处理：
 
-### 流式生成
+| 异常 | 触发 | 调用方处理 |
+| --- | --- | --- |
+| `CircuitBreakerOpenError` | 熔断开启，`generate` 拒绝主调用且无 fallback | 捕获后等待冷却 / 返回降级响应 |
+| `StructuredRefusalError` | `generate_structured` 模型拒答（内容安全策略触发） | 安全兜底 / 差异化文案 |
+| `StructuredToolCallError` | `generate_structured` 模型转工具调用（`finish_reason=tool_calls`） | 按工具调用走 Agent 循环 |
+| `StructuredTruncationError` | 结构化输出截断（扩 token 重试后仍不完整） | 扩大预算重试 / 降级处理 |
+| 不可恢复错误（原样上抛） | 4xx / 认证 / 熔断开启（`NON_RETRYABLE`） | 修复调用参数 / 返回错误响应 |
 
-```python
-from app.container import container
-from app.domain.ports.llm_gateway import StreamResult
-
-llm = container.llm_service
-sr = StreamResult()
-async for event in llm.async_generate(messages, result=sr):
-    # event 是 SSE 事件字符串，可直接发送给前端
-    print(event)
-
-print(sr.content)       # 完整回复
-print(sr.usage)         # Token 用量
-```
-
-### 非流式生成（简单任务）
+### 最小调用示例
 
 ```python
 from app.container import container
 
-llm = container.llm_service
+llm = container.llm_service   # 装配根注入（空构造，经 ClientManager 取 client）
+
+# 非流式生成（返回 StreamResult 或 None）
 result = await llm.generate(
     messages=[{"role": "user", "content": "分类：今天天气很好"}],
-    temperature=0,
+    model_key="fast",
 )
-print(result.content)   # → "正面"
-```
 
-### 结构化输出
+# 流式生成（async generator，yield SSE 事件字符串，用户交互用）
+async for event in llm.async_generate(
+    messages=[{"role": "user", "content": "你好"}],
+    model_key="main",
+):
+    print(event)
 
-```python
-from app.container import container
-
-llm = container.llm_service
+# 结构化输出（三级降级，返回 dict 或 None）
 schema = {
     "type": "object",
-    "properties": {
-        "name": {"type": "string"},
-        "age": {"type": "integer"},
-    },
-    "required": ["name", "age"],
-    # 默认补全：extract 会自动补 additionalProperties:false（拒绝额外字段混入）。
-    # 显式写出更清晰，也方便阅读者理解「模型不能扩展接口」的契约。
-    "additionalProperties": False,
+    "properties": {"name": {"type": "string"}},
+    "required": ["name"],
 }
-
 data = await llm.generate_structured(
-    messages=[{"role": "user", "content": "张三，28岁"}],
+    messages=[{"role": "user", "content": "张三"}],
     schema=schema,
 )
-# → {"name": "张三", "age": 28}
-```
 
-### 成本计算
-
-```python
+# 成本计算
 cost = LLMService.calculate_cost(
     usage={"prompt_tokens": 500, "completion_tokens": 200},
-    model="gpt-4",
+    model="gpt-4o",
 )
-# → {"cost_usd": 0.027, "input_cost": 0.015, "output_cost": 0.012}
 ```
 
 ---
 
-## 架构设计
+## 内部实现组织
 
-### 调用流程
+> 内部 7 组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
+> 本文展开——双处维护必然漂移，Rule 1「一个事实一个家」）。
 
-```
-                     start
-                       │
-                       ▼
-  ┌───────── ClientManager.get_client() ─────────┐
-  │   1. 查缓存 → 有则返回                       │
-  │   2. 无缓存 → 创建 AsyncOpenAI + 缓存        │
-  │   3. 可选 HTTP 代理                           │
-  └─────────────────┬────────────────────────────┘
-                     │
-                     ▼
-  ┌───────── ReservationLimiter.reserve() ────────┐
-  │   1. RPM 桶预留（固定 1）                     │
-  │   2. TPM 桶预留（估算 token，自适应时高分位） │
-  │   3. 配额不足则阻塞等待（锁外 sleep）          │
-  │   4. 请求后 settle() 退差 / cancel() 全额退    │
-  └─────────────────┬────────────────────────────┘
-                     │
-                     ▼
-  ┌───────── RetryHandler.execute() ──────────────┐
-  │   1. CircuitBreaker.allow_request()           │
-  │   2. 重试循环（指数退避 + 抖动）              │
-  │   3. 全部失败 → fallback_fn（降级模型）       │
-  │   4. 成功 → CircuitBreaker.record_success()   │
-  └─────────────────┬────────────────────────────┘
-                     │
-              ┌──────┴──────┐
-              │  stream?    │
-              └──────┬──────┘
-        ┌────────────┴────────────┐
-        │                          │
-        ▼ (是)                     ▼ (否)
-  ┌───────── StreamingRectifier ─────┐   ┌────── StreamParser.parse_non_stream() ────┐
-  │  （流式整流重试）                 │   │   1. 提取 content / finish_reason        │
-  │   1. 首 token 前中断 → 整流重试  │   │   2. 提取 tool_calls / usage / refusal   │
-  │   2. 已产出 token 后中断 → 放弃  │   │   3. 产出完整 StreamResult               │
-  │   3. 放弃且 RETRYABLE → 喂熔断器 │   └──────────────────┬───────────────────────┘
-  │   4. 结算闭环（settle/cancel）    │                      │
-  └─────────────────┬────────────────┘                      │
-                    │                                        │
-                    ▼                                        ▼
-  ┌───────── StreamParser.parse_chunk() ───┐                │
-  │   逐 chunk 解析：                       │                │
-  │   - reasoning_token → reasoning_event  │                │
-  │   - message_token   → message_event    │                │
-  │   - tool_call_deltas → accumulate      │                │
-  │   - usage           → StreamResult     │                │
-  └─────────────────┬──────────────────────┘                │
-                    │                                        │
-                    └──────────────┬─────────────────────────┘
-                                   ▼
-  ┌────── fill_llm_event_fields("llm_call") ──┐
-  │   记录 model, tokens, duration, success   │
-  └─────────────────┬─────────────────────────┘
-                    │
-                    ▼
-                   end
-```
-
-> **流式**（`async_generate`）：RetryHandler → StreamingRectifier 整流重试 → StreamParser 逐 chunk → 事件流。**非流式**（`generate`）：RetryHandler → `parse_non_stream` 一次解析 → 完整 StreamResult。两者共用限流闭环（reserve/settle）与事件日志。
-
-### 数据流
-
-```
-  请求流                  响应流（流式）
-  ┌─────┐               ┌─────────────────┐
-  │用户输入│ → messages  │ chunk 1: reasoning│ → yield reasoning_event
-  └─────┘               │ chunk 2: message  │ → yield message_event
-                         │ chunk 3: tool_call│ → accumulate delta
-                         │ chunk 4: message  │ → yield message_event
-                         │ chunk N: usage    │ → StreamResult.usage
-                         └─────────────────┘
-
-  响应流（非流式）
-  ┌─────────────────┐
-  │ response 完整对象 │ → StreamParser.parse_non_stream() → StreamResult
-  └─────────────────┘
-```
-
----
-
-## 核心模块详解
-
-### ClientManager — 连接池管理
-
-**文件**：`app/integration/llm/client.py`（设计文档见 [client.md](client.md)）
-
-#### 功能
-
-1. 全局共享 `AsyncOpenAI` client 实例，避免每次请求重复创建连接和 SSL 握手
-2. 支持三种预配置 client：`main` / `reasoning` / `fast`，按需获取
-3. 支持 HTTP 代理
-
-#### 实现方式
-
-```python
-class ClientManager:
-    _instances: dict[str, AsyncOpenAI] = {}   # client 缓存
-    _configs: dict[str, dict] = {}             # 配置存储
-
-    @classmethod
-    def register_config(cls, key, api_key, base_url, model, **extra):
-        """注册配置（不立即创建 client）"""
-
-    @classmethod
-    def get_client(cls, key="main") -> AsyncOpenAI:
-        """懒加载：首次调用时创建，后续复用"""
-        if key not in cls._instances:
-            cls._instances[key] = AsyncOpenAI(**cfg)
-        return cls._instances[key]
-```
-
-#### 为什么选择「懒加载 + 全局缓存」
-
-> 连接池管理决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-01-client-pool-lazy-close-tracking.md)。
-
-
-#### 代理支持
-
-通过 `httpx.AsyncClient(proxy=...)` 实现，只在配置了 `proxy_url` 时启用：
-
-```python
-def _build_proxied_client(proxy_url: str) -> httpx.AsyncClient:
-    return httpx.AsyncClient(proxy=proxy_url)
-```
-
----
-
-### RetryHandler — 重试与熔断
-
-**文件**：`app/integration/llm/retry.py`
-
-#### 功能
-
-1. **指数退避**：`base_delay × 2^attempt`，上限 `max_delay`
-2. **随机抖动**：在退避基础上 `random.uniform(0, delay)`，防止羊群效应
-3. **CircuitBreaker**：滑动窗口错误率判定熔断（参考 Hystrix），超时后半开探测
-4. **Fallback 降级**：主模型全部失败后尝试备用模型
-5. **错误分类**：区分可重试 / 不可恢复 / 限流 / 熔断触发
-
-#### 错误分类策略
-
-```python
-class ErrorCategory(Enum):
-    RETRYABLE      # 超时、5xx → 可重试
-    NON_RETRYABLE  # 4xx、未知异常 → 直接抛出（不重试）
-    RATE_LIMITED   # 429 → 可重试但退避，不计入熔断
-```
-
-| 异常类型                           | 分类          | 处理方式              |
-| ---------------------------------- | ------------- | --------------------- |
-| `TimeoutError` / `APITimeoutError` | RETRYABLE     | 重试                  |
-| 5xx                                | RETRYABLE     | 重试                  |
-| 429 `RateLimitError`               | RATE_LIMITED  | 重试 + 尊重 Retry-After，**不计入熔断** |
-| 401 / 403 / 422                    | NON_RETRYABLE | 直接抛出              |
-| 400                                | NON_RETRYABLE | 直接抛出              |
-
-#### CircuitBreaker 状态机
-
-```
-    ┌───────────┐
-    │  CLOSED   │
-    │  (正常)   │
-    └─────┬─────┘
-          │
-          │  record_failure() 满足熔断条件*
-          │  （窗口错误率≥error_threshold 且请求量≥request_volume_threshold，
-          │    或全失败且失败数≥all_failed_min）
-          ▼
-    ┌───────────┐
-    │   OPEN    │
-    │  (熔断)   │
-    └─────┬─────┘
-          │
-          │  recovery_timeout 超时（冷却结束，放行首个探针）
-          ▼
-    ┌───────────┐
-    │ HALF_OPEN │
-    │  (半开)   │
-    └─────┬─────┘
-          │
-          ├────────► 探针连续成功 ≥ half_open_max_requests → CLOSED（成功恢复）
-          │
-          ▼
-    ┌───────────┐
-    │   OPEN    │
-    │  (熔断)   │
-    └───────────┘
-    探针失败（429/超时/5xx）→ 回 OPEN（新一轮冷却）
-
-    * 熔断条件：窗口内错误率≥error_threshold 且请求量≥request_volume_threshold；
-      或窗口内全部失败且失败数≥all_failed_min（低流量纯失败保护）。
-    4xx 探针是客户端问题：不 record_success 也不 record_failure，release_probe()
-    归还槽位，熔断器保持 HALF_OPEN 等待正常请求探测真实状态。
-```
-
-#### Fallback 降级链
-
-```
-CLOSED（重试循环）
-  call_fn 最多尝试 max_retries+1 次（默认 llm_max_retries=2 → 最多 3 次）
-    ├─ 任一次成功 → cb.record_success() → 返回
-    └─ 全部失败 → 请求级统一 record_failure()（曾触及 RETRYABLE 故障时）
-                   → fallback_fn（备用模型）——
-                       ├─ 成功 → 直接返回结果（fallback 不触碰熔断器）
-                       └─ 失败 → raise last_exc from fallback_exc（主异常为主，
-                                  fallback 异常链为 __cause__）
-
-OPEN（熔断开启，有 fallback）
-  allow_request() 拒绝主调用 → 直接走 fallback_fn 纯兜底（单次、不重试、
-  不进入熔断状态机）——成功返回，失败则异常自然向上传播（无 __cause__ 链）
-
-HALF_OPEN（半开探针）
-  _probe_attempt 单次探测主链路：
-    ├─ 成功 → 累计探针成功数，达 half_open_max_requests 关闭熔断器
-    ├─ 429/超时/5xx → cb.record_failure() 回 OPEN（新一轮冷却），
-    │                 再尝试 fallback 纯兜底（同上，不记录熔断）
-    └─ 4xx/未知 → cb.release_probe() 归还槽位，异常直接抛上层
-                 （客户端问题，熔断器保持 HALF_OPEN）
-  CancelledError → 按失败回 OPEN + 立即传播（不尝试 fallback）
-```
-
-**核心约束**：fallback 是**纯兜底**——其成败完全不进入熔断状态机（不调用 `record_success`/`record_failure`）。熔断器只观察主链路（`call_fn`）的健康：备用链路通不能证明主链路恢复，备用链路故障也不代表主链路故障。
-
-#### 为什么选择「CircuitBreaker + 指数退避 + 抖动」
-
-> 重试与熔断架构决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md)。
-
-
-#### 其他可选的方法
-
-1. **gRPC 重试策略**：Google API 的 1.5 倍指数退避 + 抖动，可以在 `grpc.retry` 中内置
-2. **Resilience4j** 模式：Java 生态的重试 + 熔断模式，支持基于异常类型的复杂路由
-3. **Tenacity** 库：Python 生态的通用重试库，支持自定义退避、条件重试，但缺少熔断
-4. **无抖动退避**：固定间隔重试，实现简单但容易造成羊群效应
-
----
-
-### StreamParser — 流式解析
-
-**文件**：`app/integration/llm/streaming.py`（设计文档见 [streaming.md](streaming.md)）
-
-#### 功能
-
-1. 逐 chunk 解析 OpenAI 流式响应，提取六种信息（reasoning / message / finish_reason / usage / refusal / tool_call_deltas）
-2. 合并增量 tool_call 片段为完整对象
-3. 解析非流式完整响应
-
-#### 核心数据结构
-
-```python
-class ParsedChunk:
-    reasoning_token: str | None    # 推理过程片段（如 DeepSeek-R1）
-    message_token: str | None      # 回复文本片段
-    finish_reason: str | None      # 停止原因（stop / length / tool_calls）
-    usage: dict | None             # Token 用量（最后一个 chunk）
-    refusal: str | None            # 拒答形态（delta.refusal）
-    tool_call_deltas: list[ToolCallDelta] | None  # 工具调用增量
-
-class ToolCallDelta:
-    index: int                     # 工具索引（多工具时区分）
-    id: str                        # 工具 call ID
-    function_name: str             # 函数名增量
-    function_arguments: str        # 参数 JSON 增量
-```
-
-#### 解析策略
-
-```python
-@staticmethod
-def parse_chunk(chunk) -> ParsedChunk:
-    # 1. usage 独立于 choices/delta 提取——usage-only chunk 的 choices 通常为空，
-    #    但某些代理/适配层可能在带 delta 的 chunk 上也附带 usage，不应静默丢弃
-    if chunk.usage:
-        result.usage = chunk.usage.model_dump()
-
-    # 2. finish_reason 独立于 delta 提取——finish chunk 的 delta 可能为 None
-    #    或空对象，但 finish_reason 在 choices[0] 上，不能因 delta 为空而丢失
-    if chunk.choices and chunk.choices[0].finish_reason is not None:
-        result.finish_reason = chunk.choices[0].finish_reason
-
-    # 3. 无内容增量（usage-only / finish-only chunk）→ 到此为止
-    if not chunk.choices or not chunk.choices[0].delta:
-        return result
-
-    # 4. 有 delta → 提取（hasattr 守卫字段缺失，不同 provider 的 delta 字段集不同）
-    delta = chunk.choices[0].delta
-    #   - reasoning_content（推理模型）
-    #   - content（回复）
-    #   - refusal（OpenAI 流式拒答形态）
-    #   - tool_calls（工具调用增量 → ToolCallDelta 列表）
-```
-
-#### 为什么选择「静态方法 + 纯函数」
-
-> 流式解析策略决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-01-streaming-parse-pure-function.md)。
-
-
-#### 其他可选的方法
-
-1. **有状态解析器**：内部维护 `tool_call_deltas` 缓冲区，在 `finish_reason` 时自动合并。优点是调用方少一个 `merge_tool_calls` 步骤，缺点是测试时需要重置状态
-2. **正则提取**：直接从原始响应字符串中提取内容，不可靠且不兼容流式
-3. **回调模式**：`on_token()` / `on_tool_call()` 回调，耦合度高
-
----
-
-### StreamingRectifier — 流式整流重试策略
-
-**文件**：`app/integration/llm/streaming_rectifier.py`（设计文档见 [streaming_rectifier.md](streaming_rectifier.md)）
-
-**设计要点**：首 token 前流中断自动整流（重新 create + 重新迭代），已产出后放弃（避免重复输出 / 双倍计费 / tool_calls 残缺）；中断放弃且异常 RETRYABLE 喂熔断器；结算闭环（settle/cancel）；`StreamingRectifier` 无状态静态类 + `RectifierContext` 会话共享状态，`async_generate` 只做编排。完整机制 / 边界 / 测试见 [streaming_rectifier.md](streaming_rectifier.md)，决策见 [ADR LLM-ADR-005](../../../adr/integration/llm/2026-08-01-streaming-rectification-retry.md)。
-
-#### 调用方式
-
-```python
-rectifier_context = RectifierContext(result, active, event_fields)
-async for event in StreamingRectifier.rectified_stream(
-    create_fn=lambda: _rate_limited_call(...),   # 每次整流 attempt 重新 reserve + create
-    retry=retry,
-    cancel_event=cancel_event,
-    stream_max_retries=stream_max_retries,  # 由装配根 register_config 注入（子模块零 settings 依赖）
-    context=rectifier_context,
-    fallback_fn=fallback_fn,
-):
-    yield event
-```
-
----
-
-### StructuredOutput — 结构化输出
-
-**文件**：`app/integration/llm/structured.py`（设计文档见 [structure.md](structure.md)）
-
-> **统一入口（2026-08-07）**：对外唯一入口为 `LLMService.generate_structured()`，它委托 `StructuredOutput.extract()` 三级降级；`StructuredOutput` 是内部实现载体（接收完整 messages）。
-
-#### 功能
-
-根据 JSON Schema 从 LLM 输出中提取结构化数据，三级降级：
-
-```
-第一级：原生 JSON Schema（strict=True）
-   ↓ 不支持或解析失败
-第二级：JSON Mode（response_format="json_object"）
-   ↓ 不支持或解析失败
-第三级：纯 Prompt 约束 + 正则提取（无 schema）
-```
-
-#### 为什么选择「三级降级」
-
-> 统一结构化输出入口 + 三级降级策略决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-07-unified-structured-entry-degradation.md)。
-
-
-#### 其他可选的方法
-
-1. **只用原生 JSON Schema**：简单直接，但在不支持 strict 的模型上会失败
-2. **只用 Prompt 约束**：兼容所有模型，但解析容易失败（返回 Markdown 代码块、多余说明等）
-3. **通过工具调用（tool_use）实现**：把 JSON Schema 转为 function definition，利用模型对工具调用的高可靠性。优点是稳定性接近原生 Schema，缺点是消耗更多 token
-4. **第三方解析库（如 `json-repair` / `outlines`）**：自动修复残缺 JSON，但引入外部依赖
-
----
-
-### LLM 调用业务事件（llm_call）
-
-**来源**：`app/utils/logger.py` 全局日志框架的业务事件机制（`fill_llm_event_fields` → `log_event_async`）；早期 `LLMLogger`（`app/integration/llm/logger.py`）已移除，职责并入全局框架。详见 [logging.md](../../utils_doc/logging.md)。
-
-#### 功能
-
-1. 记录每次 LLM 调用的元数据（模型、Token、耗时、是否成功）
-2. 事件名为 `llm_call`，字段经 extra 注入进全局 JSON 结构化日志
-3. 不记录敏感信息（只记录 messages 数量，不记录内容）
-
-#### 事件字段
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `model` | str | 模型名 |
-| `messages_count` | int | 消息条数 |
-| `temperature` | float | 温度 |
-| `has_tools` | bool | 是否携带工具 |
-| `stream` | bool | 是否流式 |
-| `success` | bool | 是否成功 |
-| `error` | str\|None | 错误信息（成功为 None） |
-| `duration` | float | 耗时（秒） |
-| `prompt_tokens` | int\|None | 输入 Token |
-| `completion_tokens` | int\|None | 输出 Token |
-| `total_tokens` | int\|None | 总计 Token |
-| `finish_reason` | str\|None | 停止原因 |
-
-#### 为什么选「全局框架 + 业务事件」
-
-> 全局 JSON 结构化日志 + llm_call 业务事件的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-011](../../../adr/integration/llm/2026-08-04-llm-event-logging.md)。
-
-#### 输出示例（文件 JSON）
-
-```json
-{"timestamp": "2026-08-04T18:42:08+0800", "level": "INFO", "logger": "app.events", "message": "llm_call", "model": "gpt-4o", "messages_count": 5, "success": true, "total_tokens": 1234, "duration": 2.34, "finish_reason": "stop"}
-```
-
-#### 使用方式
-
-```python
-# 推荐：fill_llm_event_fields（统一填充 + 记录，被 generate / 整流循环复用）
-from app.utils.logger import fill_llm_event_fields
-
-event_fields = {
-    "model": "gpt-4o",
-    "messages_count": 5,
-    "temperature": 0,
-    "has_tools": False,
-    "stream": True,
-}
-await fill_llm_event_fields(
-    event_fields,
-    success=True,
-    duration=2.34,
-    usage={"prompt_tokens": 100, "completion_tokens": 50},
-    finish_reason="stop",
-)
-
-# 或原始用法：直接 log_event_async（自行填字段）
-from app.utils.logger import log_event_async
-event_fields["success"] = True
-event_fields["duration"] = 2.34
-await log_event_async("llm_call", **event_fields)
-```
-
----
-
-### 限流：reserve/settle 形态
-
-**文件**：`app/integration/llm/reservation_limiter.py`
-
-使用双 Token Bucket 算法，同时限制 **RPM**（每分钟请求数）与 **TPM**（每分钟 Token 消耗量）。限流完整设计（算法代码、5 种参考算法可视化、等待 vs 拒绝、自适应预留、工业级对比）见 **[limiter.md](limiter.md)**。
-
-**形态说明（acquire 已移除，2026-08-10）**：
-
-| 形态 | 文件 | 特点 | 生产使用者 |
+| 组件 | 文件 | 职责 | 设计文档 |
 | --- | --- | --- | --- |
-| acquire（学习参考） | 已移除，代码见 limiter.md | 一次性扣减，不退款 | 无 |
-| reserve/settle | `reservation_limiter.py` | 先预留、请求后 `settle(actual)` 退差 / `cancel()` 全额退；含自适应预留（`reserve_adaptive`，开关默认关） | ✅ `llm_service.py` |
+| `ClientManager` | client.py | 全局共享 AsyncOpenAI 连接池（main / reasoning / fast 懒加载 + 热切换关闭追踪） | [client.md](client.md) |
+| `RetryHandler` + `CircuitBreaker` | retry.py | 指数退避 + 抖动 + 滑动窗口熔断 + 半开探针 + fallback 降级链 | [retry.md](retry.md) |
+| `StreamParser` | streaming.py | 逐 chunk 解析流式 / 非流式响应（纯函数无状态） | [streaming.md](streaming.md) |
+| `StreamingRectifier` | streaming_rectifier.py | 流式整流重试（首 token 前中断重新 create + 迭代） | [streaming_rectifier.md](streaming_rectifier.md) |
+| `StructuredOutput` | structured.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则） | [structure.md](structure.md) |
+| `ReservationLimiter` | reservation_limiter.py | 客户端限流（RPM + TPM 双桶，reserve/settle + 自适应预留） | [limiter.md](limiter.md) |
+| `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配 + 会话级累计） | [cost_tracker.md](cost_tracker.md) |
+
+**组件间协作**（可靠性链）：`ReservationLimiter`（事前限流）→ `RetryHandler`
+（重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流）→
+`StreamParser`（解析）→ 全局日志框架 `fill_llm_event_fields("llm_call")`
+（事件记录，见 [logging.md](../../utils_doc/logging.md)）。
 
 ---
 
-### CostTracker — 成本计算
+## 配置关联
 
-**文件**：`app/integration/llm/cost_tracker.py`（设计文档见 [cost_tracker.md](cost_tracker.md)）
-
-#### 功能
-
-1. 根据模型和 Token 用量计算预估成本
-2. 支持前缀匹配（`deepseek-chat-v2` → `deepseek-chat` 定价）
-3. 支持会话级成本累计
-
-#### 定价表
-
-```python
-MODEL_PRICING = {
-    "gpt-4":             {"input": 0.03,    "output": 0.06},
-    "gpt-4-turbo":       {"input": 0.01,    "output": 0.03},
-    "gpt-4o":            {"input": 0.0025,  "output": 0.01},
-    "gpt-4o-mini":       {"input": 0.00015, "output": 0.0006},
-    "deepseek-chat":     {"input": 0.0005,  "output": 0.001},
-    "deepseek-reasoner": {"input": 0.0005,  "output": 0.002},
-    "claude-sonnet-4":   {"input": 0.003,   "output": 0.015},
-    ...
-}
-```
-
-> 完整定价表（15 条，含 o1 / deepseek-v4-flash / claude-haiku-3-5 等）以源码为准，见 [cost_tracker.md](cost_tracker.md)。
-
-#### 为什么选择前缀匹配
-
-> 定价查找策略决策（Context → Decision → Consequences）已归档至 [ADR](../../../adr/integration/llm/2026-08-15-pricing-prefix-match-fixed-table.md)。
-
+- LLM 模块全部配置项集中在 `app/config/settings.py`（`.env` 覆盖），装配根
+  `container.initialize()` 读 settings 后经各组件 `register_config()` 注入（零 settings 依赖）
+- 配置明细见各组件子文档「配置项清单」：
+  - 重试 / 熔断 → [retry.md](retry.md)
+  - 限流（RPM / TPM + 自适应预留）→ [limiter.md](limiter.md)
+  - 流式整流 → [streaming_rectifier.md](streaming_rectifier.md)
+  - 结构化输出 → [structure.md](structure.md)
+- 完整配置说明见 [config 文档](../../config_doc/config.md)
 
 ---
 
-## 设计选型对比
-
-> 各设计选型的完整决策（Context → Decision → Consequences）已归档至对应 ADR，此处仅列决策链接：
-
-| 选型 | 当前做法 | 决策 |
-| --- | --- | --- |
-| 连接管理 | ClientManager 连接池（懒加载 + 主动关闭 + 关闭追踪） | [LLM-ADR-004](../../../adr/integration/llm/2026-08-01-client-pool-lazy-close-tracking.md) |
-| 重试策略 | 指数退避 + 抖动（CircuitBreaker + fallback） | [LLM-ADR-006](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md) |
-| 熔断 | CircuitBreaker 滑动窗口 + 半开探针 | [LLM-ADR-006](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md) |
-| 限流算法 | Token Bucket（等待型） | [LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md) |
-| 结构化输出 | 三级降级（JSON Schema → JSON Mode → 正则提取） | [LLM-ADR-001](../../../adr/integration/llm/2026-08-07-unified-structured-entry-degradation.md) |
-| 流式解析 | 纯函数无状态 | [LLM-ADR-003](../../../adr/integration/llm/2026-08-01-streaming-parse-pure-function.md) |
-| 日志 | 全局 JSON 结构化 + llm_call 业务事件 | [LLM-ADR-011](../../../adr/integration/llm/2026-08-04-llm-event-logging.md) |
-
----
-
-## 配置参考
-
-LLM 层所有配置项集中在 `app/config/settings.py`：
-
-### 模型配置
-
-| 配置项                      | 类型  | 默认值                        | 说明                    |
-| --------------------------- | ----- | ----------------------------- | ----------------------- |
-| `llm_api_key`               | str   | `""`                          | API 密钥                |
-| `llm_base_url`              | str   | `"https://api.openai.com/v1"` | API 端点                |
-| `llm_model_id`              | str   | `"gpt-4"`                     | 主模型（用于对话）      |
-| `llm_temperature`           | float | `0.2`                         | 主模型温度              |
-| `llm_max_tokens`            | int   | `4096`                        | 主模型最大输出          |
-| `llm_reasoning_model_id`    | str   | `""`                          | 推理模型（空=用主模型） |
-| `llm_reasoning_temperature` | float | `0.7`                         | 推理模型温度            |
-| `llm_reasoning_max_tokens`  | int   | `8192`                        | 推理模型最大输出        |
-| `llm_fast_model_id`         | str   | `""`                          | 快速模型（空=用主模型） |
-| `llm_fast_temperature`      | float | `0.0`                         | 快速模型温度            |
-| `llm_fast_max_tokens`       | int   | `2048`                        | 快速模型最大输出        |
-
-### 嵌入配置
-
-| 配置项                     | 类型 | 默认值                     | 说明     |
-| -------------------------- | ---- | -------------------------- | -------- |
-| `llm_embedding_model_id`   | str  | `"text-embedding-3-small"` | 嵌入模型 |
-| `llm_embedding_dimensions` | int  | `1536`                     | 向量维度 |
-
-### 高级配置
-
-| -------------------------------------- | ----- | ------    | --------------------------------------------------- |
-| `llm_max_retries`                      | int   | `2`       | 最大重试次数                                        |
-| `llm_stream_max_retries`               | int   | `1`       | 流式整流重试次数（首 token 前中断才整流；`0`=禁用） |
-| `llm_timeout`                          | int   | `60`      | 单次 LLM 请求超时（秒）                              |
-| `llm_base_delay`                       | float | `1.0`     | 退避基数（秒）                                      |
-| `llm_max_delay`                        | float | `30.0`    | 退避上限（秒）                                      |
-| `llm_use_jitter`                       | bool  | `True`    | 是否启用随机抖动                                    |
-| `llm_circuit_window_seconds`           | float | `10.0`    | 滑动时间窗口长度（秒）                              |
-| `llm_circuit_error_threshold`          | float | `0.5`     | 窗口内错误率熔断阈值（50%）                         |
-| `llm_circuit_request_volume_threshold` | int   | `20`      | 窗口内最小请求量，不足不做错误率评估                |
-| `llm_circuit_all_failed_min`           | int   | `3`       | 低流量纯失败保护：全部失败且达此样本量才熔断        |
-| `llm_circuit_recovery_timeout`         | float | `30.0`    | 熔断恢复超时（秒）                                  |
-| `llm_circuit_half_open_max_requests`   | int   | `3`       | 半开状态最大探针数                                  |
-| `llm_fallback_model_id`                | str   | `""`      | 降级备用模型（**须与主模型同 provider**，复用主端点/密钥；跨服务商不支持） |
-| `llm_proxy_url`                        | str   | `""`      | HTTP 代理                                           |
-| `llm_main_rpm`                         | int   | `60`      | 主模型 RPM 限流                                     |
-| `llm_reasoning_rpm`                    | int   | `30`      | 推理模型 RPM 限流                                   |
-| `llm_fast_rpm`                         | int   | `100`     | 快速模型 RPM 限流                                   |
-| `llm_main_tpm`                         | int   | `2000000` | 主模型 TPM 限流（默认参考 DeepSeek 限额）           |
-| `llm_reasoning_tpm`                    | int   | `2000000` | 推理模型 TPM 限流（默认参考 DeepSeek 限额）         |
-| `llm_fast_tpm`                         | int   | `2000000` | 快速模型 TPM 限流（默认参考 DeepSeek 限额）         |
-| `llm_adaptive_reserve`                 | bool  | `false`   | 自适应预留开关（开启用高分位估算输出，减少占桶）     |
-| `llm_reserve_quantile`                 | float | `0.95`    | 普通模型输出分位数（p95）                            |
-| `llm_reserve_reasoning_quantile`       | float | `0.99`    | 推理模型分位数（p99，推理输出有相关性突发尖峰）      |
-| `llm_reserve_safety_margin`            | float | `1.15`    | 安全系数（1.0~4.0，越高越保守）                      |
-| `llm_reserve_min_samples`              | int   | `30`      | 冷启动阈值（样本不足回退静态上限）                   |
-| `llm_reserve_window`                   | int   | `256`     | 滚动样本窗口（deque 上限）                           |
-| `llm_structured_max_tokens`            | int   | `2048`    | 结构化输出预算（generate_structured 可覆盖，截断扩 2 倍重试） |
-
----
-
-## 最佳实践
-
-### 1. 模型选择原则
-
-| 场景           | 推荐模型标识             | 原因                       |
-| -------------- | ------------------------ | -------------------------- |
-| 用户对话       | `main`                   | 质量最高                   |
-| 深度推理       | `reasoning`              | 允许更长思考 + 更高温度    |
-| 分类/提取/标签 | `fast`                   | 低延迟、低成本，确定性输出 |
-| Embedding      | `llm_embedding_model_id` | 专用模型                   |
-
-### 2. 结构化输出
-
-```python
-# 推荐：指定 fast 模型 + 明确 schema
-result = await llm.generate_structured(
-    messages=[system_msg, user_msg],
-    schema=my_schema,
-    model_key="fast",  # 结构化输出通常不需要主模型
-)
-```
-
-### 3. 流式 vs 非流式
-
-```python
-# 用户交互 → 流式
-async for event in llm.async_generate(messages, model_key="main"):
-    yield event
-
-# 后端处理 → 非流式
-result = await llm.generate(messages, temperature=0, model_key="fast")
-```
-
-### 4. 成本控制
-
-```python
-# 每次调用后计算成本
-cost = LLMService.calculate_cost(result.usage, model_name)
-print(f"本次调用花费 ${cost['cost_usd']:.6f}")
-
-# 会话级累计
-session_cost = {"cost_usd": 0, "input_cost": 0, "output_cost": 0}
-for each_call_usage:
-    cost = CostTracker.calculate(each_call_usage, model)
-    session_cost = CostTracker.accumulate(session_cost, cost)
-```
-
-### 5. 异常处理
-
-```python
-try:
-    result = await llm.generate(messages)
-except CircuitBreakerOpenError:
-    # 熔断中，等待后重试或直接返回错误
-    logger.warning("LLM 熔断中，跳过本次调用")
-except Exception as e:
-    logger.error(f"LLM 调用失败: {e}")
-```
-
-### 6. 日志利用
-
-```python
-# 业务事件：LLM 调用记录（全局日志框架）
-from app.utils.logger import log_event_async
-event_fields = {"model": "gpt-4o", "messages_count": 5, "success": True}
-event_fields["duration"] = 2.34
-await log_event_async("llm_call", **event_fields)
-# 文件 JSON：{"message": "llm_call", "model": "gpt-4o", ...}
-```
-
----
-
-## 常见问题
-
-### Q: `LLMService` 和 `ClientManager` 的关系是什么？
-
-`ClientManager` 管理底层的 `AsyncOpenAI` 连接池，`LLMService` 调用 `ClientManager` 获取 client，并组合重试、解析、日志等能力对外暴露。`LLMService` 是 Facade，`ClientManager` 是它背后的齿轮之一。
-
-### Q: 什么时候用 `async_generate`，什么时候用 `generate`？
-
-- `async_generate`（流式）用于**用户可见的交互** —— 前端需要 SSE 事件流实时展示回复
-- `generate`（非流式）用于**后端内部处理** —— 分类、提取、embedding，延迟更低
-
-### Q: CircuitBreaker 开了怎么恢复？
-
-熔断器有一个 `recovery_timeout`（默认 30 秒）。超时后进入半开状态，放行探针请求：
-
-- 探针成功 → 熔断器关闭，恢复正常
-- 探针收到 429 / 超时 / 5xx → 下游仍过载/故障，熔断器回 OPEN，重置超时计时
-- 探针收到 4xx / 未知（客户端问题）→ 不改变状态、归还探针名额、异常抛给上层修复（不算健康探测，等待正常请求探测真实状态）
-
-### Q: 如何切换不同模型（GPT-4 → DeepSeek）？
-
-在 `.env` 或环境变量中修改配置：
-
-```
-LLM_MODEL_ID=deepseek-chat
-LLM_BASE_URL=https://api.deepseek.com/v1
-LLM_REASONING_MODEL_ID=deepseek-reasoner
-LLM_FAST_MODEL_ID=deepseek-chat
-```
-
-在代码中通过 `model_key` 参数切换：
-
-```python
-# 使用快速模型
-result = await llm.generate(messages, model_key="fast")
-# 使用推理模型
-async for event in llm.async_generate(messages, model_key="reasoning"):
-```
-
-### Q: 结构化的三级降级什么时候会触发？
-
-只有在第一级失败时才会尝试下一级：
-
-1. **原生 JSON Schema**：模型不支持 `strict=True` 或返回了非法 JSON
-2. **JSON Mode**：模型不支持 `json_object` 格式
-3. **正则提取**：前两级都失败时的兜底方案
-
-常见触发场景：使用 DeepSeek / Claude 等非 OpenAI 模型时，原生 JSON Schema 可能不支持。
-
-### Q: 如何增加一个新的模型种类（如超高速模型）？
-
-在 `ClientManager` 中注册新的 key，并在 `settings.py` 中添加对应配置：
-
-```python
-# settings.py 新增
-llm_ultra_fast_model_id: str = ""
-
-# container.py 注册
-ClientManager.register_config(
-    "ultra_fast",
-    api_key=settings.llm_api_key,
-    base_url=settings.llm_base_url,
-    model=settings.llm_ultra_fast_model_id or settings.llm_model_id,
-)
-
-# 使用
-result = await llm.generate(messages, model_key="ultra_fast")
-```
-
-### Q: 如何接入非 OpenAI 兼容的 API？
-
-如果 API 不兼容 OpenAI 的 `/chat/completions` 格式，有两种选择：
-
-1. **通过 proxy 层转换**（推荐）：部署一个兼容层（如 LiteLLM、one-api），对外暴露 OpenAI 接口，内部转发到目标 API
-2. **重新实现一个 Client 类**：继承或组合 `RetryHandler` / `StreamParser`，实现自己的传输逻辑
-
-### Q: 调用 `generate_structured` 报 TypeError？
-
-**A:** `StructuredOutput.extract()` 内部 `_try_extract()` 和 `_fallback_extract()` 的形参名是 `model_key`，不是 `model`。调用时须传 `model_key=model_key`：
-
-```python
-# ❌ 形参名错误
-data = await llm.generate_structured(..., model="fast")
-
-# ✅ 形参名正确
-data = await llm.generate_structured(..., model_key="fast")
-```
-
-> 历史问题记录见 [LLM-036](../../../issues/integration/llm/2026-08-16-generate-structured-model-key-param.md)。
-
----
-
-## 设计决策记录
-
-> 本节收录 LLM 层的设计决策（问题 → 工业调研 → 决策 → 实现），前因后果完整记录。
-
-### 流式整流重试
-
-> 整流重试策略的完整决策（Context → Decision → Consequences）已归档至 [ADR LLM-ADR-005](../../../adr/integration/llm/2026-08-01-streaming-rectification-retry.md)。
-> 实现载体：`StreamingRectifier`（无状态静态类）+ `RectifierContext`（result/active/event_fields 共享状态），设计见 [streaming_rectifier.md](streaming_rectifier.md)。
-
-### 配额缺口：重试/降级不计入限流申请
-
-> 完整问题生命周期（背景 → 原因 → 工业调研 → 决策 → 实现 → 测试）已归档至问题文档 [LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)。
->
-> 当前实现状态：**`reserve` 移入 call_fn（重试每轮重新 reserve = 新请求扣配额），fallback 不参与 reserve**（独立于主模型配额）。
-
----
-
-## 当前进度与遗留
-
-> 本节记录 LLM 层自身的进度、遗留工作与下一步计划（项目整体进度见 [architecture.md](../../architecture.md) 演进路径）。
-
-### 已实现
-
-- 7 个子模块全部落地：ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker（LLM 调用日志并入全局日志框架的 `log_event_async("llm_call")` 业务事件）
-- retry.py 工业级改造（2026-08-01）：滑动窗口熔断、错误分类白名单、半开探针按异常类别判定（4xx 探针不改变状态 + 归还槽位 + 抛上层）、流式迭代保护（详见 [retry.md](retry.md)）
-- **流式整流重试（2026-08-01）**：`async_generate()` 在**产出第一个 token 前**流中断时整流重试（重新 create + 重新迭代）；已产出 token 后中断不整流。见 [设计决策记录·流式整流重试](#流式整流重试)
-- **客户端限流（2026-08-02）**：`async_generate()` / `generate()` 用 `ReservationLimiterManager`（reserve/settle 形态），每次真实请求 `reserve(estimated_tokens)` 预留配额、请求后 `settle(actual)` 退差；retry 内部重试每轮重新 reserve（重试=新请求，扣配额合理），fallback 不参与 reserve
-- **配额缺口闭环（2026-08-02）**：reserve 移入 call_fn，重试计入配额、fallback 不参与（见 [问题文档 LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)）
-- **自适应预留（2026-08-06）**：`reserve_adaptive()` + `OutputTokenEstimator`（历史实际输出的高分位 × 安全系数估算输出量，替代固定 `max_tokens` 预留），开关 `llm_adaptive_reserve` 默认关；普通模型 p95、推理模型 p99，冷启动回退静态上限，结构性解耦（provider 仍收宽裕 max_tokens 不截断，仅限流器预留下降）。详见 [limiter.md](limiter.md)「对比 3.2」。「实际消耗 > 预留」仍无法补扣（预留-结算模型结构性限制，「宁多勿少」保守取舍，已缓解未消除），详述见 [limiter.md](limiter.md)「对比 3.1·已缓解但未消除」
-- **统一结构化输出入口（2026-08-07）**：`generate_structured` 委托 `StructuredOutput.extract` 三级降级（JSON Schema → JSON Mode → 正则提取），消除双入口；`extract` 签名改为接收完整 messages
-- **熔断观察盲区补齐 + 熔断器生命周期（2026-08-07）**：流式迭代「放弃时」（不整流）且异常为 RETRYABLE → 喂 `cb.record_failure()`，熔断器感知「create 正常但流频繁中断」；`RetryHandlerManager`（按 model_key 跨请求共享熔断器）让熔断窗口跨请求积累（见 [LLM-023](../../../issues/integration/llm/2026-08-07-circuit-breaker-lifecycle.md) · [LLM-024](../../../issues/integration/llm/2026-08-07-streaming-iteration-unprotected.md)）
-- **配置对象 + 依赖注入（2026-08-09）**：`RetryConfig` / `CircuitBreakerConfig` / `ReservationLimiterConfig` 纯配置对象 + 各 `Manager.register_config()` 类方法注入，子模块**零 `settings` 依赖**（由 `container.initialize()` 读 settings 后统一注册）
-- **流式整流拆为独立策略类（2026-08-10）**：`StreamingRectifier`（无状态静态类，不实例化）封装整流循环/emitted_any/熔断 feeding/结算闭环/事件日志 + `RectifierContext`（result/active/event_fields 共享状态）；`async_generate` 只做编排（构造 create_fn + 调 `rectified_stream`）。详见 [streaming_rectifier.md](streaming_rectifier.md)
-- **acquire 形态限流移除（2026-08-10）**：`rate_limiter.py` 删除，代码作为学习参考并入 [limiter.md](limiter.md)；llm_service 实际使用 reserve/settle 形态（`reservation_limiter.py`）
-- **整流判定 emitted_any 累积语义（2026-08-10）**：`_apply_chunk` 返回「单 chunk 是否产出」，整流循环入口累积（`emitted_any = emitted_any or chunk_emitted`）——已产出标记单调递增，元数据 chunk 不冲掉历史产出（见 [LLM-035](../../../issues/integration/llm/2026-08-10-rectify-emitted-any-marker-reset.md)）
-- **结构化输出调用/短路辅助方法抽取（2026-08-12）**：`StructuredOutput` 新增 `_call_generate`（统一调 generate + 下游异常分类：NON_RETRYABLE raise / 可恢复返回 None，`stage` 参数做日志前缀）与 `_raise_boundary`（统一 refusal / tool_calls / truncated 短路抛异常）——`_try_extract` 主调用/截断重试/回喂三处调用点与 `_fallback_extract` 共用，消除重复 try/except 与短路分支。truncated 为主调用点可选短路（主调用点截断仍需扩 token 重试，用 `else` 隔离）。详见 [structure.md](structure.md)
-- **结构化输出纯工具函数提取模块级（2026-08-12）**：`_build_json_schema_request` / `_build_json_mode_request` / `_enforce_no_extra_fields` / `_try_parse_json` / `_parse_and_validate` / `_collect_schema_errors` / `_build_reask_messages` / `_validate_schema` 提取为模块级私有函数（无类状态、可独立测试）；`StructuredOutput` 只保留业务编排与边界决策（`extract` / `_try_extract` / `_fallback_extract` / `_call_generate` / `_classify_result` / `_raise_boundary` / `register_config`）。详见 [structure.md](structure.md)
-- **流式失败信号透传（LLM-001，2026-08-16）**：`StreamingRectifier` 三个失败出口（create 异常 / 迭代放弃 / 用户取消）除 SSE error 事件外，标记 `StreamResult.error`（截断 500）；`ReActAgent` 检查 error 短路返回失败结果——修复「4xx/认证/熔断开启被静默吞掉、ReAct 空转到 max_iterations、最终错误信息不准确」的缺陷。正常空回（stop + 空 content）不置位、整流成功不置位。详见 [问题文档](../../../issues/integration/llm/2026-08-16-stream-error-propagation.md)
-- **非流式配额结算兜底（LLM-002，2026-08-16）**：`generate()` 解析 + 结算阶段放 `try/finally`——成功路径 `settle(actual)` 退 TPM 差；解析抛异常 → `settle(None)` 保留配额、settle 被取消 → `settle(None)` 兜底 + re-raise（LLM-003 统一「已发出请求保留配额」），与流式 `rectified_stream` finally 对称（修复非流式配额泄漏）。详见 [问题文档](../../../issues/integration/llm/2026-08-16-generate-quota-settle-fallback.md)
-- **流式硬取消保留配额（LLM-003，2026-08-16）**：`rectified_stream` 迭代阶段 finally 兜底由 `cancel()`（全额退含 RPM）改为 `settle(None)`（保留配额 + 标记终态），非流式 `generate()` 的 settle 取消兜底同步统一——「已发出的请求」是不可回滚的已提交副作用（对齐 SQLAlchemy 事务语义），`cancel()` 退回 RPM 导致客户端配额虚增 → 服务端 429 风暴；`settle(None)` 内部无退款 await，规避取消态 finally 多 await 被再次打断的 asyncio 陷阱。详见 [问题文档](../../../issues/integration/llm/2026-08-16-hard-cancel-rpm-refund.md)
-- **空 content 分类修正（LLM-004，2026-08-16）**：`_classify_result` 空 content 分支区分 finish_reason——无 finish_reason + content 空 → 新增 `"empty"` 分类（`_try_extract`/`_fallback_extract` 返回 None 触发降级），修复适配层空响应被误判为安全拒答抛 `StructuredRefusalError`；有 finish_reason（如 stop）+ content 空 → 保持 `refusal`（DeepSeek 拒答形态保留）。拒答应基于显式信号（refusal 字段 / content_filter），不靠「content 空」推断。详见 [问题文档](../../../issues/integration/llm/2026-08-16-empty-content-refusal-misjudge.md)
-- **熔断器并发测试补齐（LLM-005，2026-08-16）**：`test_retry.py` 新增 4 条并发用例守护「无锁安全」不变量——并发放行槽位上限、探针失败回 OPEN 后迟到 success no-op、并发窗口记账无丢失、4xx 释放槽位补位（`asyncio.gather` + `Event` 确定性交错）。熔断器方法同步无 await → 单方法原子（GIL），测试验证方法序列交错语义。详见 [问题文档](../../../issues/integration/llm/2026-08-16-circuit-breaker-concurrency-tests.md)
-- **整流入口取消守卫（LLM-006，2026-08-16）**：`rectified_stream` 整流循环顶部加 `cancel_event` 检查——取消置位后不再发起真实 reserve + API 请求（对齐工业界「取消后不发新副作用」）；与迭代内检查、整流退避后检查构成三道守卫；整流退避后检查补 `result.error` 标记（与取消路径一致）。详见 [问题文档](../../../issues/integration/llm/2026-08-16-rectify-entry-cancel-check.md)
-- **非法 schema 崩溃防护（LLM-007，2026-08-16）**：`_collect_schema_errors` / `_collect_schema_error_summaries` 包 try/except——非法 schema（UnknownType/SchemaError/TypeError）记 ERROR + 返回错误列表（按校验失败触发降级），与 `_validate_schema` 兜底一致（修复两套路径防护不一致、非法 schema 崩溃穿透）。详见 [问题文档](../../../issues/integration/llm/2026-08-16-invalid-schema-crash.md)
-- **拒答日志截断（LLM-008，2026-08-16）**：`_raise_boundary` refusal 日志经 `_truncate_text_for_log` 截断落盘——修复拒答文本完整落日志违反「模型输出不完整落盘」安全基线（拒答常引用触发内容，Yield RCA 含晶圆/良率数据）；异常 message 与日志分离（message 简洁、日志截断前缀供诊断）。详见 [问题文档](../../../issues/integration/llm/2026-08-16-refusal-log-truncation.md)
-- **strict schema 归一（LLM-009，2026-08-16）**：新增 `_strict_compliant` 递归把 `additionalProperties: true` 归一为 false 副本，`_build_json_schema_request` 用它构建 strict 请求——修复显式 true 导致 strict 必然 400 且被误判「模型不支持」白打调用（对齐 LangChain `_recursive_set_additional_properties_false`）；本地校验仍用原 schema（保留允许扩展意图）。详见 [问题文档](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)
-- **settle/cancel 终态互斥（LLM-010，2026-08-16）**：`Reservation` 增加 `asyncio.Lock`，`settle`/`cancel` 的「_settled 检查 + 退款循环」整体放锁内——修复并发调用重复退款（检查与退款间含 await 点）；`capacity` 封顶只防桶超容量、不防容量以下重复虚增，幂等必须靠互斥。详见 [问题文档](../../../issues/integration/llm/2026-08-16-settle-cancel-concurrent-race.md)
-- **整流放弃分支取消守卫（LLM-011，2026-08-16）**：迭代放弃分支喂熔断前加 `cancel_event` 守卫——`_should_rectify` 因用户取消返回 False 时（异常仍 RETRYABLE）不再误喂熔断器（用户取消非下游故障，对齐 `test_cancel_event_not_feeds_breaker` 契约），改走取消路径。详见 [问题文档](../../../issues/integration/llm/2026-08-16-cancel-race-feeds-breaker.md)
-- **fallback 同 provider 约束文档化（LLM-012，2026-08-16）**：fallback 复用主模型 client（仅换 model 参数），文档「备用服务商」表述修正为「同服务商便宜模型」——跨服务商 fallback 需独立 endpoint/key 配置（当前不提供），约束在代码注释 + llm.md/retry.md 配置表明确。详见 [问题文档](../../../issues/integration/llm/2026-08-16-fallback-same-provider.md)
-- **record_failure 返回值契约澄清（LLM-013，2026-08-16）**：`record_failure()` bool 返回值保留作语义标记（当前无调用方消费——请求级记账，单请求内熔断评估在重试结束后统一进行、不打断剩余重试）；retry.md「问题 2」「触发 OPEN 立即 break」表述修正为请求级记账实况。详见 [问题文档](../../../issues/integration/llm/2026-08-16-record-failure-return-contract.md)
-- **单条目 settle 测试修正（LLM-014，2026-08-16）**：`test_reservation_settle_refunds_difference` 改用双条目（RPM 按次桶 + TPM 按量桶）+ refund 计数断言——修复单条目（settle 只退 entries[1:] 为空）假阳性：断言靠桶 refill 补满通过，settle 退款从未被真实验证。详见 [问题文档](../../../issues/integration/llm/2026-08-16-single-entry-settle-test-false-positive.md)
-
-### 遗留未定事项
-
-（无 —— LLM 层遗留未定事项已全部解决/决策保持/归入模块文档）
-
-### 下一步计划
-
-（无待办 —— LLM 层遗留未定事项已全部解决/决策保持）
+## 相关文档
+
+- [集成层说明](../README.md)（层总览：LLM 网关在集成层中的位置）
+- 组件子文档：client / retry / streaming / streaming_rectifier / structure / limiter /
+  cost_tracker（见「内部实现组织」）
+- [架构设计](../../architecture.md)（分层与演进路径）
+- [全局日志框架](../../utils_doc/logging.md)（`llm_call` 业务事件）
+- 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~011）
+- 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~037）
