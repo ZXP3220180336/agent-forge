@@ -424,7 +424,12 @@ class StructuredOutput:
             StructuredOutput._raise_boundary(failure, retry, "回喂重试后")
             content = retry.content
 
-        return None  # 回喂耗尽 → 降级
+        # 终态解析：最后一次回喂请求的输出尚未被解析——循环「解析→失败→再请求」
+        # 以「请求」收尾，循环退出时 content 是最新一次回喂的输出。若不补这一次
+        # 解析，模型在最后一次回喂修正成功的结果会被静默丢弃（返回 None + 白付一次
+        # 调用）。循环退出后再解析一次，保证每次请求的输出都经过解析/校验。
+        parsed, _ = _parse_and_validate(content, schema)
+        return parsed  # 回喂耗尽（含终态）仍失败 → None 触发降级
 
     @staticmethod
     async def _fallback_extract(

@@ -1,7 +1,7 @@
 # StructuredOutput 结构化输出设计文档
 
 > **模块**：`app/integration/llm/structured.py`
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-16
 > **职责**：从 LLM 输出中提取结构化数据（三级降级：JSON Schema → JSON Mode → 正则提取）
 > **状态**：✅ 已实现
 > **统一入口**：对外唯一入口为 `LLMService.generate_structured()`，委托 `StructuredOutput.extract()` 三级降级；`StructuredOutput` 为内部实现载体（接收完整 messages）
@@ -322,7 +322,10 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
         StructuredOutput._raise_boundary(   # 回喂内 refusal/tool_calls/truncated 一律短路
             StructuredOutput._classify_result(retry), retry, "回喂重试后")
         content = retry.content
-    return None  # 回喂耗尽 → 降级
+    # 终态解析：最后一次回喂请求的输出尚未被解析（循环「解析→失败→再请求」
+    # 以请求收尾）——补一次解析避免「最后一次修正成功被静默丢弃 + 白付一次调用」
+    parsed, _ = _parse_and_validate(content, schema)
+    return parsed  # 回喂耗尽（含终态）仍失败 → None 触发降级
 ```
 
 **要点**：
@@ -331,7 +334,7 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
 - **`_call_generate` 统一调用**（2026-08-12 重构）：主调用 / 截断重试 / 回喂三处调 generate 统一走 `_call_generate`——内部处理下游异常分类（NON_RETRYABLE raise、可恢复返回 None），`stage` 参数提供日志前缀，消除重复的 try/except
 - **`_raise_boundary` 统一短路**（2026-08-12 重构）：refusal / tool_calls / truncated 三类短路统一走 `_raise_boundary`——截断重试后 / 回喂循环内 / fallback 均可用；**主调用点截断除外**（需扩 token 重试而非短路，用 `else` 让主路径 `_raise_boundary` 只在未走截断分支时执行）
 - **解析前三态检查**：`_classify_result` 区分截断/拒答/正常（问题 2）——截断扩 token 重试 1 次、拒答短路，均不进入降级链
-- **错误回喂**：解析/校验失败回喂错误重试 `_REASK_MAX_RETRIES=2` 次，耗尽返回 None 触发降级（问题 3）
+- **错误回喂**：解析/校验失败回喂错误重试 `_REASK_MAX_RETRIES=2` 次，耗尽返回 None 触发降级（问题 3）。**终态解析**（2026-08-16）：循环退出补一次解析——最后一次回喂请求的输出（循环「解析→失败→再请求」以请求收尾）必须被解析，否则模型在最后一次修正成功的结果被静默丢弃 + 白付一次调用
 - **下游失败降级（B3，2026-08-09）**：`generate` 对**可恢复错误**（超时/5xx/429）重试耗尽返回 None → 降级到下一级；对**不可恢复错误**（4xx/认证/熔断开启）抛异常 → structured 记录 ERROR 日志后 re-raise，不再白打降级请求。与截断/拒答短路区分（审核修复）
 - **回喂内截断一律短路**：不与扩 token 逻辑组合，防 token 爆炸（审核修复，对齐顶层「截断与降级正交」）
 

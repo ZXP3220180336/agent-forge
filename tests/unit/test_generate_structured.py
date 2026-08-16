@@ -571,6 +571,36 @@ async def test_reask_retries_then_success():
 
 
 @pytest.mark.asyncio
+async def test_reask_succeeds_on_last_attempt():
+    """回喂重试边界：最后一次（第 3 次）请求输出成功 → 正确返回。
+
+    修复前：循环「解析→失败→再请求」共 3 次请求，但循环退出时第 3 次请求的
+    输出从未被解析，直接 return None——模型在最后一次回喂修正成功时结果被静默
+    丢弃（返回 None + 降级到更弱一级 + 白付一次调用）。
+    修复后：循环退出补一次终态解析，最后一次回喂成功的结果被正确返回。
+    """
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        # 第 1 次：超范围；回喂 1：仍超范围；回喂 2（最后一次）：修正成功
+        if len(calls) < 3:
+            return _sr(json.dumps({"name": "张三", "confidence": 5}))
+        return _sr(json.dumps({"name": "张三", "confidence": 0.9}))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA_RANGE)
+    assert result == {"name": "张三", "confidence": 0.9}, (
+        f"最后一次回喂成功的结果应返回，实际 {result!r}"
+    )
+    assert len(calls) == 3, "第一级 + 回喂 2 次 = 3 次请求"
+    assert calls[0]["type"] == "json_schema"
+    assert calls[1]["type"] == "json_schema"
+    assert calls[2]["type"] == "json_schema"  # 回喂保持同一级约束
+
+
+@pytest.mark.asyncio
 async def test_reask_exhausted_falls_back():
     """第一级回喂耗尽（2 次）仍校验失败 → 降级到第二级成功。"""
     llm = LLMService()
