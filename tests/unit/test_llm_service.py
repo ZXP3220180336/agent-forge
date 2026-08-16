@@ -99,10 +99,13 @@ class _TrackingReservation:
 
 
 class _CancelOnSettleReservation(_TrackingReservation):
-    """settle 抛 CancelledError（模拟退款循环中途被取消，未到终态）。"""
+    """settle(actual) 抛 CancelledError、settle(None) 成功置终态（模拟退款中途取消）。"""
 
     async def settle(self, actual=None):
-        raise asyncio.CancelledError()
+        self.settle_calls += 1
+        if actual is not None:
+            raise asyncio.CancelledError()  # 退款循环中途被取消，未到终态
+        self.settled = True  # settle(None)：无退款循环，直接标记终态
 
 
 class _StubLimiter:
@@ -299,11 +302,11 @@ async def test_generate_settles_on_parse_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_cancels_when_settle_cancelled(monkeypatch):
-    """settle 被取消 → finally 兜底 cancel 未终态 res，不泄漏 + 传播取消（LLM-002）。
+async def test_generate_settles_when_settle_cancelled(monkeypatch):
+    """settle 被取消 → finally 兜底 settle(None) 保留配额，不泄漏 + 传播取消（LLM-003）。
 
     修复前：settle 期间被硬取消，res 已 pop 且未终态，无人续退 → 配额泄漏。
-    修复后：except 兜底 cancel 未终态 res + re-raise（不吞取消信号）。
+    LLM-003 修复后：except 兜底 settle(None)（请求已发出，保留配额 + 终态）+ re-raise。
     """
     reservation = _CancelOnSettleReservation()
     client = _FakeClient(_FakeCompletions([_FakeResponse("ok")]))
@@ -313,5 +316,6 @@ async def test_generate_cancels_when_settle_cancelled(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await llm.generate(messages=[{"role": "user", "content": "hi"}])
 
-    assert reservation.cancel_calls == 1, "settle 取消后应 cancel 兜底（未终态 res 不泄漏）"
-    assert reservation.settled, "cancel 后应到终态"
+    assert reservation.settle_calls == 2, "settle(actual) 抛 + finally 兜底 settle(None) 共 2 次"
+    assert reservation.cancel_calls == 0, "请求已发出，不 cancel 退 RPM"
+    assert reservation.settled, "settle(None) 收尾后应到终态"

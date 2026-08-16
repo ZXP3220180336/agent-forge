@@ -26,7 +26,7 @@
 1. **整流策略独立**：整流重试循环、`emitted_any` 状态、熔断 feeding 与 Facade 编排正交，独立成类
 2. **首 token 前才整流**：用户没看到任何输出时重试，不产生重复内容
 3. **已产出不整流**：避免重复输出 / token 双倍计费 / tool_calls 残缺
-4. **结算闭环**：create 成功后的中断/取消统一 settle，硬取消 finally 兜底 cancel
+4. **结算闭环**：create 成功后的中断/取消统一 settle（保留配额），硬取消 finally 兜底 settle(None)（LLM-003）
 5. **熔断观察**：迭代「放弃时」且异常 RETRYABLE → 喂熔断器，感知「create 正常但流频繁中断」
 
 ---
@@ -54,12 +54,12 @@
 | --- | --- |
 | 成功读完 | `settle(actual)` 退 TPM 差 |
 | 迭代中断 / 用户取消 | `settle(actual)`（请求已发出，无论整流与否） |
-| 硬取消（CancelledError） | `finally` 兜底 `cancel()` 全额退（R1：不泄漏预留） |
-| **settle 退款中途被取消** | `_settle_active` 捕获 `BaseException` 把**未终态 res 塞回 active**，由 `finally` 兜底 `cancel()` 续退（R2：settle 中断不泄漏） |
+| 硬取消（CancelledError） | `finally` 兜底 `settle(None)` 保留配额 + 标记终态（LLM-003：请求已发出，RPM 真实消耗不退回，防配额虚增→429） |
+| **settle 退款中途被取消** | `_settle_active` 捕获 `BaseException` 把**未终态 res 塞回 active**，由 `finally` 兜底 `settle(None)` 收尾（R2：settle 中断不泄漏） |
 
 每次整流 attempt 由调用方的 `create_fn` 重新 reserve（新请求语义）。
 
-> **R2（settle 中途取消）**：`_settle_active` 先 `pop("res")` 再 `await settle()`。若退款 await 期间被硬取消，reservation 保持未终态（`reservation_limiter` 的终态标记设计），但 res 已从 active 弹出——若不塞回，`finally` 兜底 `pop` 到 None 无法续退，配额永久泄漏。修复：settle 异常时把未终态 res 塞回 `active["res"]` 再 `raise`，`finally` 兜底 cancel 全额退；`TokenBucket.refund` 的 capacity 封顶保证重复退款安全、不超发。
+> **R2（settle 中途取消）**：`_settle_active` 先 `pop("res")` 再 `await settle()`。若退款 await 期间被硬取消，reservation 保持未终态（`reservation_limiter` 的终态标记设计），但 res 已从 active 弹出——若不塞回，`finally` 兜底 `pop` 到 None 无法续退，配额永久泄漏。修复：settle 异常时把未终态 res 塞回 `active["res"]` 再 `raise`，`finally` 兜底 `settle(None)` 保留配额 + 标记终态（LLM-003：请求已发出，不 cancel 退 RPM）；不泄漏。
 
 ### 熔断 feeding
 
@@ -163,7 +163,7 @@ class RectifierContext:
 
 ## 测试
 
-- `tests/unit/test_streaming_rectifier.py`（11 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / 硬取消 finally cancel / settle 中途取消 finally 续退 / 429 整流尊重 Retry-After（封顶到 max_delay）/ **整流清理复位 refusal（拒绝类死流不残留元数据）**
+- `tests/unit/test_streaming_rectifier.py`（11 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / **硬取消 finally settle(None) 保留配额（LLM-003）** / **settle 中途取消 finally settle(None) 收尾** / 429 整流尊重 Retry-After（封顶到 max_delay）/ **整流清理复位 refusal（拒绝类死流不残留元数据）**
 - `tests/unit/test_stream_rectify.py`（21 用例，经 `LLMService.async_generate` 间接覆盖）：整流/结算/事件/日志/熔断 feeding 全链路断言
 - **LLM-001 失败信号透传**（2026-08-16）：`test_stream_rectify.py` 四个失败出口补 `result.error` 断言（create 失败 / 迭代放弃 / 用户取消）；`test_agent.py` 新增 ReActAgent 遇 LLM 失败第 1 轮短路返回失败结果用例
 

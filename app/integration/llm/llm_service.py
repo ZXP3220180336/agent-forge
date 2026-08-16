@@ -475,8 +475,10 @@ class LLMService:
                 try:
                     await res.settle((sr.usage or {}).get("total_tokens"))
                 except BaseException:
+                    # settle(actual) 被取消 → 未终态 res 收尾（LLM-003）：请求已发出，
+                    # settle(None) 保留配额 + 标记终态（不 cancel 退 RPM，防配额虚增→429）
                     if not res.settled:
-                        await res.cancel()
+                        await res.settle(None)
                     raise
 
         await fill_llm_event_fields(

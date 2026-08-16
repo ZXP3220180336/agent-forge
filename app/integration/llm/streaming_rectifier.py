@@ -271,10 +271,16 @@ class StreamingRectifier:
                 return
 
             finally:
-                # R1：迭代阶段硬取消（CancelledError）兜底闭环，避免 reservation 泄漏
+                # 迭代阶段硬取消（CancelledError）兜底闭环（LLM-003）：此时 create
+                # 已成功、请求已真实发出（create 失败会在 _rate_limited_call 内
+                # cancel+pop，create 阶段的 CancelledError 在 create 阶段传播、不进入
+                # 本 finally）——「已发出的请求」是已提交副作用，按事务语义不可回滚：
+                # settle(None) 保留配额（RPM 真实消耗不退回，防客户端配额虚增→服务端
+                # 429 风暴）+ 标记终态不泄漏；且 settle(None) 内部无退款 await 循环，
+                # 规避取消态 finally「多 await 清理被再次打断」的 asyncio 陷阱。
                 res = active.pop("res", None)
                 if res is not None and not res.settled:
-                    await res.cancel()
+                    await res.settle(None)
 
             # 成功：清掉整流失败尝试残留的 error（同一 record 复用）
             await fill_llm_event_fields(

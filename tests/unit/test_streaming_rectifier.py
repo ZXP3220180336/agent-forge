@@ -297,8 +297,13 @@ def test_settle_on_success():
 
 
 def test_cancel_on_hard_interrupt():
-    """迭代被 CancelledError 中断 → finally 兜底 cancel（reservation 不泄漏）。"""
-    # CancelledError 不被 except Exception 捕获 → 走 finally 的 cancel 兜底
+    """迭代被 CancelledError 中断 → finally 兜底 settle(None)（保留配额，非退 RPM）。
+
+    LLM-003：硬取消时 create 已成功、请求已发出——「已发出的请求」是不可回滚的
+    已提交副作用，settle(None) 保留配额（RPM 真实消耗不退）+ 标记终态；而非
+    cancel() 全额退（会导致客户端 RPM 虚增 → 服务端 429 风暴）。
+    """
+    # CancelledError 不被 except Exception 捕获 → 走 finally 的结算兜底
     class _CancelStream(_FakeStream):
         async def __anext__(self):
             raise asyncio.CancelledError()
@@ -326,15 +331,16 @@ def test_cancel_on_hard_interrupt():
 
     asyncio.run(collect())
 
-    assert reservation.cancel_calls == 1, "硬取消应由 finally 兜底 cancel"
-    assert reservation.settled, "cancel 后应标记终态"
+    assert reservation.settle_calls == 1, "硬取消应由 finally 兜底 settle(None)"
+    assert reservation.cancel_calls == 0, "请求已发出，不应 cancel 退 RPM"
+    assert reservation.settled, "settle 后应标记终态"
 
 
 class _CancelOnSettleReservation:
-    """settle 中途抛 CancelledError 的 Reservation（模拟退款 await 期间被硬取消）。
+    """settle(actual) 中途抛 CancelledError、settle(None) 成功置终态的 Reservation。
 
-    与真实 Reservation 行为一致：settle 未完成保持 settled=False（reservation_limiter
-    的终态标记设计），供外层兜底 cancel 续退。
+    与真实 Reservation 行为一致：settle(actual) 退款中途取消保持未终态
+    （reservation_limiter 的终态标记设计），供外层兜底 settle(None) 收尾。
     """
 
     def __init__(self):
@@ -344,19 +350,22 @@ class _CancelOnSettleReservation:
 
     async def settle(self, actual=None):
         self.settle_calls += 1
-        raise asyncio.CancelledError()
+        if actual is not None:
+            raise asyncio.CancelledError()  # 退款循环中途被取消，未到终态
+        self.settled = True  # settle(None)：无退款循环，直接标记终态
 
     async def cancel(self):
         self.cancel_calls += 1
         self.settled = True
 
 
-def test_settle_cancelled_midway_finally_cancels():
-    """settle 退款中途被取消 → 未终态 res 塞回 active → finally 兜底 cancel。
+def test_settle_cancelled_midway_finally_settles_none():
+    """settle(actual) 退款中途被取消 → 未终态 res 塞回 active → finally 兜底 settle(None)。
 
-    修复前：_settle_active 先 pop("res") 再 await settle()，settle 被取消时
-    res 已从 active 弹出，finally pop 到 None 无法续退 → 配额永久泄漏。
-    修复后：settle 异常把未终态 res 塞回 active，finally 兜底 cancel 续退。
+    修复前（LLM-002 前）：_settle_active 先 pop("res") 再 await settle()，settle 被
+    取消时 res 已从 active 弹出，finally pop 到 None 无法续退 → 配额永久泄漏。
+    LLM-003 修复后：finally 兜底 settle(None)（保留配额 + 标记终态，不泄漏；
+    请求已发出，不 cancel 退 RPM）。
     """
     streams = [_FakeStream([_content_chunk("ok"), _usage_chunk(10, 2)])]
     result = StreamResult()
@@ -380,8 +389,9 @@ def test_settle_cancelled_midway_finally_cancels():
 
     asyncio.run(collect())
 
-    assert reservation.cancel_calls == 1, "settle 中途取消应由 finally 兜底 cancel 续退"
-    assert reservation.settled, "cancel 后应标记终态"
+    assert reservation.settle_calls == 2, "settle(actual) 抛 + finally 兜底 settle(None) 共 2 次"
+    assert reservation.cancel_calls == 0, "请求已发出，不应 cancel 退 RPM"
+    assert reservation.settled, "settle(None) 收尾后应标记终态"
     assert "res" not in active, "finally 兜底后 active 不应残留未结算 reservation"
 
 
