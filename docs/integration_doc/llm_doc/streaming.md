@@ -1,41 +1,39 @@
 # StreamParser 设计文档
 
 > **模块**：`app/integration/llm/streaming.py`
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-16
 > **职责**：流式 / 非流式 LLM 响应解析（逐 chunk 提取 reasoning / message / tool_calls / usage / refusal）
 > **状态**：✅ 已实现
-> **工业级对照**：增量累积 + 完成后解析（见「设计决策·Q1/Q2」）
+> **工业级对照**：增量累积 + 完成后解析（决策见 [设计决策](#设计决策)）
 
 ---
 
 ## 📋 目录
 
-- [设计目标](#设计目标)
-- [核心概念解释](#核心概念解释)
-  - [流式解析（逐 chunk 增量）](#流式解析逐-chunk-增量)
-  - [纯函数无状态解析](#纯函数无状态解析)
-  - [tool_call 增量累积](#tool_call-增量累积)
-  - [非流式解析](#非流式解析)
-- [架构总览](#架构总览)
-- [组件详解](#组件详解)
-  - [ParsedChunk / ToolCallDelta — 数据结构](#parsedchunk--toolcalldelta--数据结构)
-  - [parse_chunk — 流式解析](#parse_chunk--流式解析)
-  - [merge_tool_calls — 工具调用合并](#merge_tool_calls--工具调用合并)
-  - [parse_non_stream — 非流式解析](#parse_non_stream--非流式解析)
-- [执行流程](#执行流程)
-  - [流式解析流程](#流式解析流程)
-  - [tool_call 合并流程](#tool_call-合并流程)
-  - [非流式解析流程](#非流式解析流程)
-- [设计决策](#设计决策)
-  - [Q1: 为什么 tool_call 增量不立即解析 JSON？](#q1-为什么-tool_call-增量不立即解析-json)
-  - [Q2: 为什么用「纯函数 + 调用方累积」而非「有状态解析器」？](#q2-为什么用纯函数--调用方累积而非有状态解析器)
-  - [Q3: `merge_tool_calls` 如何按 index 合并多个工具调用？](#q3-merge_tool_calls-如何按-index-合并多个工具调用)
-  - [Q4: usage 为什么只在「无 choices」的 chunk 读？](#q4-usage-为什么只在无-choices-的-chunk-读)
-  - [Q5: 与工业级「状态机解析引擎」的差距？](#q5-与工业级状态机解析引擎的差距)
-- [对外接口](#对外接口)
-- [边界情况](#边界情况)
-- [测试状态](#测试状态)
-- [改造记录与工业实践](#改造记录与工业实践)
+- [StreamParser 设计文档](#streamparser-设计文档)
+  - [📋 目录](#-目录)
+  - [设计目标](#设计目标)
+  - [核心概念解释](#核心概念解释)
+    - [流式解析（逐 chunk 增量）](#流式解析逐-chunk-增量)
+    - [纯函数无状态解析](#纯函数无状态解析)
+    - [tool\_call 增量累积](#tool_call-增量累积)
+    - [非流式解析](#非流式解析)
+  - [架构总览](#架构总览)
+  - [组件详解](#组件详解)
+    - [ParsedChunk / ToolCallDelta — 数据结构](#parsedchunk--toolcalldelta--数据结构)
+    - [parse\_chunk — 流式解析](#parse_chunk--流式解析)
+    - [merge\_tool\_calls — 工具调用合并](#merge_tool_calls--工具调用合并)
+    - [parse\_non\_stream — 非流式解析](#parse_non_stream--非流式解析)
+  - [执行流程](#执行流程)
+    - [流式解析流程](#流式解析流程)
+    - [tool\_call 合并流程](#tool_call-合并流程)
+    - [非流式解析流程](#非流式解析流程)
+  - [对外接口](#对外接口)
+  - [边界情况](#边界情况)
+  - [测试状态](#测试状态)
+  - [设计决策](#设计决策)
+  - [问题记录](#问题记录)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -205,11 +203,6 @@ parse_non_stream(response)
 
 ---
 
-## 设计决策
-
-> 流式解析策略（tool_call 延迟组装 / 纯函数无状态 / usage 独立提取 / 不引入状态机引擎，Context → Decision → Consequences）已归档至 [ADR LLM-ADR-003](../../../adr/integration/llm/2026-08-01-streaming-parse-pure-function.md)。
----
-
 ## 对外接口
 
 | 方法 | 同步/异步 | 说明 |
@@ -225,7 +218,7 @@ parse_non_stream(response)
 1. **无 choices 的 chunk**：只有 usage（最后一个 chunk）→ 返回 `ParsedChunk(usage=...)`
 2. **delta 为空**：`not chunk.choices[0].delta` → 检查 usage，无则空 ParsedChunk
 3. **字段缺失**：`hasattr(delta, "content")` 守卫——不同 provider/模型的 delta 字段集不同，缺失不崩溃
-4. **tool_call 片段无 id / name**：`if tc.id` / `if tc.function.name` 守卫，缺失时保持空字符串，合并时按 index 兜底
+4. **tool_call 片段缺字段**：`if tc.id` / `if tc.function`（`function` 可能为 None，缺失跳过）`if tc.function.name` 守卫——缺失字段保持空字符串，合并时按 index 兜底
 5. **多工具调用交错**：`merge_tool_calls` 按 index 分组，交错增量正确合并
 6. **空 tool_calls**：`merge_tool_calls([])` 返回空列表
 7. **非流式无 usage**：`parse_non_stream` 对 `response.usage` 为 None 时返回 `usage: None`
@@ -248,13 +241,16 @@ parse_non_stream(response)
 
 ---
 
+## 设计决策
+
+> 流式解析策略（tool_call 延迟组装 / 纯函数无状态 / usage 独立提取 / 不引入状态机引擎，Context → Decision → Consequences）已归档至 [ADR LLM-ADR-003](../../../adr/integration/llm/2026-08-01-streaming-parse-pure-function.md)。
+---
+
 ## 问题记录
 
 > 审核发现的问题（2026-08-07 / 08-09）已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
 
 - [流式/非流式解析健壮性（finish_reason 丢失 / usage 丢弃 / tool_deltas 残留 / 空 choices 崩溃）](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)
-
-> 正文（组件详解 / 执行流程 / 设计决策）已同步到当前状态。
 
 ## 相关文档
 

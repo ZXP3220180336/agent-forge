@@ -12,7 +12,7 @@
 ## 📋 目录
 
 - [Limiter 客户端限流设计文档](#limiter-客户端限流设计文档)
-  - [目录](#-目录)
+  - [📋 目录](#-目录)
   - [设计目标](#设计目标)
   - [核心概念解释](#核心概念解释)
     - [限流（Rate Limiting）](#限流rate-limiting)
@@ -23,6 +23,7 @@
     - [突发（Burst）与平滑（Smoothing）](#突发burst与平滑smoothing)
   - [架构总览](#架构总览)
   - [组件详解](#组件详解)
+    - [两种 API 形态：acquire vs reserve/settle](#两种-api-形态acquire-vs-reservesettle)
     - [TokenBucket — 单桶算法](#tokenbucket--单桶算法)
     - [RateLimiter — 双桶组合（acquire 形态，学习参考）](#ratelimiter--双桶组合acquire-形态学习参考)
     - [RateLimiterManager — 实例管理（学习参考）](#ratelimitermanager--实例管理学习参考)
@@ -32,12 +33,14 @@
     - [reserve\_adaptive — 自适应预留](#reserve_adaptive--自适应预留)
     - [ReservationLimiterManager — 实例管理](#reservationlimitermanager--实例管理)
     - [其他限流算法组件（参考实现）](#其他限流算法组件参考实现)
-  - [调用流程（reserve/settle 生产形态）](#调用流程reservesettle-生产形态)
-  - [与重试/熔断的分层配合](#与重试熔断的分层配合)
+  - [执行流程](#执行流程)
+  - [对外接口](#对外接口)
+  - [边界情况](#边界情况)
   - [配置项清单](#配置项清单)
     - [RPM / TPM（双 Token Bucket）](#rpm--tpm双-token-bucket)
     - [自适应预留（Fenic 式，开关默认关）](#自适应预留fenic-式开关默认关)
-  - [已知边界与设计取舍](#已知边界与设计取舍)
+  - [测试状态](#测试状态)
+  - [与重试/熔断的分层配合](#与重试熔断的分层配合)
   - [设计决策](#设计决策)
   - [问题记录](#问题记录)
 
@@ -50,16 +53,6 @@
 3. **按模型独立**：main / reasoning / fast 三套模型配额不同，各自独立记账
 4. **透明等待**：限流是排队而非拒绝——请求等待配额，不失败，对上层无感
 
-## 两种 API 形态：acquire vs reserve/settle
-
-生产唯一形态为 **reserve/settle**（按实际 usage 结算退差）；acquire 形态已移除，代码保留作学习参考：
-
-| 维度 | acquire 形态（已移除，学习参考） | reserve/settle 形态（生产唯一） |
-| --- | --- | --- |
-| 核心 API | `await limiter.acquire(est)` → 返回等待时间 | `await limiter.reserve(est)` → `res.settle(actual)` |
-| 结算能力 | 无（一次性扣减，不退款） | ✅ 结算退差（settle）/ 全额退（cancel） |
-| 适用场景 | 不关心退差的简单调用 | 需按实际 usage 退还未用 TPM 配额 |
-| 生产使用者 | 无（学习参考） | ✅ `llm_service.py` |
 ---
 
 ## 核心概念解释
@@ -232,6 +225,17 @@ ReservationLimiterManager.get(model_key) ──→ 共享 ReservationLimiter 实
 ---
 
 ## 组件详解
+
+### 两种 API 形态：acquire vs reserve/settle
+
+生产唯一形态为 **reserve/settle**（按实际 usage 结算退差）；acquire 形态已移除，代码保留作学习参考：
+
+| 维度 | acquire 形态（已移除，学习参考） | reserve/settle 形态（生产唯一） |
+| --- | --- | --- |
+| 核心 API | `await limiter.acquire(est)` → 返回等待时间 | `await limiter.reserve(est)` → `res.settle(actual)` |
+| 结算能力 | 无（一次性扣减，不退款） | ✅ 结算退差（settle）/ 全额退（cancel） |
+| 适用场景 | 不关心退差的简单调用 | 需按实际 usage 退还未用 TPM 配额 |
+| 生产使用者 | 无（学习参考） | ✅ `llm_service.py` |
 
 ### TokenBucket — 单桶算法
 
@@ -945,7 +949,7 @@ TAT = 上次请求的理论到达时间
 
 ---
 
-## 调用流程（reserve/settle 生产形态）
+## 执行流程
 
 `llm_service.py` 集成的是 reserve/settle 形态（`ReservationLimiterManager`）：
 
@@ -993,20 +997,29 @@ async_generate() / generate()
 
 ---
 
-## 与重试/熔断的分层配合
+## 对外接口
 
-```
- reserve()       create()       429 时 retry 内部
-客户端预限流      正式请求      服务端反馈限流
-```
+| 方法 | 同步/异步 | 说明 |
+| --- | --- | --- |
+| `ReservationLimiter.reserve(estimated_tokens=0, retry_after=None) -> Reservation` | 异步方法 | 预留配额（RPM+TPM，排队等待） |
+| `ReservationLimiter.reserve_adaptive(prompt_tokens, max_tokens, retry_after=None) -> Reservation` | 异步方法 | 自适应预留（高分位估算输出，clamp 到上限） |
+| `Reservation.settle(actual: int | None)` | 异步方法 | 按实际消耗结算（退 TPM 差 / None 保留配额） |
+| `Reservation.cancel()` | 异步方法 | 全额退还（请求未确认发出时） |
+| `TokenBucket.acquire(tokens=1.0) -> float` | 异步方法 | 获取 token（返回桶内等待秒数） |
+| `TokenBucket.refund(tokens=1.0)` | 异步方法 | 退还 token（capacity 封顶） |
+| `ReservationLimiterManager.get(model_key="main") -> ReservationLimiter` | 同步类方法 | 获取/懒创建共享限流器 |
 
-- **限流（reserve/acquire）**：事前本地排队，配额不足时等待而非请求
-- **重试/熔断（retry.execute）**：事后处理下游故障；对 429 尊重 `Retry-After` 退避
-- **两者互补**：客户端限流减少触发服务端 429；真遇到 429，重试层兜底
+---
 
-**注意**：reserve/acquire 的 `retry_after` 与 retry 层的 `Retry-After` 是两条独立路径——前者是调用方显式传入的等待，后者是 429 异常响应头内提取的退避。
+## 边界情况
 
-**跨模块问题**：限流与重试的配合（重试/降级是否计入限流申请）详见 [llm.md「配额缺口」章节](llm.md#配额缺口重试降级不计入限流申请)。
+1. **等待期间锁外 sleep**（`TokenBucket.acquire` 的 `while True` 循环）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见下文 [问题 2](../../../issues/integration/llm/2026-08-02-lock-hold-sleep.md)（✅ 已修复）。
+2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文 [问题 3](../../../issues/integration/llm/2026-08-02-tpm-prompt-only.md)（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
+3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见下文 [问题 4](../../../issues/integration/llm/2026-08-02-api-clarity-fixes.md)（✅ 已修复）。`reserve` 形态无返回值（返回 Reservation，等待发生在内部）。
+4. **配置 0 = 禁用限流**：`register_config()` 注入的 `rpm`/`tpm` 为 0（或未注入该 key 用默认）；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文 [问题 1](../../../issues/integration/llm/2026-08-02-zero-refill-crash.md)（✅ 已修复）。
+5. **cancel/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。
+6. **防 R5（组合两步间硬取消）**：`reserve` 先扣 RPM 再扣 TPM，若 TPM 预留前被硬取消（`CancelledError`），`except BaseException` 回退已扣的 RPM。
+7. **单请求预估超 TPM 桶容量（截断不挂起）**：`reserve`/`reserve_adaptive` 的预估 token 数超过 TPM 桶容量时，`TokenBucket.acquire` 截断到 capacity（否则 `_tokens >= tokens` 永假，`while True` 死循环挂起）。`ReservationLimiter._acquire` 同步显式截断 `est` 到 capacity 并记 warning——保证 `res.add` 记录值与实际扣减一致（settle 退差基础正确），并暴露「llm_*_tpm 配置过小或单请求 token 预估异常」。截断语义：该请求一次占满桶容量，不拒绝不等待。
 
 ---
 
@@ -1040,15 +1053,36 @@ async_generate() / generate()
 
 ---
 
-## 已知边界与设计取舍
+## 测试状态
 
-1. **等待期间锁外 sleep**（`TokenBucket.acquire` 的 `while True` 循环）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见下文 [问题 2](../../../issues/integration/llm/2026-08-02-lock-hold-sleep.md)（✅ 已修复）。
-2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文 [问题 3](../../../issues/integration/llm/2026-08-02-tpm-prompt-only.md)（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
-3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见下文 [问题 4](../../../issues/integration/llm/2026-08-02-api-clarity-fixes.md)（✅ 已修复）。`reserve` 形态无返回值（返回 Reservation，等待发生在内部）。
-4. **配置 0 = 禁用限流**：`register_config()` 注入的 `rpm`/`tpm` 为 0（或未注入该 key 用默认）；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文 [问题 1](../../../issues/integration/llm/2026-08-02-zero-refill-crash.md)（✅ 已修复）。
-5. **cancel/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。
-6. **防 R5（组合两步间硬取消）**：`reserve` 先扣 RPM 再扣 TPM，若 TPM 预留前被硬取消（`CancelledError`），`except BaseException` 回退已扣的 RPM。
-7. **单请求预估超 TPM 桶容量（截断不挂起）**：`reserve`/`reserve_adaptive` 的预估 token 数超过 TPM 桶容量时，`TokenBucket.acquire` 截断到 capacity（否则 `_tokens >= tokens` 永假，`while True` 死循环挂起）。`ReservationLimiter._acquire` 同步显式截断 `est` 到 capacity 并记 warning——保证 `res.add` 记录值与实际扣减一致（settle 退差基础正确），并暴露「llm_*_tpm 配置过小或单请求 token 预估异常」。截断语义：该请求一次占满桶容量，不拒绝不等待。
+`tests/unit/test_reservation_limiter.py`（35 用例）：覆盖
+
+- **TokenBucket**：refund 恢复与容量封顶 / acquire 等待与超容量截断不挂起
+- **Reservation**：settle 退差 / settle(None) 保留 / cancel 全额退 / 终态幂等 / 空条目 no-op
+- **ReservationLimiter**：reserve 双桶扣减 / settle 只退 TPM / cancel 退双桶 / 超容量 clamp
+- **ReservationLimiterManager**：按配置构建 / 同 key 共享实例 / reset 清空 / 自定义 key 懒构建 / reasoning p99
+- **OutputTokenEstimator**：冷启动返 0 / 分位数 / quantile clamp / 安全系数 / 窗口上限 / reset
+- **reserve_adaptive**：冷启动回退静态 / 有样本用估算 / clamp 到上限 / 按 max_tokens 分池 / settle 喂样本 / reserve 兼容
+- **取消与并发**：settle/cancel 中途取消保持未终态 / 并发互斥不重复退款
+
+另被 `test_stream_rectify.py` 间接使用（整流重试走真实限流路径）。
+
+---
+
+## 与重试/熔断的分层配合
+
+```
+ reserve()       create()       429 时 retry 内部
+客户端预限流      正式请求      服务端反馈限流
+```
+
+- **限流（reserve/acquire）**：事前本地排队，配额不足时等待而非请求
+- **重试/熔断（retry.execute）**：事后处理下游故障；对 429 尊重 `Retry-After` 退避
+- **两者互补**：客户端限流减少触发服务端 429；真遇到 429，重试层兜底
+
+**注意**：reserve/acquire 的 `retry_after` 与 retry 层的 `Retry-After` 是两条独立路径——前者是调用方显式传入的等待，后者是 429 异常响应头内提取的退避。
+
+**跨模块问题**：限流与重试的配合（重试/降级是否计入限流申请）详见 [llm.md「配额缺口」章节](llm.md#配额缺口重试降级不计入限流申请)。
 
 ---
 
@@ -1075,5 +1109,3 @@ async_generate() / generate()
 - [问题 2：TokenBucket 持锁 sleep（连带问题 6 负 token）](../../../issues/integration/llm/2026-08-02-lock-hold-sleep.md)
 - [问题 3：TPM 桶只算 prompt token（加 max_tokens 余量 + 自适应预留）](../../../issues/integration/llm/2026-08-02-tpm-prompt-only.md)
 - [问题 4/5：限流器 API 清晰性（acquire 返回值 / async with 误导）](../../../issues/integration/llm/2026-08-02-api-clarity-fixes.md)
-
-

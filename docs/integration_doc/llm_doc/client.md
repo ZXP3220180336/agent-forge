@@ -28,8 +28,10 @@
     - [热切换关闭（register\_config 旧 client）](#热切换关闭register_config-旧-client)
     - [关闭指定 client（close\_client）](#关闭指定-clientclose_client)
     - [统一关闭（close\_all）](#统一关闭close_all)
-  - [配置项清单](#配置项清单)
+  - [对外接口](#对外接口)
   - [边界情况](#边界情况)
+  - [配置项清单](#配置项清单)
+  - [测试状态](#测试状态)
   - [设计决策](#设计决策)
   - [问题记录](#问题记录)
 
@@ -246,6 +248,33 @@ close_all()
 
 ---
 
+## 对外接口
+
+| 方法 | 同步/异步 | 说明 |
+| --- | --- | --- |
+| `register_config(key, api_key, base_url, model, **extra)` | 同步类方法 | 注册配置（热切换时关闭旧 client） |
+| `get_client(key="main") -> AsyncOpenAI` | 同步类方法 | 获取/懒创建 client（未注册抛 ValueError） |
+| `get_model(key="main") -> str` | 同步类方法 | 获取模型名 |
+| `get_config(key="main") -> dict` | 同步类方法 | 获取配置副本（dict 拷贝） |
+| `list_keys() -> list[str]` | 同步类方法 | 列出已注册的 key |
+| `close_all()` | 异步类方法 | 统一关闭所有 client（后台 task + 待关闭列表 + 实例） |
+| `close_client(key)` | 异步类方法 | 关闭并移除指定 key 的 client |
+| `remove(key)` | 同步类方法 | 移除配置与 client 实例（不关闭连接） |
+
+---
+
+## 边界情况
+
+1. **多次注册同一 key**：先关闭旧 client，再覆盖配置，下次 `get_client` 创建新实例
+2. **未注册 key**：`get_client` / `get_model` / `get_config` 抛出 `ValueError`
+3. **无事件循环时注册**：`asyncio.get_running_loop()` 判无运行循环 → 旧 client 放入 `_pending_closes` 由 `close_all()` 统一关闭（可追踪）。**注意**：`_pending_closes` 中的旧 client 不会自我关闭——若 `close_all()` 未被调用（应用未启动事件循环、或测试 tearDown/独立脚本未显式关闭），旧 httpx 连接池将泄漏，必须在这些场景显式 `await ClientManager.close_all()`（见「核心概念解释·优雅关闭与关闭追踪」）
+4. **并发 get_client**：Python GIL + dict 操作原子性，首次创建在锁外可能有重复创建，但 `AsyncOpenAI` 本身是线程安全的，覆盖旧实例即可
+5. **代理 client 的生命周期**：`_build_proxied_client` 创建的 `httpx.AsyncClient` 由 `AsyncOpenAI` 接管关闭，无需单独管理
+6. **close_all 迭代期间并发修改**：先 `list()` 快照再逐个关闭，`await client.close()` 让出事件循环控制权时并发 `register_config()`/`close_client()` 修改字典不会抛 `RuntimeError`
+7. **单个 close 异常隔离**：`client.close()` 抛异常（连接池关闭失败）用 `try/except Exception` + `logger.warning` 隔离，不中断其余 client 与 `_pending_closes` 的关闭
+
+---
+
 ## 配置项清单
 
 `register_config` 的参数（来自 `Container.initialize()` 读 settings 后调用）：
@@ -267,15 +296,13 @@ close_all()
 
 ---
 
-## 边界情况
+## 测试状态
 
-1. **多次注册同一 key**：先关闭旧 client，再覆盖配置，下次 `get_client` 创建新实例
-2. **未注册 key**：`get_client` / `get_model` / `get_config` 抛出 `ValueError`
-3. **无事件循环时注册**：`asyncio.get_running_loop()` 判无运行循环 → 旧 client 放入 `_pending_closes` 由 `close_all()` 统一关闭（可追踪）。**注意**：`_pending_closes` 中的旧 client 不会自我关闭——若 `close_all()` 未被调用（应用未启动事件循环、或测试 tearDown/独立脚本未显式关闭），旧 httpx 连接池将泄漏，必须在这些场景显式 `await ClientManager.close_all()`（见「核心概念解释·优雅关闭与关闭追踪」）
-4. **并发 get_client**：Python GIL + dict 操作原子性，首次创建在锁外可能有重复创建，但 `AsyncOpenAI` 本身是线程安全的，覆盖旧实例即可
-5. **代理 client 的生命周期**：`_build_proxied_client` 创建的 `httpx.AsyncClient` 由 `AsyncOpenAI` 接管关闭，无需单独管理
-6. **close_all 迭代期间并发修改**：先 `list()` 快照再逐个关闭，`await client.close()` 让出事件循环控制权时并发 `register_config()`/`close_client()` 修改字典不会抛 `RuntimeError`
-7. **单个 close 异常隔离**：`client.close()` 抛异常（连接池关闭失败）用 `try/except Exception` + `logger.warning` 隔离，不中断其余 client 与 `_pending_closes` 的关闭
+`tests/unit/test_client_manager.py`（10 用例）：覆盖
+
+- **注册热切换关闭**：无 loop 入 `_pending_closes` / 有 loop 后台关闭 + `_closing_tasks` 追踪
+- **close_all**：等待后台 task / 快照迭代（并发修改不崩溃）/ 单个 close 异常隔离 / 待关闭列表统一关闭
+- **完成回调**：`_on_closing_task_done` 移除已完成 task / 后台关闭失败记日志
 
 ---
 

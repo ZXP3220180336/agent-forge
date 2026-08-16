@@ -9,21 +9,32 @@
 
 ## 📋 目录
 
-- [设计目标](#设计目标)
-- [核心概念解释](#核心概念解释)
-- [架构总览](#架构总览)
-- [组件详解](#组件详解)
-  - [RetryConfig — 重试配置](#retryconfig--重试配置)
-  - [CircuitBreakerConfig — 熔断配置](#circuitbreakerconfig--熔断配置)
-  - [CircuitBreaker — 熔断器](#circuitbreaker--熔断器)
-  - [RetryHandler — 重试执行器](#retryhandler--重试执行器)
-  - [RetryHandlerManager — 重试执行器管理](#retryhandlermanager--重试执行器管理)
-  - [classify_error — 错误分类](#classify_error--错误分类)
-- [执行流程](#执行流程)
-- [配置项清单](#配置项清单)
-- [边界情况](#边界情况)
-- [设计决策](#设计决策)
-- [问题记录](#问题记录)
+- [RetryHandler 设计文档](#retryhandler-设计文档)
+  - [📋 目录](#-目录)
+  - [设计目标](#设计目标)
+  - [核心概念解释](#核心概念解释)
+    - [指数退避（Exponential Backoff）](#指数退避exponential-backoff)
+    - [随机抖动（Jitter）](#随机抖动jitter)
+    - [熔断器（Circuit Breaker）](#熔断器circuit-breaker)
+    - [半开探针（Half-Open Probe）](#半开探针half-open-probe)
+    - [降级 / Fallback](#降级--fallback)
+  - [架构总览](#架构总览)
+  - [组件详解](#组件详解)
+    - [RetryConfig — 重试配置](#retryconfig--重试配置)
+    - [CircuitBreakerConfig — 熔断配置](#circuitbreakerconfig--熔断配置)
+    - [CircuitBreaker — 熔断器](#circuitbreaker--熔断器)
+    - [RetryHandler — 重试执行器](#retryhandler--重试执行器)
+    - [RetryHandlerManager — 重试执行器管理](#retryhandlermanager--重试执行器管理)
+    - [classify\_error — 错误分类](#classify_error--错误分类)
+  - [执行流程](#执行流程)
+    - [完整流程图](#完整流程图)
+    - [场景推演：一次完整的"熔断-恢复"周期](#场景推演一次完整的熔断-恢复周期)
+  - [对外接口](#对外接口)
+  - [边界情况](#边界情况)
+  - [配置项清单](#配置项清单)
+  - [测试状态](#测试状态)
+  - [设计决策](#设计决策)
+  - [问题记录](#问题记录)
 
 ---
 
@@ -493,23 +504,17 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ---
 
-## 配置项清单
+## 对外接口
 
-所有配置项集中在 `app/config/settings.py`，通过 `.env` 覆盖：
-
-| 配置项 | 默认值 | 说明 | 关联组件 |
-| --- | --- | --- | --- |
-| `LLM_MAX_RETRIES` | `2` | 最大重试次数 | `RetryConfig.max_retries` |
-| `LLM_BASE_DELAY` | `1.0` | 退避基数（秒） | `RetryConfig.base_delay` |
-| `LLM_MAX_DELAY` | `30.0` | 退避上限（秒） | `RetryConfig.max_delay` |
-| `LLM_USE_JITTER` | `True` | 是否启用随机抖动 | `RetryConfig.use_jitter` |
-| `LLM_CIRCUIT_WINDOW_SECONDS` | `10.0` | 滑动时间窗口长度（秒） | `CircuitBreakerConfig.window_seconds` |
-| `LLM_CIRCUIT_ERROR_THRESHOLD` | `0.5` | 窗口内错误率熔断阈值（50%） | `CircuitBreakerConfig.error_threshold` |
-| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD` | `20` | 窗口内最小请求量，不足则不做错误率评估 | `CircuitBreakerConfig.request_volume_threshold` |
-| `LLM_CIRCUIT_ALL_FAILED_MIN` | `3` | 低流量纯失败保护：全部失败且达此样本量才熔断 | `CircuitBreakerConfig.all_failed_min` |
-| `LLM_CIRCUIT_RECOVERY_TIMEOUT` | `30.0` | 熔断恢复到半开的时间（秒） | `CircuitBreakerConfig.recovery_timeout` |
-| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | `3` | 半开状态最大探针数 | `CircuitBreakerConfig.half_open_max_requests` |
-| `LLM_FALLBACK_MODEL_ID` | `""` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `RetryHandler.fallback_fn` |
+| 方法 | 同步/异步 | 说明 |
+| --- | --- | --- |
+| `classify_error(exc) -> ErrorCategory` | 同步函数 | 异常分类（RETRYABLE / RATE_LIMITED / NON_RETRYABLE） |
+| `RetryHandlerManager.get(model_key="main") -> RetryHandler` | 同步类方法 | 获取/懒创建共享 RetryHandler（含熔断器） |
+| `RetryHandlerManager.register_config(config=None, circuit_breaker_config=None)` | 同步类方法 | 注入重试/熔断配置并重建实例（None 不覆盖） |
+| `RetryHandler.execute(call_fn, fallback_fn=None) -> Any` | 异步方法 | 执行调用（重试 + 熔断 + fallback） |
+| `CircuitBreaker.allow_request() -> bool` | 同步方法 | 判断是否允许请求通过 |
+| `CircuitBreaker.record_success()` | 同步方法 | 记录主链路成功 |
+| `CircuitBreaker.record_failure() -> bool` | 同步方法 | 记录主链路失败（可能触发 OPEN） |
 
 ---
 
@@ -544,6 +549,41 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ---
 
+## 配置项清单
+
+所有配置项集中在 `app/config/settings.py`，通过 `.env` 覆盖：
+
+| 配置项 | 默认值 | 说明 | 关联组件 |
+| --- | --- | --- | --- |
+| `LLM_MAX_RETRIES` | `2` | 最大重试次数 | `RetryConfig.max_retries` |
+| `LLM_BASE_DELAY` | `1.0` | 退避基数（秒） | `RetryConfig.base_delay` |
+| `LLM_MAX_DELAY` | `30.0` | 退避上限（秒） | `RetryConfig.max_delay` |
+| `LLM_USE_JITTER` | `True` | 是否启用随机抖动 | `RetryConfig.use_jitter` |
+| `LLM_CIRCUIT_WINDOW_SECONDS` | `10.0` | 滑动时间窗口长度（秒） | `CircuitBreakerConfig.window_seconds` |
+| `LLM_CIRCUIT_ERROR_THRESHOLD` | `0.5` | 窗口内错误率熔断阈值（50%） | `CircuitBreakerConfig.error_threshold` |
+| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD` | `20` | 窗口内最小请求量，不足则不做错误率评估 | `CircuitBreakerConfig.request_volume_threshold` |
+| `LLM_CIRCUIT_ALL_FAILED_MIN` | `3` | 低流量纯失败保护：全部失败且达此样本量才熔断 | `CircuitBreakerConfig.all_failed_min` |
+| `LLM_CIRCUIT_RECOVERY_TIMEOUT` | `30.0` | 熔断恢复到半开的时间（秒） | `CircuitBreakerConfig.recovery_timeout` |
+| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | `3` | 半开状态最大探针数 | `CircuitBreakerConfig.half_open_max_requests` |
+| `LLM_FALLBACK_MODEL_ID` | `""` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `RetryHandler.fallback_fn` |
+
+---
+
+## 测试状态
+
+`tests/unit/test_retry.py`（41 用例）：覆盖
+
+- **熔断窗口**：错误率打开 / 阈值下保持 / 请求量不足不评估 / 低流量纯失败 / 窗口过期剔除
+- **请求级记账**：一次 execute 只记录一条
+- **OPEN 拒绝**：OPEN 拒绝 call_fn / OPEN 下 record_success no-op / OPEN 失败不延长冷却
+- **半开探针**：探针失败不重试 / 429 回 OPEN / 4xx 不触发 + 释放槽位 / 4xx 后成功关闭 / 连续 4xx 保持半开 / release_probe 安全 / 探针取消与 BaseException 兜底
+- **fallback 隔离**：成败不进熔断 / OPEN fallback 服务但保持 OPEN / fallback 失败抛主异常
+- **限流与混合失败**：429 不计入窗口 / Retry-After 尊重与封顶 / 混合失败（429+超时 / 超时+4xx）只计一次下游故障
+- **取消路径**：探针取消释放槽位 / 退避取消补记 RETRYABLE
+- **并发**：槽位上限 / 迟到成功 no-op / 并发窗口记账无丢失
+
+---
+
 ## 设计决策
 
 > 设计决策已归档至 ADR，完整决策（Context → Decision → Consequences）见：
@@ -552,7 +592,6 @@ T3 + 30s 后 → 请求 H（探针 #1）
 - [重试与熔断架构（CircuitBreaker + 指数退避 + 抖动 + fallback 降级 + 配置注入 + 不引入 tenacity）](../../../adr/integration/llm/2026-08-01-retry-circuit-breaker-architecture.md)
 
 ---
-
 
 ## 问题记录
 
@@ -565,5 +604,3 @@ T3 + 30s 后 → 请求 H（探针 #1）
 - [熔断器生命周期共享（每次 new 熔断失效）](../../../issues/integration/llm/2026-08-07-circuit-breaker-lifecycle.md)
 - [流式迭代异常无保护（熔断观察盲区）](../../../issues/integration/llm/2026-08-07-streaming-iteration-unprotected.md)
 - [fallback 隔离（成败不进状态机 / 异常覆盖主调用）](../../../issues/integration/llm/2026-08-09-fallback-isolation.md)
-
-
