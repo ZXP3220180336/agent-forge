@@ -36,7 +36,8 @@ CostTracker 是系统的**成本计算器**：根据 Token 用量与模型定价
 | --- | --- | --- |
 | `calculate` | `@staticmethod (usage: dict \| None, model: str = "") -> dict[str, float]` | 单次成本 `{cost_usd, input_cost, output_cost}`，round 6 |
 | `accumulate` | `@staticmethod (stats: dict, cost: dict) -> dict[str, float]` | 会话级累计，round 6 |
-| `_find_price` | `@staticmethod (model: str) -> dict[str, float]` | 定价查找（私有） |
+
+> 私有 `_find_price`（定价查找，精确 → 最长前缀 → 默认）为内部实现，不属对外接口——行为由「测试」一节锚定。
 
 `calculate` 公式：`input_cost = prompt_tokens / 1000 × 输入单价`；`output_cost = completion_tokens / 1000 × 输出单价`。
 

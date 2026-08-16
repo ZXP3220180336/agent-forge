@@ -1103,7 +1103,7 @@ async_generate() / generate()
 
 ## 问题记录
 
-> 代码审核（2026-08-01）发现的 6 个问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
+> 代码审核发现的 6 个问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
 
 - [问题 1：配置为 0 时除零崩溃（限流禁用表达）](../../../issues/integration/llm/2026-08-02-zero-refill-crash.md)
 - [问题 2：TokenBucket 持锁 sleep（连带问题 6 负 token）](../../../issues/integration/llm/2026-08-02-lock-hold-sleep.md)

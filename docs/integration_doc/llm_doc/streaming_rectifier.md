@@ -100,7 +100,7 @@
 
 ## 架构总览
 
-```
+```text
 create_fn（限流闭环 reserve + create）
     → retry.execute() 保护 create 阶段
     → rectified_stream 整流循环
@@ -174,7 +174,7 @@ StreamingRectifier.register_config(
 
 ## 执行流程
 
-```
+```text
 async_generate → rectified_stream（整流循环）
     attempt = 0
     while attempt <= stream_max_retries:

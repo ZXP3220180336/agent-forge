@@ -50,7 +50,7 @@
 
 ### 两层存储
 
-```
+```text
 _configs: dict[str, dict]    # 配置存储（key → {api_key, base_url, model, ...}）
 _instances: dict[str, AsyncOpenAI]  # client 缓存（key → AsyncOpenAI）
 ```
@@ -66,7 +66,7 @@ _instances: dict[str, AsyncOpenAI]  # client 缓存（key → AsyncOpenAI）
 
 配置注册时不创建 client，首次 `get_client` 才实例化——避免应用启动即建立所有模型的连接，只在真正使用某个 key 时创建对应 client。
 
-```
+```text
 register_config("main", api_key=..., base_url=..., model=...)
     └─ 只写 _configs，不创建 client
 
@@ -108,7 +108,7 @@ _OPENAI_CLIENT_KWARGS = {
 
 ## 架构总览
 
-```
+```text
 Container.initialize() / LLMService / 外部调用方
         │
         ▼
@@ -195,7 +195,7 @@ class ClientManager:
 
 ### 获取 client（懒加载）
 
-```
+```text
 get_client("main")
   ├─ "main" in _instances ?
   │    ├─ 是 → 返回缓存 client
@@ -210,7 +210,7 @@ get_client("main")
 
 ### 热切换关闭（register_config 旧 client）
 
-```
+```text
 register_config(key, ...)
   ├─ _configs[key] = {api_key, base_url, model, **extra}
   ├─ old = _instances.pop(key, None)
@@ -224,7 +224,7 @@ register_config(key, ...)
 
 ### 关闭指定 client（close_client）
 
-```
+```text
 close_client("main")
   ├─ client = _instances.pop("main", None)
   ├─ client is None → 无实例，结束
@@ -233,7 +233,7 @@ close_client("main")
 
 ### 统一关闭（close_all）
 
-```
+```text
 close_all()
   ├─ 先等待后台 task：asyncio.gather(*_closing_tasks, return_exceptions=True)
   │    └─ _closing_tasks.clear()（异常隔离，不中断）

@@ -52,7 +52,7 @@
 
 OpenAI SDK 的流式响应是**逐 chunk** 到达的（每个 chunk 携带一小段增量）。`parse_chunk(chunk)` 负责把单个 chunk 拆成结构化增量：
 
-```
+```text
 chunk → ParsedChunk
     ├─ reasoning_token    推理过程片段（如 DeepSeek-R1）
     ├─ message_token      回复文本片段
@@ -84,7 +84,7 @@ chunk → ParsedChunk
 
 ## 架构总览
 
-```
+```text
 调用方（StreamingRectifier / async_generate / generate）
         │
         ▼
@@ -175,7 +175,7 @@ def parse_non_stream(response: Any) -> dict[str, Any]:
 
 ### 流式解析流程
 
-```
+```text
 chunk 流（async for）
   └─ parse_chunk(chunk)
        ├─ usage 提取（独立于 choices）
@@ -186,7 +186,7 @@ chunk 流（async for）
 
 ### tool_call 合并流程
 
-```
+```text
 调用方累积 tool_deltas：list[ToolCallDelta] = []
   async for chunk → parse_chunk → tool_call_deltas 追加
 流结束（finish_reason）→ merge_tool_calls(tool_deltas)
@@ -195,7 +195,7 @@ chunk 流（async for）
 
 ### 非流式解析流程
 
-```
+```text
 parse_non_stream(response)
   ├─ 空 choices → 返回空结果（业务无结果，不抛 IndexError）
   └─ 有 choices → 读 msg.content / tool_calls / usage / refusal → 统一 dict
@@ -248,7 +248,7 @@ parse_non_stream(response)
 
 ## 问题记录
 
-> 审核发现的问题（2026-08-07 / 08-09）已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
+> 审核发现的问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
 
 - [流式/非流式解析健壮性（finish_reason 丢失 / usage 丢弃 / tool_deltas 残留 / 空 choices 崩溃）](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)
 

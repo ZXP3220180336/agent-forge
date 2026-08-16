@@ -53,7 +53,7 @@
 
 每次重试的等待时间按指数增长：
 
-```
+```text
 delay = base_delay × 2^attempt
 ```
 
@@ -68,7 +68,7 @@ delay = base_delay × 2^attempt
 
 在退避延迟上叠加随机值：
 
-```
+```text
 delay = random.uniform(0, base_delay × 2^attempt)
 ```
 
@@ -78,7 +78,7 @@ delay = random.uniform(0, base_delay × 2^attempt)
 
 三种状态：
 
-```
+```text
 CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ──→ OPEN（熔断）
     ↑                                                    │
     │                                                    │ recovery_timeout 超时
@@ -117,7 +117,7 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 
 主模型全部重试失败后，尝试备用模型：
 
-```
+```text
 主模型 call_fn → 重试 N 次 → 全部失败
     → fallback_fn（备用模型）→ 成功 → 直接返回（不触碰熔断器）
     → fallback_fn 也失败 → 抛出主调用异常（fallback 异常链为 __cause__）
@@ -131,7 +131,7 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 
 ## 架构总览
 
-```
+```text
             RetryHandlerManager（按 model_key 缓存共享）
                      │
                      ▼
@@ -407,7 +407,7 @@ flowchart TB
 
 以下推演使用默认配置：`max_retries=2`、`window_seconds=10`、`request_volume_threshold=20`、`error_threshold=0.5`、`all_failed_min=3`、`half_open_max_requests=3`。
 
-```
+```text
 熔断器初始状态：CLOSED, _window=[]
 
 ─────────────────────────────────────────
@@ -595,7 +595,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ## 问题记录
 
-> 工业级改造（2026-08-01~08-12）发现的问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
+> 代码审核发现的问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
 
 - [滑动窗口熔断改造（计数粒度/时间维度/429 分离 + OPEN 冻结）](../../../issues/integration/llm/2026-08-01-sliding-window-circuit-breaker.md)
 - [请求级记账（熔断触发后仍重试 / 混合失败丢失信号）](../../../issues/integration/llm/2026-08-01-request-level-accounting.md)
