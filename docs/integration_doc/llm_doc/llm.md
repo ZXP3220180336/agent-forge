@@ -486,7 +486,7 @@ HALF_OPEN（半开探针）
 - **指数退避**是 API 调用的标准做法 —— 快失败、慢重试，给服务端恢复时间
 - **随机抖动**防止多个请求在同一个时刻重试（羊群效应），这在多个 Agent 并发时尤其重要
 - **CircuitBreaker** 让系统在 API 不可用时快速失败而不是空等，同时通过探针自动恢复
-- **fallback 降级**保证主模型故障时系统仍可用（降级到便宜模型或备用服务商）
+- **fallback 降级**保证主模型故障时系统仍可用（降级到**同服务商**便宜模型——fallback 复用主模型端点/密钥，**须与主模型同 provider**；跨服务商需独立配置，见 [LLM-012](../../issues/llm/llm-012-fallback-same-provider.md)）
 
 #### 其他可选的方法
 
@@ -890,7 +890,7 @@ LLM 层所有配置项集中在 `app/config/settings.py`：
 | `llm_circuit_all_failed_min`           | int   | `3`       | 低流量纯失败保护：全部失败且达此样本量才熔断        |
 | `llm_circuit_recovery_timeout`         | float | `30.0`    | 熔断恢复超时（秒）                                  |
 | `llm_circuit_half_open_max_requests`   | int   | `3`       | 半开状态最大探针数                                  |
-| `llm_fallback_model_id`                | str   | `""`      | 降级备用模型                                        |
+| `llm_fallback_model_id`                | str   | `""`      | 降级备用模型（**须与主模型同 provider**，复用主端点/密钥；跨服务商不支持） |
 | `llm_proxy_url`                        | str   | `""`      | HTTP 代理                                           |
 | `llm_main_rpm`                         | int   | `60`      | 主模型 RPM 限流                                     |
 | `llm_reasoning_rpm`                    | int   | `30`      | 推理模型 RPM 限流                                   |
@@ -1211,6 +1211,7 @@ response = await retry.execute(
 - **strict schema 归一（LLM-009，2026-08-16）**：新增 `_strict_compliant` 递归把 `additionalProperties: true` 归一为 false 副本，`_build_json_schema_request` 用它构建 strict 请求——修复显式 true 导致 strict 必然 400 且被误判「模型不支持」白打调用（对齐 LangChain `_recursive_set_additional_properties_false`）；本地校验仍用原 schema（保留允许扩展意图）。详见 [问题文档](../../issues/llm/llm-009-strict-additional-properties-true.md)
 - **settle/cancel 终态互斥（LLM-010，2026-08-16）**：`Reservation` 增加 `asyncio.Lock`，`settle`/`cancel` 的「_settled 检查 + 退款循环」整体放锁内——修复并发调用重复退款（检查与退款间含 await 点）；`capacity` 封顶只防桶超容量、不防容量以下重复虚增，幂等必须靠互斥。详见 [问题文档](../../issues/llm/llm-010-settle-cancel-concurrent-race.md)
 - **整流放弃分支取消守卫（LLM-011，2026-08-16）**：迭代放弃分支喂熔断前加 `cancel_event` 守卫——`_should_rectify` 因用户取消返回 False 时（异常仍 RETRYABLE）不再误喂熔断器（用户取消非下游故障，对齐 `test_cancel_event_not_feeds_breaker` 契约），改走取消路径。详见 [问题文档](../../issues/llm/llm-011-cancel-race-feeds-breaker.md)
+- **fallback 同 provider 约束文档化（LLM-012，2026-08-16）**：fallback 复用主模型 client（仅换 model 参数），文档「备用服务商」表述修正为「同服务商便宜模型」——跨服务商 fallback 需独立 endpoint/key 配置（当前不提供），约束在代码注释 + llm.md/retry.md 配置表明确。详见 [问题文档](../../issues/llm/llm-012-fallback-same-provider.md)
 
 ### 遗留未定事项
 
