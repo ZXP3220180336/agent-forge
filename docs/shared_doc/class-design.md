@@ -224,7 +224,7 @@ self.tool_service = ToolService()
 
 ### 依赖注入链路
 
-```
+```text
 路由层（FastAPI）
     │  Depends(get_session_manager)
     ▼
@@ -246,7 +246,7 @@ async def get_session_manager() -> SessionManager:
 
 ## 三层单例体系
 
-```
+```text
 Container 容器（模块级单例实例）
     │  initialize() 时创建
     ├── session_manager ──┐

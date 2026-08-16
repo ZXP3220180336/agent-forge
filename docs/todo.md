@@ -76,7 +76,7 @@
 
 ### 完成情况（2026-08-15）
 
-- 文档目录已镜像到 `app/` 顶层：`application_doc / domain_doc / integration_doc / infrastructure_doc / shared_doc`（`api_doc / config_doc / utils_doc` 保留）。
+- 文档目录已镜像到 `app/` 顶层：`application_doc / domain_doc / integration_doc / infrastructure_doc / shared_doc / platform_doc`（`api_doc / config_doc` 保留）；`utils_doc` 已废弃迁移（logger/metrics → platform_doc/observability，error_handling/class-design → shared_doc）。
 - 旧路径链接（`docs/service_doc`、`docs/core_doc`、`docs/tool_doc`、`docs/model_doc` 及 `app/services`、`app/core`、`app/models`、`app/tools`、`app_state`）全部替换为新路径。
 - `docs/ALIGNMENT.md` 登记全部代码模块；`scripts/verify_alignment.py` 校验三处对齐；新增 10 个单测。
 - 全量测试 `224 passed`（原 214 + 新增 10）。

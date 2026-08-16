@@ -74,7 +74,7 @@
 | app/integration/tools/builtin/search.py | 🔶 | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/unit/test_tools.py | 内置搜索；测试待补 |
 | app/integration/tools/builtin/web_browse.py | 🔶 | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/unit/test_tools.py | 内置网页抓取；测试待补 |
 | app/shared/events.py | ✅ | docs/shared_doc/events.md | tests/unit/test_events.py | 7 种 SSE 事件 |
-| app/utils/exceptions.py | ⬜ | docs/utils_doc/error_handling.md | (无) | 空文件待实现 |
-| app/utils/helpers.py | ⬜ | docs/utils_doc/class-design.md | (无) | 空文件待实现 |
-| app/utils/logger.py | ✅ | docs/utils_doc/logging.md | tests/unit/test_logger.py | 全局日志框架 |
-| app/utils/metrics.py | ⬜ | (无) | (无) | 空文件；指标规划见 architecture Phase D |
+| app/shared/exceptions.py | ⬜ | docs/shared_doc/error_handling.md | (无) | 空文件待实现（异常体系 → 错误码） |
+| app/shared/types.py | ⬜ | docs/shared_doc/class-design.md | (无) | 空文件待实现（通用类型 / 标识） |
+| app/platform/observability/logger.py | ✅ | docs/platform_doc/observability/logging.md | tests/unit/test_logger.py | 全局日志框架 |
+| app/platform/observability/metrics.py | ⬜ | (无) | (无) | 空文件；指标规划见 architecture Phase D |

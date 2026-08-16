@@ -349,7 +349,7 @@ Pydantic 类型验证
 | `LOG_FORMAT` | str  | "json"         | 日志格式（json/text） |
 | `LOG_FILE`   | str  | "logs/app.log" | 日志文件路径          |
 
-> `LOG_*` 由全局日志框架（`app/utils/logger.py` 的 `setup_logging()`）读取生效，见 [logging.md](../utils_doc/logging.md)。
+> `LOG_*` 由全局日志框架（`app/platform/observability/logger.py` 的 `setup_logging()`）读取生效，见 [logging.md](../platform_doc/observability/logging.md)。
 
 ---
 
@@ -632,7 +632,7 @@ python main.py
 **A:** 启用 DEBUG 模式（`LOG_LEVEL=DEBUG` + 全局日志框架的 `setup_logging()`）：
 
 ```python
-from app.utils.logger import setup_logging
+from app.platform.observability.logger import setup_logging
 from app.config import settings
 
 settings.log_level = "DEBUG"

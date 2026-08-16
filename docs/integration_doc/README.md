@@ -97,7 +97,7 @@ app/integration/
 
 - **外部调用方**：领域层 Agent（经端口）；应用层 / 接入层（经 container 依赖注入）
 - **配置**：各子模块经 `register_config()` 注入，零 `settings` 直接依赖（由 container 唯一读取）
-- **事件日志**：LLM 调用业务事件 `llm_call` 走全局日志框架（`app/utils/logger.py`）
+- **事件日志**：LLM 调用业务事件 `llm_call` 走全局日志框架（`app/platform/observability/logger.py`）
 
 ---
 

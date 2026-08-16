@@ -1,6 +1,6 @@
 # 全局日志框架
 
-> **模块**：`app/utils/logger.py`
+> **模块**：`app/platform/observability/logger.py`
 > **定位**：项目级日志基础设施 —— 全项目所有模块（LLM / 服务 / Agent / API / 基础设施）的统一日志入口
 > **职责**：双 handler 输出、业务事件机制、结构化日志（JSON）
 
@@ -33,7 +33,7 @@
 ## 快速开始
 
 ```python
-from app.utils.logger import get_logger, setup_logging, log_event_async
+from app.platform.observability.logger import get_logger, setup_logging, log_event_async
 
 # 1. 应用入口（main.py）配置一次
 setup_logging()
@@ -81,7 +81,7 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 
 ### 控制台（ConsoleFormatter）
 
-```
+```text
 18:42:08 [OK]   app.events: llm_call success=True duration=1.5
 18:42:08 [WARN] app.container: Redis 不可用（服务降级）: ...
 ```
@@ -104,7 +104,7 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 
 **用途**：记录领域事件（LLM 调用、任务流转等），事件名即 message，字段进结构化输出。
 
-**LLM 调用事件 `llm_call`**（由 `fill_llm_event_fields` 产生——`app/utils/logger.py` 的通用 LLM 事件日志工具，被 `llm_service.py` 与 `streaming_rectifier.py` 复用）：
+**LLM 调用事件 `llm_call`**（由 `fill_llm_event_fields` 产生——`app/platform/observability/logger.py` 的通用 LLM 事件日志工具，被 `llm_service.py` 与 `streaming_rectifier.py` 复用）：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -149,7 +149,7 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 
 | 模块 | logger 名 | 日志内容 |
 | --- | --- | --- |
-| `app/utils/logger.py` | `app.events` | 业务事件（`llm_call` 等） |
+| `app/platform/observability/logger.py` | `app.events` | 业务事件（`llm_call` 等） |
 | `app/main.py` | `app.main` | 启动/关闭/静态目录警告 |
 | `app/container.py` | `app.container` | 基础设施初始化（Redis/DB/工具） |
 | `app/application/session/session_manager.py` | `app.services.session_manager` | 缓存降级警告 |
@@ -161,7 +161,7 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 
 ## 相关文档
 
-- [配置管理模块](../config_doc/config.md)（`LOG_*` 配置项）
-- [LLM 服务层说明](../integration_doc/llm_doc/llm.md)（LLM 调用业务事件）
-- [服务层说明](../application_doc/README.md)（各模块日志归属）
-- [架构设计](../architecture.md)
+- [配置管理模块](../../config_doc/config.md)（`LOG_*` 配置项）
+- [LLM 服务层说明](../../integration_doc/llm_doc/llm.md)（LLM 调用业务事件）
+- [服务层说明](../../application_doc/README.md)（各模块日志归属）
+- [架构设计](../../architecture.md)

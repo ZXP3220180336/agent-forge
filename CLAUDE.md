@@ -29,16 +29,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 文档体系
 
 - **关键文档**：[architecture.md](docs/architecture.md)（架构蓝图 + 演进路径）· [ALIGNMENT.md](docs/ALIGNMENT.md)（代码↔文档↔测试对齐表）· [config.md](docs/config_doc/config.md) · [deployment.md](docs/deployment.md)
-- **各层模块说明**：`docs/` 下按模块目录对应（domain/application/integration/infrastructure/api/shared/utils）
+- **各层模块说明**：`docs/` 下按模块目录对应（domain/application/integration/infrastructure/api/shared/platform）
 - **层级 README 写作规范**：每层 `docs/<layer>_doc/README.md` 是该层**总览 + 导航**页（范式见 domain / application / integration 三层），写作规范见 [layer_readme_doc.md](docs/layer_readme_doc.md)——标准结构、总览 + 导航原则、状态徽标、text 代码块、以实际代码为准
 - **组件级子文档设计规范**：独立子文档（`docs/<layer>_doc/**/*.md`）的创建 / 优化按 [component_doc.md](docs/component_doc.md) 实施——类型分离（Reference / Explanation）、粒度分级（简单组件轻量 Reference ~80 行 / 复杂组件完整设计文档）、契约优先、状态标注、创建后同步父文档链接与 ALIGNMENT 并跑 verify_alignment
 - **模块对外接口文档规范**：模块级对外接口文档（对应 `app/<layer>/<module>/` 模块，如 `docs/integration_doc/llm_doc/llm.md`）的创建 / 优化按 [module_doc.md](docs/module_doc.md) 实施——聚焦模块对外的接口契约（Facade 方法表 + 对外异常），内部组件细节链接组件子文档，不搬子文档内容
 - **计划与研发教训**：归档于 [docs/todo.md](docs/todo.md) / [docs/lessons.md](docs/lessons.md)
+- **横切主题文档**：项目级跨层主题（非层/模块文档）——[评测与评估](docs/eval_doc/evaluation.md)（Agent 质量基线）· [安全](docs/platform_doc/security.md)（威胁模型/数据/工具/密钥）· [可观测性](docs/platform_doc/observability.md)（日志/追踪/指标/告警）
 - **硬性约定**：修改模块后必须同步对应模块文档与**该层 README**（新增/重命名/删除子模块、改设计或状态时同步更新；见上方工作流 gate）
 
 ## 仓库布局
 
-```
+```text
 app/      代码（接入/应用/领域/集成/基础设施/共享/配置）
 docs/     文档（架构/模块说明/对齐表）
 tests/    单元 + 集成 + e2e 测试

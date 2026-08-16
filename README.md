@@ -122,7 +122,7 @@ pytest 已配置 `asyncio_mode = "auto"`，测试函数无需手动标记 `@pyte
 - [product](docs/product.md) — 产品定位与方向（Yield RCA / 工业 RAG / EDA）
 - [deployment](docs/deployment.md) — 部署说明（运行方式 / 环境 / 依赖基础设施）
 - LLM 层：[integration_doc/llm_doc/](docs/integration_doc/llm_doc/)（llm 总览 / client / retry / streaming / structure / limiter）
-- 各模块：[domain_doc](docs/domain_doc/) / [application_doc](docs/application_doc/) / [integration_doc](docs/integration_doc/) / [infrastructure_doc](docs/infrastructure_doc/) / [shared_doc](docs/shared_doc/) / [api_doc](docs/api_doc/) / [config_doc](docs/config_doc/) / [utils_doc](docs/utils_doc/)
+- 各模块：[domain_doc](docs/domain_doc/) / [application_doc](docs/application_doc/) / [integration_doc](docs/integration_doc/) / [infrastructure_doc](docs/infrastructure_doc/) / [shared_doc](docs/shared_doc/) / [api_doc](docs/api_doc/) / [config_doc](docs/config_doc/) / [platform_doc](docs/platform_doc/)
 
 ## 项目状态
 

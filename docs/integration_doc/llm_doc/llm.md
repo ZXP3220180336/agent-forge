@@ -184,7 +184,7 @@ cost = LLMService.calculate_cost(
 **组件间协作**（可靠性链）：`ReservationLimiter`（事前限流）→ `RetryHandler`
 （重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流）→
 `StreamParser`（解析）→ 全局日志框架 `fill_llm_event_fields("llm_call")`
-（事件记录，见 [logging.md](../../utils_doc/logging.md)）。Facade 如何组织这些组件
+（事件记录，见 [logging.md](../../platform_doc/observability/logging.md)）。Facade 如何组织这些组件
 （可靠性链 / 配额结算闭环 / 整流协作）见 [llm_service.md](llm_service.md)。
 
 ---
@@ -208,6 +208,6 @@ cost = LLMService.calculate_cost(
 - 组件子文档：client / retry / streaming / streaming_rectifier / structure / limiter /
   cost_tracker（见「内部实现组织」）
 - [架构设计](../../architecture.md)（分层与演进路径）
-- [全局日志框架](../../utils_doc/logging.md)（`llm_call` 业务事件）
+- [全局日志框架](../../platform_doc/observability/logging.md)（`llm_call` 业务事件）
 - 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~011）
 - 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~037）

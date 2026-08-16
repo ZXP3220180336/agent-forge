@@ -4,7 +4,7 @@
 > **文档定位**：每层 `docs/<layer>_doc/README.md`（层 README，即该层**总览 + 导航**页）
 > 的设计方法——定位、与其他文档的分工、编写原则、标准结构、创建 / 优化流程。
 > **适用范围**：编写 / 优化各层 README（domain / application / integration /
-> infrastructure / api / shared / utils）时，按本规范实施（CLAUDE.md 文档体系引用本规范）。
+> infrastructure / api / shared / platform）时，按本规范实施（CLAUDE.md 文档体系引用本规范）。
 
 ---
 

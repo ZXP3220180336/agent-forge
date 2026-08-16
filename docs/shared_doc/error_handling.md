@@ -65,7 +65,7 @@
 
 ## LLM 模块异常全景
 
-```
+```text
 [SDK/HTTP 层]  client.chat.completions.create() 抛
     ① openai.APIStatusError（4xx/5xx/429）—— status_code 区分
     ② openai.APITimeoutError / APIConnectionError（网络）
@@ -94,7 +94,7 @@
 
 ### `generate()` —— 非流式，「可恢复失败返回 None，不可恢复抛异常」契约
 
-```
+```text
 调用方
   └─ generate()
        ├─ _build_chat_kwargs()      ← try 块外：配置错误（get_model ValueError）fail fast 传播
@@ -108,7 +108,7 @@
 
 ### `async_generate()` —— 流式，「错误转事件」契约
 
-```
+```text
 调用方 async for ... in async_generate()
   ├─ create 失败（阶段1）  → except Exception → yield build_error_event(f"LLM 调用失败: {e!s}") + return
   ├─ 迭代中断（阶段2）     → except Exception → 可整流则重试，不可整流 yield build_error_event(f"流式响应中断: {e!s}") + return
@@ -120,7 +120,7 @@
 
 ### `structured.py` —— 业务边界短路
 
-```
+```text
 extract()
   ├─ 第一级 strict json_schema → _try_extract()
   ├─ 第二级 JSON mode         → _try_extract()
@@ -244,4 +244,4 @@ encoder = tiktoken.encoding_for_model(model)  # 若抛异常，直接向上传�
 - [重试与熔断](../integration_doc/llm_doc/retry.md)（`classify_error` 错误分类白名单、`CircuitBreakerOpenError`）
 - [结构化输出](../integration_doc/llm_doc/structure.md)（四态分类、`StructuredTruncationError`/`RefusalError`/`ToolCallError`）
 - [限流器](../integration_doc/llm_doc/limiter.md)（reserve/settle 资源清理、取消兜底）
-- [全局日志框架](logging.md)（`log_event_async("llm_call")` 错误记录）
+- [全局日志框架](../platform_doc/observability/logging.md)（`log_event_async("llm_call")` 错误记录）

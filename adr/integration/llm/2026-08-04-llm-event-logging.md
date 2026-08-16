@@ -2,8 +2,8 @@
 
 > **状态**：✅ 已采纳
 > **决策日期**：2026-08-04（全局日志框架升级，LLMLogger 移除并入）
-> **涉及模块**：`app/utils/logger.py`（全局日志框架）· `app/integration/llm/`（`llm_call` 业务事件）
-> **关联文档**：[llm.md](../../../docs/integration_doc/llm_doc/llm.md) · [logging.md](../../../docs/utils_doc/logging.md)
+> **涉及模块**：`app/platform/observability/logger.py`（全局日志框架）· `app/integration/llm/`（`llm_call` 业务事件）
+> **关联文档**：[llm.md](../../../docs/integration_doc/llm_doc/llm.md) · [logging.md](../../../docs/platform_doc/observability/logging.md)
 
 ---
 

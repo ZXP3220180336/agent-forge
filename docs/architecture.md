@@ -53,7 +53,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 
 | 维度 | 现状（2026-08-15） | 目标（工业级） | 演进 |
 | --- | --- | --- | --- |
-| 分层 | 7 层 + 装配根已落地（domain/integration/application/infrastructure/shared） | 7 层 + 2 横切 + 装配根（Clean Architecture / Hexagonal） | Phase C-D |
+| 分层 | 7 层 + shared/platform + 装配根已落地（domain/integration/application/infrastructure/shared/platform） | 7 层 + 2 横切 + 装配根（Clean Architecture / Hexagonal） | Phase C-D |
 | 依赖方向 | ✅ 已切断：domain 依赖 ports，integration 实现端口 | 单向向内 + 依赖倒置（Port / Adapter） | —（已完成） |
 | 配置 | ✅ 已收敛：仅 container 读取（register_config 注入） | 仅装配根读取，各模块 `register_config` 注入 | —（已完成） |
 | 装配 | ✅ `container.py`（Container）唯一组装 | `container.py` 唯一组装 | —（已完成） |
@@ -144,6 +144,10 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 │ 配置 app/config：settings 仅装配根读取；各模块经 register_config 注入            │
 │ 可观测/安全 app/platform：日志 · Prometheus 指标 · OTel 追踪 · 审计 · JWT        │
 └────────────────────────────────────────────────────────────────────────────────┘
+┌ ⑧ 评测与评估层 Evaluation · app/eval/（离线 · 不参与运行时调用链） ────────────┐
+│ 评测集（对话 / 工具调用 / Yield RCA 场景分组）· 评测执行器（mock LLM / 真实调用）│
+│ 评估指标（任务成功率 / 工具准确率 / 延迟 / 成本）· 基准报告（benchmarks/ 随版本积累）│
+└────────────────────────────────────────────────────────────────────────────────┘
 
 装配根 Composition Root：app/container.py —— 唯一读 settings，组装 ④⑤⑥ 并注入 ③
 ```
@@ -216,7 +220,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
 | events.py（迁移 + 拆分） | 事件类型 / 领域事件 / SSE 序列化 / EventPublisher | ✅ 已迁 `app/shared/` | ✅ | — |
-| exceptions.py（异常体系 → 错误码） | 统一异常与错误码 | ⬜ `utils/exceptions` 空 | 🔶 | Phase B |
+| exceptions.py（异常体系 → 错误码） | 统一异常与错误码 | 🔶 已迁 `app/shared/exceptions.py`（空待实现） | 🔶 | Phase B |
 | types.py | 通用类型 / 标识 | ⬜ 未实现 | 🔶 | Phase B |
 
 #### 横切与装配根
@@ -227,6 +231,17 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | 可观测：日志 / 指标 / 追踪 / 审计 | 可观测三件套 | 🔶 仅日志框架 | 🔶 | Phase D |
 | 安全：鉴权 JWT / 密钥管理 | 认证授权、密钥托管 | ⬜ mock 鉴权 | 🔶 | Phase D |
 | 装配根：container.py | 唯一读 settings + 组装 + 生命周期 | ✅ container.py（Container 类） | ✅ | — |
+
+#### 评测与评估（离线质量保障，不参与运行时调用链）
+
+| 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
+| --- | --- | --- | --- | --- |
+| 评测集（对话 / 工具调用 / Yield RCA 场景） | 评测用例与标注，覆盖正常 / 边界 / 失败路径 | ⬜ 待规划 | 🔶 | Phase D |
+| 评测执行器（mock LLM / 真实调用） | 跑评测、CI 回归触发、结果对比 | ⬜ 待规划 | 🔶 | Phase D |
+| 评估指标（任务成功率 / 工具准确率 / 延迟 / 成本） | 质量基线量化 | ⬜ 待规划 | 🔶 | Phase D |
+| 基准报告（benchmarks/） | 各版本评测结果与基线对比 | ⬜ 待规划 | 🔶 | Phase D |
+
+> 详见 [评测与评估](eval_doc/evaluation.md)。
 
 ---
 
@@ -435,7 +450,8 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 领域层 app/domain           Agent 内核 ✅（依赖 ports）；memory/planner ⬜
 集成层 app/integration      LLM ✅；ToolService（已拆分）✅；Embedding 孤儿
 基础设施层 app/infrastructure  models/database ✅；db/redis 仍由 container 管 ⬜
-共享内核 app/shared         events ✅
+共享内核 app/shared         events ✅；exceptions 已迁（空）；types 待建
+横切 app/platform           observability/logger ✅（metrics ⬜）；安全 ⬜
 装配根 app/container        Container 唯一组装 ✅
 ```
 
@@ -507,8 +523,9 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 - `domain/yield_rca/`：实体 + RcaService；`application/yield_rca/rca_use_case.py`；5 个 RCA 工具
 - embedding / vector_store / memory 接线（RAG：search_historical_rca）；StructuredOutput 供报告结构化
 - MemoryService 实现（短期注入 ContextManager + 长期向量 RAG）
+- `app/eval/`：评测集 + 评测执行器 + 评估指标 + 基准报告（Agent 质量基线，CI 回归）
 
-架构达成：全链路可观测三件套；鉴权 / 限流 / 错误码真实；Yield RCA 带证据链根因报告闭环；C9 清零。`⬜ 待规划`
+架构达成：全链路可观测三件套；鉴权 / 限流 / 错误码真实；Yield RCA 带证据链根因报告闭环；评测集闭环回归；C9 清零。`⬜ 待规划`
 
 ### 阶段依赖与验收
 
@@ -528,10 +545,13 @@ Phase A ──→ Phase B ──→ Phase C ──→ Phase D
 - [agent 模块](domain_doc/agent_doc/agent.md)
 - [api 模块](api_doc/api.md)
 - [config 模块](config_doc/config.md)
-- [logging 模块](utils_doc/logging.md)（全局日志框架）
-- [error_handling 模块](utils_doc/error_handling.md)（异常处理与传播约定）
-- [class-design 模块](utils_doc/class-design.md)（类的类型体系与实例形态）
+- [logging 模块](platform_doc/observability/logging.md)（全局日志框架）
+- [error_handling 模块](shared_doc/error_handling.md)（异常处理与传播约定）
+- [class-design 模块](shared_doc/class-design.md)（类的类型体系与实例形态）
 - [LLM 层](integration_doc/llm_doc/llm.md)
 - [task 模块](application_doc/task_doc/task.md)
 - [tool 模块](integration_doc/tools_doc/tools.md)
 - [部署](deployment.md)
+- [评测与评估](eval_doc/evaluation.md)（Agent 质量基线，待规划）
+- [安全](platform_doc/security.md)（威胁模型 / 数据 / 工具 / 密钥）
+- [可观测性](platform_doc/observability.md)（日志 / 追踪 / 指标 / 告警）
