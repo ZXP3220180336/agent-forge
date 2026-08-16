@@ -18,6 +18,7 @@
 | --- | --- | --- | --- | --- |
 | [LLM-ADR-001](2026-08-07-unified-structured-entry-degradation.md) | 统一结构化输出入口 + 三级降级策略 | ✅ 已采纳 | llm_service / structured | 2026-08-07 |
 | [LLM-ADR-002](2026-08-15-pricing-prefix-match-fixed-table.md) | 定价查找：最长前缀匹配 + 模块内固定定价表 | ✅ 已采纳 | cost_tracker | 2026-08-15 |
+| [LLM-ADR-003](2026-08-01-streaming-parse-pure-function.md) | 流式解析策略：纯函数无状态 + tool_call 延迟组装 + usage 独立提取 | ✅ 已采纳 | streaming | 2026-08-01 |
 
 ## 新决策登记规范
 
