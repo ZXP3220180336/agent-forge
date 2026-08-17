@@ -52,7 +52,7 @@ LLM 传 `"count": "3"`（字符串）给 integer 参数 → 直接校验失败�
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `validate` | `(schema: dict, parameters: dict) -> list[ValidationIssue]` | 全量校验；空列表 = 通过 |
-| `format_issues` | `(issues: list[ValidationIssue]) -> str` | 分号拼接全部问题为一句（executor 写入错误信息） |
+| `format_issues` | `(issues: list[ValidationIssue]) -> str` | 分号拼接全部问题为一句（供调用方拼接错误信息） |
 | `validate_or_raise` | `(schema: dict, parameters: dict) -> None` | 有错抛 `ParameterValidationError`（需要异常语义的调用方） |
 
 - `ValidationIssue`：`dataclass(frozen=True)`，字段 `message: str`（中文完整描述，含字段名）
@@ -74,9 +74,9 @@ LLM 传 `"count": "3"`（字符串）给 integer 参数 → 直接校验失败�
 
 1. **parameters 为空 dict**：仅 required 校验生效，其余参数无约束时通过
 2. **schema 无 properties**：仅 reject_unknown 生效（任何参数都被拒绝）
-3. **根级错误**（如参数非 object）：`path` 为空，message 兜底不带字段前缀
+3. **根级错误**（如参数非 object）：`path` 为空，兜底字段名取「参数」（无具体字段名，归因信息为「参数 '参数' …」）
 4. **类型映射**：Python 类型名（`str`/`int`/`list`）映射为 JSON Schema 类型名（`string`/`integer`/`array`），错误信息语义一致
-5. **未知参数双层判定**：schema 自身声明 `additionalProperties: false` 时直接生效，不重复包装
+5. **reject_unknown 幂等**：校验前无条件包一层 `additionalProperties: false`（重复置 false 幂等，无需特殊处理）
 
 ## 测试状态
 

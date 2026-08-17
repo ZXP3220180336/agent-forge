@@ -18,6 +18,9 @@ from app.integration.tools.security import (
 )
 from app.integration.tools.stats import ToolStatsCollector
 from app.integration.tools.validator import ParameterValidator
+from app.platform.observability.logger import get_logger
+
+logger = get_logger("tools.executor")
 
 
 class ToolExecutor:
@@ -270,14 +273,17 @@ class ToolExecutor:
             if isinstance(parameters, dict)
             else {"raw": str(parameters)[:500]}
         )
-        await self._auditor.record(
-            tool_name=tool.name if tool else (tool_name or "unknown"),
-            risk_level=tool.risk_level if tool else RiskLevel.L0_READONLY,
-            category=tool.category if tool else "unknown",
-            success=result.success,
-            elapsed=elapsed,
-            parameters=audit_params,
-            error=result.error,
-            retry_count=result.retry_count,
-            content_preview=result.content,
-        )
+        try:
+            await self._auditor.record(
+                tool_name=tool.name if tool else (tool_name or "unknown"),
+                risk_level=tool.risk_level if tool else RiskLevel.L0_READONLY,
+                category=tool.category if tool else "unknown",
+                success=result.success,
+                elapsed=elapsed,
+                parameters=audit_params,
+                error=result.error,
+                retry_count=result.retry_count,
+                content_preview=result.content,
+            )
+        except Exception as e:  # noqa: BLE001 — 审计失败不阻断工具执行
+            logger.warning("工具审计失败（不影响执行）: %s", e)

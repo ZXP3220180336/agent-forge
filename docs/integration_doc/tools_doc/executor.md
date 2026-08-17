@@ -87,14 +87,14 @@ execute(name, parameters, timeout, max_retries, retry_delay)
        · 非空 → 审计 → 返回 "参数验证失败: {归因列表}"        # 可归因，非 kwargs 转储
     5. 人工审批：if tool.requires_approval → await approval_gate.request(name, parameters)
        · 拒绝 → 审计 → 返回 "工具调用被拒绝：等待人工审批"（默认 AutoApprovalGate 放行）
-    6. 若 not tool.concurrency_safe → async with _tool_lock(name)（同工具串行化）
-    6. 重试循环 for attempt in range(max_retries)：
+    6. 执行（concurrency_safe=False 时 per-tool 锁串行化）：
+       重试循环 for attempt in range(max_retries)：
        · asyncio.wait_for(tool.execute(**parameters), timeout)
        · 成功 → ResultProcessor.truncate_result(result, tool.max_output_length)
               → 填 execution_time / retry_count → 统计 → 钩子 → 返回
        · 返回失败 / 超时 / 异常 → 记 error（normalize_error）→ 统计
        · attempt < max_retries-1 → 退避 asyncio.sleep(retry_delay * 2^attempt)
-    7. 全部失败 → 构造最终 result → 审计 → 返回
+    7. 审计最终结果（成功 / 失败均 1 条）→ 返回
 ```
 
 **统计记录时机**：每次真实尝试（成功 / 失败 / 超时 / 异常）`stats.record` 一次；**钩子触发**：仅 `result.success` 时 `hooks.run`；**审计**：每次 execute 退出点 1 条最终结果（不做 per-attempt）。

@@ -2,7 +2,7 @@
 
 > **状态**：✅ 已采纳
 > **决策日期**：2026-08-17
-> **涉及模块**：`app/integration/tools/security.py`（RiskLevel / ToolAuditor）· `app/integration/tools/executor.py`（审计接入）
+> **涉及模块**：`app/integration/tools/security.py`（RiskLevel / ToolAuditor / ApprovalGate）· `app/integration/tools/executor.py`（审计接入 + 审批拦截）· `app/integration/tools/base.py`（requires_approval 元数据）· `app/integration/tools/tool_service.py`（approval_gate 注入）
 > **关联文档**：[security.md](../../../docs/integration_doc/tools_doc/security.md)
 
 ---

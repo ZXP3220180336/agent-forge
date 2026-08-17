@@ -1,4 +1,4 @@
-# 工具安全与审计（RiskLevel / ToolAuditor）说明文档
+# 工具安全与审计（RiskLevel / ToolAuditor / ApprovalGate）说明文档
 
 > **更新日期**：2026-08-17
 > **模块**：`app/integration/tools/security.py`
@@ -25,7 +25,7 @@
 
 1. **分级标注**：每个工具声明 `RiskLevel`（L0 只读 / L1 写 / L2 危险 / L3 禁用），为未来人工确认 / 沙箱拦截预留元数据
 2. **审计留痕**：每次工具调用记录一条结构化事件（`tool_call`），覆盖成功 / 失败 / 未注册 / 校验失败 / 超时全路径
-3. **不拦截执行**：当前单用户本地运行，分级只标注 + 审计，不做执行拦截（高危拦截列为未来增强）
+3. **审批骨架落地（默认放行）**：`requires_approval` 工具经 `ApprovalGate` 确认，默认 `AutoApprovalGate` 放行；未来接真实审批（API 确认 / 管理端审批 / 策略引擎）仅换注入实现
 
 ## 核心概念解释
 
@@ -50,7 +50,7 @@
 
 ### 人工审批通道（ApprovalGate）
 
-`BaseTool.requires_approval` 声明「需人工审批」；executor 在参数校验通过后、执行前经 `ApprovalGate.request(name, parameters)` 征得确认：
+`BaseTool.requires_approval` 声明「需人工审批」；executor 在参数校验通过后、执行前经 `ApprovalGate.request(tool_name, parameters)` 征得确认：
 
 - 返回 `True` → 放行执行；返回 `False` → 拒绝（返回 `"工具调用被拒绝：等待人工审批"`，工具不执行）
 - 默认 `AutoApprovalGate` 一律放行（保持「不拦截」行为）；未来接真实审批（API 确认 / 管理端审批 / 策略引擎）仅实现 `ApprovalGate` 并在 `ToolService(approval_gate=...)` 注入，Agent 层零改动
@@ -61,8 +61,10 @@
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `ToolAuditor.record` | `async (*, tool_name, risk_level, category, success, elapsed, parameters, error=None, retry_count=0, content_preview="")` | 记录一条审计事件 |
+| `ApprovalGate.request` | `async (tool_name: str, parameters: dict) -> bool` | 审批通道协议：执行前确认，返回 False 拒绝 |
+| `AutoApprovalGate.request` | `async (tool_name: str, parameters: dict) -> bool` | 默认审批通道：恒 True 放行 |
 
-调用方：`executor._audit`（每个 execute 一条最终结果，含未注册工具的兜底元数据）。
+调用方：`executor._audit`（每个 execute 一条最终结果，含未注册工具的兜底元数据）；`executor` 步骤 5 经 `ApprovalGate` 确认 `requires_approval` 工具。
 
 ## 与 ExecutionHooks 的分工
 

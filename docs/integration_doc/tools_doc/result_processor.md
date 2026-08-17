@@ -66,7 +66,7 @@ processor.truncate_result(result, max_length=100)
 
 ## 测试
 
-`tests/unit/test_result_processor.py`（9 用例）：head+tail 边界 / 自定义 head_ratio / 空内容 / truncate_result 就地标记 / normalize_error 边界。
+`tests/unit/test_result_processor.py`（10 用例）：head+tail 边界 / 自定义 head_ratio / 空内容 / truncate_result 就地标记与未触发 / normalize_error 边界。
 
 ## 相关文档
 

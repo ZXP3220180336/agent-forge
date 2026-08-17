@@ -62,7 +62,6 @@ ToolStatsCollector 记录每个工具的执行统计（由 [executor.md](executo
 | 零调用查询 | `success_rate` / `avg_time` 返回 0.0（不除零） |
 | 记录未注册工具 | 惰性创建 `ToolStats()` 条目 |
 | 注销工具 | 统计条目同步删除 |
-| `record` 未传工具名 | 惰性建条目后累加 |
 
 ## 设计决策
 
@@ -71,7 +70,7 @@ ToolStatsCollector 记录每个工具的执行统计（由 [executor.md](executo
 
 ## 测试
 
-`tests/unit/test_tools.py`（`test_tool_service_execute_basic` 断言 `call_count` / `success_count`）+ `test_tool_executor_components.py` 经 executor 路径覆盖统计记录。
+`tests/unit/test_tools.py`（`test_tool_service_execute_basic` 断言 `call_count` / `success_count`）；executor 路径间接触发 `record`（统计断言见 test_tools.py）。
 
 ## 相关文档
 

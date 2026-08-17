@@ -68,7 +68,7 @@
 | app/integration/tools/hooks.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tool_hooks.py | 执行钩子（成功路径通知） |
 | app/integration/tools/registry.py | ✅ | docs/integration_doc/tools_doc/registry.md | tests/unit/test_tool_registry_metadata.py | 注册中心 + 元数据查询（风险/分类） |
 | app/integration/tools/result_processor.py | ✅ | docs/integration_doc/tools_doc/result_processor.md | tests/unit/test_result_processor.py | 结果处理器：head+tail 截断 + 错误归一化 |
-| app/integration/tools/security.py | ✅ | docs/integration_doc/tools_doc/security.md | tests/unit/test_tool_audit.py | 风险分级 L0-L3 + 审计 + 审批通道（默认放行） |
+| app/integration/tools/security.py | ✅ | docs/integration_doc/tools_doc/security.md | tests/unit/test_tool_audit.py | 风险分级 L0-L3 + 审计 + 审批通道（默认放行；审批测试 test_tool_approval.py） |
 | app/integration/tools/selector.py | ✅ | docs/integration_doc/tools_doc/selector.md | tests/unit/test_tool_selector.py | 工具选择器（默认全量注入，预留） |
 | app/integration/tools/stats.py | ✅ | docs/integration_doc/tools_doc/stats.md | tests/unit/test_tools.py | 执行统计 |
 | app/integration/tools/tool_service.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tools.py | Facade 编排（六大子组件） |

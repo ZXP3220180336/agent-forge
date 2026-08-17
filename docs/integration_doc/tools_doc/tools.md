@@ -31,9 +31,9 @@ app/integration/tools/
 ├── registry.py            ← ToolRegistry 注册中心（容器 + Schema 导出 + 元数据查询）
 ├── selector.py            ← ToolSelector 选择器（协议 + DefaultToolSelector 全量注入）
 ├── validator.py           ← ParameterValidator 参数校验器（jsonschema 严格校验）
-├── executor.py            ← ToolExecutor 执行调度器（信号量 / 重试 / 超时 / 校验 / 截断 / 审计）
+├── executor.py            ← ToolExecutor 执行调度器（信号量 / 重试 / 超时 / 校验 / 截断 / 审计 / 审批拦截）
 ├── result_processor.py    ← ResultProcessor 结果处理器（head+tail 截断 + 错误归一化）
-├── security.py            ← RiskLevel / ToolAuditor 安全审计（分级标注 + 审计留痕）
+├── security.py            ← RiskLevel / ToolAuditor / ApprovalGate 安全审计（分级 + 审计 + 审批通道）
 ├── stats.py               ← ToolStats / ToolStatsCollector 执行统计
 ├── hooks.py               ← ExecutionHooks 执行钩子
 ├── assembler.py           ← ToolAssembler 内置工具装配
@@ -114,9 +114,9 @@ class ToolGateway(Protocol):
 | 工具注册中心 | registry.py | 容器 + Schema 导出 + 按风险/分类查询 | [registry.md](registry.md) |
 | 工具选择器 | selector.py | 选注入子集（默认全量，预留召回） | [selector.md](selector.md) |
 | 参数校验器 | validator.py | jsonschema 严格校验 + 错误归因 | [validator.md](validator.md) |
-| 执行调度器 | executor.py | 信号量 / 重试 / 超时 / 截断 / 审计编排 | [executor.md](executor.md) |
+| 执行调度器 | executor.py | 信号量 / 重试 / 超时 / 校验 / 截断 / 审计 / 审批拦截编排 | [executor.md](executor.md) |
 | 结果处理器 | result_processor.py | head+tail 截断 + 错误归一化 | [result_processor.md](result_processor.md) |
-| 安全审计 | security.py | 风险分级 + 审计留痕 | [security.md](security.md) |
+| 安全审计 | security.py | 风险分级 + 审计留痕 + 审批通道 | [security.md](security.md) |
 
 辅助组件：`stats.py`（执行统计，见 [stats.md](stats.md)）、`hooks.py`（执行钩子）、`assembler.py`（内置工具装配），详见 [ToolService 说明](tool_service.md)。人工审批通道（`ApprovalGate` / `AutoApprovalGate`）随安全审计子组件见 [security.md](security.md)。
 

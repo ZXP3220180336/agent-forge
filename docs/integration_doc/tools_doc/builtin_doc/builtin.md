@@ -1,6 +1,6 @@
 # builtin 内置工具子模块说明
 
-> **更新日期**：2026-08-04
+> **更新日期**：2026-08-17
 > **文档定位**：工具层 `app/integration/tools/builtin/` 子模块 —— 内置工具的定义、自动发现机制与各工具实现详解。
 > **实现状态**：SearchTool（✅）/ ReadFileTool（✅）/ WriteFileTool（✅）/ CodeExecTool（✅）/ WebBrowseTool（✅）
 > **前置阅读**：[工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试机制在此说明，本文不重复）
@@ -26,8 +26,8 @@
 
 ```text
 app/integration/tools/
-├── __init__.py          # 模块导出（BaseTool, ToolResult）
-├── base.py              # 基类定义（BaseTool, ToolResult）
+├── __init__.py          # 模块导出（BaseTool / ToolService / ResultProcessor 等 11 项）
+├── base.py              # 基类定义（BaseTool + 元数据；ToolResult 定义于领域端口）
 ├── builtin/             # 内置工具（自动发现）        ← 本文档
 │   ├── __init__.py      # 自动扫描目录，发现 BaseTool 子类
 │   ├── search.py        # SearchTool    网络搜索（Tavily API）
@@ -36,6 +36,8 @@ app/integration/tools/
 │   └── web_browse.py    # WebBrowseTool 网页内容抓取（HTML 解析）
 └── external/            # 外部工具（预留，0 字节空文件）
 ```
+
+> 完整工具模块目录（含 executor / registry / validator / result_processor / security / selector / stats / hooks / assembler / tool_service）见 [工具模块接口文档](../tools.md)。
 
 **核心特性：**
 
@@ -61,7 +63,7 @@ Tool 层 (BaseTool)            ← builtin 子模块，每个工具一个 execut
 
 ## 自动发现机制
 
-`builtin/__init__.py`（57 行）实现了一套「扫描目录 + 反射收集 + 惰性访问」的自动发现机制。
+`builtin/__init__.py`（62 行）实现了一套「扫描目录 + 反射收集 + 惰性访问」的自动发现机制。
 
 ### 发现流程
 
@@ -79,7 +81,8 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
 
         try:
             module = importlib.import_module(f".{module_name}", __package__)
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            logger.warning("内置工具模块导入失败，跳过 %s: %s", module_name, e)
             continue                  # 单个模块导入失败不影响其它模块
 
         for name, obj in inspect.getmembers(module, inspect.isclass):
@@ -408,7 +411,7 @@ _http_client = httpx.AsyncClient(
 3. `parameters` 使用 OpenAI Function Calling 的 JSON Schema 格式
 4. `execute` 必须为 `async def` 并返回 `ToolResult`
 5. 开头总是调用 `self.validate_parameters(**kwargs)` 做参数校验（executor 已做，此为兜底）
-6. **按需覆写元数据**：`risk_level`（默认 L0）、`category`、`concurrency_safe`（写 / 子进程类设为 `False`）、`max_output_length`（结果截断上限）
+6. **按需覆写元数据**：`risk_level`（默认 L0）、`category`、`concurrency_safe`（写 / 子进程类设为 `False`）、`max_output_length`（结果截断上限）、`requires_approval`（需人工审批时设为 `True`）
 7. 所有异常捕获为 `ToolResult(success=False, error=...)`，不让异常抛出
 8. 同步 IO（如第三方 SDK）用 `asyncio.to_thread` 包装，避免阻塞事件循环
 

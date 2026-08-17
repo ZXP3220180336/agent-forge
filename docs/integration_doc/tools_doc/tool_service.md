@@ -26,7 +26,7 @@ ToolService 是**工具系统的对外统一入口**（Facade），聚合六大�
 
 1. **工具容器**：注册 / 注销 / 查询 / 列表 / 按风险与分类过滤（Registry）
 2. **Schema 导出**：`get_openai_tools()` 经选择器选出注入子集 / `get_openai_responses()` 全量
-3. **工具执行**：`execute()` 带参数校验（jsonschema 归因）、自动重试（指数退避）、超时保护、结果截断、审计留痕、并发控制
+3. **工具执行**：`execute()` 带参数校验（jsonschema 归因）、自动重试（指数退避）、超时保护、结果截断、审计留痕、人工审批拦截、并发控制
 4. **执行统计**：`ToolStats` 记录调用次数 / 成功率 / 平均耗时 / 最后调用时间
 5. **钩子机制**：工具执行成功后运行扩展钩子（异步 / 同步皆可，钩子失败不影响工具执行）
 6. **内置工具装配**：`init_default_tools()` 用 importlib 扫描 `builtin` 包，幂等注册
@@ -41,6 +41,7 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 ├── ToolExecutor        调度器：信号量 / 重试 / 超时 / 截断 / 审计编排
 ├── ResultProcessor     结果处理器：head+tail 截断 + 错误归一化
 ├── ToolAuditor         安全审计：风险分级 + 审计留痕（日志，不拦截）
+├── ApprovalGate        审批通道：requires_approval 工具执行前确认（默认放行）
 ├── ToolStatsCollector  统计
 ├── ExecutionHooks      钩子
 └── ToolAssembler       内置工具装配
@@ -93,15 +94,12 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 ### 内置工具装配 `init_default_tools`
 
 ```python
-pkg = importlib.import_module("app.integration.tools.builtin")
-for name in builtin_tool_names:          # 来自 builtin.__all__（自动发现）
-    tool_cls = getattr(pkg, name)
-    tool = tool_cls()
-    if self.get(tool.name) is not None:  # 幂等：按实例 tool.name 判断
-        continue
-    self.register(tool)
-    registered.append(name)
+def init_default_tools(self) -> list[str]:
+    """注册全部内置工具（幂等），返回新增类名列表。"""
+    return self._assembler.assemble(self._registry, self._stats)
 ```
+
+装配逻辑位于 `ToolAssembler.assemble`（[assembler.py](../../../app/integration/tools/assembler.py)）：扫描 builtin 包 → 实例化 → 幂等注册（按实例 `tool.name` 判断，`stats.init` 双写）→ 返回新增类名。
 
 - `builtin.__all__` 由 `_discover_tools()` 自动扫描生成（见 [builtin.md](builtin_doc/builtin.md)）
 - **幂等判断用实例 `tool.name`**（如 `"search"`）而非类名（`SearchTool`），避免重复注册
