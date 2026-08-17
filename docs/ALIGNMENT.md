@@ -1,6 +1,6 @@
 # 代码模块 ↔ 文档 ↔ 测试 对齐表
 
-> 更新日期：2026-08-16
+> 更新日期：2026-08-17
 > 原则：**代码树是唯一事实来源**。每个代码模块在此登记状态、对应文档与测试；新增/移动/删除模块时三处同步。
 > 状态徽标：✅ 代码 + 文档 + 测试齐全 ｜ 🔶 已实现但文档或测试不全 ｜ ⬜ 空壳待实现。
 > 本表由 `scripts/verify_alignment.py` 校验，所有路径相对仓库根。
@@ -62,17 +62,21 @@
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |
 | app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流 |
 | app/integration/llm/structured.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | 结构化三级降级 |
-| app/integration/tools/assembler.py | 🔶 | docs/integration_doc/tool_service_doc/tool_service.md | tests/unit/test_tools.py | 内置工具装配；组件级测试待补 |
-| app/integration/tools/base.py | 🔶 | docs/integration_doc/tool_service_doc/tool_service.md | tests/unit/test_tools.py | BaseTool 抽象；组件级测试待补 |
-| app/integration/tools/executor.py | 🔶 | docs/integration_doc/tool_service_doc/tool_service.md | tests/unit/test_tools.py | 执行器；重试/超时/校验路径测试待补 |
-| app/integration/tools/hooks.py | 🔶 | docs/integration_doc/tool_service_doc/tool_service.md | tests/unit/test_tools.py | 执行钩子；组件级测试待补 |
-| app/integration/tools/registry.py | 🔶 | docs/integration_doc/tool_service_doc/tool_service.md | tests/unit/test_tools.py | 工具注册中心；组件级测试待补 |
-| app/integration/tools/stats.py | 🔶 | docs/integration_doc/tool_service_doc/tool_service.md | tests/unit/test_tools.py | 工具统计；组件级测试待补 |
-| app/integration/tools/tool_service.py | 🔶 | docs/integration_doc/tool_service_doc/tool_service.md | tests/unit/test_tools.py | Facade；test_tools.py 仅覆盖并发/基本执行/异常释放 |
-| app/integration/tools/builtin/code_exec.py | 🔶 | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/unit/test_tools.py | 内置代码执行；测试待补 |
-| app/integration/tools/builtin/file_ops.py | 🔶 | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/unit/test_tools.py | 内置文件读写；测试待补 |
-| app/integration/tools/builtin/search.py | 🔶 | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/unit/test_tools.py | 内置搜索；测试待补 |
-| app/integration/tools/builtin/web_browse.py | 🔶 | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/unit/test_tools.py | 内置网页抓取；测试待补 |
+| app/integration/tools/assembler.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/integration/test_tool_execution.py | 内置工具幂等装配 |
+| app/integration/tools/base.py | ✅ | docs/integration_doc/tools_doc/tools.md | tests/unit/test_tool_validator.py | BaseTool 抽象 + 元数据（风险/分类/并发安全）+ 校验委托 |
+| app/integration/tools/executor.py | ✅ | docs/integration_doc/tools_doc/executor.md | tests/unit/test_tool_executor_components.py | 执行编排：校验归因/截断/审计/串行化 |
+| app/integration/tools/hooks.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tool_hooks.py | 执行钩子（成功路径通知） |
+| app/integration/tools/registry.py | ✅ | docs/integration_doc/tools_doc/registry.md | tests/unit/test_tool_registry_metadata.py | 注册中心 + 元数据查询（风险/分类） |
+| app/integration/tools/result_processor.py | ✅ | docs/integration_doc/tools_doc/result_processor.md | tests/unit/test_result_processor.py | 结果处理器：head+tail 截断 + 错误归一化 |
+| app/integration/tools/security.py | ✅ | docs/integration_doc/tools_doc/security.md | tests/unit/test_tool_audit.py | 风险分级 L0-L3 + 审计 + 审批通道（默认放行） |
+| app/integration/tools/selector.py | ✅ | docs/integration_doc/tools_doc/selector.md | tests/unit/test_tool_selector.py | 工具选择器（默认全量注入，预留） |
+| app/integration/tools/stats.py | ✅ | docs/integration_doc/tools_doc/stats.md | tests/unit/test_tools.py | 执行统计 |
+| app/integration/tools/tool_service.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tools.py | Facade 编排（六大子组件） |
+| app/integration/tools/validator.py | ✅ | docs/integration_doc/tools_doc/validator.md | tests/unit/test_tool_validator.py | 参数校验器：jsonschema 严格校验 + 错误归因 |
+| app/integration/tools/builtin/code_exec.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置命令执行（L2 危险 + 黑名单） |
+| app/integration/tools/builtin/file_ops.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置文件读写（readFile L0 / writeFile L1） |
+| app/integration/tools/builtin/search.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置搜索（L0，Tavily） |
+| app/integration/tools/builtin/web_browse.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置网页抓取（L0，HTML→文本） |
 | app/shared/events.py | ✅ | docs/shared_doc/events.md | tests/unit/test_events.py | 7 种 SSE 事件 |
 | app/shared/exceptions.py | ⬜ | docs/shared_doc/error_handling.md | (无) | 空文件待实现（异常体系 → 错误码） |
 | app/shared/types.py | ⬜ | docs/shared_doc/class-design.md | (无) | 空文件待实现（通用类型 / 标识） |

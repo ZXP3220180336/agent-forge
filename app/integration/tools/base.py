@@ -3,10 +3,17 @@
 所有工具都应继承此基类
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any
 
 from app.domain.ports.tool_gateway import ToolResult
+from app.integration.tools.security import RiskLevel
+from app.integration.tools.validator import ParameterValidator
+
+# 模块级校验器单例（无状态）；与 executor 注入实例配置恒等（reject_unknown=True）
+_validator = ParameterValidator()
 
 
 class BaseTool(ABC):
@@ -47,6 +54,43 @@ class BaseTool(ABC):
             ToolResult: 执行结果
         """
 
+    @classmethod
+    def register_config(cls, **kwargs: Any) -> None:
+        """可选：由装配根注入工具运行配置（默认无操作，子类按需覆盖）。
+
+        内置工具（SearchTool / WebBrowseTool 等）各自实现此方法，
+        经装配根调用，避免直接依赖 settings。
+        """
+
+    # ===== 元数据（分级标注 + 审计用，仅标注不拦截） =====
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        """风险分级（L0 只读 / L1 写 / L2 危险 / L3 禁用）。默认最安全 L0。"""
+        return RiskLevel.L0_READONLY
+
+    @property
+    def category(self) -> str:
+        """功能域（search / file / code / web / ...），供按域查询。"""
+        return "general"
+
+    @property
+    def concurrency_safe(self) -> bool:
+        """是否允许自身并发执行（写类 / 子进程类工具应为 False → 串行化）。"""
+        return True
+
+    @property
+    def requires_approval(self) -> bool:
+        """是否需人工审批（HITL）。由 executor 执行前经 ApprovalGate 确认，默认放行。"""
+        return False
+
+    @property
+    def max_output_length(self) -> int:
+        """结果截断上限（字符数），ResultProcessor 消费。默认 100_000。"""
+        return 100_000
+
+    # ===== Schema 导出 =====
+
     def to_openai_tool(self) -> dict[str, Any]:
         """
         转换为 OpenAI Tool 格式
@@ -77,9 +121,11 @@ class BaseTool(ABC):
             "parameters": self.parameters,
         }
 
+    # ===== 参数校验（委托 jsonschema 校验器） =====
+
     def validate_parameters(self, **kwargs) -> bool:
         """
-        验证参数是否符合 Schema（可选实现）
+        参数是否符合 Schema（jsonschema 完整校验：必填 / 未知 / 类型 / 枚举 / 范围）。
 
         Args:
             **kwargs: 工具参数
@@ -87,25 +133,12 @@ class BaseTool(ABC):
         Returns:
             bool: 参数是否有效
         """
+        return not self.validation_issues(**kwargs)
 
-        # 基础验证：检查异常参数
-        properties = self.parameters.get("properties", {})
-        for param in kwargs:
-            if param not in properties:
-                return False
+    def validation_issues(self, **kwargs) -> list[str]:
+        """返回参数校验问题（中文描述列表）；空列表 = 通过。
 
-        # 基础验证：检查必填参数
-        required = self.parameters.get("required", [])
-        for param in required:
-            if param not in kwargs:
-                return False
-
-        return True
-
-    @classmethod
-    def register_config(cls, **kwargs: Any) -> None:
-        """可选：由装配根注入工具运行配置（默认无操作，子类按需覆盖）。
-
-        内置工具（SearchTool / WebBrowseTool 等）各自实现此方法，
-        经装配根调用，避免直接依赖 settings。
+        供 executor 构造可归因的错误信息（LLM 下一轮据此修正）。
         """
+        issues = _validator.validate(self.parameters, kwargs)
+        return [issue.message for issue in issues]

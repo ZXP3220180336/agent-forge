@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from tavily import TavilyClient
 
 from ..base import BaseTool, ToolResult
+from ..security import RiskLevel
 
 
 class SearchTool(BaseTool):
@@ -24,6 +25,15 @@ class SearchTool(BaseTool):
         """注入 Tavily 配置（由装配根调用，避免直接依赖 settings）。"""
         cls._api_key = api_key
         cls._search_depth = search_depth
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        """只读外部查询，L0。"""
+        return RiskLevel.L0_READONLY
+
+    @property
+    def category(self) -> str:
+        return "search"
 
     @property
     def name(self) -> str:

@@ -52,11 +52,15 @@ app/integration/
 │   ├── structured.py             ← StructuredOutput 结构化输出
 │   ├── reservation_limiter.py    ← ReservationLimiter 客户端限流
 │   └── cost_tracker.py           ← CostTracker 成本计算
-├── tools/                        ← 工具系统（ToolService Facade + 5 组件 + 内置工具）
-    ├── base.py                   ← BaseTool / ToolResult
+├── tools/                        ← 工具系统（ToolService Facade + 六大子组件 + 内置工具）
+    ├── base.py                   ← BaseTool / ToolResult（元数据 + 校验委托）
     ├── tool_service.py           ← ToolService（统一 Facade，对外入口）
-    ├── registry.py               ← ToolRegistry 工具容器 + Schema 导出
-    ├── executor.py               ← ToolExecutor 执行器（信号量/重试/超时/校验）
+    ├── registry.py               ← ToolRegistry 注册中心（容器 + Schema 导出 + 元数据查询）
+    ├── selector.py               ← ToolSelector 选择器（全量注入，预留召回）
+    ├── validator.py              ← ParameterValidator 参数校验器（jsonschema 严格校验）
+    ├── executor.py               ← ToolExecutor 执行调度器（信号量/重试/超时/校验/截断/审计）
+    ├── result_processor.py       ← ResultProcessor 结果处理器（head+tail 截断 + 错误归一化）
+    ├── security.py               ← RiskLevel / ToolAuditor 安全审计（分级 + 留痕）
     ├── stats.py                  ← ToolStats / ToolStatsCollector 执行统计
     ├── hooks.py                  ← ExecutionHooks 执行钩子
     ├── assembler.py              ← ToolAssembler 内置工具装配
@@ -77,7 +81,7 @@ app/integration/
 1. **Facade 模式**：`LLMService` / `ToolService` 是各自子系统唯一外部入口，内部组件不对外暴露
 2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort` / `TokenCounter`），领域层只依赖抽象；装配根 `container.py` 在启动时注入
 3. **三权分立（LLM）**：传输层（连接）/ 可靠性层（重试/熔断/限流/降级）/ 数据层（解析）/ 策略层（整流）/ 治理层（日志/成本）各司其职
-4. **God Object 拆分（Tools）**：ToolService 拆为 Registry / Executor / Stats / Hooks / Assembler，Facade 聚合
+4. **God Object 拆分（Tools）**：ToolService 拆为六大子组件（Registry / Selector / Validator / Executor / ResultProcessor / Auditor）+ 辅助组件（Stats / Hooks / Assembler），Facade 聚合
 5. **纯函数优先**：`StreamParser` 等解析组件为无状态静态方法，便于测试与整流重试幂等
 6. **降级容错**：单组件初始化失败不影响整体启动，仅记录警告并降级
 
@@ -107,8 +111,8 @@ app/integration/
 | --- | --- | --- | --- |
 | LLM Facade | `llm/llm_service.py` | ✅ | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost` |
 | LLM 子包 | `llm/`（7 组件） | ✅ | ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker |
-| 工具 Facade | `tools/tool_service.py` | ✅ | `ToolService`：注册 / 执行 / 统计 / 钩子 / 装配 / Schema 导出 |
-| 工具子包 | `tools/`（5 组件） | ✅ | Registry / Executor / Stats / Hooks / Assembler |
+| 工具 Facade | `tools/tool_service.py` | ✅ | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
+| 工具子包 | `tools/`（六大子组件） | ✅ | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler |
 | 内置工具 | `tools/builtin/` | ✅ | search / readFile / writeFile / code_exec / web_browse |
 | Embedding | `embedding/embedding_service.py` | 🔶 已实现未接线 | `EmbeddingService`：`embed` / `embed_batch` / 内存缓存 |
 | VectorStore adapter | `vector_store/` | ⬜ 待规划 | Milvus 向量库检索（Phase D，规划接入 RAG） |
@@ -138,21 +142,25 @@ app/integration/
 
 ## 工具系统
 
-**代码**：`app/integration/tools/` · **文档**：[ToolService 详解](tool_service_doc/tool_service.md) · [工具层详解](tools_doc/tools.md)
+**代码**：`app/integration/tools/` · **文档**：[ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md)
 
-为 Agent 提供可执行能力集合。`ToolService` 是唯一外部入口（Facade），聚合 5 个拆分组件：
+为 Agent 提供可执行能力集合。`ToolService` 是唯一外部入口（Facade），聚合工业级六大子组件 + 辅助组件：
 
-| 组件 | 文件 | 职责 |
+| 子组件 | 文件 | 职责 |
 | --- | --- | --- |
-| `ToolRegistry` | registry.py | 工具容器 + OpenAI 格式 Schema 导出 |
-| `ToolExecutor` | executor.py | 执行器：信号量 / 重试 / 超时 / 参数校验 / 统计 / 钩子 |
+| `ToolRegistry` | registry.py | 注册中心：容器 + Schema 导出 + 按风险/分类查询 |
+| `ToolSelector` | selector.py | 选择器：选注入子集（默认全量注入，预留召回） |
+| `ParameterValidator` | validator.py | 校验器：jsonschema 严格校验 + 错误归因 |
+| `ToolExecutor` | executor.py | 调度器：信号量 / 重试 / 超时 / 校验 / 截断 / 审计编排 |
+| `ResultProcessor` | result_processor.py | 结果处理器：head+tail 截断 + 错误归一化 |
+| `ToolAuditor` | security.py | 安全审计：风险分级 L0-L3 + 审计留痕 |
 | `ToolStatsCollector` | stats.py | 执行统计（调用次数 / 成功率 / 平均耗时） |
-| `ExecutionHooks` | hooks.py | 执行前后钩子（失败不影响工具执行） |
+| `ExecutionHooks` | hooks.py | 执行钩子（成功路径通知） |
 | `ToolAssembler` | assembler.py | 内置工具幂等装配 |
 
-**内置工具**（`builtin/` 自动发现，`BaseTool` 子类即注册）：`search`（Tavily 搜索）/ `readFile` / `writeFile` / `code_exec`（危险命令黑名单）/ `web_browse`（自实现 HTML→文本解析）。
+**内置工具**（`builtin/` 自动发现，`BaseTool` 子类即注册）：`search`（Tavily 搜索）/ `readFile` / `writeFile` / `code_exec`（危险命令黑名单 + L2 分级）/ `web_browse`（自实现 HTML→文本解析）。风险分级见 [安全文档](tools_doc/security.md)。
 
-**执行流程**：信号量内 → 查注册表 → 参数验证 → 重试循环（`asyncio.wait_for` + 指数退避）→ 统计 + 钩子。
+**执行流程**：信号量内 → 查注册表 → 参数校验（jsonschema 归因）→ 重试循环（`asyncio.wait_for` + 指数退避）→ 结果截断（head+tail）→ 统计 + 钩子 + 审计。
 
 ## Embedding 服务
 
@@ -178,7 +186,7 @@ app/integration/
 ## 配置关联
 
 - LLM 层配置（模型 / 重试 / 熔断 / 限流 / 整流 / 结构化 / 嵌入）见 [LLM 层文档](llm_doc/llm.md)
-- 工具配置（超时 / 重试 / 并发 / 输出截断）见 [ToolService 文档](tool_service_doc/tool_service.md)
+- 工具配置（超时 / 重试 / 并发 / 输出截断）见 [ToolService 文档](tools_doc/tool_service.md)
 - 全部配置项见 [config 文档](../config_doc/config.md)
 
 配置从 `.env` 加载，仅装配根读取，各子模块经 `register_config()` 注入。
@@ -191,6 +199,6 @@ app/integration/
 - [应用层说明](../application_doc/README.md)
 - [领域层说明](../domain_doc/README.md)
 - [LLM 层详解](llm_doc/llm.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md)
-- [ToolService 详解](tool_service_doc/tool_service.md) · [工具层详解](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md)
+- [ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md) · [执行调度](tools_doc/executor.md) · [注册中心](tools_doc/registry.md) · [校验](tools_doc/validator.md) · [结果处理](tools_doc/result_processor.md) · [安全审计](tools_doc/security.md) · [选择器](tools_doc/selector.md) · [统计](tools_doc/stats.md)
 - [Embedding 详解](embedding_doc/embedding.md)
 - [配置说明](../config_doc/config.md)

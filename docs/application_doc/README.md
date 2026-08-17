@@ -548,7 +548,7 @@ cost = LLMService.calculate_cost(
 - [Task 模块](task_doc/task.md)（任务调度顶层计划）
 - [Session 模块](session_doc/session.md)（会话管理详解）
 - [Context 模块](context_doc/context.md)（上下文管理详解）
-- [ToolService 模块](../integration_doc/tool_service_doc/tool_service.md)（工具服务详解）
+- [ToolService 模块](../integration_doc/tools_doc/tool_service.md)（工具服务详解）
 - [Embedding 模块](../integration_doc/embedding_doc/embedding.md)（向量化详解）
 - [工具层说明](../integration_doc/tools_doc/tools.md)（BaseTool 与内置工具）
 - [Agent 模块](../domain_doc/agent_doc/agent.md)（ReActAgent 循环，服务层的下游调用方）

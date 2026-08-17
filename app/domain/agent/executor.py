@@ -207,7 +207,7 @@ class ReActAgent(BaseAgent):
             tool_name = tc["function"]["name"]
             try:
                 tool_args = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError, KeyError:
+            except (json.JSONDecodeError, KeyError):
                 tool_args = {}
             start = time.monotonic()
             exec_result = await self._tools.execute(tool_name, tool_args)

@@ -1,4 +1,4 @@
-"""工具服务 Facade — 聚合 Registry/Executor/Stats/Hooks/Assembler。
+"""工具服务 Facade — 聚合 Registry/Selector/Executor/Validator/ResultProcessor/Auditor/Stats/Hooks/Assembler。
 
 对外保持稳定 API（满足 ToolGateway：get_openai_tools + execute），
 具体职责委托给内部组件，与既有调用方（Agent / 路由 / 测试）兼容。
@@ -13,7 +13,11 @@ from app.integration.tools.base import BaseTool
 from app.integration.tools.executor import ToolExecutor
 from app.integration.tools.hooks import ExecutionHooks
 from app.integration.tools.registry import ToolRegistry
+from app.integration.tools.result_processor import ResultProcessor
+from app.integration.tools.security import ApprovalGate, RiskLevel, ToolAuditor
+from app.integration.tools.selector import DefaultToolSelector, ToolSelector
 from app.integration.tools.stats import ToolStats, ToolStatsCollector
+from app.integration.tools.validator import ParameterValidator
 
 
 class ToolService:
@@ -24,15 +28,26 @@ class ToolService:
         max_concurrent_tools: int = 3,
         tool_timeout: int = 30,
         tool_max_retries: int = 3,
+        *,
+        selector: ToolSelector | None = None,
+        validator: ParameterValidator | None = None,
+        result_processor: ResultProcessor | None = None,
+        auditor: ToolAuditor | None = None,
+        approval_gate: ApprovalGate | None = None,
     ) -> None:
         self._registry = ToolRegistry()
         self._stats = ToolStatsCollector()
         self._hooks = ExecutionHooks()
         self._assembler = ToolAssembler()
+        self._selector = selector or DefaultToolSelector()
         self._executor = ToolExecutor(
             self._registry,
             self._stats,
             self._hooks,
+            validator=validator,
+            result_processor=result_processor,
+            auditor=auditor,
+            approval_gate=approval_gate,
             max_concurrent_tools=max_concurrent_tools,
             tool_timeout=tool_timeout,
             tool_max_retries=tool_max_retries,
@@ -50,6 +65,7 @@ class ToolService:
         ok = self._registry.unregister(name)
         if ok:
             self._stats.remove(name)
+            self._executor.prune_tool_lock(name)
         return ok
 
     def get(self, name: str) -> BaseTool | None:
@@ -60,14 +76,23 @@ class ToolService:
         """列出全部工具名。"""
         return self._registry.list_tools()
 
-    # ===== OpenAI 格式导出（→ Registry） =====
+    def list_by_risk(self, risk_level: RiskLevel) -> list[BaseTool]:
+        """按风险等级列出工具（供安全审计 / 管理界面）。"""
+        return self._registry.list_by_risk(risk_level)
+
+    def list_by_category(self, category: str) -> list[BaseTool]:
+        """按功能域列出工具（供按域选择 / 管理界面）。"""
+        return self._registry.list_by_category(category)
+
+    # ===== OpenAI 格式导出（→ Selector + Registry） =====
 
     def get_openai_tools(self) -> list[dict[str, Any]]:
-        """OpenAI Tool Schema 列表。"""
-        return self._registry.get_openai_tools()
+        """OpenAI Tool Schema 列表（经选择器选出本次注入 LLM 的子集）。"""
+        selected = self._selector.select(self._registry.all_tools())
+        return [tool.to_openai_tool() for tool in selected]
 
     def get_openai_responses(self) -> list[dict[str, Any]]:
-        """OpenAI Response Schema 列表。"""
+        """OpenAI Response Schema 列表（全量，不走选择器）。"""
         return self._registry.get_openai_responses()
 
     # ===== 工具执行（→ Executor） =====
@@ -80,7 +105,7 @@ class ToolService:
         max_retries: int | None = None,
         retry_delay: float = 1.0,
     ) -> ToolResult:
-        """执行工具（信号量 + 参数验证 + 自动重试 + 超时 + 统计 + 钩子）。"""
+        """执行工具（信号量 + 参数验证 + 自动重试 + 超时 + 统计 + 截断 + 审计 + 钩子）。"""
         return await self._executor.execute(
             name,
             parameters,

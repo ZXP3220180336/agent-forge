@@ -3,7 +3,7 @@
 > **更新日期**：2026-08-04
 > **文档定位**：工具层 `app/integration/tools/builtin/` 子模块 —— 内置工具的定义、自动发现机制与各工具实现详解。
 > **实现状态**：SearchTool（✅）/ ReadFileTool（✅）/ WriteFileTool（✅）/ CodeExecTool（✅）/ WebBrowseTool（✅）
-> **前置阅读**：[工具模块总览](../tools.md)（ToolService 注册中心、并发控制、重试机制在此说明，本文不重复）
+> **前置阅读**：[工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试机制在此说明，本文不重复）
 
 ---
 
@@ -41,8 +41,8 @@ app/integration/tools/
 
 - **零注册成本**：新增工具只需在 `builtin/` 下创建文件并继承 `BaseTool`，无需修改任何注册代码
 - **自动发现**：`builtin/__init__.py` 在包导入时自动扫描目录，收集所有可实例化的 `BaseTool` 子类
-- **惰性属性访问**：通过模块级 `__getattr__` / `__dir__` 支持 `from app.tools.builtin import SearchTool` 式导入
-- **独立职责**：每个工具只实现 `BaseTool` 的抽象接口，参数验证、超时、重试、统计、并发控制统一由 [ToolService 注册中心](../tools.md) 负责
+- **惰性属性访问**：通过模块级 `__getattr__` / `__dir__` 支持 `from app.integration.tools.builtin import SearchTool` 式导入
+- **独立职责**：每个工具只实现 `BaseTool` 的抽象接口，参数验证、超时、重试、统计、并发控制统一由 [ToolExecutor](../executor.md)（经 ToolService 门面）负责
 
 **架构定位**：工具层在架构分层中位于服务层之下、基础设施之上。
 
@@ -50,7 +50,7 @@ app/integration/tools/
 Agent 层 (LLM 运行时)
     │ 调用 tool_service.execute("search", ...)
     ▼
-服务层 (ToolService)          ← 参数验证 / 超时 / 重试 / 统计 / 信号量
+执行调度 (ToolExecutor，经 ToolService 门面)  ← 参数验证 / 超时 / 重试 / 统计 / 信号量
     ▼
 Tool 层 (BaseTool)            ← builtin 子模块，每个工具一个 execute()
     ▼
@@ -101,7 +101,7 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
 **注意事项：**
 
 - 字典的键是**类名**（如 `"SearchTool"`），不是工具的 `name` 属性（如 `"search"`）——二者在 `BaseTool` 设计中是分离的
-- 模块导入失败会被静默跳过（`except Exception: continue`），因此单个工具文件有语法/依赖错误时，其余工具仍可正常发现，但需注意排障时错误不会直接暴露
+- 模块导入失败会**记录 warning 后跳过**（`except Exception` + `logger.warning`），因此单个工具文件有语法/依赖错误时，其余工具仍可正常发现，且失败会暴露在日志中（`app.tools.builtin`）便于排障
 - `inspect.getmembers` 会遍历模块内的所有类（含被 import 进来的类），但最终收录仍由 `issubclass` 过滤，实践中只有本文件定义的工具类符合条件
 
 ### 惰性访问与触发时机
@@ -121,21 +121,21 @@ __all__ = list(_discover_tools().keys())
 ```
 
 - 文件末尾的 `__all__ = list(_discover_tools().keys())` 在**包导入时立即触发一次全量发现**并填充缓存，因此 `_discover_tools` 的缓存分支在后续调用中直接命中
-- `__getattr__` 是 Python 模块级属性访问兜底：`from app.tools.builtin import SearchTool` 在普通属性查找失败后走到这里，从缓存返回工具类；未收录的名字抛出 `AttributeError`
-- `__dir__` 让 `dir(app.tools.builtin)` 能列出所有已发现的工具类
+- `__getattr__` 是 Python 模块级属性访问兜底：`from app.integration.tools.builtin import SearchTool` 在普通属性查找失败后走到这里，从缓存返回工具类；未收录的名字抛出 `AttributeError`
+- `__dir__` 让 `dir(app.integration.tools.builtin)` 能列出所有已发现的工具类
 
 **典型用法：**
 
 ```python
-from app.tools.builtin import SearchTool, WebBrowseTool   # 惰性加载单个类
-from app.tools.builtin import __all__ as builtin_tools    # 或遍历 __all__ 批量注册
+from app.integration.tools.builtin import SearchTool, WebBrowseTool   # 惰性加载单个类
+from app.integration.tools.builtin import __all__ as builtin_tools    # 或遍历 __all__ 批量注册
 ```
 
 ---
 
 ## BaseTool 基类详解
 
-`BaseTool`（`app/integration/tools/base.py`，129 行）是所有工具的抽象基类，定义了 4 个必须实现的抽象成员和 3 个通用具体方法。
+`BaseTool`（`app/integration/tools/base.py`）是所有工具的抽象基类，定义了 4 个必须实现的抽象成员，并提供元数据属性、Schema 导出与参数校验委托。
 
 ### 抽象接口（子类必须实现）
 
@@ -162,7 +162,17 @@ class BaseTool(ABC):
 | `name` | `str` | LLM、注册中心 | 唯一标识，如 `"search"`、`"readFile"` |
 | `description` | `str` | LLM | 描述工具功能与适用场景，LLM 据此决定是否调用 |
 | `parameters` | `dict` | LLM | OpenAI Function Calling 格式的 JSON Schema，LLM 据此构造参数 |
-| `execute` | `ToolResult` | 注册中心 | 实际执行逻辑，必须是 `async def` |
+| `execute` | `ToolResult` | executor | 实际执行逻辑，必须是 `async def` |
+
+### 元数据属性（分级标注 + 审计用，默认值由内置工具覆写）
+
+| 属性 | 默认值 | 说明 |
+| --- | --- | --- |
+| `risk_level` | `L0_READONLY` | 风险分级（L0 只读 / L1 写 / L2 危险 / L3 禁用），见 [security.md](../security.md) |
+| `category` | `"general"` | 功能域（search / file / code / web / ...），供按域查询 |
+| `concurrency_safe` | `True` | 是否允许自身并发（写 / 子进程类应为 False → 串行化） |
+| `requires_approval` | `False` | 是否需人工审批（executor 经 ApprovalGate 确认，默认放行） |
+| `max_output_length` | `100_000` | 结果截断上限（ResultProcessor 消费），见 [result_processor.md](../result_processor.md) |
 
 ### 具体方法（基类提供，子类可覆写）
 
@@ -177,18 +187,15 @@ class BaseTool(ABC):
 
 **`validate_parameters(**kwargs) -> bool`**
 
-执行前的基础参数校验，默认实现做两项检查（子类可覆写以增强校验）：
+委托 jsonschema 校验器做完整校验（类型 / 必填 / 枚举 / 范围 / 未知参数拒绝），返回布尔；`validation_issues(**kwargs)` 返回中文归因问题列表，供 executor 构造可归因错误（见 [validator.md](../validator.md)）。
 
-1. **未知参数检查**：`kwargs` 中的键不在 `parameters["properties"]` 中 → 返回 `False`
-2. **必填参数检查**：`parameters["required"]` 中的键不在 `kwargs` 中 → 返回 `False`
-
-> 实际执行链路上，注册中心 `ToolService.execute()` 会先调用 `validate_parameters`，工具内部 `execute()` 开头也会再调用一次作为兜底（解耦测试时单测工具也更方便）。
+> 实际执行链路上，executor 先调 `tool.validation_issues()` 做可归因校验（失败即返回错误），工具内部 `execute()` 开头再调 `validate_parameters()` 作为兜底。
 
 ---
 
 ## ToolResult 数据结构
 
-`ToolResult`（`app/integration/tools/base.py`）是工具执行的统一返回结构，`BaseTool.execute()` 必须返回它：
+`ToolResult`（`app/domain/ports/tool_gateway.py`）是工具执行的统一返回结构，`BaseTool.execute()` 必须返回它：
 
 ```python
 @dataclass
@@ -196,13 +203,14 @@ class ToolResult:
     success: bool                   # 是否执行成功
     content: str                    # 执行结果内容（传给 LLM 的观察结果）
     error: str | None = None        # 失败时的详细错误信息
-    metadata: dict[str, Any] | None = None   # 额外元数据（来源、状态码、数量等）
-    execution_time: float | None = None      # 执行耗时（秒），注册中心自动填充
-    retry_count: int = 0                     # 实际重试次数，注册中心自动填充
+    metadata: dict[str, Any] | None = None   # 额外元数据（来源、状态码、截断标记等）
+    execution_time: float | None = None      # 执行耗时（秒），executor 自动填充
+    retry_count: int = 0                     # 实际重试次数，executor 自动填充
 ```
 
 - `__str__`：成功时返回 `content`，失败时返回 `错误: {error}`
-- **约定**：工具内所有异常都应捕获并包装为 `ToolResult(success=False, error=...)` 返回，**不要让异常抛出**；`execution_time` 与 `retry_count` 由注册中心填充，工具自身不设置
+- **约定**：工具内所有异常都应捕获并包装为 `ToolResult(success=False, error=...)` 返回，**不要让异常抛出**；`execution_time` 与 `retry_count` 由 executor 填充，工具自身不设置
+- `metadata["truncated"]`：结果被 ResultProcessor 截断时置 `True`
 
 ---
 
@@ -210,7 +218,7 @@ class ToolResult:
 
 ### 1. SearchTool — 网络搜索
 
-**文件**：`app/integration/tools/builtin/search.py`（104 行）｜**名称**：`search`
+**文件**：`app/integration/tools/builtin/search.py`｜**名称**：`search`
 
 | 项目 | 说明 |
 | --- | --- |
@@ -218,6 +226,7 @@ class ToolResult:
 | 参数 | `query: string`（必填） |
 | 依赖 | Tavily API，需配置 `TAVILY_API_KEY`；未配置时直接返回失败 |
 | 执行方式 | 同步 SDK 经 `asyncio.to_thread` 包装，**不阻塞事件循环** |
+| 风险级 | L0 只读（category=search，并发安全） |
 
 **实现要点：**
 
@@ -225,12 +234,12 @@ class ToolResult:
 response = await asyncio.to_thread(
     tavily.search,
     query=kwargs["query"],
-    search_depth=settings.tavily_search_depth,   # 默认 "basic"
+    search_depth=self._search_depth,   # register_config 注入，默认 "basic"
     include_answer=True,
 )
 ```
 
-- 搜索深度取 `settings.tavily_search_depth`（可选 `"basic"` / `"advanced"`）
+- 搜索深度取 `self._search_depth`（由装配根经 `register_config` 注入 settings 值，可选 `"basic"` / `"advanced"`）
 - 返回**优先取直接答案**：`response.get("answer")` 非空时直接返回，`metadata["source"] = "tavily_answer"`
 - 否则格式化搜索结果列表（`- 标题: 内容`），`metadata` 记录 `source="tavily_search"` 与 `count`
 - 无结果时返回 `"抱歉，没有找到相关信息。"`
@@ -238,18 +247,19 @@ response = await asyncio.to_thread(
 
 ### 2. ReadFileTool — 读取文件
 
-**文件**：`app/integration/tools/builtin/file_ops.py`（111 行）｜**名称**：`readFile`
+**文件**：`app/integration/tools/builtin/file_ops.py`｜**名称**：`readFile`
 
 | 项目 | 说明 |
 | --- | --- |
 | 描述 | 读取指定路径的文本文件内容 |
 | 参数 | `file_path: string`（必填，绝对路径） |
 | 执行方式 | `aiofiles.open(path, encoding="utf-8")` 异步读取 |
-| 安全限制 | 输出截断 `settings.tool_max_output_length`（默认 100_000 字符） |
+| 风险级 | L0 只读（category=file，并发安全） |
+| 结果截断 | ResultProcessor 统一 head+tail 截断（`max_output_length`，默认 100_000） |
 
 **实现要点：**
 
-- 内容超过上限时截断，并追加 `"...（内容已截断，共 N 字符）"` 说明
+- 返回完整文件内容，截断由 [ResultProcessor](../result_processor.md) 统一处理（head+tail）
 - `FileNotFoundError` → `"文件 '...' 未找到"`；其它异常 → `"读取文件失败: ..."`
 
 ### 3. WriteFileTool — 写入文件
@@ -262,6 +272,7 @@ response = await asyncio.to_thread(
 | 参数 | `file_path: string`（必填）、`content: string`（必填） |
 | 执行方式 | `aiofiles.open(path, "w", encoding="utf-8")` 异步写入 |
 | 特性 | **自动创建父目录**（`os.makedirs(dir_path, exist_ok=True)`） |
+| 风险级 | L1 写（category=file，**非并发安全** → 同工具串行化） |
 
 **实现要点：**
 
@@ -270,14 +281,15 @@ response = await asyncio.to_thread(
 
 ### 4. CodeExecTool — 终端命令执行
 
-**文件**：`app/integration/tools/builtin/code_exec.py`（138 行）｜**名称**：`code_exec`
+**文件**：`app/integration/tools/builtin/code_exec.py`｜**名称**：`code_exec`
 
 | 项目 | 说明 |
 | --- | --- |
 | 描述 | 在系统终端中执行代码/命令并返回输出，适用于运行脚本、Shell 命令、编译等 |
 | 参数 | `command: string`（必填）、`workdir: string`（可选，绝对路径，留空用项目根目录） |
 | 执行方式 | `asyncio.create_subprocess_shell` 异步子进程 |
-| 安全限制 | **危险命令黑名单**、空命令拦截、输出截断 100K 字符 |
+| 风险级 | L2 危险（category=code，**非并发安全** → 同工具串行化） |
+| 安全限制 | **危险命令黑名单**、空命令拦截（结果截断由 ResultProcessor 统一处理） |
 
 **危险命令黑名单（`FORBIDDEN_PREFIXES`，17 项）：**
 
@@ -309,14 +321,14 @@ stdout, stderr = await proc.communicate()
 
 - **黑名单匹配方式**：`startswith` 前缀匹配（大小写不敏感），例如 `rm -rf /` 会拦截 `RM -RF /xxx`；但**不拦截** `... && rm -rf /` 这类非前缀位置的危险子串，属已知局限
 - 空命令（`command` 去除空白后为空）直接返回失败
-- stdout 与 stderr 分别 `decode("utf-8", errors="replace")` 解码；输出超限截断 `settings.tool_max_output_length`
+- stdout 与 stderr 分别 `decode("utf-8", errors="replace")` 解码；结果截断由 ResultProcessor 统一处理
 - 返回内容：有输出则拼接 stdout（及 `--- stderr ---` 段），否则 `"(无输出)"`
 - `success = proc.returncode == 0`；`metadata` 记录 `return_code` 与 `command`
 - 异常分类：`FileNotFoundError` → `"命令不存在或未找到可执行文件"`；其它 → `"命令执行失败: ..."`
 
 ### 5. WebBrowseTool — 网页内容抓取
 
-**文件**：`app/integration/tools/builtin/web_browse.py`（272 行）｜**名称**：`web_browse`
+**文件**：`app/integration/tools/builtin/web_browse.py`｜**名称**：`web_browse`
 
 | 项目 | 说明 |
 | --- | --- |
@@ -324,7 +336,8 @@ stdout, stderr = await proc.communicate()
 | 参数 | `url: string`（必填，完整 URL；缺协议时自动补 `https://`） |
 | 执行方式 | `httpx.AsyncClient`（**全局单例**，复用连接池） |
 | HTML 解析 | 自实现 `_HTMLToTextParser`，基于标准库 `html.parser`，零额外依赖 |
-| 安全限制 | 内容截断 `settings.tool_max_content_length`（默认 50_000）、超时 15s、最大重定向 5 |
+| 风险级 | L0 只读（category=web，并发安全） |
+| 安全限制 | 超时 15s、最大重定向 5（结果截断由 ResultProcessor 统一处理，`max_output_length` 默认 50_000） |
 
 **HTTP 客户端（全局单例，连接池复用）：**
 
@@ -354,7 +367,7 @@ _http_client = httpx.AsyncClient(
 标题: {title}
 来源: {final_url}
 
-{纯文本正文（超限截断 tool_max_content_length）}
+{纯文本正文（截断由 ResultProcessor 统一处理）}
 
 页面链接：
   - [text](url)
@@ -386,23 +399,24 @@ _http_client = httpx.AsyncClient(
 `builtin` 的自动发现机制让新增工具只需两步：
 
 1. **在 `builtin/` 下新建文件**，继承 `BaseTool` 并实现 4 个抽象成员（`name` / `description` / `parameters` / `execute`）
-2. **无需任何注册代码**，重启后 `from app.tools.builtin import YourTool` 即可使用
+2. **无需任何注册代码**，重启后 `from app.integration.tools.builtin import YourTool` 即可使用
 
-**开发规范（详见 [工具模块总览 - 如何开发新工具](../tools.md)）：**
+**开发规范（详见 [工具模块接口文档](../tools.md)）：**
 
 1. `name` 使用小写+下划线且全局唯一（现有 5 个已占用：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse`）
 2. `description` 清晰描述功能与适用场景，LLM 据此决定调用
 3. `parameters` 使用 OpenAI Function Calling 的 JSON Schema 格式
 4. `execute` 必须为 `async def` 并返回 `ToolResult`
-5. 开头总是调用 `self.validate_parameters(**kwargs)` 做参数校验
-6. 所有异常捕获为 `ToolResult(success=False, error=...)`，不让异常抛出
-7. 同步 IO（如第三方 SDK）用 `asyncio.to_thread` 包装，避免阻塞事件循环
+5. 开头总是调用 `self.validate_parameters(**kwargs)` 做参数校验（executor 已做，此为兜底）
+6. **按需覆写元数据**：`risk_level`（默认 L0）、`category`、`concurrency_safe`（写 / 子进程类设为 `False`）、`max_output_length`（结果截断上限）
+7. 所有异常捕获为 `ToolResult(success=False, error=...)`，不让异常抛出
+8. 同步 IO（如第三方 SDK）用 `asyncio.to_thread` 包装，避免阻塞事件循环
 
 ---
 
 ## 相关文档
 
-- [工具模块总览](../tools.md)（ToolService 注册中心、并发控制、重试、统计、配置关联）
+- [工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试、统计、配置关联）
 - [service 模块](../../../application_doc/README.md)（ToolService 所在的服务层）
 - [架构设计](../../../architecture.md)（工具层在整体架构中的定位）
 - [配置管理](../../../config_doc/config.md)（`TAVILY_API_KEY`、`TOOL_MAX_OUTPUT_LENGTH` 等配置项）

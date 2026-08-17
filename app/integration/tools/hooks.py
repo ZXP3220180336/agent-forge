@@ -1,6 +1,6 @@
 """执行钩子管理。"""
 
-import asyncio
+import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -29,9 +29,9 @@ class ExecutionHooks:
         """运行全部钩子；单个钩子异常只记 warning，不影响主流程。"""
         for hook in self._hooks:
             try:
-                if asyncio.iscoroutinefunction(hook):
+                if inspect.iscoroutinefunction(hook):
                     await hook(tool_name, parameters, result)
                 else:
                     hook(tool_name, parameters, result)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning("钩子执行失败: %s", e)

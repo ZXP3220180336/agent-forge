@@ -108,3 +108,25 @@ async def test_init_default_tools_registers_five():
         "code_exec",
         "web_browse",
     }
+
+
+@pytest.mark.asyncio
+async def test_read_file_large_content_truncated_head_tail(tmp_path):
+    """readFile 大文件结果由 ResultProcessor 统一 head+tail 截断（含 marker）。"""
+    target = tmp_path / "big.txt"
+    # 超过 readFile 默认 max_output_length（100_000）
+    content = ("头" * 500) + ("中" * 100_000) + ("尾" * 500)
+    target.write_text(content, encoding="utf-8")
+
+    service = ToolService()
+    service.register(ReadFileTool())
+
+    result = await service.execute("readFile", {"file_path": str(target)})
+
+    assert result.success is True
+    assert "已截断" in result.content
+    assert "共 " in result.content  # marker 含原长度
+    # 首尾保留（head 段 + tail 段）
+    assert "头" * 500 in result.content
+    assert "尾" * 500 in result.content
+    assert result.metadata["truncated"] is True

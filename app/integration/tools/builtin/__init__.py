@@ -7,7 +7,11 @@ import importlib
 import inspect
 import pkgutil
 
+from app.platform.observability.logger import get_logger
+
 from ..base import BaseTool
+
+logger = get_logger("tools.builtin")
 
 # 自动收集的所有工具类
 _tool_classes: dict[str, type[BaseTool]] = {}
@@ -26,7 +30,8 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
 
         try:
             module = importlib.import_module(f".{module_name}", __package__)
-        except Exception:
+        except Exception as e:  # noqa: BLE001 — 单模块导入失败不影响其它模块发现
+            logger.warning("内置工具模块导入失败，跳过 %s: %s", module_name, e)
             continue
 
         for name, obj in inspect.getmembers(module, inspect.isclass):

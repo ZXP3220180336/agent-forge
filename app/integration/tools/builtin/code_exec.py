@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, ClassVar
 
 from ..base import BaseTool, ToolResult
+from ..security import RiskLevel
 
 
 class CodeExecTool(BaseTool):
@@ -14,9 +15,30 @@ class CodeExecTool(BaseTool):
     _max_output_length: ClassVar[int] = 100_000
 
     @classmethod
-    def register_config(cls, *, max_output_length: int = 100_000, **kwargs: Any) -> None:
+    def register_config(
+        cls, *, max_output_length: int = 100_000, **kwargs: Any
+    ) -> None:
         """注入输出截断配置（由装配根调用，避免直接依赖 settings）。"""
         cls._max_output_length = max_output_length
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        """命令执行（潜在不可逆影响），L2。"""
+        return RiskLevel.L2_DANGEROUS
+
+    @property
+    def category(self) -> str:
+        return "code"
+
+    @property
+    def concurrency_safe(self) -> bool:
+        """子进程执行非并发安全，串行化。"""
+        return False
+
+    @property
+    def max_output_length(self) -> int:
+        """结果截断上限（字符数），ResultProcessor 消费。"""
+        return self._max_output_length
 
     # 禁止执行的危险命令前缀
     FORBIDDEN_PREFIXES: tuple[str, ...] = (
@@ -103,14 +125,7 @@ class CodeExecTool(BaseTool):
             stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
             stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
 
-            # 截断过长的输出
-            max_len = self._max_output_length
-            if len(stdout_str) > max_len:
-                stdout_str = (
-                    stdout_str[:max_len]
-                    + f"\n...（输出已截断，共 {len(stdout_str)} 字符）"
-                )
-
+            # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
             # 构建返回内容
             parts = []
             if stdout_str:
@@ -136,7 +151,7 @@ class CodeExecTool(BaseTool):
                 content="",
                 error=f"命令不存在或未找到可执行文件: {e!s}",
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return ToolResult(
                 success=False,
                 content="",

@@ -1,8 +1,9 @@
-"""工具注册表 — 工具容器 + OpenAI 格式导出。"""
+"""工具注册表 — 工具容器 + OpenAI 格式导出 + 元数据查询。"""
 
 from typing import Any
 
 from app.integration.tools.base import BaseTool
+from app.integration.tools.security import RiskLevel
 
 
 class ToolRegistry:
@@ -31,6 +32,18 @@ class ToolRegistry:
     def list_tools(self) -> list[str]:
         """列出全部工具名。"""
         return list(self._tools.keys())
+
+    def all_tools(self) -> list[BaseTool]:
+        """全部工具实例（注册顺序）。"""
+        return list(self._tools.values())
+
+    def list_by_risk(self, risk_level: RiskLevel) -> list[BaseTool]:
+        """按风险等级过滤工具（供安全审计 / 管理界面查询）。"""
+        return [tool for tool in self._tools.values() if tool.risk_level == risk_level]
+
+    def list_by_category(self, category: str) -> list[BaseTool]:
+        """按功能域过滤工具（供按域选择 / 管理界面查询）。"""
+        return [tool for tool in self._tools.values() if tool.category == category]
 
     def get_openai_tools(self) -> list[dict[str, Any]]:
         """OpenAI Tool Schema 列表。"""

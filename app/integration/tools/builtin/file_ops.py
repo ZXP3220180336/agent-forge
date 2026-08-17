@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 import aiofiles
 
 from ..base import BaseTool, ToolResult
+from ..security import RiskLevel
 
 
 class ReadFileTool(BaseTool):
@@ -16,9 +17,25 @@ class ReadFileTool(BaseTool):
     _max_output_length: ClassVar[int] = 100_000
 
     @classmethod
-    def register_config(cls, *, max_output_length: int = 100_000, **kwargs: Any) -> None:
+    def register_config(
+        cls, *, max_output_length: int = 100_000, **kwargs: Any
+    ) -> None:
         """注入内容截断配置（由装配根调用，避免直接依赖 settings）。"""
         cls._max_output_length = max_output_length
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        """只读文件，L0。"""
+        return RiskLevel.L0_READONLY
+
+    @property
+    def category(self) -> str:
+        return "file"
+
+    @property
+    def max_output_length(self) -> int:
+        """结果截断上限（字符数），ResultProcessor 消费。"""
+        return self._max_output_length
 
     @property
     def name(self) -> str:
@@ -51,25 +68,32 @@ class ReadFileTool(BaseTool):
             async with aiofiles.open(kwargs["file_path"], encoding="utf-8") as file:
                 content = await file.read()
 
-            # 截断过大的文件内容
-            max_len = self._max_output_length
-            if len(content) > max_len:
-                content = (
-                    content[:max_len]
-                    + f"\n...（内容已截断，共 {len(content)} 字符）"
-                )
-
+            # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
             return ToolResult(success=True, content=content)
         except FileNotFoundError:
             return ToolResult(
                 success=False, content="", error=f"文件 '{kwargs['file_path']}' 未找到"
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return ToolResult(success=False, content="", error=f"读取文件失败: {e!s}")
 
 
 class WriteFileTool(BaseTool):
     """文件写入工具"""
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        """写文件（修改磁盘），L1。"""
+        return RiskLevel.L1_WRITE
+
+    @property
+    def category(self) -> str:
+        return "file"
+
+    @property
+    def concurrency_safe(self) -> bool:
+        """写文件存在并发覆盖风险，串行化。"""
+        return False
 
     @property
     def name(self) -> str:
@@ -113,5 +137,5 @@ class WriteFileTool(BaseTool):
             ) as file:
                 await file.write(kwargs["content"])
             return ToolResult(success=True, content=f"成功写入 '{kwargs['file_path']}'")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return ToolResult(success=False, content="", error=f"写入文件失败: {e!s}")

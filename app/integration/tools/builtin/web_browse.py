@@ -10,12 +10,13 @@ from urllib.parse import urljoin
 import httpx
 
 from ..base import BaseTool, ToolResult
+from ..security import RiskLevel
 
 
 class _HTMLToTextParser(HTMLParser):
     """HTML 转纯文本的解析器"""
 
-    BLOCK_TAGS = {
+    BLOCK_TAGS: ClassVar[set[str]] = {
         "p",
         "div",
         "br",
@@ -166,6 +167,20 @@ class WebBrowseTool(BaseTool):
         cls._max_content_length = max_content_length
 
     @property
+    def risk_level(self) -> RiskLevel:
+        """只读网页抓取，L0。"""
+        return RiskLevel.L0_READONLY
+
+    @property
+    def category(self) -> str:
+        return "web"
+
+    @property
+    def max_output_length(self) -> int:
+        """结果截断上限（字符数），ResultProcessor 消费。"""
+        return self._max_content_length
+
+    @property
     def name(self) -> str:
         return "web_browse"
 
@@ -225,14 +240,7 @@ class WebBrowseTool(BaseTool):
             page_title = parser.get_title()
             links_block = parser.get_links_formatted()
 
-            # 截断过长的内容
-            max_len = self._max_content_length
-            if len(page_text) > max_len:
-                page_text = (
-                    page_text[:max_len]
-                    + f"\n...（内容已截断，共 {len(page_text)} 字符）"
-                )
-
+            # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
             # 构建返回
             content_parts = [
                 f"标题: {page_title}",
@@ -272,7 +280,7 @@ class WebBrowseTool(BaseTool):
                 content="",
                 error=f"请求失败: {e!s}",
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return ToolResult(
                 success=False,
                 content="",

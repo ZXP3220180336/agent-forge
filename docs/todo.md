@@ -99,3 +99,34 @@
 - SessionManager 构造参数 `db_session_factory` 存为 `self.db_session`（非同名属性）；fake 的 db_session 必须实现 `__aenter__/__aexit__`（`async with self.db_session() as db`）。
 - 复用 fake 时要清理其状态：`list_sessions` 首页会写缓存，连续两次调用需 `fake_redis.data.clear()`，否则第二次命中缓存不查库、断言落空。
 - 内置工具测试显式 `register_config(api_key="")` 重置 key，否则会读到仓库根 `.env` 的真实 TAVILY_API_KEY 触发真实网络请求。
+
+---
+
+# 2026-08-17 工具模块重构：对齐工业级六大子组件
+
+> 背景：工具模块原为 Facade + 5 组件（registry/executor/stats/hooks/assembler），对照工业级 Agent 工具模块存在差距（参数校验仅查未知+必填、无统一结果处理、无风险分级与审计、无选择机制）。网络调研工业级方案后，与用户「六大子组件」蓝图对比整合，确认四个方向性决策：全盘对齐六大子组件 / 安全分级+审计留痕（不拦截）/ 选择器只留接口不实现 / 引入 jsonschema。
+
+## 任务清单（垂直切片）
+
+- [x] **Slice 0** Facade 骨架 + 最小链路：新建 selector / validator / result_processor / security 四组件，wire 进 ToolService/executor，既有测试全绿（12 passed）
+- [x] **Slice 1** validator 细化（iter_errors 全量收集 + 中文归因 + reject_unknown + 类型名映射）；base.py 委托改造；`test_tool_validator.py`（13 用例）
+- [x] **Slice 2** result_processor 细化（head+tail 截断 + 错误归一化）；内置工具删内联截断 + 元数据（risk/category/concurrency_safe/max_output_length）；`test_result_processor.py` + readFile 大文件截断集成用例
+- [x] **Slice 3** security 细化（RiskLevel L0-L3 + ToolAuditor 审计到日志）；executor 审计全路径接入 + per-tool 串行化锁；`test_tool_audit.py` + executor 组件测试
+- [x] **Slice 4** selector 接入 get_openai_tools；修 domain/agent/executor.py:210 PEP 758 语法；`test_tool_selector.py` + `test_tool_registry_metadata.py` + `test_tool_executor_components.py` + `test_tool_hooks.py`
+- [x] **Slice 5** 文档：tools.md 重写为模块接口文档 + tool_service.md/builtin.md/集成层 README 更新 + validator/result_processor/security/selector 四子文档 + ALIGNMENT + ADR×3 + issue + verify_alignment 通过
+
+## 评审（2026-08-17）
+
+- **全量测试 414 passed**（原 12 工具测试 + 新增 ~40 用例），无回归
+- **`uv run python -m scripts.verify_alignment` 通过**（4 新组件已登记，文档死链清零）
+- **Container 装配冒烟**：5 工具注册 + code_exec 正确标注 L2_DANGEROUS + 审计默认启用
+- **受控审计冒烟**：search 未配置 key 优雅失败路径触发 `tool_call` 审计事件
+- **新增组件**：selector（接口+全量注入）/ validator（jsonschema 严格校验）/ result_processor（head+tail 截断）/ security（分级+审计）
+- **行为变更**：参数校验从「未知+必填」升级为 jsonschema 完整校验（LLM 传字符串化数字会校验失败并归因）——ADR-002 记录；结果截断从「只留前 N」升级为 head+tail（含 marker）
+- **顺带修复**：domain/agent/executor.py `except json.JSONDecodeError, KeyError:` → 显式元组（PEP 758 可移植性，issue AGENT-001）；hooks.py `asyncio.iscoroutinefunction` → `inspect`（3.16 弃用告警）
+
+### 遗留（工具模块重构）
+
+- `app/main.py:27`、`app/integration/llm/retry.py:595` 同型 PEP 758 逗号语法，超出本次范围，仅 issue AGENT-001 记录待后续处理
+- 审计密钥脱敏（params 中的 api_key 等）列为未来增强；审计默认常开（不设 settings 开关）
+- 选择器向量召回（embedding 粗排 + LLM 精排）留待工具数 >50 时实现（ADR-001 记录升级路径）
