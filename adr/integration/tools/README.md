@@ -19,6 +19,7 @@
 | [TOOLS-ADR-001](2026-08-17-six-component-alignment.md) | 六大子组件对齐 + 选择器全量注入 + head+tail 截断 | ✅ 已采纳 | tools 全模块 | 2026-08-17 |
 | [TOOLS-ADR-002](2026-08-17-jsonschema-strict-validation.md) | 参数校验：jsonschema 严格校验 + 错误归因 | ✅ 已采纳 | validator / base | 2026-08-17 |
 | [TOOLS-ADR-003](2026-08-17-risk-levels-audit-no-enforcement.md) | 风险分级 L0-L3 + 审计留痕（不拦截） | ✅ 已采纳 | security / executor | 2026-08-17 |
+| [TOOLS-ADR-004](2026-08-17-tool-timeout-priority.md) | 工具自声明默认超时（调用方 > 工具 > 全局） | ✅ 已采纳 | base / executor / builtin | 2026-08-17 |
 
 ## 新决策登记规范
 

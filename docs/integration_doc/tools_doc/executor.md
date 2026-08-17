@@ -51,6 +51,8 @@
 
 `asyncio.wait_for(tool.execute(...), timeout)` 包裹每次尝试；重试循环 `range(max_retries)`（默认 3，含首次），失败后退避 `retry_delay * 2^attempt`（1s / 2s / 4s）。参数校验失败 / 未注册 / JSON 解析失败**不重试**（直接返回）。
 
+**超时优先级（调用方显式 > 工具自声明 > 全局配置）**：`execute(timeout=...)` 显式传入最高优先；否则用工具声明的 `BaseTool.timeout`（如 code_exec 60s / readFile 5s）；两者均缺省时用全局 `tool_timeout`（默认 30s）。工具按自身耗时特征声明默认值，编排层可按需覆盖。
+
 ### 组件接入点
 
 - **校验**：`tool.validation_issues()`（jsonschema 全量归因），见 [validator.md](validator.md)
@@ -80,8 +82,9 @@ ToolExecutor（依赖注入，无 settings 直接依赖）
 ```text
 execute(name, parameters, timeout, max_retries, retry_delay)
   async with _tool_semaphore                # 工具级并发信号量
-    1. 补默认：timeout=注入 tool_timeout、max_retries=注入 tool_max_retries
-    2. 查工具：未注册 → 审计（保留原始名，risk 兜底 L0）→ 返回 "工具 '...' 未注册"
+    1. 查工具：未注册 → 审计（保留原始名，risk 兜底 L0）→ 返回 "工具 '...' 未注册"
+    2. 解析执行参数：timeout = 调用方显式 or tool.timeout（自声明）or 全局 tool_timeout
+       · max_retries = 调用方显式 or 全局 tool_max_retries
     3. 参数解析：str → json.loads（失败 → 审计 → 返回 "参数 JSON 解析失败: {e}"）
     4. jsonschema 校验：issues = tool.validation_issues(**parameters)
        · 非空 → 审计 → 返回 "参数验证失败: {归因列表}"        # 可归因，非 kwargs 转储
@@ -123,7 +126,7 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 | 配置 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `max_concurrent_tools` | int | 3 | 工具级并发信号量（`agent_max_concurrent_tools` 注入） |
-| `tool_timeout` | int | 30 | 单次执行超时（秒） |
+| `tool_timeout` | int | 30 | 单次执行超时（秒）；优先级：调用方显式 > 工具自声明 `timeout` > 本配置 |
 | `tool_max_retries` | int | 3 | 最大执行次数（含首次） |
 
 ## 测试状态

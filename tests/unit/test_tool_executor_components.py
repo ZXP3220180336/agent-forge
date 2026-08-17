@@ -207,3 +207,57 @@ async def test_audit_on_tool_failure():
     assert len(spy.records) == 1
     assert spy.records[0]["success"] is False
     assert "业务失败" in spy.records[0]["error"]
+
+
+class _SlowTool(_ParamTool):
+    """慢工具：声明 timeout 属性，execute 固定 sleep 模拟耗时调用。"""
+
+    def __init__(self, *, declared_timeout: int | None = None):
+        self._declared_timeout = declared_timeout
+
+    @property
+    def timeout(self) -> int | None:
+        return self._declared_timeout
+
+    async def execute(self, **kwargs) -> ToolResult:
+        await asyncio.sleep(0.2)
+        return ToolResult(success=True, content="slow done")
+
+
+@pytest.mark.asyncio
+async def test_tool_declared_timeout_takes_precedence_over_global():
+    """工具自声明 timeout（0.05s）优先于全局配置（30s）→ 慢执行超时失败。"""
+    tool = _SlowTool(declared_timeout=0.05)
+    service = ToolService(tool_max_retries=1)
+    service.register(tool)
+
+    result = await service.execute("param_tool", {"count": 1})
+
+    assert result.success is False
+    assert "超时" in result.error
+
+
+@pytest.mark.asyncio
+async def test_caller_timeout_overrides_tool_declared():
+    """调用方显式 timeout（0.05s）覆盖工具自声明（1s）→ 慢执行超时失败。"""
+    tool = _SlowTool(declared_timeout=1)
+    service = ToolService(tool_max_retries=1)
+    service.register(tool)
+
+    result = await service.execute("param_tool", {"count": 1}, timeout=0.05)
+
+    assert result.success is False
+    assert "超时" in result.error
+
+
+@pytest.mark.asyncio
+async def test_global_timeout_used_when_tool_declares_none():
+    """工具声明 None → 沿用全局配置（注入小值）→ 慢执行超时失败。"""
+    tool = _SlowTool(declared_timeout=None)
+    service = ToolService(tool_timeout=0.05, tool_max_retries=1)
+    service.register(tool)
+
+    result = await service.execute("param_tool", {"count": 1})
+
+    assert result.success is False
+    assert "超时" in result.error

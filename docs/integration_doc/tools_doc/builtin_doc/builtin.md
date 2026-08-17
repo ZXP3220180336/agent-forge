@@ -176,6 +176,7 @@ class BaseTool(ABC):
 | `concurrency_safe` | `True` | 是否允许自身并发（写 / 子进程类应为 False → 串行化） |
 | `requires_approval` | `False` | 是否需人工审批（executor 经 ApprovalGate 确认，默认放行） |
 | `max_output_length` | `100_000` | 结果截断上限（ResultProcessor 消费），见 [result_processor.md](../result_processor.md) |
+| `timeout` | `None` | 工具自声明默认超时（秒；None = 沿用全局 `tool_timeout`，调用方显式传入可覆盖），见 [executor.md](../executor.md) |
 
 ### 具体方法（基类提供，子类可覆写）
 
@@ -230,6 +231,7 @@ class ToolResult:
 | 依赖 | Tavily API，需配置 `TAVILY_API_KEY`；未配置时直接返回失败 |
 | 执行方式 | 同步 SDK 经 `asyncio.to_thread` 包装，**不阻塞事件循环** |
 | 风险级 | L0 只读（category=search，并发安全） |
+| 默认超时 | 15s（executor 外层保护） |
 
 **实现要点：**
 
@@ -258,6 +260,7 @@ response = await asyncio.to_thread(
 | 参数 | `file_path: string`（必填，绝对路径） |
 | 执行方式 | `aiofiles.open(path, encoding="utf-8")` 异步读取 |
 | 风险级 | L0 只读（category=file，并发安全） |
+| 默认超时 | 5s（本地读快） |
 | 结果截断 | ResultProcessor 统一 head+tail 截断（`max_output_length`，默认 100_000） |
 
 **实现要点：**
@@ -276,6 +279,7 @@ response = await asyncio.to_thread(
 | 执行方式 | `aiofiles.open(path, "w", encoding="utf-8")` 异步写入 |
 | 特性 | **自动创建父目录**（`os.makedirs(dir_path, exist_ok=True)`） |
 | 风险级 | L1 写（category=file，**非并发安全** → 同工具串行化） |
+| 默认超时 | 5s（本地写快） |
 
 **实现要点：**
 
@@ -292,6 +296,7 @@ response = await asyncio.to_thread(
 | 参数 | `command: string`（必填）、`workdir: string`（可选，绝对路径，留空用项目根目录） |
 | 执行方式 | `asyncio.create_subprocess_shell` 异步子进程 |
 | 风险级 | L2 危险（category=code，**非并发安全** → 同工具串行化） |
+| 默认超时 | 60s（编译 / 运行可较久） |
 | 安全限制 | **危险命令黑名单**、空命令拦截（结果截断由 ResultProcessor 统一处理） |
 
 **危险命令黑名单（`FORBIDDEN_PREFIXES`，17 项）：**
@@ -340,6 +345,7 @@ stdout, stderr = await proc.communicate()
 | 执行方式 | `httpx.AsyncClient`（**全局单例**，复用连接池） |
 | HTML 解析 | 自实现 `_HTMLToTextParser`，基于标准库 `html.parser`，零额外依赖 |
 | 风险级 | L0 只读（category=web，并发安全） |
+| 默认超时 | 15s（与内部 httpx 超时一致） |
 | 安全限制 | 超时 15s、最大重定向 5（结果截断由 ResultProcessor 统一处理，`max_output_length` 默认 50_000） |
 
 **HTTP 客户端（全局单例，连接池复用）：**
@@ -411,7 +417,7 @@ _http_client = httpx.AsyncClient(
 3. `parameters` 使用 OpenAI Function Calling 的 JSON Schema 格式
 4. `execute` 必须为 `async def` 并返回 `ToolResult`
 5. 开头总是调用 `self.validate_parameters(**kwargs)` 做参数校验（executor 已做，此为兜底）
-6. **按需覆写元数据**：`risk_level`（默认 L0）、`category`、`concurrency_safe`（写 / 子进程类设为 `False`）、`max_output_length`（结果截断上限）、`requires_approval`（需人工审批时设为 `True`）
+6. **按需覆写元数据**：`risk_level`（默认 L0）、`category`、`concurrency_safe`（写 / 子进程类设为 `False`）、`max_output_length`（结果截断上限）、`timeout`（工具自声明默认超时，None 沿用全局 30s）、`requires_approval`（需人工审批时设为 `True`）
 7. 所有异常捕获为 `ToolResult(success=False, error=...)`，不让异常抛出
 8. 同步 IO（如第三方 SDK）用 `asyncio.to_thread` 包装，避免阻塞事件循环
 

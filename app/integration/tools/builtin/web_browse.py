@@ -176,6 +176,11 @@ class WebBrowseTool(BaseTool):
         return "web"
 
     @property
+    def timeout(self) -> int:
+        """工具自声明默认超时（秒），与内部 httpx 超时（15s）一致。"""
+        return 15
+
+    @property
     def max_output_length(self) -> int:
         """结果截断上限（字符数），ResultProcessor 消费。"""
         return self._max_content_length

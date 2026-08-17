@@ -91,11 +91,7 @@ class ToolExecutor:
         """执行工具（带参数校验、自动重试、结果截断、审计留痕），在信号量保护内调用。"""
         started_at = time.monotonic()
 
-        # 1. 使用配置默认值（调用方传 None 则走注入配置）
-        timeout = timeout if timeout is not None else self._tool_timeout
-        max_retries = max_retries if max_retries is not None else self._tool_max_retries
-
-        # 2. 查找工具
+        # 1. 查找工具
         tool = self._registry.get(name)
         if not tool:
             result = ToolResult(
@@ -107,6 +103,11 @@ class ToolExecutor:
                 None, parameters, result, started_at=started_at, tool_name=name
             )
             return result
+
+        # 2. 解析执行参数：调用方显式 > 工具自声明 > 全局配置（max_retries 仅调用方 / 全局两档）
+        if timeout is None:
+            timeout = tool.timeout if tool.timeout is not None else self._tool_timeout
+        max_retries = max_retries if max_retries is not None else self._tool_max_retries
 
         # 3. 解析参数（str → dict）
         if isinstance(parameters, str):

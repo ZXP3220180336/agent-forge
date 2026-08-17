@@ -36,6 +36,11 @@ class SearchTool(BaseTool):
         return "search"
 
     @property
+    def timeout(self) -> int:
+        """工具自声明默认超时（秒），executor 外层超时保护。"""
+        return 15
+
+    @property
     def name(self) -> str:
         return "search"
 

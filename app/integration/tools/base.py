@@ -89,6 +89,11 @@ class BaseTool(ABC):
         """结果截断上限（字符数），ResultProcessor 消费。默认 100_000。"""
         return 100_000
 
+    @property
+    def timeout(self) -> int | None:
+        """工具自声明默认超时（秒）。None = 沿用全局配置；调用方显式传入可覆盖。"""
+        return None
+
     # ===== Schema 导出 =====
 
     def to_openai_tool(self) -> dict[str, Any]:

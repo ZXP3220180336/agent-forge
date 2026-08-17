@@ -31,6 +31,11 @@ class CodeExecTool(BaseTool):
         return "code"
 
     @property
+    def timeout(self) -> int:
+        """工具自声明默认超时（秒）：编译 / 运行可较久，放宽至 60s。"""
+        return 60
+
+    @property
     def concurrency_safe(self) -> bool:
         """子进程执行非并发安全，串行化。"""
         return False

@@ -105,6 +105,7 @@ class ToolGateway(Protocol):
 | `concurrency_safe` | 是否允许自身并发（写 / 子进程类应为 False → 串行化） |
 | `requires_approval` | 是否需人工审批（executor 经 ApprovalGate 确认，默认放行） |
 | `max_output_length` | 结果截断上限（ResultProcessor 消费，默认 100_000） |
+| `timeout` | 工具自声明默认超时（秒；None = 沿用全局配置，调用方显式传入可覆盖） |
 | `register_config` | 可选类方法：装配根注入运行配置（避免直接依赖 settings） |
 
 ## 内部实现组织（六大子组件）
@@ -124,13 +125,13 @@ class ToolGateway(Protocol):
 
 `builtin/` 自动发现 `BaseTool` 子类（无需注册代码）。各工具风险分级与分类：
 
-| 工具 | 注册名 | 风险级 | 分类 | 并发安全 |
-| --- | --- | --- | --- | --- |
-| SearchTool | `search` | L0 只读 | search | ✅ |
-| ReadFileTool | `readFile` | L0 只读 | file | ✅ |
-| WriteFileTool | `writeFile` | L1 写 | file | ❌ 串行化 |
-| CodeExecTool | `code_exec` | L2 危险 | code | ❌ 串行化 |
-| WebBrowseTool | `web_browse` | L0 只读 | web | ✅ |
+| 工具 | 注册名 | 风险级 | 分类 | 并发安全 | 默认超时 |
+| --- | --- | --- | --- | --- | --- |
+| SearchTool | `search` | L0 只读 | search | ✅ | 15s |
+| ReadFileTool | `readFile` | L0 只读 | file | ✅ | 5s |
+| WriteFileTool | `writeFile` | L1 写 | file | ❌ 串行化 | 5s |
+| CodeExecTool | `code_exec` | L2 危险 | code | ❌ 串行化 | 60s |
+| WebBrowseTool | `web_browse` | L0 只读 | web | ✅ | 15s |
 
 详见 [内置工具说明](builtin_doc/builtin.md)。工具实例化不依赖外部服务（API Key 执行时才需要），个别注册失败不影响启动。
 
@@ -141,7 +142,7 @@ class ToolGateway(Protocol):
 | 配置项 | 默认值 | 使用位置 |
 | --- | --- | --- |
 | `agent_max_concurrent_tools` | 3 | executor 信号量 |
-| `tool_timeout` | 30 | execute 默认超时（秒） |
+| `tool_timeout` | 30 | execute 默认超时（秒）；优先级：调用方显式 > 工具自声明 `timeout` > 本配置 |
 | `tool_max_retries` | 3 | execute 默认重试次数 |
 | `tool_max_output_length` | 100_000 | readFile / code_exec 结果截断 |
 | `tool_max_content_length` | 50_000 | web_browse 结果截断 |

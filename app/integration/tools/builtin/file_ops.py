@@ -33,6 +33,11 @@ class ReadFileTool(BaseTool):
         return "file"
 
     @property
+    def timeout(self) -> int:
+        """工具自声明默认超时（秒）：本地读快，收紧至 5s。"""
+        return 5
+
+    @property
     def max_output_length(self) -> int:
         """结果截断上限（字符数），ResultProcessor 消费。"""
         return self._max_output_length
@@ -89,6 +94,11 @@ class WriteFileTool(BaseTool):
     @property
     def category(self) -> str:
         return "file"
+
+    @property
+    def timeout(self) -> int:
+        """工具自声明默认超时（秒）：本地写快，收紧至 5s。"""
+        return 5
 
     @property
     def concurrency_safe(self) -> bool:
