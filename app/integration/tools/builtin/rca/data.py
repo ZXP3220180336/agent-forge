@@ -184,21 +184,32 @@ def query_defects(batch_id: str, wafer_id: str | None = None) -> list[dict]:
 
 
 def search_history(query: str, top_k: int = 3) -> list[dict]:
-    """关键词匹配历史案例（RAG 召回为后续增强，当前用文本子串打分）。"""
+    """关键词匹配历史案例（RAG 召回为后续增强，当前用文本子串打分）。
+
+    返回案例列表，每个案例附带相关度信号（供 Agent 置信度分级）：
+    - `score`：命中 token 数（+ 整句子串命中 +1）
+    - `confidence`：`score / (去重 token 数 + 1)`，范围 (0, 1]
+    """
     query_lower = query.lower()
     query_compact = query_lower.replace(" ", "")
+    tokens = [t for t in query_lower.split() if t]
+    max_score = max(1, len(set(tokens)) + 1)
 
-    scored: list[tuple[int, dict]] = []
+    scored: list[tuple[int, float, dict]] = []
     for case in HISTORY:
         haystack = (
             case["symptom"] + " " + case["root_cause"] + " " + case["evidence"]
         ).lower()
         haystack_compact = haystack.replace(" ", "")
-        score = sum(1 for token in query_lower.split() if token in haystack)
+        score = sum(1 for token in set(tokens) if token in haystack)
         if query_compact and query_compact in haystack_compact:
             score += 1  # 整句子串命中（中英文混排）
         if score:
-            scored.append((score, case))
+            confidence = round(score / max_score, 2)
+            scored.append((score, confidence, case))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [case for _, case in scored[:top_k]]
+    return [
+        {**case, "score": score, "confidence": confidence}
+        for score, confidence, case in scored[:top_k]
+    ]

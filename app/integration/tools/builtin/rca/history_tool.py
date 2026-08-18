@@ -69,9 +69,10 @@ class SearchHistoricalRcaTool(BaseTool):
 
         lines = [f"命中 {len(cases)} 条历史案例（按相关度）："]
         for c in cases:
+            conf = int(c["confidence"] * 100)
             lines.extend(
                 [
-                    f"- {c['case_id']}（{c['timestamp']}）",
+                    f"- {c['case_id']}（{c['timestamp']}）[相关度 {conf}%]",
                     f"  症状: {c['symptom']}",
                     f"  根因: {c['root_cause']}",
                     f"  证据: {c['evidence']}",
@@ -79,8 +80,14 @@ class SearchHistoricalRcaTool(BaseTool):
                 ]
             )
 
+        top_confidence = max(c["confidence"] for c in cases)
         return ToolResult(
             success=True,
             content="\n".join(lines),
-            metadata={"source": "mock_history", "query": query, "top_k": top_k},
+            metadata={
+                "source": "mock_history",
+                "query": query,
+                "top_k": top_k,
+                "top_confidence": top_confidence,
+            },
         )

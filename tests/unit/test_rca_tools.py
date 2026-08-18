@@ -75,7 +75,7 @@ async def test_query_defect_center_cluster_particle():
 
 @pytest.mark.asyncio
 async def test_search_history_hits_relevant_case():
-    """关键词检索命中与 LOT-A123 根因匹配的历史案例（RCA-001）。"""
+    """关键词检索命中与 LOT-A123 根因匹配的历史案例（RCA-001），带相关度。"""
     result = await SearchHistoricalRcaTool().execute(
         query="etch 偏离 良率 骤降"
     )
@@ -83,7 +83,23 @@ async def test_search_history_hits_relevant_case():
     assert result.success is True
     assert "RCA-001" in result.content
     assert "chamber" in result.content
+    assert "相关度" in result.content
     assert result.metadata["top_k"] == 3
+    assert result.metadata["top_confidence"] is not None
+
+
+@pytest.mark.asyncio
+async def test_history_confidence_ranking():
+    """相关度分数：高匹配排前 + confidence 暴露（置信度分级信号）。"""
+    result = await SearchHistoricalRcaTool().execute(
+        query="etch 偏离 良率 骤降", top_k=3
+    )
+
+    assert result.success is True
+    assert "80%" in result.content  # RCA-001 confidence = 4/5 = 0.8
+    assert result.metadata["top_confidence"] == 0.8
+    # 高相关度案例排前
+    assert result.content.index("RCA-001") < result.content.index("RCA-002")
 
 
 @pytest.mark.asyncio

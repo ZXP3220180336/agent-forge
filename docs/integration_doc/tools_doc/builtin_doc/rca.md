@@ -50,6 +50,8 @@ search_historical_rca("etch 偏离 良率 骤降") → RCA-001 佐证
 
 当前用**预置案例 + 关键词匹配**（query 与案例文本子串打分，返回 top_k）跑通主链路；**RAG（embedding 召回）为后续增强**——产品审核标注的升级路径，不阻塞本次落地。
 
+**相关度 / 置信度信号**：每个案例返回 `confidence`（score / 去重 token 数 + 1，范围 (0,1]）；content 显示 `[相关度 X%]`，metadata 带 `top_confidence`——服务产品「置信度分级」亮点（Agent 可据历史佐证强度调整结论置信度）。
+
 ## 测试状态
 
 `tests/unit/test_rca_tools.py`（10 用例）：各工具正常查询 + 证据链 metadata / 参数校验 / 业务未找到 / LOT-A123 根因故事（骤降、FDC 偏离、center_cluster、历史命中）/ 数据可复现 / init_default_tools 装配 10 工具。
