@@ -2,22 +2,33 @@
 
 ## 📋 目录
 
-- [模块概述](#模块概述)
-- [已实现模型详解](#已实现模型详解)
-  - [Base — ORM 基类](#base--orm-基类)
-  - [SessionModel — 会话](#sessionmodel--会话)
-  - [MessageModel — 消息](#messagemodel--消息)
-- [模型使用方式](#模型使用方式)
-- [预留模型说明](#预留模型说明)
-  - [database/task.py — 任务表](#databasetaskpy--任务表)
-  - [database/tool_log.py — 工具调用日志表](#databasetool_logpy--工具调用日志表)
-  - [schemas/ — Pydantic 模型](#schemas--pydantic-模型)
-- [设计注意与历史教训](#设计注意与历史教训)
-  - [两个 declarative_base() 实例](#两个-declarative_base-实例)
-  - [SQLAlchemy 保留属性 metadata](#sqlalchemy-保留属性-metadata)
-- [当前状态与遗留](#当前状态与遗留)
-- [常见问题](#常见问题)
-- [相关文档](#相关文档)
+- [数据模型层说明文档](#数据模型层说明文档)
+  - [📋 目录](#-目录)
+  - [模块概述](#模块概述)
+    - [核心功能](#核心功能)
+    - [模块结构](#模块结构)
+    - [设计原则](#设计原则)
+    - [依赖关系](#依赖关系)
+  - [已实现模型详解](#已实现模型详解)
+    - [Base — ORM 基类](#base--orm-基类)
+    - [SessionModel — 会话](#sessionmodel--会话)
+    - [MessageModel — 消息](#messagemodel--消息)
+  - [模型使用方式](#模型使用方式)
+  - [预留模型说明](#预留模型说明)
+    - [database/task.py — 任务表](#databasetaskpy--任务表)
+    - [database/tool\_log.py — 工具调用日志表](#databasetool_logpy--工具调用日志表)
+    - [Pydantic Schema（API 层）](#pydantic-schemaapi-层)
+  - [设计注意](#设计注意)
+    - [约定小结](#约定小结)
+  - [当前状态与遗留](#当前状态与遗留)
+  - [常见问题](#常见问题)
+    - [Q: 为什么会话 id 用 UUID 字符串，消息 id 用自增 BigInteger？](#q-为什么会话-id-用-uuid-字符串消息-id-用自增-biginteger)
+    - [Q: `updated_at` 什么时候被刷新？](#q-updated_at-什么时候被刷新)
+    - [Q: 为什么 `reasoning_content` 单独存一列，且读历史时不返回？](#q-为什么-reasoning_content-单独存一列且读历史时不返回)
+    - [Q: 为什么用 `meta` JSON 而不是直接加列？](#q-为什么用-meta-json-而不是直接加列)
+    - [Q: 什么时候用软删除，什么时候用物理删除？](#q-什么时候用软删除什么时候用物理删除)
+    - [Q: 新增一张表要注意什么？](#q-新增一张表要注意什么)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -25,38 +36,38 @@
 
 ### 核心功能
 
-`app/infrastructure/models/` 是系统的**数据模型层**，承载所有结构化数据的定义，职责分两部分：
+`app/infrastructure/models/` 是系统的**ORM 数据模型层**，承载所有结构化数据的持久化定义：
 
 - **ORM 模型（`database/` 子包）**：SQLAlchemy 声明式模型，与数据库表一一对应，负责持久化会话与消息
-- **Pydantic Schema（`schemas/` 子包）**：请求 / 响应数据校验模型，负责 API 层的出入参校验（**当前为空，预留**）
+- **Pydantic Schema（`app/api/schemas/`）**：请求 / 响应数据校验模型，负责 API 层的出入参校验（不属于本层，见 [api.md](../../api_doc/api.md)）
 
-其中 ORM 模型已完成，是会话管理与消息持久化的基石；Schema 层随 API 层落地后填充。
+其中 ORM 模型已完成，是会话管理与消息持久化的基石。
 
 ### 模块结构
 
 ```
 app/infrastructure/models/
 ├── __init__.py              ← 模块入口，导出 MessageModel / SessionModel
-├── database/                ← SQLAlchemy ORM 子包
-│   ├── __init__.py          ← 导出 Base / MessageModel / SessionModel
-│   ├── base.py              ← Base（共享 declarative_base 实例）
-│   ├── session.py           ← SessionModel（会话表）
-│   ├── messages.py          ← MessageModel（消息表）
-│   ├── task.py              ← ⏳ 预留：任务表
-│   └── tool_log.py          ← ⏳ 预留：工具调用日志表
-└── schemas/                 ← Pydantic 模型（预留，全部为空文件）
-    ├── __init__.py
-    ├── request.py           ← 预留：请求体模型
-    ├── response.py          ← 预留：响应体模型
+└── database/                ← SQLAlchemy ORM 子包
+    ├── __init__.py          ← 导出 Base / MessageModel / SessionModel
+    ├── base.py              ← Base（共享 declarative_base 实例）
+    ├── session.py           ← SessionModel（会话表）
+    ├── messages.py          ← MessageModel（消息表）
+    ├── task.py              ← ⏳ 预留：任务表
+    └── tool_log.py          ← ⏳ 预留：工具调用日志表
+
+app/api/schemas/             ← Pydantic 模型（API 层，见 api.md）
+    ├── request.py           ← 请求体模型（已实现）
+    ├── response.py          ← 响应体模型（已实现）
     └── agent.py             ← 预留：Agent 相关数据结构
 ```
 
 ### 设计原则
 
-1. **ORM 与 Schema 分层**：`database/` 管数据库映射，`schemas/` 管 API 校验，两者互不混用（Pydantic 模型不直接作为 ORM 使用）
+1. **ORM 与 Schema 分层**：`database/` 管数据库映射，`app/api/schemas/` 管 API 校验，两者互不混用（Pydantic 模型不直接作为 ORM 使用）
 2. **单一 Base**：所有模型共享 `database/base.py` 中唯一一个 `declarative_base()` 实例（详见「设计注意与历史教训」）
 3. **JSON 扩展字段**：`meta` 列承载未定型的扩展数据，避免频繁改动表结构
-4. **导出收敛**：外部只从 `app.models` / `app.models.database` 导入模型，不直接 import 具体文件
+4. **导出收敛**：外部只从 `app.infrastructure.models` / `app.infrastructure.models.database` 导入模型，不直接 import 具体文件
 
 ### 依赖关系
 
@@ -64,16 +75,16 @@ app/infrastructure/models/
 服务层（SessionManager 等）
         │
         ▼
-app.models（__init__.py）
+app.infrastructure.models（__init__.py）
         │
         └── database/__init__.py
               ├── base.py      ← Base
               ├── session.py   ← SessionModel
               └── messages.py  ← MessageModel（FK → sessions.id）
 
-API 层（预留）
+API 层（schemas）
         ▼
-app.models.schemas/（Pydantic，预留）
+app.api.schemas/（Pydantic，见 api.md）
 ```
 
 ---
@@ -97,7 +108,7 @@ Base = declarative_base()
 
 #### 为什么独立成文件
 
-历史上 `messages.py` 和 `session.py` 各自声明 `Base = declarative_base()`，导致 FK 引用时 mapper 冲突（详见「设计注意与历史教训」）。独立成 `base.py` 并让所有模型 `from .base import Base`，从源头避免多 Base 问题。
+共享 `Base` 独立于各模型文件声明（`declarative_base()` 单例），所有模型 `from .base import Base` 继承——保证 FK 引用在单一映射空间内注册。设计过程见 [lessons.md](../../lessons.md)「两个 declarative_base() 实例」。
 
 ---
 
@@ -130,7 +141,7 @@ Base = declarative_base()
 
 ### MessageModel — 消息
 
-**文件**：`app/infrastructure/models/database/messages.py`（30 行），表名 `messages`
+**文件**：`app/infrastructure/models/database/messages.py`（31 行），表名 `messages`
 
 消息是**每一轮对话的持久化记录**，外键关联会话。`SessionManager.get_messages()` 读取历史喂给 Agent，`add_message()` 写入每一轮交互。
 
@@ -177,7 +188,7 @@ Base = declarative_base()
 
 ## 预留模型说明
 
-以下文件当前为空（✅ 无内容，⏳ 预留待实现），说明其预期用途，避免后续重复造轮子。
+以下 `database/` 下的文件当前为空（❌ 空文件，预留待实现），说明其预期用途，避免后续重复造轮子。
 
 ### database/task.py — 任务表
 
@@ -186,6 +197,7 @@ Base = declarative_base()
 任务表用于持久化 **Agent 任务的执行记录**。内存态任务结构已定义在 `app/application/task/task_service.py` 对应的 `Task` 数据结构中（见 [task.md](../../application_doc/task_doc/task.md)「数据模型」小节），含 `task_id` / `user_request` / `priority` / `status` / `parent_task_id` / `sub_tasks` / `agent_result` / `error` / `created_at` / `started_at` / `completed_at` 等字段。
 
 **预期用途**：
+
 - 任务失败后重启恢复（从 DB 重新拉起未完成任务）
 - 跨进程 / 多节点共享任务状态（当前 `TaskService` 仅进程内信号量限流）
 - 任务审计与统计分析（耗时、成功率、Token 消耗）
@@ -199,44 +211,26 @@ Base = declarative_base()
 工具调用日志表用于持久化**每次工具调用的审计记录**。工具系统的统一抽象见 [tools.md](../../integration_doc/tools_doc/tools.md)（`BaseTool` / `ToolResult`，10 个内置工具）。
 
 **预期用途**：
+
 - 记录工具名、入参、出参、耗时、是否成功、归属会话 / 任务
 - 安全审计与成本归因（工具调用往往伴随 Token 消耗）
 - 工具可靠性统计（哪些工具失败率高，辅助改进）
 
-### schemas/ — Pydantic 模型
+### Pydantic Schema（API 层）
 
-**状态**：❌ 全部空文件（`__init__.py` / `request.py` / `response.py` / `agent.py`）。
+Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 层出入参的校验与文档化，详见 [api.md](../../api_doc/api.md)：
 
-Pydantic Schema 用于 **API 层出入参的校验与文档化**：
-
-| 文件           | 预期用途                                   |
-| -------------- | ------------------------------------------ |
-| `request.py`   | 请求体模型（如创建会话、发送消息、任务下发） |
-| `response.py`  | 响应体模型（如会话详情、消息列表、分页包装） |
-| `agent.py`     | Agent 相关数据结构（ReAct 结果、事件负载等） |
-
-**预期用途**：
-- FastAPI 路由参数校验（`Depends` + Body 校验）
-- OpenAPI 自动文档（`/docs` 交互式接口）
-- 服务层与 API 层的解耦（服务层返回 dict / dataclass，API 层用 Schema 包装）
+| 文件           | 状态                                   | 用途                                   |
+| -------------- | -------------------------------------- | -------------------------------------- |
+| `request.py`   | ✅ 已实现（23 行）                      | 请求体模型（如创建会话、发送消息）       |
+| `response.py`  | ✅ 已实现（15 行）                      | 响应体模型（如会话详情、消息列表）       |
+| `agent.py`     | ⬜ 预留空文件                            | Agent 相关数据结构（ReAct 结果等）       |
 
 ---
 
-## 设计注意与历史教训
+## 设计注意
 
-> 以下两条为项目级研发教训中标记待数据模型文档的条目（原 `⏳` 标记，本处正式收录，出处见 [lessons.md](../../lessons.md)）。
-
-### 两个 declarative_base() 实例
-
-**问题**：早期 `messages.py` 与 `session.py` **各自**执行 `Base = declarative_base()`，得到两个互相独立的 Base 实例、两套 `metadata`。`MessageModel.session_id` 声明 `ForeignKey("sessions.id")` 时，由于 `sessions` 表注册在另一个 Base 的 metadata 上，SQLAlchemy 在映射 / create_all 阶段报 **mapper 冲突**，无法正确解析跨模型外键。
-
-**解决**：统一到 `app/infrastructure/models/database/base.py` 中声明**唯一** `Base`，所有模型 `from .base import Base` 继承。任何新增模型（如未来的 `task` / `tool_log`）都必须复用该 `Base`，**严禁**在自己文件里再写 `declarative_base()`。
-
-### SQLAlchemy 保留属性 metadata
-
-**问题**：ORM 模型里曾写 `metadata = Column(JSON)` 作为扩展字段列名，运行时抛 `'metadata' is reserved when using the Declarative API` 错误——`metadata` 是 `declarative_base()` 上用于注册表结构的保留属性，不能作为列名。
-
-**解决**：扩展字段列统一命名为 `meta`（`JSON` 类型，默认 `{}`）。新增列名时避开 SQLAlchemy / Declarative API 的保留字。
+> 本项目 ORM 建模的约定与历史问题详见 [lessons.md](../../lessons.md)（两个 declarative_base / metadata 保留字），本文只列当前约定。
 
 ### 约定小结
 
@@ -256,7 +250,7 @@ Pydantic Schema 用于 **API 层出入参的校验与文档化**：
 | `messages.py`        | ✅   | `MessageModel` 已实现并被 `SessionManager` 使用                       |
 | `task.py`            | ❌   | 预留任务表，待任务落库需求出现后实现                                   |
 | `tool_log.py`        | ❌   | 预留工具调用日志表                                                     |
-| `schemas/`           | ❌   | 预留 Pydantic 模型，待 API 层落地                                       |
+| `app/api/schemas/`   | 🔶   | Pydantic 模型在 API 层（request/response 已实现，agent 预留），见 [api.md](../../api_doc/api.md) |
 | **DB 运行环境**      | 🔶   | `asyncpg` 驱动未安装，数据库恒降级（项目级遗留）；模型已就绪但未连真库验证 |
 
 **下一步计划**：
@@ -264,7 +258,7 @@ Pydantic Schema 用于 **API 层出入参的校验与文档化**：
 1. 补 `asyncpg` 依赖并连通 PostgreSQL，验证 `SessionModel` / `MessageModel` 建表与增删查改
 2. 依据 `task_doc/task.md` 落地 `task.py` 任务表
 3. 依据 `integration_doc/tools_doc/tools.md` 落地 `tool_log.py` 工具调用日志表
-4. API 层开发时填充 `schemas/` 请求 / 响应模型
+4. API 层补充 `agent.py` 等剩余 Pydantic Schema（见 [api.md](../../api_doc/api.md)）
 
 ---
 
@@ -287,7 +281,7 @@ Pydantic Schema 用于 **API 层出入参的校验与文档化**：
 
 ### Q: 为什么用 `meta` JSON 而不是直接加列？
 
-`meta` 用于**暂不定型**的扩展数据。早期列名曾用 `metadata` 触发 SQLAlchemy 保留字错误（已改名 `meta`）。若某字段长期稳定且需要查询过滤，应升级为正式列并加索引，而不是塞进 JSON。
+`meta` 用于**暂不定型**的扩展数据。扩展字段列统一用 `meta`（`metadata` 是 SQLAlchemy 保留字，不能作列名，见 [lessons.md](../../lessons.md)）。若某字段长期稳定且需要查询过滤，应升级为正式列并加索引，而不是塞进 JSON。
 
 ### Q: 什么时候用软删除，什么时候用物理删除？
 
@@ -296,7 +290,7 @@ Pydantic Schema 用于 **API 层出入参的校验与文档化**：
 
 ### Q: 新增一张表要注意什么？
 
-1. 继承 `database/base.py` 的共享 `Base`，**不要**新写 `declarative_base()`
+1. 继承 `database/base.py` 的共享 `Base`（唯一 `declarative_base()` 实例）
 2. 列名避开保留字（`metadata` 等），扩展字段用 `meta`
 3. 在 `app/infrastructure/models/database/__init__.py` 中导出（若对外使用还需在 `app/infrastructure/models/__init__.py` 导出）
 4. 时间字段统一 UTC + `DateTime(timezone=True)`

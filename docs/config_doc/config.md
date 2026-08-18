@@ -199,6 +199,36 @@ Pydantic 类型验证
 - `generate_structured()` 提取结构化数据（JSON Schema → JSON Mode → 正则）
 - 输出规模预期较大的场景（长报告/多字段），用 `generate_structured(max_tokens=8192)` 覆盖
 
+#### 3.6 LLM 高级配置（重试 / 熔断 / 限流）
+
+| 配置项                              | 类型  | 默认值 | 说明                                                     |
+| ----------------------------------- | ----- | ------ | -------------------------------------------------------- |
+| `LLM_MAX_RETRIES`                   | int   | 2      | 单次请求最大重试次数（指数退避）                         |
+| `LLM_STREAM_MAX_RETRIES`            | int   | 1      | 流式整流重试次数（首 token 前中断才整流；0=禁用）         |
+| `LLM_BASE_DELAY`                    | float | 1.0    | 重试退避基准延迟（秒）                                   |
+| `LLM_MAX_DELAY`                     | float | 30.0   | 重试退避最大延迟（秒）                                   |
+| `LLM_USE_JITTER`                    | bool  | true   | 退避是否加随机抖动                                       |
+| `LLM_CIRCUIT_WINDOW_SECONDS`        | float | 10.0   | 熔断滑动窗口长度（秒）                                   |
+| `LLM_CIRCUIT_ERROR_THRESHOLD`       | float | 0.5    | 窗口内错误率熔断阈值（50%）                              |
+| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD` | int | 20   | 窗口内最小请求量，不足不做错误率评估                     |
+| `LLM_CIRCUIT_ALL_FAILED_MIN`        | int   | 3      | 低流量纯失败保护：全部失败且达此样本量才熔断             |
+| `LLM_CIRCUIT_RECOVERY_TIMEOUT`      | float | 30.0   | 熔断恢复超时（秒）                                       |
+| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | int  | 3      | 半开探针最大放行请求数                                   |
+| `LLM_FALLBACK_MODEL_ID`             | str   | ""     | 主模型降级备用模型（空则无 fallback）                    |
+| `LLM_PROXY_URL`                     | str   | ""     | HTTP 代理地址                                           |
+| `LLM_MAIN_RPM` / `LLM_REASONING_RPM` / `LLM_FAST_RPM` | int | 60 / 30 / 100 | 三档模型客户端限流 RPM 配额                |
+| `LLM_MAIN_TPM` / `LLM_REASONING_TPM` / `LLM_FAST_TPM` | int | 2000000 | 三档模型 TPM 配额（双 Token Bucket）      |
+| `LLM_ADAPTIVE_RESERVE`              | bool  | false  | 自适应预留开关（Fenic 式 OutputTokenEstimator）          |
+| `LLM_RESERVE_QUANTILE` / `LLM_RESERVE_REASONING_QUANTILE` | float | 0.95 / 0.99 | 预留分位数（普通 p95 / 推理 p99） |
+| `LLM_RESERVE_SAFETY_MARGIN`         | float | 1.15   | 预留安全系数（1.0~4.0）                                  |
+| `LLM_RESERVE_MIN_SAMPLES`           | int   | 30     | 自适应预留冷启动阈值（样本不足用静态上限）               |
+| `LLM_RESERVE_WINDOW`                | int   | 256    | 滚动样本窗口（deque 上限）                               |
+
+**使用场景：**
+
+- 重试 / 熔断 / 限流 / 整流 / fallback 的具体机制见 [llm_doc/retry.md](../integration_doc/llm_doc/retry.md) 与 [llm_doc/limiter.md](../integration_doc/llm_doc/limiter.md)
+- 自适应预留默认关闭；开启后按「历史实际输出高分位 × 安全系数」替代固定 `max_tokens` 预留，减少并发空耗（见 limiter.md「对比 3.2」）
+
 ---
 
 ### 4. 上下文配置
@@ -687,7 +717,6 @@ api_key = settings.llm_api_key  # ✅ 而不是 os.getenv("LLM_API_KEY")
 
 | 类别       | 建议增加配置项                        | 原因                     |
 | ---------- | ------------------------------------- | ------------------------ |
-| LLM 配置   | `LLM_RETRY_TIMES` / `LLM_RETRY_DELAY` | API 调用失败的重试机制   |
 | Agent 配置 | `AGENT_ENABLE_REFLECTION`             | 是否启用反思机制         |
 |            | `AGENT_MAX_TOOL_CALLS`                | 单次任务最大工具调用次数 |
 | 数据库配置 | `DATABASE_SSL_MODE`                   | SSL 连接模式             |

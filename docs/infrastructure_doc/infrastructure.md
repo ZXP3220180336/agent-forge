@@ -2,17 +2,21 @@
 
 ## 目录
 
-- [模块概述](#模块概述)
-- [模块实现状态表](#模块实现状态表)
-- [现状说明](#现状说明)
-  - [DB / Redis 由 container 直接管理](#db--redis-由-container-直接管理)
-  - [降级策略](#降级策略)
-  - [asyncpg 驱动未安装 → DB 恒降级](#asyncpg-驱动未安装--db-恒降级)
-- [规划说明](#规划说明)
-  - [database.py](#databasepy)
-  - [redis_client.py](#redis_clientpy)
-  - [message_queue/](#message_queue)
-- [相关文档链接](#相关文档链接)
+- [基础设施层说明文档](#基础设施层说明文档)
+  - [目录](#目录)
+  - [模块概述](#模块概述)
+    - [核心定位](#核心定位)
+    - [模块结构](#模块结构)
+  - [模块实现状态表](#模块实现状态表)
+  - [现状说明](#现状说明)
+    - [DB / Redis 由 container 直接管理](#db--redis-由-container-直接管理)
+    - [降级策略](#降级策略)
+    - [asyncpg 驱动未安装 → DB 恒降级](#asyncpg-驱动未安装--db-恒降级)
+  - [规划说明](#规划说明)
+    - [database.py](#databasepy)
+    - [redis\_client.py](#redis_clientpy)
+    - [message\_queue/](#message_queue)
+  - [相关文档链接](#相关文档链接)
 
 ---
 
@@ -34,11 +38,18 @@ app/infrastructure/
 ├── __init__.py             ← 包入口，规划导出统一封装接口
 ├── database.py             ← 数据库封装（规划：engine / session factory）
 ├── redis_client.py         ← Redis 封装（规划：连接池 / 编解码 / 重连）
-└── message_queue/          ← 消息队列子包
-    └── __init__.py         ← 子包入口
+├── message_queue/          ← 消息队列子包
+│   └── __init__.py         ← 子包入口
+└── models/                 ← ORM 数据模型（已实现，见 model_doc/model.md）
+    └── database/
+        ├── base.py         ← Base（共享 declarative_base 实例）
+        ├── session.py      ← SessionModel（会话表）
+        ├── messages.py     ← MessageModel（消息表）
+        ├── task.py         ← ⏳ 预留：任务表
+        └── tool_log.py     ← ⏳ 预留：工具调用日志表
 ```
 
-> **当前状态**：本层所有文件均为空占位，尚未提供实际封装。DB / Redis 实际由 `app/container.py` 直接管理（见 [现状说明](#现状说明)）。
+> **当前状态**：`models/database/` 的 ORM 模型（SessionModel / MessageModel）已实现并被 `SessionManager` 使用；`database.py` / `redis_client.py` / `message_queue/` 为空占位。DB / Redis 连接实际由 `app/container.py` 直接管理（见 [现状说明](#现状说明)）。
 
 ---
 
@@ -50,6 +61,11 @@ app/infrastructure/
 | `app/infrastructure/database.py` | 空（0 行） | 数据库引擎与会话封装（engine / session factory / 生命周期 / 健康检查） |
 | `app/infrastructure/redis_client.py` | 空（0 行） | Redis 客户端封装（连接池 / 编解码 / 超时 / 重连 / 命名空间） |
 | `app/infrastructure/message_queue/__init__.py` | 空（0 行） | 消息队列子包入口，规划抽象统一消息发布 / 消费接口 |
+| `app/infrastructure/models/database/base.py` | ✅ 已实现（8 行） | 共享 `Base`（唯一 declarative_base 实例），见 [model.md](model_doc/model.md) |
+| `app/infrastructure/models/database/session.py` | ✅ 已实现（23 行） | `SessionModel` 会话表，见 [model.md](model_doc/model.md) |
+| `app/infrastructure/models/database/messages.py` | ✅ 已实现（31 行） | `MessageModel` 消息表，见 [model.md](model_doc/model.md) |
+| `app/infrastructure/models/database/task.py` | 空（0 行） | 任务表预留，见 [model.md](model_doc/model.md) |
+| `app/infrastructure/models/database/tool_log.py` | 空（0 行） | 工具调用日志表预留，见 [model.md](model_doc/model.md) |
 
 ---
 
@@ -59,7 +75,7 @@ app/infrastructure/
 
 当前基础设施资源**未经过** `infrastructure/` 层封装，而是由 `app/container.py` 的 `Container.initialize()` 直接创建：
 
-**数据库**（`container.py` L74-93）：
+**数据库**（`container.py` L103-119）：
 
 ```python
 engine = create_async_engine(
@@ -72,7 +88,7 @@ self._engine = engine  # 显式持有引用，shutdown 时 dispose()
 self.db_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 ```
 
-**Redis**（`container.py` L59-72）：
+**Redis**（`container.py` L88-99）：
 
 ```python
 self.redis = Redis.from_url(

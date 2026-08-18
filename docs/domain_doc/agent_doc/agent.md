@@ -43,10 +43,10 @@ app/domain/agent/
 ```
 Agent 模块
     │
-    ├── app.services.LLMService    ← LLM 通信（单轮推理）
-    ├── app.services.ToolService  ← 工具服务（执行工具）
-    ├── app.core.events            ← SSE 事件构建（共享 LLM 层）
-    └── app.config.settings        ← 配置中心（默认值）
+    ├── app.integration.llm.llm_service.LLMService   ← LLM 通信（单轮推理）
+    ├── app.integration.tools.tool_service.ToolService ← 工具服务（执行工具）
+    ├── app.shared.events            ← SSE 事件构建（共享 LLM 层）
+    └── app.config.settings          ← 配置中心（生产默认值由装配根注入）
 ```
 
 ---
@@ -80,7 +80,7 @@ Agent 模块
 | LLM 层 | 单轮推理、Token 提取、连接重试 | 消息管理、循环控制   |
 | Agent  | 循环编排、工具调用、结果判定   | Token 解析、API 重试 |
 
-4. **事件流驱动**
+1. **事件流驱动**
 
    ```
    LLM 层产出:  reasoning / message / error
@@ -126,9 +126,9 @@ BaseAgent.run(user_input, messages, context)
 ```python
 import asyncio
 from app.config import settings
-from app.core.agent import AgentContext, ReActAgent
-from app.services import LLMService
-from app.services import ToolService
+from app.domain.agent import AgentContext, ReActAgent
+from app.integration.llm.llm_service import LLMService
+from app.integration.tools.tool_service import ToolService
 
 async def main():
     # 1. 准备依赖
@@ -176,7 +176,7 @@ asyncio.run(main())
 
 ```python
 from fastapi.responses import StreamingResponse
-from app.core.agent import AgentContext, ReActAgent
+from app.domain.agent import AgentContext, ReActAgent
 
 @router.post("/agent/chat")
 async def agent_chat(request: Request):
@@ -230,10 +230,10 @@ class AgentContext:
     session_id: str                    # 会话标识（必填）
     user_id: str                       # 用户标识（必填）
 
-    # 参数控制（默认值从配置中心读取）
-    max_iterations: int = settings.agent_max_iterations   # 默认 10
-    temperature: float = settings.llm_temperature          # 默认 0.2
-    max_tokens: int = settings.llm_max_tokens              # 默认 4096
+    # 参数控制（默认值为字面量；生产值由装配根 container 注入覆盖）
+    max_iterations: int = 10       # 默认 10
+    temperature: float = 0.2        # 默认 0.2
+    max_tokens: int = 4096          # 默认 4096
 
     # 扩展字段
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -366,11 +366,15 @@ class LoggingReActAgent(ReActAgent):
     │
     ├─ 2. 复制 LLM 回复到 messages（assistant 角色）
     │
-    ├─ 3. 检查 finish_reason
+    ├─ 3. 检查 stream_result.error（LLM 调用失败：create 失败 / 流中断放弃 / 用户取消）
+    │   │
+    │   └─ 短路返回 AgentResult(success=False, error=...) → 结束
+    │
+    ├─ 4. 检查 finish_reason
     │
     ├─ "tool_calls"
     │   │
-    │   ├─ 4. _execute_tool_calls()
+    │   ├─ 5. _execute_tool_calls()
     │   │   ├─ yield tool_call 事件
     │   │   ├─ tool_service.execute(name, args)
     │   │   ├─ yield tool_result 事件
@@ -417,7 +421,12 @@ async def _strategy_cycle(self, user_input, messages) -> AsyncGenerator[str]:
         # 2. 追加 assistant 消息
         messages.append({"role": "assistant", "content": stream_result.content, ...})
 
-        # 3. 根据 finish_reason 分支
+        # 3. LLM 调用失败 → 短路返回（create 失败 / 流中断放弃 / 用户取消）
+        if stream_result.error:
+            self._result = AgentResult(success=False, error=stream_result.error)
+            return
+
+        # 4. 根据 finish_reason 分支
         if finish_reason == "tool_calls" and has_tools:
             async for event in self._execute_tool_calls(...):
                 yield event
@@ -487,7 +496,7 @@ messages.extend(tool_messages)
 
 ## SSE 事件流
 
-Agent 模块全量产出的事件类型（与 LLM 层共用 `app.core.events`）：
+Agent 模块全量产出的事件类型（与 LLM 层共用 `app.shared.events`）：
 
 | 事件类型      | 产出者       | 触发时机                   | 关键字段                               |
 | ------------- | ------------ | -------------------------- | -------------------------------------- |
@@ -717,14 +726,7 @@ class MyCustomAgent(BaseAgent):
 
 ### Q7: 回传 tool 消息时报 400 `Messages with role 'tool' must be a response to a previous message with 'tool_calls'`？
 
-**A:** OpenAI 兼容 API 的硬性规则：ReAct 循环把 tool 消息回传前，**前置的 assistant 消息必须带 `tool_calls` 字段**。修复前 executor 只回传 `content` + `reasoning_content`，DeepSeek 第二轮必报 400，Agent 空转重试到迭代上限。
-
-```python
-# 回传 assistant 消息时必须带上 tool_calls
-assistant_msg["tool_calls"] = stream_result.tool_calls  # 见 executor.py 步骤 2
-```
-
-已加测试断言防回归。
+**A:** OpenAI 兼容 API 的硬性规则：ReAct 循环把 tool 消息回传前，**前置的 assistant 消息必须带 `tool_calls` 字段**——`assistant_msg["tool_calls"] = stream_result.tool_calls`（见 executor.py 步骤 2），否则第二轮必报 400、Agent 空转重试到迭代上限。
 
 ---
 

@@ -7,18 +7,52 @@
 
 ## 📋 目录
 
-- [模块概述](#模块概述)
-- [模块实现状态总览](#模块实现状态总览)
-- [核心调度链路](#核心调度链路)
-- [SessionManager — 会话管理](#sessionmanager--会话管理)
-- [ContextManager — 上下文管理](#contextmanager--上下文管理)
-- [ToolService — 工具服务](#toolservice--工具服务)
-- [TaskService — 任务调度](#taskservice--任务调度)
-- [EmbeddingService — 文本向量化](#embeddingservice--文本向量化)
-- [LLMService — LLM Facade](#llmservice--llm-facade)
-- [MemoryService — 记忆服务（预留）](#memoryservice--记忆服务预留)
-- [配置关联](#配置关联)
-- [相关文档](#相关文档)
+- [应用层与集成层说明文档](#应用层与集成层说明文档)
+  - [📋 目录](#-目录)
+  - [模块概述](#模块概述)
+    - [核心功能](#核心功能)
+    - [模块结构](#模块结构)
+    - [设计原则](#设计原则)
+    - [依赖关系](#依赖关系)
+  - [模块实现状态总览](#模块实现状态总览)
+  - [核心调度链路](#核心调度链路)
+  - [SessionManager — 会话管理](#sessionmanager--会话管理)
+    - [核心功能](#核心功能-1)
+    - [关键方法](#关键方法)
+    - [设计要点](#设计要点)
+    - [使用示例](#使用示例)
+  - [ContextManager — 上下文管理](#contextmanager--上下文管理)
+    - [核心功能](#核心功能-2)
+    - [关键方法](#关键方法-1)
+    - [组装策略](#组装策略)
+    - [使用示例](#使用示例-1)
+  - [ToolService — 工具服务](#toolservice--工具服务)
+    - [核心功能](#核心功能-3)
+    - [关键方法](#关键方法-2)
+    - [执行流程](#执行流程)
+    - [使用示例](#使用示例-2)
+  - [TaskService — 任务调度](#taskservice--任务调度)
+    - [核心功能](#核心功能-4)
+    - [关键方法](#关键方法-3)
+    - [设计要点](#设计要点-1)
+    - [使用示例](#使用示例-3)
+  - [EmbeddingService — 文本向量化](#embeddingservice--文本向量化)
+    - [核心功能](#核心功能-5)
+    - [关键方法](#关键方法-4)
+    - [批量流程](#批量流程)
+    - [使用示例](#使用示例-4)
+  - [LLMService — LLM Facade](#llmservice--llm-facade)
+    - [核心功能](#核心功能-6)
+    - [关键数据结构](#关键数据结构)
+    - [关键方法](#关键方法-5)
+    - [流式生成的可靠性编排](#流式生成的可靠性编排)
+    - [使用示例](#使用示例-5)
+  - [MemoryService — 记忆服务（预留）](#memoryservice--记忆服务预留)
+    - [定位](#定位)
+    - [规划方向](#规划方向)
+    - [当前状态](#当前状态)
+  - [配置关联](#配置关联)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -30,7 +64,7 @@
 
 - **会话管理**（`SessionManager`）：会话 CRUD + Redis 热缓存 + DB 持久化，支持分页 / 搜索 / 统计
 - **上下文管理**（`ContextManager`）：从会话历史组装 messages，token 精确计数 + 超限截断
-- **工具服务**（`ToolService`）：工具容器 / 执行 / 统计 / 钩子 / 内置工具装配（已合并原 ToolRegistry）
+- **工具服务**（`ToolService`）：工具注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 内置工具装配 / 外部热加载（Facade 聚合六大子组件）
 - **任务调度**（`TaskService`）：任务级并发信号量 + `run_agent()` 流式包装
 - **文本向量化**（`EmbeddingService`）：单条 / 批量嵌入 + 内存缓存
 - **LLM Facade**（`LLMService`）：流式 / 非流式生成、结构化输出、成本计算，组合 LLM 子包全部可靠性能力
@@ -55,7 +89,7 @@ app/domain/memory/memory_service.py  ← MemoryService（❌ 预留，空文件�
 ### 设计原则
 
 1. **单例装配**：`container` 持有全部服务实例，启动时经 `Container.initialize()` 统一初始化，关闭时统一清理；依赖注入 `get_tool_service` 等返回同一实例
-2. **服务统一入口**：工具系统经 `ToolService` 对外（容器 + 执行 + 统计 + 装配合并一处），不再有独立 ToolRegistry
+2. **服务统一入口**：工具系统经 `ToolService` Facade 对外，聚合六大子组件（Registry / Selector / Validator / Executor / ResultProcessor / Auditor）+ 辅助组件（Stats / Hooks / Assembler / Loader）
 3. **Facade 模式**：`LLMService` 是 LLM 能力的唯一外部入口，`llm/` 子包内部组件不对外暴露
 4. **降级容错**：单个基础设施（Redis / DB / 工具）初始化失败不影响整体启动，只记录警告并降级
 5. **调度与执行解耦**：`TaskService` 决定「任务何时并发执行」，Agent 决定「单个任务如何执行」
@@ -96,7 +130,7 @@ API 层（chat / session 路由）
 | --- | --- | --- | --- |
 | `session_manager.py` | ✅ 已实现（454 行） | `SessionManager`：`create_session` / `get_session` / `get_messages` / `add_message` / `delete_session` / `hard_delete_session` / `list_sessions` / `list_sessions_v2` / `_get_session_stats` | 会话生命周期 + Redis 热缓存 + DB 持久化 + 分页/搜索/统计 |
 | `context_manager.py` | ✅ 已实现（135 行） | `ContextManager`：`build_messages` / `count_tokens` / `count_messages_tokens` / `_truncate_messages` | 组装 messages + token 计数 + 超限截断 |
-| `tool_service.py` | ✅ 已实现（409 行） | `ToolService`：`register` / `unregister` / `get` / `execute` / `get_stats` / `get_all_stats_summary` / `init_default_tools`；`ToolStats` | 工具容器 / 执行 / 统计 / 钩子 / 装配（已合并原 ToolRegistry） |
+| `tool_service.py` | ✅ 已实现（169 行） | `ToolService`：`register` / `unregister` / `get` / `list_tools` / `list_by_risk` / `list_by_category` / `get_openai_tools` / `get_openai_responses` / `execute` / `refresh_external_tools` / `get_stats` / `get_all_stats_summary` / `add_execution_hook` / `init_default_tools` / `shutdown` | 工具 Facade：聚合六大子组件 + 外部热加载 + 生命周期回收 |
 | `task_service.py` | ✅ 已实现（68 行） | `TaskService`：`run_agent` / `max_concurrent` | 任务级并发信号量 + `run_agent()` 流式包装 |
 | `embedding/embedding_service.py` | ✅ 已实现（141 行） | `EmbeddingService`：`embed` / `embed_batch` / `clear_cache` / `cache_size` | 文本向量化 + 批量 + 缓存 |
 | `llm_service.py` | ✅ 已实现（608 行） | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost`；`StreamResult` | LLM 统一 Facade |
@@ -236,45 +270,48 @@ messages, total_tokens = await container.context_manager.build_messages(
 
 ## ToolService — 工具服务
 
-**文件**：`app/integration/tools/tool_service.py`
+**文件**：`app/integration/tools/tool_service.py` · **详解**：[ToolService 说明](../integration_doc/tools_doc/tool_service.md)
 
 ### 核心功能
 
-1. **工具容器**：注册 / 注销 / 查询 / 列表（原 ToolRegistry 职责合并于此）
-2. **工具执行**：`execute()` 带参数验证、自动重试（指数退避）、超时保护、执行统计、并发控制
-3. **执行统计**：`ToolStats` 记录调用次数 / 成功率 / 平均耗时 / 最后调用时间
+1. **工具注册中心**：注册 / 注销 / 查询 / 列表 / 按风险与分类过滤（委托 `ToolRegistry`）
+2. **工具执行**：`execute()` 带参数校验（jsonschema 归因）、自动重试（指数退避）、超时保护、结果截断、审计留痕、并发控制（委托 `ToolExecutor`）
+3. **执行统计**：`ToolStatsCollector` 记录调用次数 / 成功率 / 平均耗时 / 最后调用时间
 4. **钩子机制**：工具执行成功后运行扩展钩子（异步 / 同步皆可，钩子失败不影响工具执行）
-5. **内置工具装配**：`init_default_tools()` 用 importlib 扫描 `app.tools.builtin` 包，幂等注册
-6. **Schema 导出**：`get_openai_tools()` / `get_openai_responses()` 导出 OpenAI 格式工具列表
+5. **内置工具装配**：`init_default_tools()` 经 `ToolAssembler` 扫描 `app.integration.tools.builtin` 包，幂等注册
+6. **Schema 导出**：`get_openai_tools()`（经选择器） / `get_openai_responses()`（全量）导出 OpenAI 格式工具列表
+7. **外部工具热加载**：`execute` 入口惰性检查 `external/` 目录，变化即重扫（无后台任务，见 [external.md](../integration_doc/tools_doc/external.md)）
+8. **生命周期回收**：`shutdown()` 遍历已注册工具调 `on_unload`（容器关闭时调用）
 
 ### 关键方法
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `register` | `(tool: BaseTool) -> None` | 注册工具，重名抛 `ValueError` |
-| `unregister` | `(name: str) -> bool` | 注销工具及其统计 |
+| `unregister` | `(name: str) -> bool` | 注销工具及其统计与 per-tool 锁 |
 | `get` | `(name: str) -> BaseTool \| None` | 获取工具实例 |
 | `list_tools` | `() -> list[str]` | 列出全部工具名 |
-| `get_openai_tools` | `() -> list[dict]` | OpenAI Tool Schema 列表 |
-| `get_openai_responses` | `() -> list[dict]` | OpenAI Response Schema 列表 |
-| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0) -> ToolResult` | 执行工具（信号量保护内） |
+| `list_by_risk` | `(risk_level) -> list[BaseTool]` | 按风险等级过滤 |
+| `list_by_category` | `(category: str) -> list[BaseTool]` | 按功能域过滤 |
+| `get_openai_tools` | `() -> list[dict]` | OpenAI Tool Schema 列表（经选择器） |
+| `get_openai_responses` | `() -> list[dict]` | OpenAI Response Schema 列表（全量） |
+| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0) -> ToolResult` | 执行工具（信号量 + 校验 + 重试 + 截断 + 审计） |
+| `refresh_external_tools` | `async () -> None` | 手动触发外部工具重扫 |
 | `get_stats` | `(name=None) -> dict \| ToolStats \| None` | 单工具或全量统计 |
 | `get_all_stats_summary` | `() -> dict` | 总调用 / 总成功率 / 各工具详情摘要 |
 | `add_execution_hook` | `(hook: Callable) -> None` | 注册执行钩子 `async def hook(tool_name, parameters, result)` |
-| `init_default_tools` | `() -> list[str]` | 注册全部内置工具，返回新增工具名列表 |
+| `init_default_tools` | `() -> list[str]` | 注册全部内置工具（幂等），返回新增类名列表 |
+| `shutdown` | `async () -> None` | 关闭全部已注册工具资源（调 on_unload，幂等） |
 
 ### 执行流程
 
 ```
 execute(name, parameters)
-  1. async with self._tool_semaphore（工具级并发信号量）
-  2. 参数补默认（timeout=tool_timeout, max_retries=tool_max_retries）
-  3. 查找工具（未注册 → 直接失败）
-  4. 参数 JSON 字符串解析
-  5. tool.validate_parameters() 前置验证
-  6. 重试循环：asyncio.wait_for(tool.execute(**parameters), timeout)
-     - 成功 → 记录统计 + 运行钩子 + 返回
-     - 失败/超时 → 记录统计，指数退避 retry_delay × 2^attempt 后重试
+  1. 入口先外部工具惰性检查（ExternalToolLoader.maybe_refresh，无变化零开销）
+  2. async with 工具级并发信号量（agent_max_concurrent_tools）
+  3. 查注册表 → 参数校验（jsonschema 归因）→ 重试循环（asyncio.wait_for + 指数退避）
+  4. 结果 head+tail 截断（tool.max_output_length）
+  5. 统计 + 钩子（成功路径）+ 审计（每条最终结果）
 ```
 
 **并发控制语义**：工具级信号量限制单任务内最大并发工具调用数（对应配置 `agent_max_concurrent_tools`），是 **Agent 维度（GPU / 服务器资源）**，而非 LLM API 维度（RPM / TPM 由 `reservation_limiter` 覆盖）。`async with` 天然保证异常 / 取消时释放信号量，不会挂死占坑。
