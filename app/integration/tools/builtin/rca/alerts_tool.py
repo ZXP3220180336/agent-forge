@@ -37,6 +37,10 @@ class QueryEquipmentAlertsTool(BaseTool):
                     "enum": ["ALARM", "PM", "INFO"],
                     "description": "告警类型（可选）：ALARM 异常 / PM 维护 / INFO 常规",
                 },
+                "time_range": {
+                    "type": "string",
+                    "description": "时间窗口（可选），如 2026-08-12 08:00~2026-08-12 20:00",
+                },
             },
             "required": [],
         }
@@ -57,7 +61,12 @@ class QueryEquipmentAlertsTool(BaseTool):
 
         equipment_id = kwargs.get("equipment_id")
         alert_type = kwargs.get("alert_type")
-        records = query_alerts(equipment_id=equipment_id, alert_type=alert_type)
+        time_range = kwargs.get("time_range")
+        records = query_alerts(
+            equipment_id=equipment_id,
+            alert_type=alert_type,
+            time_range=time_range,
+        )
 
         if not records:
             scope = equipment_id or "全部设备"

@@ -36,6 +36,10 @@ class QueryFdcParamsTool(BaseTool):
                     "type": "string",
                     "description": "工艺 step（可选），如 ETCH",
                 },
+                "time_range": {
+                    "type": "string",
+                    "description": "时间窗口（可选），如 2026-08-12 08:00~2026-08-12 20:00（看偏离随时间发展）",
+                },
             },
             "required": ["equipment_id"],
         }
@@ -56,7 +60,8 @@ class QueryFdcParamsTool(BaseTool):
 
         equipment_id: str = kwargs["equipment_id"]
         process_step = kwargs.get("process_step")
-        records = query_fdc(equipment_id, process_step=process_step)
+        time_range = kwargs.get("time_range")
+        records = query_fdc(equipment_id, process_step=process_step, time_range=time_range)
 
         if not records:
             scope = f"{equipment_id}" + (f" / {process_step}" if process_step else "")

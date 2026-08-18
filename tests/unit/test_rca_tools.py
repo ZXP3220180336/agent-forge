@@ -131,3 +131,59 @@ async def test_init_default_tools_registers_all():
         "query_defect_map",
         "search_historical_rca",
     }
+
+
+@pytest.mark.asyncio
+async def test_fdc_time_range_reveals_deviation_development():
+    """FDC 时间窗口：可看出 chamber_pressure 偏离随时间发展（早窗正常 → 晚窗偏离）。"""
+    tool = QueryFdcParamsTool()
+    # 早窗口（偏离尚未开始）：仅 normal 样本
+    early = await tool.execute(
+        equipment_id="ETCH-01", time_range="2026-08-12 08:00~2026-08-12 11:00"
+    )
+    assert "12.0%" not in early.content
+    assert "⚠ 偏离" not in early.content
+    # 晚窗口（偏离已发展）：含 +12% 偏离样本
+    late = await tool.execute(
+        equipment_id="ETCH-01", time_range="2026-08-12 12:00~2026-08-12 14:30"
+    )
+    assert "12.0%" in late.content
+    assert "⚠ 偏离" in late.content
+
+
+@pytest.mark.asyncio
+async def test_batch_yield_time_range_filters():
+    """批次良率时间窗口：只看骤降后的 ETCH 记录，排除窗口外 step。"""
+    tool = QueryBatchYieldTool()
+    result = await tool.execute(
+        batch_id="LOT-A123", time_range="2026-08-12 14:00~2026-08-13 00:00"
+    )
+
+    assert result.success is True
+    assert "82.0" in result.content  # ETCH 骤降（14:30）在窗口内
+    assert "97.5" not in result.content  # LITHO（08:00）在窗口外
+
+
+@pytest.mark.asyncio
+async def test_time_range_single_side_open():
+    """时间窗口单侧缺省（~end）仍生效。"""
+    tool = QueryFdcParamsTool()
+    result = await tool.execute(
+        equipment_id="ETCH-01", time_range="~2026-08-12 11:00"
+    )
+
+    assert result.success is True
+    assert "12.0%" not in result.content  # 14:00 的偏离样本被排除
+
+
+@pytest.mark.asyncio
+async def test_time_range_end_short_form():
+    """end 仅时间（缺日期）自动补 start 日期——LLM 直觉写法鲁棒。"""
+    tool = QueryFdcParamsTool()
+    late = await tool.execute(
+        equipment_id="ETCH-01", time_range="2026-08-12 12:00~14:30"
+    )
+
+    assert late.success is True
+    assert "12.0%" in late.content
+    assert "⚠ 偏离" in late.content

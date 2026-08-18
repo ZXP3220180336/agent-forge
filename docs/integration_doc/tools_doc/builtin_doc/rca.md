@@ -17,11 +17,13 @@
 
 | 工具 | 参数 | 返回内容 | category | source |
 | --- | --- | --- | --- | --- |
-| `query_batch_yield` | `batch_id` 必填 | 批次良率记录（按 step，含骤降标记） | yield | mock_yms |
-| `query_equipment_alerts` | `equipment_id`/`alert_type` 可选 | 告警 / PM 记录 | equipment | mock_mes |
-| `query_fdc_params` | `equipment_id` 必填、`process_step` 可选 | FDC 参数偏离（value/baseline/deviation/status） | fdc | mock_fdc |
+| `query_batch_yield` | `batch_id` 必填、`time_range` 可选 | 批次良率记录（按 step，含骤降标记） | yield | mock_yms |
+| `query_equipment_alerts` | `equipment_id`/`alert_type`/`time_range` 可选 | 告警 / PM 记录 | equipment | mock_mes |
+| `query_fdc_params` | `equipment_id` 必填、`process_step`/`time_range` 可选 | FDC 参数偏离（value/baseline/deviation/status） | fdc | mock_fdc |
 | `query_defect_map` | `batch_id` 必填、`wafer_id` 可选 | wafer 缺陷分布（模式/数量/主导类型） | defect | mock_defect |
 | `search_historical_rca` | `query` 必填、`top_k` 可选(默认3) | 匹配历史案例（症状/根因/证据/解决） | history | mock_history |
+
+> `time_range` 格式 `'start~end'`（如 `2026-08-12 08:00~2026-08-12 20:00`），start / end 可单侧缺省——支撑「对比异常前后」的 RCA 核心动作。
 
 ## 排查链示例（LOT-A123）
 
@@ -30,7 +32,7 @@
 ```text
 query_batch_yield("LOT-A123")      → ETCH step 良率骤降 82%（涉及 ETCH-01）
 query_equipment_alerts("ETCH-01")  → chamber pressure ALARM + 一次 PM
-query_fdc_params("ETCH-01")        → chamber_pressure 偏离 +12%（deviated）
+query_fdc_params("ETCH-01", "2026-08-12 08:00~14:30") → 偏离随时间发展（08:00 正常 → 14:00 +12%）
 query_defect_map("LOT-A123")       → center_cluster 模式，主导类型 particle
 search_historical_rca("etch 偏离 良率 骤降") → RCA-001 佐证
 结论 → 根因：chamber 内部污染致粒子聚集，需 chamber 清洁 / PM
@@ -41,6 +43,8 @@ search_historical_rca("etch 偏离 良率 骤降") → RCA-001 佐证
 ## 模拟数据（data.py）
 
 固定数据（无随机）——`BATCHES` / `ALERTS` / `FDC_PARAMS` / `DEFECTS` / `HISTORY` + 查询辅助函数。两次查询结果恒等，演示 / 测试可复现。数据源标识经工具 metadata 暴露（`source=mock_yms` 等）。
+
+**时间序列**：`FDC_PARAMS` 含同机台多时间点样本（ETCH-01 的 `chamber_pressure` 偏离随时间发展：08:00 正常 → 12:00 +4.9% → 14:00 +12%）——配合 `time_range` 窗口过滤可看「异常如何发展」，支撑异常前后对比。
 
 ## search_historical_rca 简化
 

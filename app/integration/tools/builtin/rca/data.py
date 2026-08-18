@@ -4,7 +4,7 @@
 
 - 良率：LOT-A123 在 ETCH step 骤降，涉及 ETCH-01
 - 告警：ETCH-01 有 ALARM（chamber pressure abnormal）+ 一次 PM
-- FDC：ETCH-01 的 `chamber_pressure` 偏离 +12%（baseline 45.0 → 50.4）
+- FDC：ETCH-01 的 `chamber_pressure` 偏离**随时间发展**（08:00 正常 → 12:00 +4.9% → 14:00 +12%，baseline 45.0）——时间窗口过滤可看出偏离发展过程
 - 缺陷：LOT-A123 wafer 为 center_cluster 模式，top type = particle
 - 历史：预置案例佐证「chamber pressure 偏离 → center particle → 良率骤降」，根因 = chamber 需清洁/PM
 
@@ -44,14 +44,25 @@ ALERTS: list[dict] = [
      "message": "routine check ok", "timestamp": "2026-08-13 07:00"},
 ]
 
-# ===== FDC 工艺参数（模拟 FDC 时序） =====
+# ===== FDC 工艺参数（模拟 FDC 时序，多时间点支持窗口过滤） =====
 FDC_PARAMS: list[dict] = [
+    # ---- ETCH-01 chamber_pressure 时间序列：偏离随时间发展 ----
+    {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "chamber_pressure", "unit": "mTorr",
+     "value": 45.1, "baseline": 45.0, "deviation_pct": 0.2, "status": "normal", "timestamp": "2026-08-12 08:00"},
+    {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "chamber_pressure", "unit": "mTorr",
+     "value": 45.3, "baseline": 45.0, "deviation_pct": 0.7, "status": "normal", "timestamp": "2026-08-12 10:00"},
+    {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "chamber_pressure", "unit": "mTorr",
+     "value": 47.2, "baseline": 45.0, "deviation_pct": 4.9, "status": "normal", "timestamp": "2026-08-12 12:00"},
+    {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "chamber_pressure", "unit": "mTorr",
+     "value": 49.0, "baseline": 45.0, "deviation_pct": 8.9, "status": "deviated", "timestamp": "2026-08-12 13:00"},
     {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "chamber_pressure", "unit": "mTorr",
      "value": 50.4, "baseline": 45.0, "deviation_pct": 12.0, "status": "deviated", "timestamp": "2026-08-12 14:00"},
+    # ---- ETCH-01 其他参数（单点正常，对照） ----
     {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "rf_power", "unit": "W",
      "value": 800.0, "baseline": 800.0, "deviation_pct": 0.0, "status": "normal", "timestamp": "2026-08-12 14:00"},
     {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "temperature", "unit": "C",
      "value": 60.2, "baseline": 60.0, "deviation_pct": 0.3, "status": "normal", "timestamp": "2026-08-12 14:00"},
+    # ---- ETCH-02 / LITHO-01 / CMP-01 正常对照 ----
     {"equipment_id": "ETCH-02", "process_step": "ETCH", "parameter": "chamber_pressure", "unit": "mTorr",
      "value": 45.2, "baseline": 45.0, "deviation_pct": 0.4, "status": "normal", "timestamp": "2026-08-12 11:00"},
     {"equipment_id": "ETCH-02", "process_step": "ETCH", "parameter": "rf_power", "unit": "W",
@@ -101,30 +112,66 @@ HISTORY: list[dict] = [
 # ===== 查询函数（供工具调用；固定数据直接过滤，可复现） =====
 
 
-def query_yield(batch_id: str) -> list[dict]:
-    """按批次查良率记录（保持时间顺序）。"""
-    return [r for r in BATCHES if r["batch_id"] == batch_id]
+def _in_range(timestamp: str, time_range: str | None) -> bool:
+    """ISO 格式时间范围过滤（`'start~end'`，缺省端不限；同格式字符串比较）。
+
+    - 两端须含完整时间，**缺日期的一端自动补对端日期**
+      （支持 `'2026-08-12 08:00~11:00'` → end 补为同日 11:00）
+    - start / end 可整体缺省（`'~2026-08-12 11:00'` / `'2026-08-12 08:00~'`）
+    """
+    if not time_range:
+        return True
+    start, _, end = time_range.partition("~")
+    start = start.strip()
+    end = end.strip()
+    if start and end:
+        if " " not in start and " " in end:  # start 仅时间 → 补 end 日期
+            start = end[:10] + " " + start
+        elif " " not in end and " " in start:  # end 仅时间 → 补 start 日期
+            end = start[:10] + " " + end
+    if start and timestamp < start:
+        return False
+    if end and timestamp > end:
+        return False
+    return True
+
+
+def query_yield(batch_id: str, time_range: str | None = None) -> list[dict]:
+    """按批次查良率记录（可选时间窗口，保持时间顺序）。"""
+    return [
+        r
+        for r in BATCHES
+        if r["batch_id"] == batch_id and _in_range(r["timestamp"], time_range)
+    ]
 
 
 def query_alerts(
-    equipment_id: str | None = None, alert_type: str | None = None
+    equipment_id: str | None = None,
+    alert_type: str | None = None,
+    time_range: str | None = None,
 ) -> list[dict]:
-    """按机台 / 告警类型过滤。"""
+    """按机台 / 告警类型 / 时间窗口过滤。"""
     result = ALERTS
     if equipment_id:
         result = [r for r in result if r["equipment_id"] == equipment_id]
     if alert_type:
         result = [r for r in result if r["alert_type"] == alert_type]
+    if time_range:
+        result = [r for r in result if _in_range(r["timestamp"], time_range)]
     return result
 
 
 def query_fdc(
-    equipment_id: str, process_step: str | None = None
+    equipment_id: str,
+    process_step: str | None = None,
+    time_range: str | None = None,
 ) -> list[dict]:
-    """按机台（及可选 step）查 FDC 参数。"""
+    """按机台（及可选 step / 时间窗口）查 FDC 参数。"""
     result = [r for r in FDC_PARAMS if r["equipment_id"] == equipment_id]
     if process_step:
         result = [r for r in result if r["process_step"] == process_step]
+    if time_range:
+        result = [r for r in result if _in_range(r["timestamp"], time_range)]
     return result
 
 

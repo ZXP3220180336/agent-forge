@@ -29,6 +29,10 @@ class QueryBatchYieldTool(BaseTool):
             "type": "object",
             "properties": {
                 "batch_id": {"type": "string", "description": "批次号，如 LOT-A123"},
+                "time_range": {
+                    "type": "string",
+                    "description": "时间窗口（可选），如 2026-08-12 08:00~2026-08-12 20:00",
+                },
             },
             "required": ["batch_id"],
         }
@@ -48,7 +52,8 @@ class QueryBatchYieldTool(BaseTool):
             return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
 
         batch_id: str = kwargs["batch_id"]
-        records = query_yield(batch_id)
+        time_range = kwargs.get("time_range")
+        records = query_yield(batch_id, time_range=time_range)
         if not records:
             return ToolResult(
                 success=False, content="", error=f"未找到批次 '{batch_id}' 的良率记录"
