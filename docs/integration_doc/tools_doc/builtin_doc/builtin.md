@@ -331,6 +331,7 @@ stdout, stderr = await proc.communicate()
 
 - **黑名单匹配方式**：`startswith` 前缀匹配（大小写不敏感），例如 `rm -rf /` 会拦截 `RM -RF /xxx`；但**不拦截** `... && rm -rf /` 这类非前缀位置的危险子串，属已知局限
 - 空命令（`command` 去除空白后为空）直接返回失败
+- **超时 / 取消清理**：`communicate()` 经 `asyncio.wait_for` 以工具自声明超时（60s）兜底；超时或 executor 外层取消（`CancelledError`）时先 `proc.kill()` 再二次 `communicate()` 回收管道后重抛（由 executor 归为 `TIMEOUT`），避免孤儿进程泄漏
 - stdout 与 stderr 分别 `decode("utf-8", errors="replace")` 解码；结果截断由 ResultProcessor 统一处理
 - 返回内容：有输出则拼接 stdout（及 `--- stderr ---` 段），否则 `"(无输出)"`
 - `success = proc.returncode == 0`；`metadata` 记录 `return_code` 与 `command`
@@ -439,3 +440,4 @@ _http_client = httpx.AsyncClient(
 - [配置管理](../../../config_doc/config.md)（`TAVILY_API_KEY`、`TOOL_MAX_OUTPUT_LENGTH` 等配置项）
 - [核心层](../../../domain_doc/README.md)（Agent 推理循环如何消费工具）
 - [API 文档](../../../api_doc/api.md)
+- [TOOLS-001 问题记录](../../../../issues/integration/tools/2026-08-18-subprocess-orphan-on-cancel.md)（子进程超时 / 取消清理）

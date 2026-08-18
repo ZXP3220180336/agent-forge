@@ -124,41 +124,65 @@ class CodeExecTool(BaseTool):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workdir,
             )
-
-            stdout, stderr = await proc.communicate()
-
-            stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
-            stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
-
-            # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
-            # 构建返回内容
-            parts = []
-            if stdout_str:
-                parts.append(stdout_str)
-            if stderr_str:
-                parts.append(f"--- stderr ---\n{stderr_str}")
-
-            content = "".join(parts) if parts else "(无输出)"
-
-            success = proc.returncode == 0
-            return ToolResult(
-                success=success,
-                content=content,
-                metadata={
-                    "return_code": proc.returncode,
-                    "command": command,
-                },
-            )
-
         except FileNotFoundError as e:
             return ToolResult(
                 success=False,
                 content="",
                 error=f"命令不存在或未找到可执行文件: {e!s}",
             )
+
+        # 超时 / 取消时主动终止子进程，避免孤儿进程泄漏：
+        # executor 外层 asyncio.wait_for 超时会对本协程注入 CancelledError，
+        # 此处捕获后先 kill 子进程再重抛，保证进程与管道被回收。
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.timeout
+            )
+        except TimeoutError:
+            proc.kill()
+            # kill 只是发信号，进程不会瞬间消失；
+            # 同时子进程的 stdout/stderr 管道还处于打开状态。
+            # 再次调用communicate()：等待进程真正退出、
+            # 消费完管道缓冲区、关闭 IO 管道，避免文件句柄泄漏。
+            await proc.communicate()  # kill 后再次 communicate 关闭管道并等待退出
+            return ToolResult(
+                success=False,
+                content="",
+                error=f"命令执行超时（{self.timeout} 秒）",
+            )
+        except asyncio.CancelledError:
+            proc.kill()
+            await proc.communicate()
+            raise
         except Exception as e:  # noqa: BLE001
+            # communicate 阶段异常：尽力终止子进程后归因，不留孤儿
+            proc.kill()
+            await proc.communicate()
             return ToolResult(
                 success=False,
                 content="",
                 error=f"命令执行失败: {e!s}",
             )
+
+        stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
+        stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
+
+        # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
+        # 构建返回内容
+        parts = []
+        if stdout_str:
+            parts.append(stdout_str)
+        if stderr_str:
+            parts.append(f"--- stderr ---\n{stderr_str}")
+
+        content = "".join(parts) if parts else "(无输出)"
+
+        success = proc.returncode == 0
+        return ToolResult(
+            success=success,
+            content=content,
+            metadata={
+                "return_code": proc.returncode,
+                "command": command,
+            },
+        )

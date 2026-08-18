@@ -8,11 +8,13 @@
 - init_default_tools 装配完整性（5 个内置工具）
 """
 
+import asyncio
 import sys
 
 import httpx
 import pytest
 
+from app.domain.ports.tool_gateway import ErrorCode
 from app.integration.tools.builtin import (
     CodeExecTool,
     ReadFileTool,
@@ -151,3 +153,47 @@ async def test_web_browse_on_unload_closes_client():
 
     await tool.on_unload()  # 幂等：已关闭则跳过
     assert web_browse._http_client is None
+
+
+class _FakeSubprocessProc:
+    """模拟长跑子进程：首次 communicate 挂起（被取消），kill 后清理立即返回。"""
+
+    def __init__(self) -> None:
+        self.killed = False
+        self._communicate_count = 0
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        self._communicate_count += 1
+        if self._communicate_count == 1:
+            await asyncio.sleep(30)  # 首次：模拟长时间运行，等待外层超时取消
+        return b"", b""  # 二次（kill 后清理管道）：立即返回
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+@pytest.mark.asyncio
+async def test_code_exec_timeout_kills_subprocess(monkeypatch):
+    """executor 超时取消时，工具主动 kill 子进程，不留孤儿。"""
+    captured: dict[str, _FakeSubprocessProc] = {}
+
+    async def fake_create_subprocess_shell(*args, **kwargs) -> _FakeSubprocessProc:
+        proc = _FakeSubprocessProc()
+        captured["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(
+        "app.integration.tools.builtin.code_exec.asyncio.create_subprocess_shell",
+        fake_create_subprocess_shell,
+    )
+
+    service = ToolService()
+    service.register(CodeExecTool())
+
+    result = await service.execute("code_exec", {"command": "sleep 30"}, timeout=1)
+
+    assert result.success is False
+    assert result.error_code == ErrorCode.TIMEOUT
+    assert "工具执行超时" in result.error
+    # 关键：子进程已被 kill，executor 超时未导致孤儿进程残留
+    assert captured["proc"].killed is True
