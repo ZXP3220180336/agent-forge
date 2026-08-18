@@ -12,6 +12,7 @@ from app.integration.tools.assembler import ToolAssembler
 from app.integration.tools.base import BaseTool
 from app.integration.tools.executor import ToolExecutor
 from app.integration.tools.hooks import ExecutionHooks
+from app.integration.tools.loader import ExternalToolLoader
 from app.integration.tools.registry import ToolRegistry
 from app.integration.tools.result_processor import ResultProcessor
 from app.integration.tools.security import ApprovalGate, RiskLevel, ToolAuditor
@@ -52,6 +53,8 @@ class ToolService:
             tool_timeout=tool_timeout,
             tool_max_retries=tool_max_retries,
         )
+        # 外部工具热加载器（execute 惰性检查：无后台任务，见 loader.py）
+        self._external_loader = ExternalToolLoader(self)
 
     # ===== 注册管理（→ Registry + Stats 双写） =====
 
@@ -105,7 +108,11 @@ class ToolService:
         max_retries: int | None = None,
         retry_delay: float = 1.0,
     ) -> ToolResult:
-        """执行工具（信号量 + 参数验证 + 自动重试 + 超时 + 统计 + 截断 + 审计 + 钩子）。"""
+        """执行工具（信号量 + 参数验证 + 自动重试 + 超时 + 统计 + 截断 + 审计 + 钩子）。
+
+        入口先做外部工具惰性检查（目录变化 → 重扫），对齐「变更 → 下次调用生效」。
+        """
+        await self._external_loader.maybe_refresh()
         return await self._executor.execute(
             name,
             parameters,
@@ -113,6 +120,10 @@ class ToolService:
             max_retries=max_retries,
             retry_delay=retry_delay,
         )
+
+    async def refresh_external_tools(self) -> None:
+        """手动触发外部工具重扫（加载新增 / 重载修改 / 卸载删除）。供未来管理接口。"""
+        await self._external_loader.scan_once()
 
     # ===== 统计（→ Stats） =====
 

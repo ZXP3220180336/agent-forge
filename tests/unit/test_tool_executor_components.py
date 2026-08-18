@@ -13,7 +13,11 @@ import asyncio
 import pytest
 
 from app.integration.tools.base import BaseTool, ToolResult
+from app.integration.tools.executor import ToolExecutor
+from app.integration.tools.hooks import ExecutionHooks
+from app.integration.tools.registry import ToolRegistry
 from app.integration.tools.security import RiskLevel, ToolAuditor
+from app.integration.tools.stats import ToolStatsCollector
 from app.integration.tools.tool_service import ToolService
 
 
@@ -261,3 +265,19 @@ async def test_global_timeout_used_when_tool_declares_none():
 
     assert result.success is False
     assert "超时" in result.error
+
+
+@pytest.mark.asyncio
+async def test_prune_tool_lock_skips_held():
+    """外部工具重载场景：在飞 execute 持锁时 prune 跳过；释放后才清理。"""
+    executor = ToolExecutor(ToolRegistry(), ToolStatsCollector(), ExecutionHooks())
+    lock = asyncio.Lock()
+    executor._tool_locks["x"] = lock
+    await lock.acquire()
+
+    executor.prune_tool_lock("x")
+    assert "x" in executor._tool_locks  # 持锁跳过 → 重载后新实例复用同一把锁
+
+    lock.release()
+    executor.prune_tool_lock("x")
+    assert "x" not in executor._tool_locks

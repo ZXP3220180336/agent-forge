@@ -255,8 +255,14 @@ class ToolExecutor:
         return self._tool_locks[name]
 
     def prune_tool_lock(self, name: str) -> None:
-        """注销工具时清理 per-tool 锁条目（由 ToolService.unregister 调用）。"""
-        self._tool_locks.pop(name, None)
+        """注销工具时清理 per-tool 锁条目（由 ToolService.unregister 调用）。
+
+        跳过仍在持有的锁：外部工具重载时在飞 execute 持锁，先 pop 会导致
+        新实例惰性建新锁、与旧实例并发（破坏串行化）；跳过则新实例复用同一把锁。
+        """
+        lock = self._tool_locks.get(name)
+        if lock is not None and not lock.locked():
+            self._tool_locks.pop(name, None)
 
     async def _audit(
         self,

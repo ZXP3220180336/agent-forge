@@ -53,7 +53,7 @@ app/integration/
 │   ├── reservation_limiter.py    ← ReservationLimiter 客户端限流
 │   └── cost_tracker.py           ← CostTracker 成本计算
 ├── tools/                        ← 工具系统（ToolService Facade + 六大子组件 + 内置工具）
-    ├── base.py                   ← BaseTool / ToolResult（元数据 + 校验委托）
+    ├── base.py                   ← BaseTool / ToolResult（元数据 + 校验委托 + 生命周期钩子）
     ├── tool_service.py           ← ToolService（统一 Facade，对外入口）
     ├── registry.py               ← ToolRegistry 注册中心（容器 + Schema 导出 + 元数据查询）
     ├── selector.py               ← ToolSelector 选择器（全量注入，预留召回）
@@ -64,12 +64,13 @@ app/integration/
     ├── stats.py                  ← ToolStats / ToolStatsCollector 执行统计
     ├── hooks.py                  ← ExecutionHooks 执行钩子
     ├── assembler.py              ← ToolAssembler 内置工具装配
+    ├── loader.py                 ← ExternalToolLoader 外部工具热加载（execute 惰性检查）
     ├── builtin/                  ← 内置工具（自动发现）
     │   ├── search.py             ← "search" 网络搜索（Tavily）
     │   ├── file_ops.py           ← "readFile" / "writeFile" 文件读写
     │   ├── code_exec.py          ← "code_exec" 终端命令执行
     │   └── web_browse.py         ← "web_browse" 网页抓取
-    └── external/                 ← 外部工具（预留）
+    └── external/                 ← 外部工具（热加载，见 tools_doc/external.md）
 
 └── vector_store/                 ← 向量检索（待规划：Milvus，服务 RAG）
     ├── base.py                   ← 向量库抽象基类
@@ -112,8 +113,9 @@ app/integration/
 | LLM Facade | `llm/llm_service.py` | ✅ | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost` |
 | LLM 子包 | `llm/`（7 组件） | ✅ | ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker |
 | 工具 Facade | `tools/tool_service.py` | ✅ | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
-| 工具子包 | `tools/`（六大子组件） | ✅ | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler |
+| 工具子包 | `tools/`（六大子组件） | ✅ | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler / Loader |
 | 内置工具 | `tools/builtin/` | ✅ | search / readFile / writeFile / code_exec / web_browse |
+| 外部工具加载器 | `tools/loader.py` | ✅ | ExternalToolLoader：execute 惰性检查热加载 + 生命周期钩子（external/ 目录） |
 | Embedding | `embedding/embedding_service.py` | 🔶 已实现未接线 | `EmbeddingService`：`embed` / `embed_batch` / 内存缓存 |
 | VectorStore adapter | `vector_store/` | ⬜ 待规划 | Milvus 向量库检索（Phase D，规划接入 RAG） |
 | RCA 工具 | — | ⬜ 待规划 | 良率 / 告警 / FDC / wafer / 历史检索（Phase C/D） |
@@ -157,8 +159,11 @@ app/integration/
 | `ToolStatsCollector` | stats.py | 执行统计（调用次数 / 成功率 / 平均耗时） |
 | `ExecutionHooks` | hooks.py | 执行钩子（成功路径通知） |
 | `ToolAssembler` | assembler.py | 内置工具幂等装配 |
+| `ExternalToolLoader` | loader.py | 外部工具热加载（execute 惰性检查 + 生命周期钩子） |
 
 **内置工具**（`builtin/` 自动发现，`BaseTool` 子类即注册）：`search`（Tavily 搜索）/ `readFile` / `writeFile` / `code_exec`（危险命令黑名单 + L2 分级）/ `web_browse`（自实现 HTML→文本解析）。风险分级见 [安全文档](tools_doc/security.md)。
+
+**外部工具**（`external/` + `ExternalToolLoader`）：文件放入目录即被 `execute` 惰性检查发现，下次调用生效（无后台任务），见 [外部工具热加载](tools_doc/external.md)。
 
 **执行流程**：信号量内 → 查注册表 → 参数校验（jsonschema 归因）→ 重试循环（`asyncio.wait_for` + 指数退避）→ 结果截断（head+tail）→ 统计 + 钩子 + 审计。
 
@@ -199,6 +204,6 @@ app/integration/
 - [应用层说明](../application_doc/README.md)
 - [领域层说明](../domain_doc/README.md)
 - [LLM 层详解](llm_doc/llm.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md)
-- [ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md) · [执行调度](tools_doc/executor.md) · [注册中心](tools_doc/registry.md) · [校验](tools_doc/validator.md) · [结果处理](tools_doc/result_processor.md) · [安全审计](tools_doc/security.md) · [选择器](tools_doc/selector.md) · [统计](tools_doc/stats.md)
+- [ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md) · [外部工具热加载](tools_doc/external.md) · [执行调度](tools_doc/executor.md) · [注册中心](tools_doc/registry.md) · [校验](tools_doc/validator.md) · [结果处理](tools_doc/result_processor.md) · [安全审计](tools_doc/security.md) · [选择器](tools_doc/selector.md) · [统计](tools_doc/stats.md)
 - [Embedding 详解](embedding_doc/embedding.md)
 - [配置说明](../config_doc/config.md)

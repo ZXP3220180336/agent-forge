@@ -94,6 +94,24 @@ class BaseTool(ABC):
         """工具自声明默认超时（秒）。None = 沿用全局配置；调用方显式传入可覆盖。"""
         return None
 
+    # ===== 生命周期钩子（对齐工业热插拔：加载 / 卸载 / 健康检查） =====
+
+    async def on_load(self) -> None:
+        """加载完成后初始化（建立连接 / 加载配置）。默认无操作。
+
+        由外部工具加载器在实例化并注册前调用；失败 → 该工具跳过并回滚。
+        """
+
+    async def on_unload(self) -> None:
+        """卸载前释放资源（连接 / 子进程 / 定时器）。默认无操作。
+
+        由外部工具加载器在注销前调用；异常不影响卸载流程。
+        """
+
+    async def health_check(self) -> bool:
+        """健康检查，返回可用性状态。默认可用（接口预留，供未来巡检隔离）。"""
+        return True
+
     # ===== Schema 导出 =====
 
     def to_openai_tool(self) -> dict[str, Any]:

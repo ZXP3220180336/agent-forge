@@ -37,9 +37,10 @@ app/integration/tools/
 ├── stats.py               ← ToolStats / ToolStatsCollector 执行统计
 ├── hooks.py               ← ExecutionHooks 执行钩子
 ├── assembler.py           ← ToolAssembler 内置工具装配
-├── base.py                ← BaseTool 抽象基类（元数据 + 校验委托）
+├── loader.py              ← ExternalToolLoader 外部工具热加载（惰性检查 + 生命周期钩子）
+├── base.py                ← BaseTool 抽象基类（元数据 + 校验委托 + 生命周期钩子）
 ├── builtin/               ← 内置工具（自动发现）
-└── external/              ← 外部工具（预留）
+└── external/              ← 外部工具（热加载，见 external.md）
 ```
 
 ### 设计原则
@@ -48,6 +49,7 @@ app/integration/tools/
 2. **依赖倒置**：领域层只依赖 `ToolGateway` 端口；`ToolService` 结构实现之（非显式继承）
 3. **零 settings 依赖**：tools 模块不直接 import settings，配置经 `container.py` 的 `register_config` / 构造参数注入
 4. **工具级并发信号量**：限制单任务内最大并发工具数（`agent_max_concurrent_tools`），保护 GPU / 服务器资源
+5. **外部工具惰性检查**：`execute` 入口对比 external 目录签名，变化才重扫（无后台任务，对齐「变更 → 下次调用生效」）
 
 ## 对外接口
 
@@ -106,6 +108,8 @@ class ToolGateway(Protocol):
 | `requires_approval` | 是否需人工审批（executor 经 ApprovalGate 确认，默认放行） |
 | `max_output_length` | 结果截断上限（ResultProcessor 消费，默认 100_000） |
 | `timeout` | 工具自声明默认超时（秒；None = 沿用全局配置，调用方显式传入可覆盖） |
+| `on_load` / `on_unload` | 可选异步钩子：加载后初始化 / 卸载前释放资源（外部工具加载器消费，默认 no-op） |
+| `health_check` | 可选异步钩子：健康检查，返回可用性（默认 True，预留巡检） |
 | `register_config` | 可选类方法：装配根注入运行配置（避免直接依赖 settings） |
 
 ## 内部实现组织（六大子组件）
@@ -119,7 +123,7 @@ class ToolGateway(Protocol):
 | 结果处理器 | result_processor.py | head+tail 截断 + 错误归一化 | [result_processor.md](result_processor.md) |
 | 安全审计 | security.py | 风险分级 + 审计留痕 + 审批通道 | [security.md](security.md) |
 
-辅助组件：`stats.py`（执行统计，见 [stats.md](stats.md)）、`hooks.py`（执行钩子）、`assembler.py`（内置工具装配），详见 [ToolService 说明](tool_service.md)。人工审批通道（`ApprovalGate` / `AutoApprovalGate`）随安全审计子组件见 [security.md](security.md)。
+辅助组件：`stats.py`（执行统计，见 [stats.md](stats.md)）、`hooks.py`（执行钩子）、`assembler.py`（内置工具装配）、`loader.py`（外部工具热加载，见 [external.md](external.md)），详见 [ToolService 说明](tool_service.md)。人工审批通道（`ApprovalGate` / `AutoApprovalGate`）随安全审计子组件见 [security.md](security.md)。
 
 ## 内置工具
 
@@ -134,6 +138,16 @@ class ToolGateway(Protocol):
 | WebBrowseTool | `web_browse` | L0 只读 | web | ✅ | 15s |
 
 详见 [内置工具说明](builtin_doc/builtin.md)。工具实例化不依赖外部服务（API Key 执行时才需要），个别注册失败不影响启动。
+
+## 外部工具（热加载）
+
+`external/` 目录下的 `BaseTool` 子类由 `ExternalToolLoader` 动态发现并注册（对齐工业热插拔「内嵌式可信插件」档，机制详解见 [external.md](external.md)）：
+
+- **惰性检查**：`execute` 入口对比目录签名，文件新增 / 修改 / 删除后**下一次工具调用即生效**（无后台任务）
+- **生命周期**：`on_load()` / `on_unload()` / `health_check()` 钩子，资源可完整回收
+- **同名拒绝**：与内置 / 已加载工具重名 → 跳过（builtin 权威）
+- **信任边界**：加载即执行任意代码，只放受信任工具；外部工具自行读环境变量配置（容器不注入）
+- **编写约定**：见 [外部工具编写约定](external.md#外部工具编写约定)
 
 ## 配置关联
 
@@ -151,7 +165,7 @@ class ToolGateway(Protocol):
 ## 相关文档
 
 - [ToolService 说明](tool_service.md)（Facade 装配 / 执行流程 / 并发语义）
-- [内置工具说明](builtin_doc/builtin.md)（BaseTool + 5 内置工具）
+- [内置工具说明](builtin_doc/builtin.md)（BaseTool + 5 内置工具）· [外部工具热加载](external.md)（ExternalToolLoader）
 - [validator.md](validator.md) · [result_processor.md](result_processor.md) · [security.md](security.md) · [selector.md](selector.md)
 - [集成层总览](../README.md) · [架构设计](../../architecture.md)
 - 决策记录：[ADR 索引](../../../adr/integration/tools/README.md)

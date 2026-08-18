@@ -30,6 +30,7 @@ ToolService 是**工具系统的对外统一入口**（Facade），聚合六大�
 4. **执行统计**：`ToolStats` 记录调用次数 / 成功率 / 平均耗时 / 最后调用时间
 5. **钩子机制**：工具执行成功后运行扩展钩子（异步 / 同步皆可，钩子失败不影响工具执行）
 6. **内置工具装配**：`init_default_tools()` 用 importlib 扫描 `builtin` 包，幂等注册
+7. **外部工具热加载**：`execute` 入口惰性检查 `external/` 目录，变化即重扫（无后台任务，见 [external.md](external.md)）
 
 ### 组件装配
 
@@ -44,7 +45,8 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 ├── ApprovalGate        审批通道：requires_approval 工具执行前确认（默认放行）
 ├── ToolStatsCollector  统计
 ├── ExecutionHooks      钩子
-└── ToolAssembler       内置工具装配
+├── ToolAssembler       内置工具装配
+└── ExternalToolLoader  外部工具热加载（execute 惰性检查 + 生命周期钩子）
 ```
 
 - `container` 持有单例实例，`get_tool_service` 依赖注入返回同一实例（见 [集成层总览](../README.md)）
@@ -73,11 +75,12 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 | `list_by_category` | `(category: str) -> list[BaseTool]` | 按功能域过滤（预留管理界面） |
 | `get_openai_tools` | `() -> list[dict]` | OpenAI Tool Schema（经选择器） |
 | `get_openai_responses` | `() -> list[dict]` | OpenAI Response Schema（全量） |
-| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0) -> ToolResult` | 信号量内执行（见下方流程） |
+| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0) -> ToolResult` | 入口先做外部工具惰性检查，再信号量内执行（见下方流程） |
 | `get_stats` | `(name=None) -> dict \| ToolStats \| None` | 单工具或全量统计 |
 | `get_all_stats_summary` | `() -> dict` | 总调用 / 总成功 / 总失败 / 总成功率 / 各工具详情 |
 | `add_execution_hook` | `(hook: Callable) -> None` | 注册执行钩子 `async def hook(tool_name, parameters, result)` |
 | `init_default_tools` | `() -> list[str]` | 注册全部内置工具（幂等），返回新增**类名**列表 |
+| `refresh_external_tools` | `async () -> None` | 手动触发外部工具重扫（加载新增 / 重载修改 / 卸载删除） |
 
 ## 关键实现详解
 
@@ -104,6 +107,15 @@ def init_default_tools(self) -> list[str]:
 - `builtin.__all__` 由 `_discover_tools()` 自动扫描生成（见 [builtin.md](builtin_doc/builtin.md)）
 - **幂等判断用实例 `tool.name`**（如 `"search"`）而非类名（`SearchTool`），避免重复注册
 - 单工具实例化失败会中断装配循环，`Container` 捕获后降级（`[WARN] 工具初始化失败`）
+
+### 外部工具热加载
+
+`execute` 入口先调 `ExternalToolLoader.maybe_refresh()`：对比 `external/` 目录签名（文件集 + mtime/size），**无变化零开销返回**，变化才重扫（加载 / 重载 / 卸载）。详见 [external.md](external.md)。
+
+- 惰性检查对齐工业标准「变更 → 下次调用生效」，**无后台任务**
+- 外部工具自动获得 executor 全量横切关注点（校验 / 超时 / 重试 / 截断 / 审计 / 并发 / 审批）
+- 生命周期钩子 `on_load()` / `on_unload()` / `health_check()` 由 loader 消费（见 [tools.md](tools.md) BaseTool 契约）
+- `refresh_external_tools()` 手动触发同语义重扫（供未来管理接口）
 
 ### 边缘情况
 
@@ -141,6 +153,9 @@ summary = container.tool_service.get_all_stats_summary()
 
 # 内置工具装配（幂等，Container 启动时调用）
 registered = container.tool_service.init_default_tools()
+
+# 手动触发外部工具重扫（execute 已惰性自动检查，此为显式触发）
+await container.tool_service.refresh_external_tools()
 ```
 
 > 实际调用方：`app/domain/agent/executor.py`（ReActAgent 并行执行工具）、`app/api/routes/chat.py`（构造 ReActAgent 时注入 `tool_service`）。
@@ -167,6 +182,7 @@ registered = container.tool_service.init_default_tools()
 
 - [集成层总览](../README.md)（ToolService 的定位）
 - [工具模块接口文档](tools.md)（BaseTool / ToolResult / 内置工具）
+- [外部工具热加载](external.md)（ExternalToolLoader：execute 惰性检查 / 生命周期钩子 / 编写约定）
 - 子组件：[executor.md](executor.md) · [registry.md](registry.md) · [validator.md](validator.md) · [result_processor.md](result_processor.md) · [security.md](security.md) · [selector.md](selector.md) · [stats.md](stats.md)
 - [Agent 模块](../../domain_doc/agent_doc/agent.md)（`_execute_tool_calls` 并行执行，本模块上游调用方）
 - [架构设计](../../architecture.md) · [配置说明](../../config_doc/config.md)
