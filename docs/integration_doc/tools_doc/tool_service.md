@@ -31,6 +31,7 @@ ToolService 是**工具系统的对外统一入口**（Facade），聚合六大�
 5. **钩子机制**：工具执行成功后运行扩展钩子（异步 / 同步皆可，钩子失败不影响工具执行）
 6. **内置工具装配**：`init_default_tools()` 用 importlib 扫描 `builtin` 包，幂等注册
 7. **外部工具热加载**：`execute` 入口惰性检查 `external/` 目录，变化即重扫（无后台任务，见 [external.md](external.md)）
+8. **生命周期回收**：`shutdown()` 遍历已注册工具调 `on_unload`（内置工具随应用生命周期，容器关闭时调用；外部工具卸载已走 loader）
 
 ### 组件装配
 
@@ -81,6 +82,7 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 | `add_execution_hook` | `(hook: Callable) -> None` | 注册执行钩子 `async def hook(tool_name, parameters, result)` |
 | `init_default_tools` | `() -> list[str]` | 注册全部内置工具（幂等），返回新增**类名**列表 |
 | `refresh_external_tools` | `async () -> None` | 手动触发外部工具重扫（加载新增 / 重载修改 / 卸载删除） |
+| `shutdown` | `async () -> None` | 关闭全部已注册工具资源（调用 on_unload，幂等；容器关闭时调用） |
 
 ## 关键实现详解
 
@@ -116,6 +118,10 @@ def init_default_tools(self) -> list[str]:
 - 外部工具自动获得 executor 全量横切关注点（校验 / 超时 / 重试 / 截断 / 审计 / 并发 / 审批）
 - 生命周期钩子 `on_load()` / `on_unload()` / `health_check()` 由 loader 消费（见 [tools.md](tools.md) BaseTool 契约）
 - `refresh_external_tools()` 手动触发同语义重扫（供未来管理接口）
+
+### 生命周期回收 `shutdown`
+
+`container.shutdown` **最先**调 `tool_service.shutdown()`（[container.py](../../../app/container.py)）——`on_unload` 可能依赖 redis / LLM，须在基础设施关闭前执行（对齐 agentflow 关闭清理链）。`shutdown` 遍历已注册工具调 `on_unload`：内置工具随应用生命周期回收（如 web_browse 关闭全局 httpx 连接池）；外部工具卸载已由 loader 走 `on_unload`（幂等，此处对残留实例二次兜底）。单工具失败仅 warning，可重复调用。范式取舍见 [ADR TOOLS-ADR-006](../../../adr/integration/tools/2026-08-17-tool-lifecycle-paradigm.md)。
 
 ### 边缘情况
 

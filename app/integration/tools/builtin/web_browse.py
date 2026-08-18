@@ -166,6 +166,16 @@ class WebBrowseTool(BaseTool):
         """注入网页内容截断配置（由装配根调用，避免直接依赖 settings）。"""
         cls._max_content_length = max_content_length
 
+    async def on_unload(self) -> None:
+        """关闭全局 httpx 连接池（内置工具随应用生命周期，由 ToolService.shutdown 调用）。
+
+        幂等：client 已关闭则跳过，与外部工具的 on_unload 语义一致（资源完整回收）。
+        """
+        global _http_client
+        if _http_client is not None:
+            await _http_client.aclose()
+            _http_client = None
+
     @property
     def risk_level(self) -> RiskLevel:
         """只读网页抓取，L0。"""

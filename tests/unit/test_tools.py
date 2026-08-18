@@ -93,3 +93,63 @@ async def test_tool_service_releases_semaphore_on_error(monkeypatch):
     assert not r1.success
     r2 = await reg.execute("sleep_tool", {})
     assert not r2.success
+
+
+class _ShutdownSpyTool(BaseTool):
+    """记录 on_unload 调用次数的 spy（name 可配置以便注册多个）。"""
+
+    def __init__(self, name: str = "shutdown_spy"):
+        self._name = name
+        self.unloaded = 0
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return "shutdown spy"
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(success=True, content="ok")
+
+    async def on_unload(self) -> None:
+        self.unloaded += 1
+
+
+@pytest.mark.asyncio
+async def test_tool_service_shutdown_calls_on_unload():
+    """shutdown 遍历全部已注册工具调用 on_unload（内置工具随应用生命周期回收）。"""
+    service = ToolService()
+    spy = _ShutdownSpyTool()
+    service.register(spy)
+
+    await service.shutdown()
+
+    assert spy.unloaded == 1
+
+
+@pytest.mark.asyncio
+async def test_tool_service_shutdown_idempotent_and_tolerates_failure():
+    """shutdown 可重复调用；单个工具 on_unload 抛异常不阻断其余。"""
+
+    class _BoomOnUnload(_ShutdownSpyTool):
+        async def on_unload(self) -> None:
+            self.unloaded += 1
+            raise RuntimeError("unload boom")
+
+    service = ToolService()
+    boom = _BoomOnUnload(name="boom_spy")
+    good = _ShutdownSpyTool(name="good_spy")
+    service.register(boom)
+    service.register(good)
+
+    await service.shutdown()  # 不抛异常（on_unload 失败被捕获）
+    await service.shutdown()  # 幂等
+
+    assert boom.unloaded == 2
+    assert good.unloaded == 2

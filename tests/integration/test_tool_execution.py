@@ -10,13 +10,16 @@
 
 import sys
 
+import httpx
 import pytest
 
 from app.integration.tools.builtin import (
     CodeExecTool,
     ReadFileTool,
     SearchTool,
+    WebBrowseTool,
     WriteFileTool,
+    web_browse,
 )
 from app.integration.tools.tool_service import ToolService
 
@@ -130,3 +133,16 @@ async def test_read_file_large_content_truncated_head_tail(tmp_path):
     assert "头" * 500 in result.content
     assert "尾" * 500 in result.content
     assert result.metadata["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_browse_on_unload_closes_client():
+    """内置工具 on_unload 关闭全局 httpx 连接池（应用关闭回收，幂等）。"""
+    tool = WebBrowseTool()
+    web_browse._http_client = httpx.AsyncClient()
+
+    await tool.on_unload()
+    assert web_browse._http_client is None
+
+    await tool.on_unload()  # 幂等：已关闭则跳过
+    assert web_browse._http_client is None

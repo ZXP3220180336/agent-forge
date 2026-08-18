@@ -360,6 +360,7 @@ _http_client = httpx.AsyncClient(
 ```
 
 - 单例由 `_get_http_client()` 维护，避免每次执行新建连接
+- 连接池随应用关闭由 `on_unload()` 回收（`ToolService.shutdown` 调用，见 [tool_service.md](../tool_service.md)）
 - `url` 不以 `http://` / `https://` 开头时自动补全 `https://`
 
 **`_HTMLToTextParser`（`HTMLParser` 子类）特性：**

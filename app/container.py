@@ -268,6 +268,10 @@ class Container:
         清理所有资源。
         在 FastAPI 应用关闭时调用（lifespan 事件）。
         """
+        # 0. 工具资源回收须在基础设施（redis/engine/LLM）关闭前——on_unload 可能依赖它们
+        if self.tool_service is not None:
+            await self.tool_service.shutdown()
+
         cleanup_tasks = []
 
         if self.redis:

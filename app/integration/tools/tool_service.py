@@ -19,6 +19,9 @@ from app.integration.tools.security import ApprovalGate, RiskLevel, ToolAuditor
 from app.integration.tools.selector import DefaultToolSelector, ToolSelector
 from app.integration.tools.stats import ToolStats, ToolStatsCollector
 from app.integration.tools.validator import ParameterValidator
+from app.platform.observability.logger import get_logger
+
+logger = get_logger("tools.service")
 
 
 class ToolService:
@@ -148,3 +151,18 @@ class ToolService:
     def init_default_tools(self) -> list[str]:
         """注册全部内置工具（幂等），返回本次新增的类名列表。"""
         return self._assembler.assemble(self._registry, self._stats)
+
+    async def shutdown(self) -> None:
+        """关闭全部已注册工具资源（调用 on_unload，幂等）。
+
+        内置工具随应用生命周期，由装配根 shutdown 调用；外部工具卸载已由 loader 走
+        on_unload，此处对其幂等（on_unload 实现应可重复调用）。单工具失败不阻断其余。
+        """
+        for name in list(self._registry.list_tools()):
+            tool = self._registry.get(name)
+            if tool is None:
+                continue
+            try:
+                await tool.on_unload()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("工具 on_unload 失败（继续关闭）: %s: %s", name, e)
