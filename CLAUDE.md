@@ -2,7 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-工业级 AI Agent 系统：FastAPI + OpenAI API 协议（兼容 DeepSeek），实现完整 ReAct 循环 Agent（推理 ↔ 工具调用 ↔ 推理）。产品方向为多 Agent 任务执行引擎 + 半导体良率异常根因分析（Yield RCA）。架构蓝图见 [docs/architecture.md](docs/architecture.md)。
+工业级 AI Agent 系统：FastAPI + OpenAI API 协议（兼容 DeepSeek），实现完整 ReAct 循环 Agent（推理 ↔ 工具调用 ↔ 推理）。产品方向为多 Agent 任务执行引擎 + 半导体良率异常根因分析（Yield RCA）。架构蓝图见 [docs/architecture.md](docs/architecture.md)，产品定位见 [docs/product.md](docs/product.md)。
+
+## 第一硬性要求：产品导向（最高优先级，先于一切 gate）
+
+> 本项目 = **多 Agent 任务执行引擎** + 驱动场景 **半导体良率异常根因分析（Yield RCA）**。
+> 产品主链路：良率工程师提交「某批次良率异常」→ 系统异步受理 → 主 Agent 拆分 → 并行子 Agent 排查 → 输出带**证据链**的根因报告。
+
+**一切设计 / 实现 / 文档决策，都必须从产品角度出发，以「对产品主链路的真实价值」为第一判断标准。** 技术能力只有在服务产品目标时才值得建设，不为纯技术优雅或前瞻假设买单。
+
+设计每个功能 / 模块 / 组件时，依次自问：
+
+1. **服务谁**：这个能力服务产品中的哪个真实场景、哪类用户（良率工程师）？
+2. **价值几何**：它是否推进主链路（拆分 → 并行排查 → 证据链报告）？价值是直接还是间接？
+3. **成本匹配**：实现 + 维护成本是否与该价值匹配？技术复杂度能否简化而不损产品价值？
+4. **不做或预留**：当前不服务主链路的能力默认不做，或降级为 ADR 记录的升级路径；出现真实需求再落地。
+
+> 本仓库实践参考：后台轮询热加载、沙箱隔离、元数据分离等企业级能力，因不服务当前单用户本地 / 引擎主链路场景而砍掉或降级为升级路径——这正是产品导向的落地形态。
 
 ## 工作流 gate —— 模块开发全生命周期
 
