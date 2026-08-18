@@ -72,13 +72,13 @@
 
 ### 工具清单（规划）
 
-| 工具 | 作用 | 数据源 |
-| --- | --- | --- |
-| `query_batch_yield` | 批次良率查询（按时间/机台/批次） | 模拟 YMS 数据 |
-| `query_equipment_alerts` | 设备告警 / PM 记录 | 模拟 MES 数据 |
-| `query_fdc_params` | FDC 工艺参数偏离检测 | 模拟 FDC 时序 |
-| `query_defect_map` | wafer map 缺陷模式分析 | 模拟缺陷检测数据 |
-| `search_historical_rca` | 历史案例检索 | RAG（激活 embedding 能力） |
+| 工具 | 作用 | 数据源 | 状态 |
+| --- | --- | --- | --- |
+| `query_batch_yield` | 批次良率查询（按时间/机台/批次） | 模拟 YMS 数据 | ⬜ 未落地（P0） |
+| `query_equipment_alerts` | 设备告警 / PM 记录 | 模拟 MES 数据 | ⬜ 未落地（P0） |
+| `query_fdc_params` | FDC 工艺参数偏离检测 | 模拟 FDC 时序 | ⬜ 未落地（P0） |
+| `query_defect_map` | wafer map 缺陷模式分析 | 模拟缺陷检测数据 | ⬜ 未落地（P0） |
+| `search_historical_rca` | 历史案例检索 | RAG（激活 embedding 能力） | ⬜ 未落地（P0） |
 
 ### 顺带激活的空能力
 
@@ -126,6 +126,37 @@
 ### 验收标准
 
 一个模拟的良率异常 case，系统能靠多 Agent 并行排查自动收敛到正确根因，输出带**证据链**的根因报告（每步结论可回溯到数据来源）。
+
+---
+
+## 工具模块产品导向审核（2026-08-17）
+
+> 依据 CLAUDE.md 第一硬性要求（产品导向），对工具模块（`app/integration/tools/`）现状的评估结论与优化优先级。
+
+**结论**：工具模块的「引擎能力层」建设完备且直接服务主链路，但**良率 RCA 场景工具（P0）尚未落地**——工具模块的产品价值待兑现。
+
+### 能力评估
+
+| 组件 / 能力 | 服务主链路 | 定位 |
+| --- | --- | --- |
+| registry / executor / validator / result_processor / auditor / error_code / 生命周期钩子 | ✅ 直接 | RCA 工具全都要，保留 |
+| stats（执行统计） | 🔶 间接 | 场景可观测，保留 |
+| selector（选择器占位） | ❌ 纯预留 | 工具 <10 全量注入足够，不扩展 |
+| 审批骨架（ApprovalGate） | ❌ 未来人机协同 | 预留（产品亮点「人机协同」可能用） |
+| 热加载（ExternalToolLoader） | ❌ 无当前场景驱动 | 引擎资产，不再投入 |
+| 内置 search / web_browse | 🔶 弱相关 | 备选方向（工艺知识助手）能力 |
+| 内置 code_exec / readFile / writeFile | 🔶 间接有用 | RCA 分析跑脚本 / 写报告，保留 |
+
+### 优化建议（优先级）
+
+- **P0 落地 RCA 工具**：实现 `query_batch_yield` 等 5 个工具（模拟数据源），复用已就绪引擎能力——工具模块产品价值兑现
+- **P1 证据链元数据**：RCA 工具结果 `metadata` 带数据来源 / 时间戳（`source` / `batch_id` / `timestamp`），支撑「证据链」亮点
+- **P2 引擎层收敛**：selector / 审批骨架 / 热加载明确「预留资产」定位，不新增引擎能力，除非主链路场景驱动
+- **P3 内置通用工具定位**：search / web_browse 标注为备选方向能力，主链路投入不放这里
+
+### 待判断取舍
+
+热加载、审批骨架为「对齐工业蓝图」驱动，**无产品场景直接驱动**（本地单用户、固定工具）。已完成、成本最小化、保留无害；但后续「工业蓝图对齐」类需求应**先用产品导向过滤**，而非直接落地。
 
 ---
 
