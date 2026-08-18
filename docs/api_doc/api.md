@@ -28,7 +28,7 @@
 
 ## 认证方式
 
-当前认证由 `app/dependencies.py` 的 `get_current_user()` **模拟实现**（非 JWT/OAuth）：
+当前认证由 `app/api/deps.py` 的 `get_current_user()` **模拟实现**（非 JWT/OAuth）：
 
 ```
 Authorization: Bearer <token>

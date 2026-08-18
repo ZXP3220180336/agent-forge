@@ -105,7 +105,7 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
 **注意事项：**
 
 - 字典的键是**类名**（如 `"SearchTool"`），不是工具的 `name` 属性（如 `"search"`）——二者在 `BaseTool` 设计中是分离的
-- 模块导入失败会**记录 warning 后跳过**（`except Exception` + `logger.warning`），因此单个工具文件有语法/依赖错误时，其余工具仍可正常发现，且失败会暴露在日志中（`app.tools.builtin`）便于排障
+- 模块导入失败会**记录 warning 后跳过**（`except Exception` + `logger.warning`），因此单个工具文件有语法/依赖错误时，其余工具仍可正常发现，且失败会暴露在日志中（`tools.builtin`）便于排障
 - `inspect.getmembers` 会遍历模块内的所有类（含被 import 进来的类），但最终收录仍由 `issubclass` 过滤，实践中只有本文件定义的工具类符合条件
 
 ### 惰性访问与触发时机
@@ -208,6 +208,7 @@ class ToolResult:
     success: bool                   # 是否执行成功
     content: str                    # 执行结果内容（传给 LLM 的观察结果）
     error: str | None = None        # 失败时的详细错误信息
+    error_code: ErrorCode | None = None   # 系统级失败分类（业务错误为 None，见 tools.md）
     metadata: dict[str, Any] | None = None   # 额外元数据（来源、状态码、截断标记等）
     execution_time: float | None = None      # 执行耗时（秒），executor 自动填充
     retry_count: int = 0                     # 实际重试次数，executor 自动填充

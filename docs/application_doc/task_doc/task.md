@@ -52,12 +52,10 @@ Agent 层（BaseAgent / ReActAgent / 子Agent）
 ### 当前实现状态
 
 ```python
-# 当前 TaskService（仅并发闸门）
+# 当前 TaskService（仅并发闸门；max_concurrent 由装配根注入，默认 10）
 class TaskService:
-    def __init__(self, max_concurrent=None):
-        self._semaphore = asyncio.Semaphore(
-            max_concurrent or settings.agent_max_concurrent_tasks
-        )
+    def __init__(self, max_concurrent: int = 10):
+        self._semaphore = asyncio.Semaphore(max_concurrent)
     async def run_agent(self, user_input, messages, context, agent):
         async with self._semaphore:      # 并发限制
             async for event in agent.run(...):

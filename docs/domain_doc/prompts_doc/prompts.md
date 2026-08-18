@@ -91,7 +91,7 @@ Phase 2 预留：Plan-then-Execute 策略的任务分解模板（将需求拆解
 ## 使用示例
 
 ```python
-from app.core.prompts.manager import PromptManager
+from app.domain.prompts.manager import PromptManager
 
 pm = PromptManager()
 

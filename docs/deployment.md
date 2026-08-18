@@ -55,7 +55,7 @@ uv run uvicorn app.main:app --reload
   [OK] Redis 连接成功          ← Redis 可用时
   [WARN] Redis 不可用（服务降级）  ← Redis 缺失时
   [OK] 数据库引擎创建成功      ← PG 可用时（当前缺 asyncpg 驱动则降级）
-  [OK] 已注册工具: ['CodeExecTool', 'ReadFileTool', 'WriteFileTool', 'SearchTool', 'WebBrowseTool']
+  [OK] 已注册工具: ['CodeExecTool', 'ReadFileTool', 'WriteFileTool', 'SearchTool', 'WebBrowseTool', 'QueryBatchYieldTool', 'QueryEquipmentAlertsTool', 'QueryFdcParamsTool', 'QueryDefectMapTool', 'SearchHistoricalRcaTool']
 应用初始化完成
 ```
 

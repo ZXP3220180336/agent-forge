@@ -200,7 +200,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | --- | --- | --- | --- | --- |
 | LLMService + llm/ 7 组件 | LLM 网关（实现 LLMGateway） | ✅ 已实现 | ✅ | 归位 integration |
 | 可靠性链（重试 / 熔断 / 限流 / 整流 / 结构化降级） | 外部调用可靠性 | ✅ 已实现（llm/ 子包） | ✅ | — |
-| ToolService（拆分 Facade）+ builtin 10 工具 | 工具执行（实现 ToolGateway） | ✅ 已拆分（Registry/Executor/Stats/Hooks/Assembler） | ✅ | — |
+| ToolService（拆分 Facade）+ builtin 10 工具 | 工具执行（实现 ToolGateway） | ✅ Facade 聚合六大子组件（Registry/Selector/Validator/Executor/ResultProcessor/Auditor） | ✅ | — |
 | RCA 工具（良率 / 告警 / FDC / wafer / 历史检索） | 良率分析工具链 | ✅ 已实现（builtin/rca 5 工具） | ✅ | — |
 | EmbeddingService（实现 EmbeddingPort） | 文本向量化 | ✅ 已实现（孤儿） | 🔶 | Phase D |
 | VectorStore adapter（Milvus） | 向量库检索 | ⬜ 空文件 | 🔶 | Phase D |
@@ -219,8 +219,8 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
-| events.py（迁移 + 拆分） | 事件类型 / 领域事件 / SSE 序列化 / EventPublisher | ✅ 已迁 `app/shared/` | ✅ | — |
-| exceptions.py（异常体系 → 错误码） | 统一异常与错误码 | 🔶 已迁 `app/shared/exceptions.py`（空待实现） | 🔶 | Phase B |
+| events.py（迁移 + 拆分） | 事件类型 / 领域事件 / SSE 序列化 / EventPublisher | ✅ 位于 `app/shared/` | ✅ | — |
+| exceptions.py（异常体系 → 错误码） | 统一异常与错误码 | 🔶 `app/shared/exceptions.py`（空待实现） | 🔶 | Phase B |
 | types.py | 通用类型 / 标识 | ⬜ 未实现 | 🔶 | Phase B |
 
 #### 横切与装配根
@@ -440,7 +440,7 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 
 ## 现状耦合与差距
 
-> 以下为 2026-08-15 代码现状。C3 / C4 / C5 / C6 / C8 已通过系列重构解决；C1 / C2 / C7 部分 / C9 仍待处理。
+> 以下为 2026-08-15 代码现状。C3 / C4 / C5 / C6 / C8 已解决；C1 / C2 / C7 部分 / C9 仍待处理。
 
 ### 现状分层
 
@@ -448,9 +448,9 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 接入层 app/api              chat/session ✅；deps.py ✅；task/agent/admin + 中间件 ⬜
 应用层 app/application      session/context/task ✅；TaskScheduler 队列/编排 ⬜
 领域层 app/domain           Agent 内核 ✅（依赖 ports）；memory/planner ⬜
-集成层 app/integration      LLM ✅；ToolService（已拆分）✅；Embedding 孤儿
+集成层 app/integration      LLM ✅；ToolService（Facade 六大子组件）✅；Embedding 孤儿
 基础设施层 app/infrastructure  models/database ✅；db/redis 仍由 container 管 ⬜
-共享内核 app/shared         events ✅；exceptions 已迁（空）；types 待建
+共享内核 app/shared         events ✅；exceptions（空）；types 待建
 横切 app/platform           observability/logger ✅（metrics ⬜）；安全 ⬜
 装配根 app/container        Container 唯一组装 ✅
 ```

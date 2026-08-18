@@ -76,7 +76,7 @@
 
 ### 事件日志
 
-每次尝试独立计时，失败走 `success=False` + error，成功清 `error=None`（整流成功 = 1 条失败 + 1 条成功日志）。日志填充复用 `utils/logger.py` 的 `fill_llm_event_fields`（通用 LLM 事件日志工具）。
+每次尝试独立计时，失败走 `success=False` + error，成功清 `error=None`（整流成功 = 1 条失败 + 1 条成功日志）。日志填充复用 `app/platform/observability/logger.py` 的 `fill_llm_event_fields`（通用 LLM 事件日志工具）。
 
 ### 失败信号透传
 

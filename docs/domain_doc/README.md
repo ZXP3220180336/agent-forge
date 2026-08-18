@@ -43,7 +43,7 @@ app/domain/agent/executor.py  →  ReAct 循环
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
 | Agent | base.py（201行） | ✅ | BaseAgent / AgentContext / AgentResult / AgentState |
-| Agent | executor.py（240行） | ✅ | ReActAgent（ReAct 循环 + 并行工具） |
+| Agent | executor.py（267行） | ✅ | ReActAgent（ReAct 循环 + 并行工具） |
 | Agent | planner.py / reasoning.py | ❌ | 预留策略 |
 | Events | events.py（123行） | ✅ | 7 种 SSE 事件 + 构建函数 |
 | Prompts | base.py / manager.py / templates/ | ✅ | 提示词模板 + 管理器 |

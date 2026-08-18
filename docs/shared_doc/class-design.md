@@ -2,7 +2,7 @@
 
 > **文档定位**：项目代码中各种「类」的设计模式归类 + 单例/实例形态分析。
 > **适用对象**：任何需要理解或新增类的开发者 —— 先判断「这属于哪一类」，再决定「是否实例化、怎么实例化」。
-> **内容来源**：对 `app/integration/llm/`、`app/container.py`、`app/dependencies.py` 等代码的模式提炼。
+> **内容来源**：对 `app/integration/llm/`、`app/container.py`、`app/api/deps.py` 等代码的模式提炼。
 
 ---
 
@@ -22,7 +22,7 @@
 
 ## 为什么这些类不需要实例化
 
-项目里 `ClientManager`、`RateLimiterManager`、`ReservationLimiterManager`、`StructuredOutput`、`CostTracker`、`StreamParser` 这些类都可以**直接类调用、不实例化**，但它们的原因各不相同：
+项目里 `ClientManager`、`ReservationLimiterManager`、`StructuredOutput`、`CostTracker`、`StreamParser` 这些类都可以**直接类调用、不实例化**，但它们的原因各不相同：
 
 | 类 | 不实例化的真实原因 |
 |---|---|
@@ -57,7 +57,7 @@ class StreamParser:
 
 ### 第二类：全局管理器类（`@classmethod` + `ClassVar` 缓存）
 
-**代表**：`ClientManager`、`RateLimiterManager`、`ReservationLimiterManager`
+**代表**：`ClientManager`、`ReservationLimiterManager`
 
 **特征**：所有方法 `@classmethod`，持有**类级缓存**（`ClassVar[dict] = {}`），通过**懒加载**复用对象。
 
@@ -228,14 +228,14 @@ self.tool_service = ToolService()
 路由层（FastAPI）
     │  Depends(get_session_manager)
     ▼
-app/dependencies.py 的 get_session_manager()
+app/api/deps.py 的 get_session_manager()
     │  container.session_manager
     ▼
 Container.initialize() 统一创建的服务实例
 ```
 
 ```python
-# dependencies.py
+# app/api/deps.py
 async def get_session_manager() -> SessionManager:
     if container.session_manager is None:
         raise RuntimeError("SessionManager 尚未初始化...")

@@ -30,7 +30,7 @@
 - **限流**（`rate_limit.py`）：按用户 / IP / 全局维度约束请求频率，防滥用
 - **错误处理**（`error_handler.py`）：捕获并归一化所有异常，保证错误响应格式统一
 
-与依赖注入（`app/dependencies.py` 的 `get_current_user`）相比，中间件的核心差异是**全局性**：中间件对所有请求生效，不依赖路由函数显式声明依赖；而依赖注入是**按端点**精确控制。二者是互补关系，而非替代关系（详见 [auth 设计要点](#auth--认证与鉴权)）。
+与依赖注入（`app/api/deps.py` 的 `get_current_user`）相比，中间件的核心差异是**全局性**：中间件对所有请求生效，不依赖路由函数显式声明依赖；而依赖注入是**按端点**精确控制。二者是互补关系，而非替代关系（详见 [auth 设计要点](#auth--认证与鉴权)）。
 
 ### 模块结构
 
@@ -69,7 +69,7 @@ app/api/middleware/
 
 ### 2. 认证当前由依赖注入模拟
 
-当前认证由 `app/dependencies.py` 的 `get_current_user()` 实现，是**模拟 Token 解析**，非真正的 JWT / OAuth：
+当前认证由 `app/api/deps.py` 的 `get_current_user()` 实现，是**模拟 Token 解析**，非真正的 JWT / OAuth：
 
 ```python
 async def get_current_user(
@@ -187,7 +187,7 @@ async def get_current_user(
 
 | 事项 | 当前状态 | 说明 |
 | ---- | -------- | ---- |
-| JWT 认证实现 | 未开始 | 当前由 `dependencies.get_current_user()` 模拟；需引入 JWT 库、密钥管理、白名单配置 |
+| JWT 认证实现 | 未开始 | 当前由 `deps.get_current_user()` 模拟；需引入 JWT 库、密钥管理、白名单配置 |
 | 认证迁移路径 | 未决策 | 中间件做全局预检 + 依赖注入做端点级控制的职责边界需明确 |
 | API 限流实现 | 未开始 | 复用 LLM 层 Token Bucket / reserve-settle 形态，还是独立轻量封装，需决策 |
 | 限流存储选型 | 未决策 | 单机内存 vs Redis（多实例部署时） |

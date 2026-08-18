@@ -12,7 +12,7 @@
 - **LLM 可靠性链**：滑动窗口熔断、错误分类白名单、半开探针、流式整流重试、fallback 降级、RPM/TPM 双桶限流
 - **多模型配置**：main / reasoning / fast 三个模型按场景切换（对话 / 深度推理 / 快速任务），连接池按 key 缓存复用
 - **结构化输出**：三级降级（JSON Schema → JSON Mode → 正则提取），适配不同模型能力
-- **工具系统**：BaseTool + 5 个内置工具（search / readFile / writeFile / code_exec / web_browse），并行执行 + 并发限流
+- **工具系统**：BaseTool + 10 个内置工具（5 通用 + 5 良率 RCA），并行执行 + 并发限流
 - **服务化会话**：SessionManager / ContextManager / TaskService / EmbeddingService，任务级与工具级并发控制
 
 ## 技术栈
