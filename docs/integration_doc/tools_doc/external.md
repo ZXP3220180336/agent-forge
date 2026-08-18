@@ -97,7 +97,7 @@ class MyTool(BaseTool):
 
 **约定要点**：
 
-1. **命名唯一**：`name` 不得与 builtin（`search` / `readFile` / `writeFile` / `code_exec` / `web_browse`）或已加载工具冲突
+1. **命名唯一**：`name` 不得与 builtin（10 个：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse` / `query_batch_yield` / `query_equipment_alerts` / `query_fdc_params` / `query_defect_map` / `search_historical_rca`）或已加载工具冲突
 2. **配置自取**：外部工具**自行读环境变量**等配置（容器不知道其存在，不注入 `register_config`）
 3. **单文件自包含**：建议一个文件一个工具，共享逻辑放 `_` 前缀文件（不参与扫描，需重启生效——跨文件 `from . import helper` 存在传递性陈旧，只改 helper 不会重载依赖方）
 4. **信任边界**：`external/` 与应用**同信任级别**——加载即执行任意 Python 代码，只放受信任工具

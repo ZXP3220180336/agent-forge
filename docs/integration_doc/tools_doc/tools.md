@@ -173,7 +173,7 @@ class ToolGateway(Protocol):
 ## 相关文档
 
 - [ToolService 说明](tool_service.md)（Facade 装配 / 执行流程 / 并发语义）
-- [内置工具说明](builtin_doc/builtin.md)（BaseTool + 5 内置工具）· [外部工具热加载](external.md)（ExternalToolLoader）
+- [内置工具说明](builtin_doc/builtin.md)（BaseTool + 10 内置工具）· [外部工具热加载](external.md)（ExternalToolLoader）
 - [validator.md](validator.md) · [result_processor.md](result_processor.md) · [security.md](security.md) · [selector.md](selector.md)
 - [集成层总览](../README.md) · [架构设计](../../architecture.md)
 - 决策记录：[ADR 索引](../../../adr/integration/tools/README.md)

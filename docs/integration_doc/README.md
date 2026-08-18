@@ -69,7 +69,8 @@ app/integration/
     │   ├── search.py             ← "search" 网络搜索（Tavily）
     │   ├── file_ops.py           ← "readFile" / "writeFile" 文件读写
     │   ├── code_exec.py          ← "code_exec" 终端命令执行
-    │   └── web_browse.py         ← "web_browse" 网页抓取
+    │   ├── web_browse.py         ← "web_browse" 网页抓取
+    │   └── rca/                  ← 良率 RCA 场景工具（5 工具，见 builtin_doc/rca.md）
     └── external/                 ← 外部工具（热加载，见 tools_doc/external.md）
 
 └── vector_store/                 ← 向量检索（待规划：Milvus，服务 RAG）
@@ -114,11 +115,11 @@ app/integration/
 | LLM 子包 | `llm/`（7 组件） | ✅ | ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker |
 | 工具 Facade | `tools/tool_service.py` | ✅ | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
 | 工具子包 | `tools/`（六大子组件） | ✅ | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler / Loader |
-| 内置工具 | `tools/builtin/` | ✅ | search / readFile / writeFile / code_exec / web_browse |
+| 内置工具 | `tools/builtin/` | ✅ | search / readFile / writeFile / code_exec / web_browse + RCA 5 工具（query_batch_yield 等） |
 | 外部工具加载器 | `tools/loader.py` | ✅ | ExternalToolLoader：execute 惰性检查热加载 + 生命周期钩子（external/ 目录） |
 | Embedding | `embedding/embedding_service.py` | 🔶 已实现未接线 | `EmbeddingService`：`embed` / `embed_batch` / 内存缓存 |
 | VectorStore adapter | `vector_store/` | ⬜ 待规划 | Milvus 向量库检索（Phase D，规划接入 RAG） |
-| RCA 工具 | — | ⬜ 待规划 | 良率 / 告警 / FDC / wafer / 历史检索（Phase C/D） |
+| RCA 工具 | `tools/builtin/rca/` | ✅ | query_batch_yield / query_equipment_alerts / query_fdc_params / query_defect_map / search_historical_rca（模拟数据源，见 [rca.md](tools_doc/builtin_doc/rca.md)） |
 
 ---
 

@@ -54,7 +54,7 @@ search_historical_rca("etch 偏离 良率 骤降") → RCA-001 佐证
 
 ## 测试状态
 
-`tests/unit/test_rca_tools.py`（10 用例）：各工具正常查询 + 证据链 metadata / 参数校验 / 业务未找到 / LOT-A123 根因故事（骤降、FDC 偏离、center_cluster、历史命中）/ 数据可复现 / init_default_tools 装配 10 工具。
+`tests/unit/test_rca_tools.py`（15 用例）：各工具正常查询 + 证据链 metadata / 参数校验 / 业务未找到 / LOT-A123 根因故事（骤降、FDC 偏离、center_cluster、历史命中）/ 数据可复现 / init_default_tools 装配 10 工具 / 时间窗口过滤（P0-1，含单侧缺省）/ 相关度置信度（P0-2）。
 
 ## 相关文档
 

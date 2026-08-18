@@ -128,7 +128,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 │  LLM 网关：LLMService +        │      │  db/engine.py + db/repos/              │
 │   llm/ 7 组件（实现 LLMGateway）│      │   （SqlSession/Message/Task Repo）     │
 │  工具：ToolService（拆分 Facade）│      │  redis/client + redis/cache.py        │
-│   + builtin 5 工具 + RCA 工具   │      │   （RedisCache + NullCache 真降级）    │
+│   + builtin 10 工具（含 RCA 5）  │      │   （RedisCache + NullCache 真降级）    │
 │  嵌入：EmbeddingService         │      │  mq/ 队列 · store/ 存储 · http/       │
 │  向量：VectorStore Adapter      │      │  models/database/（ORM 归位）         │
 └───────────────────────────────┘      └───────────────────────────────────────┘
@@ -200,8 +200,8 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | --- | --- | --- | --- | --- |
 | LLMService + llm/ 7 组件 | LLM 网关（实现 LLMGateway） | ✅ 已实现 | ✅ | 归位 integration |
 | 可靠性链（重试 / 熔断 / 限流 / 整流 / 结构化降级） | 外部调用可靠性 | ✅ 已实现（llm/ 子包） | ✅ | — |
-| ToolService（拆分 Facade）+ builtin 5 工具 | 工具执行（实现 ToolGateway） | ✅ 已拆分（Registry/Executor/Stats/Hooks/Assembler） | ✅ | — |
-| RCA 工具（良率 / 告警 / FDC / wafer / 历史检索） | 良率分析工具链 | ⬜ 未实现 | 🔶 | Phase C/D |
+| ToolService（拆分 Facade）+ builtin 10 工具 | 工具执行（实现 ToolGateway） | ✅ 已拆分（Registry/Executor/Stats/Hooks/Assembler） | ✅ | — |
+| RCA 工具（良率 / 告警 / FDC / wafer / 历史检索） | 良率分析工具链 | ✅ 已实现（builtin/rca 5 工具） | ✅ | — |
 | EmbeddingService（实现 EmbeddingPort） | 文本向量化 | ✅ 已实现（孤儿） | 🔶 | Phase D |
 | VectorStore adapter（Milvus） | 向量库检索 | ⬜ 空文件 | 🔶 | Phase D |
 

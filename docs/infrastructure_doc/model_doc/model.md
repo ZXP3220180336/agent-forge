@@ -196,7 +196,7 @@ Base = declarative_base()
 
 **状态**：❌ 空文件（0 行），预留。
 
-工具调用日志表用于持久化**每次工具调用的审计记录**。工具系统的统一抽象见 [tools.md](../../integration_doc/tools_doc/tools.md)（`BaseTool` / `ToolResult`，5 个内置工具）。
+工具调用日志表用于持久化**每次工具调用的审计记录**。工具系统的统一抽象见 [tools.md](../../integration_doc/tools_doc/tools.md)（`BaseTool` / `ToolResult`，10 个内置工具）。
 
 **预期用途**：
 - 记录工具名、入参、出参、耗时、是否成功、归属会话 / 任务

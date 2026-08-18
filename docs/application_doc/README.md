@@ -46,7 +46,7 @@ app/application/
 
 app/integration/
 ├── llm/                        ← LLMService + 子包（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）
-├── tools/                      ← ToolService 与 5 个内置工具
+├── tools/                      ← ToolService 与 10 个内置工具（5 通用 + 5 RCA）
 └── embedding/embedding_service.py  ← EmbeddingService 文本向量化
 
 app/domain/memory/memory_service.py  ← MemoryService（❌ 预留，空文件）

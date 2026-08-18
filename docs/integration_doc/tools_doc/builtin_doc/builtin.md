@@ -2,7 +2,7 @@
 
 > **更新日期**：2026-08-17
 > **文档定位**：工具层 `app/integration/tools/builtin/` 子模块 —— 内置工具的定义、自动发现机制与各工具实现详解。
-> **实现状态**：SearchTool（✅）/ ReadFileTool（✅）/ WriteFileTool（✅）/ CodeExecTool（✅）/ WebBrowseTool（✅）
+> **实现状态**：SearchTool（✅）/ ReadFileTool（✅）/ WriteFileTool（✅）/ CodeExecTool（✅）/ WebBrowseTool（✅）/ RCA 5 工具（✅，见 [rca.md](rca.md)）
 > **前置阅读**：[工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试机制在此说明，本文不重复）
 
 ---
@@ -14,7 +14,7 @@
 - [BaseTool 基类详解](#basetool-基类详解)
 - [ToolResult 数据结构](#toolresult-数据结构)
 - [各内置工具详解](#各内置工具详解)
-- [外部工具（预留）](#外部工具预留)
+- [外部工具（热加载）](#外部工具热加载)
 - [开发新工具要点](#开发新工具要点)
 - [相关文档](#相关文档)
 
@@ -22,7 +22,7 @@
 
 ## 模块概述
 
-`builtin` 是工具层 `app/integration/tools/` 下的**内置工具子模块**，存放随系统发布、开箱即用的工具实现，与预留的 `external` 子模块（第三方工具，按需加载）互为补充。
+`builtin` 是工具层 `app/integration/tools/` 下的**内置工具子模块**，存放随系统发布、开箱即用的工具实现，与 `external` 子模块（第三方工具，热加载，见 [external.md](../external.md)）互为补充。
 
 ```text
 app/integration/tools/
@@ -35,7 +35,7 @@ app/integration/tools/
 │   ├── code_exec.py     # CodeExecTool  终端命令执行（危险命令黑名单）
 │   ├── web_browse.py    # WebBrowseTool 网页内容抓取（HTML 解析）
 │   └── rca/             # 良率 RCA 场景工具（5 工具，见 rca.md）
-└── external/            # 外部工具（预留，0 字节空文件）
+└── external/            # 外部工具（热加载，见 ../external.md）
 ```
 
 > 完整工具模块目录（含 executor / registry / validator / result_processor / security / selector / stats / hooks / assembler / tool_service）见 [工具模块接口文档](../tools.md)。
@@ -403,17 +403,9 @@ _http_client = httpx.AsyncClient(
 
 ---
 
-## 外部工具（预留）
+## 外部工具（热加载）
 
-`app/integration/tools/external/__init__.py`（0 字节空文件）为**第三方/外部工具预留**位置。
-
-| 项目 | 说明 |
-| --- | --- |
-| 定位 | 与 builtin 相对的**外部工具**，规划按需加载、热插拔 |
-| 现状 | 仅存在空包，无任何工具实现 |
-| 设计意图 | builtin 随系统发布、开箱即用；external 留给第三方插件/按需装配的工具 |
-
-外部工具若落地，仍需继承 `BaseTool`、经 `ToolService` 注册后对外提供能力，接入方式与内置工具一致。
+`app/integration/tools/external/` 为**外部工具**目录（含随附示例 `http_api`），由 `ExternalToolLoader` 动态发现注册。加载 / 重载 / 卸载 / 生命周期钩子 / 编写约定见 [外部工具热加载](../external.md)——**状态只在此维护，本文不重复**。
 
 ---
 
