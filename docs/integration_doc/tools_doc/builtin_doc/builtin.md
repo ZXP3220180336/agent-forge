@@ -33,7 +33,8 @@ app/integration/tools/
 │   ├── search.py        # SearchTool    网络搜索（Tavily API）
 │   ├── file_ops.py      # ReadFileTool / WriteFileTool  文件读写
 │   ├── code_exec.py     # CodeExecTool  终端命令执行（危险命令黑名单）
-│   └── web_browse.py    # WebBrowseTool 网页内容抓取（HTML 解析）
+│   ├── web_browse.py    # WebBrowseTool 网页内容抓取（HTML 解析）
+│   └── rca/             # 良率 RCA 场景工具（5 工具，见 rca.md）
 └── external/            # 外部工具（预留，0 字节空文件）
 ```
 
@@ -390,6 +391,18 @@ _http_client = httpx.AsyncClient(
 
 ---
 
+## 良率 RCA 工具（RCA 场景）
+
+`builtin/rca/` 子包实现 5 个**产品场景工具**（产品主链路「良率异常 → 并行排查 → 证据链根因报告」的直接支撑）：
+
+`query_batch_yield`（批次良率）/ `query_equipment_alerts`（设备告警）/ `query_fdc_params`（FDC 参数偏离）/ `query_defect_map`（缺陷模式）/ `search_historical_rca`（历史案例检索）。
+
+- 全部 **L0 只读**，返回内容带**证据链 metadata**（`source` / 查询键 / `timestamp`）
+- 数据为**固定模拟数据**（LOT-A123 根因故事 + 对照组，可复现）；`search_historical_rca` 当前为关键词匹配，RAG（embedding 召回）列为后续增强
+- 契约 / 排查链示例 / 模拟数据详见 [RCA 工具说明](rca.md)
+
+---
+
 ## 外部工具（预留）
 
 `app/integration/tools/external/__init__.py`（0 字节空文件）为**第三方/外部工具预留**位置。
@@ -413,7 +426,7 @@ _http_client = httpx.AsyncClient(
 
 **开发规范（详见 [工具模块接口文档](../tools.md)）：**
 
-1. `name` 使用小写+下划线且全局唯一（现有 5 个已占用：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse`）
+1. `name` 使用小写+下划线且全局唯一（现有 10 个已占用：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse` + `query_batch_yield` / `query_equipment_alerts` / `query_fdc_params` / `query_defect_map` / `search_historical_rca`）
 2. `description` 清晰描述功能与适用场景，LLM 据此决定调用
 3. `parameters` 使用 OpenAI Function Calling 的 JSON Schema 格式
 4. `execute` 必须为 `async def` 并返回 `ToolResult`
@@ -427,6 +440,7 @@ _http_client = httpx.AsyncClient(
 ## 相关文档
 
 - [工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试、统计、配置关联）
+- [RCA 工具说明](rca.md)（良率根因分析场景工具，模拟数据源）
 - [service 模块](../../../application_doc/README.md)（ToolService 所在的服务层）
 - [架构设计](../../../architecture.md)（工具层在整体架构中的定位）
 - [配置管理](../../../config_doc/config.md)（`TAVILY_API_KEY`、`TOOL_MAX_OUTPUT_LENGTH` 等配置项）

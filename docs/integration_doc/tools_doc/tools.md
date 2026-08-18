@@ -139,6 +139,11 @@ class ToolGateway(Protocol):
 | WriteFileTool | `writeFile` | L1 写 | file | ❌ 串行化 | 5s |
 | CodeExecTool | `code_exec` | L2 危险 | code | ❌ 串行化 | 60s |
 | WebBrowseTool | `web_browse` | L0 只读 | web | ✅ | 15s |
+| QueryBatchYieldTool | `query_batch_yield` | L0 只读 | yield | ✅ | 30s |
+| QueryEquipmentAlertsTool | `query_equipment_alerts` | L0 只读 | equipment | ✅ | 30s |
+| QueryFdcParamsTool | `query_fdc_params` | L0 只读 | fdc | ✅ | 30s |
+| QueryDefectMapTool | `query_defect_map` | L0 只读 | defect | ✅ | 30s |
+| SearchHistoricalRcaTool | `search_historical_rca` | L0 只读 | history | ✅ | 30s |
 
 详见 [内置工具说明](builtin_doc/builtin.md)。工具实例化不依赖外部服务（API Key 执行时才需要），个别注册失败不影响启动。
 

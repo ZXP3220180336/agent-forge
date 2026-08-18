@@ -121,7 +121,7 @@ async def test_initialize_happy_path(monkeypatch):
     assert c.context_manager.model_name == settings.llm_model_id
     assert c.llm_service is not None
     assert c.tool_service is not None
-    assert len(c.tool_service.list_tools()) == 5  # 5 个内置工具
+    assert len(c.tool_service.list_tools()) == 10  # 10 个内置工具（5 通用 + 5 RCA）
     assert c.task_service is not None
     assert c.embedding_service is not None
     assert c.agent_params == {

@@ -74,11 +74,11 @@
 
 | 工具 | 作用 | 数据源 | 状态 |
 | --- | --- | --- | --- |
-| `query_batch_yield` | 批次良率查询（按时间/机台/批次） | 模拟 YMS 数据 | ⬜ 未落地（P0） |
-| `query_equipment_alerts` | 设备告警 / PM 记录 | 模拟 MES 数据 | ⬜ 未落地（P0） |
-| `query_fdc_params` | FDC 工艺参数偏离检测 | 模拟 FDC 时序 | ⬜ 未落地（P0） |
-| `query_defect_map` | wafer map 缺陷模式分析 | 模拟缺陷检测数据 | ⬜ 未落地（P0） |
-| `search_historical_rca` | 历史案例检索 | RAG（激活 embedding 能力） | ⬜ 未落地（P0） |
+| `query_batch_yield` | 批次良率查询（按时间/机台/批次） | 模拟 YMS 数据 | ✅ 已落地 |
+| `query_equipment_alerts` | 设备告警 / PM 记录 | 模拟 MES 数据 | ✅ 已落地 |
+| `query_fdc_params` | FDC 工艺参数偏离检测 | 模拟 FDC 时序 | ✅ 已落地 |
+| `query_defect_map` | wafer map 缺陷模式分析 | 模拟缺陷检测数据 | ✅ 已落地 |
+| `search_historical_rca` | 历史案例检索 | 模拟案例库（关键词匹配，RAG 后续） | ✅ 已落地 |
 
 ### 顺带激活的空能力
 

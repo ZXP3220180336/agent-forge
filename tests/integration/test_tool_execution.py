@@ -98,18 +98,23 @@ async def test_search_missing_key_graceful_failure():
 
 
 @pytest.mark.asyncio
-async def test_init_default_tools_registers_five():
-    """装配根一键注册 5 个内置工具"""
+async def test_init_default_tools_registers_all():
+    """装配根一键注册 10 个内置工具（5 通用 + 5 RCA）"""
     service = ToolService()
     registered = service.init_default_tools()
 
-    assert len(registered) == 5
+    assert len(registered) == 10
     assert set(service.list_tools()) == {
         "search",
         "readFile",
         "writeFile",
         "code_exec",
         "web_browse",
+        "query_batch_yield",
+        "query_equipment_alerts",
+        "query_fdc_params",
+        "query_defect_map",
+        "search_historical_rca",
     }
 
 
