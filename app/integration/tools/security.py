@@ -17,6 +17,7 @@ import logging
 from enum import IntEnum
 from typing import Any, Protocol
 
+from app.domain.ports.tool_gateway import ErrorCode
 from app.platform.observability.logger import log_event_async
 
 
@@ -53,6 +54,7 @@ class ToolAuditor:
         elapsed: float,
         parameters: dict[str, Any],
         error: str | None = None,
+        error_code: ErrorCode | None = None,
         retry_count: int = 0,
         content_preview: str = "",
     ) -> None:
@@ -80,6 +82,7 @@ class ToolAuditor:
             retry_count=retry_count,
             params=params_json[: self._params_max_chars],
             error=error,
+            error_code=error_code.name if error_code else None,
             content=content_preview[: self._content_preview_chars],
         )
 

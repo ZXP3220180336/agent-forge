@@ -13,6 +13,7 @@ import logging
 
 import pytest
 
+from app.domain.ports.tool_gateway import ErrorCode
 from app.integration.tools.security import RiskLevel, ToolAuditor
 
 
@@ -118,3 +119,39 @@ async def test_audit_params_truncated(caplog):
         )
 
     assert len(caplog.records[-1].params) <= 10
+
+
+@pytest.mark.asyncio
+async def test_audit_records_error_code(caplog):
+    """error_code 记录到 tool_call 事件（失败可机器分类，供证据链聚合）。"""
+    auditor = ToolAuditor()
+    with caplog.at_level(logging.INFO, logger="app.events"):
+        await auditor.record(
+            tool_name="readFile",
+            risk_level=RiskLevel.L0_READONLY,
+            category="file",
+            success=False,
+            elapsed=0.1,
+            parameters={},
+            error="文件不存在",
+            error_code=ErrorCode.TIMEOUT,
+        )
+
+    assert caplog.records[-1].error_code == "TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_audit_error_code_defaults_none(caplog):
+    """未传 error_code（成功 / 业务错误）→ 日志字段为 None。"""
+    auditor = ToolAuditor()
+    with caplog.at_level(logging.INFO, logger="app.events"):
+        await auditor.record(
+            tool_name="search",
+            risk_level=RiskLevel.L0_READONLY,
+            category="search",
+            success=True,
+            elapsed=0.1,
+            parameters={},
+        )
+
+    assert caplog.records[-1].error_code is None

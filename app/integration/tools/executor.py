@@ -5,7 +5,7 @@ import json
 import time
 from typing import Any
 
-from app.domain.ports.tool_gateway import ToolResult
+from app.domain.ports.tool_gateway import ErrorCode, ToolResult
 from app.integration.tools.base import BaseTool
 from app.integration.tools.hooks import ExecutionHooks
 from app.integration.tools.registry import ToolRegistry
@@ -98,6 +98,7 @@ class ToolExecutor:
                 success=False,
                 content="",
                 error=f"工具 '{name}' 未注册",
+                error_code=ErrorCode.NOT_REGISTERED,
             )
             await self._audit(
                 None, parameters, result, started_at=started_at, tool_name=name
@@ -120,6 +121,7 @@ class ToolExecutor:
                     error=self._result_processor.normalize_error(
                         f"参数 JSON 解析失败: {e}"
                     ),
+                    error_code=ErrorCode.JSON_PARSE,
                 )
                 await self._audit(tool, parameters, result, started_at=started_at)
                 return result
@@ -133,6 +135,7 @@ class ToolExecutor:
                 error=self._result_processor.normalize_error(
                     f"参数验证失败: {'; '.join(issues)}"
                 ),
+                error_code=ErrorCode.VALIDATION,
             )
             await self._audit(tool, parameters, result, started_at=started_at)
             return result
@@ -145,6 +148,7 @@ class ToolExecutor:
                 success=False,
                 content="",
                 error="工具调用被拒绝：等待人工审批",
+                error_code=ErrorCode.REJECTED,
             )
             await self._audit(tool, parameters, result, started_at=started_at)
             return result
@@ -184,6 +188,7 @@ class ToolExecutor:
         """重试循环：超时保护 + 渐进式退避 + 成功截断 + 统计 + 钩子。"""
         name = tool.name
         last_error: str | None = None
+        last_error_code: ErrorCode | None = None
         last_result: ToolResult | None = None
         actual_retries = 0
 
@@ -209,10 +214,11 @@ class ToolExecutor:
                     await self._hooks.run(name, parameters, result)
                     return result
 
-                # 执行返回失败（如文件不存在）→ 记录错误，准备重试
+                # 执行返回失败（如文件不存在）→ 记录错误与业务码，准备重试
                 last_error = self._result_processor.normalize_error(
                     result.error or "工具执行失败"
                 )
+                last_error_code = result.error_code  # 透传工具业务码（默认 None）
                 last_result = result
                 self._stats.record(name, success=False, elapsed=elapsed)
 
@@ -220,6 +226,7 @@ class ToolExecutor:
                 last_error = self._result_processor.normalize_error(
                     f"工具执行超时（{timeout}秒）"
                 )
+                last_error_code = ErrorCode.TIMEOUT
                 elapsed = time.monotonic() - start_time
                 self._stats.record(name, success=False, elapsed=elapsed)
 
@@ -227,6 +234,7 @@ class ToolExecutor:
                 last_error = self._result_processor.normalize_error(
                     f"工具执行异常: {e!s}"
                 )
+                last_error_code = ErrorCode.UNKNOWN
                 elapsed = time.monotonic() - start_time
                 self._stats.record(name, success=False, elapsed=elapsed)
 
@@ -242,6 +250,7 @@ class ToolExecutor:
             success=False,
             content="",
             error=last_error,
+            error_code=last_error_code,
             retry_count=actual_retries,
         )
         result.retry_count = actual_retries
@@ -289,6 +298,7 @@ class ToolExecutor:
                 elapsed=elapsed,
                 parameters=audit_params,
                 error=result.error,
+                error_code=result.error_code,
                 retry_count=result.retry_count,
                 content_preview=result.content,
             )

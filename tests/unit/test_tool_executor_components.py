@@ -12,6 +12,7 @@ import asyncio
 
 import pytest
 
+from app.domain.ports.tool_gateway import ErrorCode
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.executor import ToolExecutor
 from app.integration.tools.hooks import ExecutionHooks
@@ -110,6 +111,7 @@ async def test_validation_failure_reports_attribution():
     assert result.success is False
     assert "参数验证失败" in result.error
     assert "类型应为 integer" in result.error
+    assert result.error_code == ErrorCode.VALIDATION
 
 
 @pytest.mark.asyncio
@@ -173,6 +175,7 @@ async def test_audit_on_not_found_tool():
     result = await service.execute("ghost", {})
 
     assert result.success is False
+    assert result.error_code == ErrorCode.NOT_REGISTERED
     assert len(spy.records) == 1
     assert spy.records[0]["tool_name"] == "ghost"
     assert spy.records[0]["success"] is False
@@ -208,6 +211,7 @@ async def test_audit_on_tool_failure():
     result = await service.execute("param_tool", {"count": 1})
 
     assert result.success is False
+    assert result.error_code is None  # 业务失败透传工具业务码（默认 None）
     assert len(spy.records) == 1
     assert spy.records[0]["success"] is False
     assert "业务失败" in spy.records[0]["error"]
@@ -265,6 +269,24 @@ async def test_global_timeout_used_when_tool_declares_none():
 
     assert result.success is False
     assert "超时" in result.error
+    assert result.error_code == ErrorCode.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_uncaught_exception_maps_to_unknown():
+    """工具 execute 抛未捕获异常 → error_code=UNKNOWN。"""
+
+    class _ExplodingTool(_ParamTool):
+        async def execute(self, **kwargs) -> ToolResult:
+            raise RuntimeError("boom")
+
+    service = ToolService(tool_max_retries=1)
+    service.register(_ExplodingTool())
+
+    result = await service.execute("param_tool", {"count": 1})
+
+    assert result.success is False
+    assert result.error_code == ErrorCode.UNKNOWN
 
 
 @pytest.mark.asyncio

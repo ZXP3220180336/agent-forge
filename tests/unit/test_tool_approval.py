@@ -9,6 +9,7 @@
 
 import pytest
 
+from app.domain.ports.tool_gateway import ErrorCode
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.security import AutoApprovalGate
 from app.integration.tools.tool_service import ToolService
@@ -84,6 +85,7 @@ async def test_rejecting_gate_blocks_tool_execution():
 
     assert result.success is False
     assert "人工审批" in result.error
+    assert result.error_code == ErrorCode.REJECTED
     assert tool.executed is False  # 工具未被真实执行
     assert gate.requests == [("approval_tool", {})]  # gate 收到正确参数
 

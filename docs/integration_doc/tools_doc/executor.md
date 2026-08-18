@@ -53,6 +53,8 @@
 
 **超时优先级（调用方显式 > 工具自声明 > 全局配置）**：`execute(timeout=...)` 显式传入最高优先；否则用工具声明的 `BaseTool.timeout`（如 code_exec 60s / readFile 5s）；两者均缺省时用全局 `tool_timeout`（默认 30s）。工具按自身耗时特征声明默认值，编排层可按需覆盖。
 
+**错误码**：各失败路径返回结构化 `error_code`——未注册→`NOT_REGISTERED` / 参数 JSON 解析→`JSON_PARSE` / 校验→`VALIDATION` / 审批拒绝→`REJECTED` / 超时→`TIMEOUT` / 未捕获异常→`UNKNOWN`；工具业务失败透传其业务码（默认 `None`）。错误码与 `error` 中文归因并存：前者供审计聚合与证据链可审计性，后者供 LLM 修正（见 [tools.md](tools.md) `ErrorCode`）。
+
 ### 组件接入点
 
 - **校验**：`tool.validation_issues()`（jsonschema 全量归因），见 [validator.md](validator.md)

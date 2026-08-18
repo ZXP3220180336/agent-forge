@@ -42,7 +42,7 @@
 
 ### ToolAuditor 审计
 
-`record()` 落一条结构化事件到 `app.events` logger（`event_name="tool_call"`），字段：`tool` / `risk_level` / `category` / `success` / `elapsed` / `retry_count` / `params` / `error` / `content`。
+`record()` 落一条结构化事件到 `app.events` logger（`event_name="tool_call"`），字段：`tool` / `risk_level` / `category` / `success` / `elapsed` / `retry_count` / `params` / `error` / `error_code` / `content`。
 
 - `params` 截断至 `params_max_chars`（默认 1000，防 writeFile 把整文件内容写进日志）
 - `content` 预览截断至 `content_preview_chars`（默认 200）
@@ -60,7 +60,7 @@
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `ToolAuditor.record` | `async (*, tool_name, risk_level, category, success, elapsed, parameters, error=None, retry_count=0, content_preview="")` | 记录一条审计事件 |
+| `ToolAuditor.record` | `async (*, tool_name, risk_level, category, success, elapsed, parameters, error=None, error_code=None, retry_count=0, content_preview="")` | 记录一条审计事件 |
 | `ApprovalGate.request` | `async (tool_name: str, parameters: dict) -> bool` | 审批通道协议：执行前确认，返回 False 拒绝 |
 | `AutoApprovalGate.request` | `async (tool_name: str, parameters: dict) -> bool` | 默认审批通道：恒 True 放行 |
 
@@ -86,7 +86,7 @@
 
 ## 测试状态
 
-`tests/unit/test_tool_audit.py`（6 用例）：RiskLevel 排序 / record 字段完整性 / L2→WARNING、L0→INFO / enabled=False 静默 / params 截断。
+`tests/unit/test_tool_audit.py`（8 用例）：RiskLevel 排序 / record 字段完整性 / L2→WARNING、L0→INFO / enabled=False 静默 / params 截断 / error_code 字段 / error_code 默认 None。
 `tests/unit/test_tool_approval.py`（5 用例）：审批通道——默认放行 / 拒绝拦截 / 不触发 / 审计留痕。
 
 ## 设计决策

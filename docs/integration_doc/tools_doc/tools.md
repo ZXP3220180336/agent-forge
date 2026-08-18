@@ -70,10 +70,13 @@ class ToolGateway(Protocol):
 | --- | --- | --- |
 | `success` | `bool` | 是否成功 |
 | `content` | `str` | 结果内容（LLM 观察） |
-| `error` | `str \| None` | 失败错误信息 |
+| `error` | `str \| None` | 失败错误信息（中文归因，供 LLM 下一轮修正） |
+| `error_code` | `ErrorCode \| None` | 系统级失败分类（业务错误为 None，见下） |
 | `metadata` | `dict \| None` | 元数据（截断标记 `truncated` 等） |
 | `execution_time` | `float \| None` | 执行耗时（executor 填充） |
 | `retry_count` | `int` | 实际尝试次数（executor 填充） |
+
+`ErrorCode`（[`app/domain/ports/tool_gateway.py`](../../../app/domain/ports/tool_gateway.py)）系统级 6 码：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数 JSON 解析失败）/ `VALIDATION`（校验失败）/ `REJECTED`（审批拒绝）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。工具业务错误为 `None`（`error` 字符串承载 LLM 归因）——**错误码 + 中文归因并存**：错误码供审计聚合与证据链可审计性，`error` 供 LLM 修正。
 
 ### `ToolService` 方法
 
