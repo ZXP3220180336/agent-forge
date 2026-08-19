@@ -141,13 +141,20 @@ def _in_range(timestamp: str, time_range: str | None) -> bool:
     return True
 
 
+def _apply_time_range(records: list[dict], time_range: str | None) -> list[dict]:
+    """按时间窗口过滤记录（time_range 为空时原样返回）。
+
+    三处查询（yield / alerts / fdc）共用的统一过滤入口，避免 `if time_range:` 守卫重复。
+    """
+    if not time_range:
+        return records
+    return [r for r in records if _in_range(r["timestamp"], time_range)]
+
+
 def query_yield(batch_id: str, time_range: str | None = None) -> list[dict]:
     """按批次查良率记录（可选时间窗口，保持时间顺序）。"""
-    return [
-        r
-        for r in BATCHES
-        if r["batch_id"] == batch_id and _in_range(r["timestamp"], time_range)
-    ]
+    batch_records = [r for r in BATCHES if r["batch_id"] == batch_id]
+    return _apply_time_range(batch_records, time_range)
 
 
 def query_alerts(
@@ -161,9 +168,7 @@ def query_alerts(
         result = [r for r in result if r["equipment_id"] == equipment_id]
     if alert_type:
         result = [r for r in result if r["alert_type"] == alert_type]
-    if time_range:
-        result = [r for r in result if _in_range(r["timestamp"], time_range)]
-    return result
+    return _apply_time_range(result, time_range)
 
 
 def query_fdc(
@@ -175,9 +180,7 @@ def query_fdc(
     result = [r for r in FDC_PARAMS if r["equipment_id"] == equipment_id]
     if process_step:
         result = [r for r in result if r["process_step"] == process_step]
-    if time_range:
-        result = [r for r in result if _in_range(r["timestamp"], time_range)]
-    return result
+    return _apply_time_range(result, time_range)
 
 
 def query_defects(batch_id: str, wafer_id: str | None = None) -> list[dict]:
