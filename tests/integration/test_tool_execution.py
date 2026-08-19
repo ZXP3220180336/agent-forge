@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import locale
 import sys
 
 import httpx
@@ -23,6 +24,7 @@ from app.integration.tools.builtin import (
     WriteFileTool,
     web_browse,
 )
+from app.integration.tools.builtin.code_exec import _decode_output
 from app.integration.tools.tool_service import ToolService
 
 
@@ -359,3 +361,26 @@ async def test_code_exec_output_capped(monkeypatch):
     # 输出被限制在 cap（max_output_length×3=300k）附近，而非完整 40 万
     assert len(result.content) <= 310_000
     assert result.content.startswith("A")
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("良率正常".encode("utf-8"), "良率正常"),
+        ("english only".encode("utf-8"), "english only"),
+        (b"", ""),
+    ],
+)
+def test_code_exec_decode_output_utf8(raw, expected):
+    """UTF-8 合法输出按 UTF-8 解码（现代工具 / Python 脚本）。"""
+    assert _decode_output(raw) == expected
+
+
+@pytest.mark.skipif(
+    locale.getpreferredencoding(False).lower() not in ("cp936", "gbk"),
+    reason="非 GBK locale 环境不验证 Windows 中文输出回退",
+)
+def test_code_exec_decode_output_gbk_fallback():
+    """GBK 编码输出（Windows cmd 系统命令）回退系统 locale 解码，不乱码。"""
+    raw = "良率异常 98%→82%".encode("gbk")
+    assert _decode_output(raw) == "良率异常 98%→82%"

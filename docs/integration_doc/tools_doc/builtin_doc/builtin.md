@@ -338,7 +338,7 @@ stdout, stderr = await proc.communicate()
 - 空命令（`command` 去除空白后为空）直接返回失败
 - **超时 / 取消清理**：stdout/stderr 读取经 `asyncio.wait_for` 以工具自声明超时（60s）兜底；超时或 executor 外层取消（`CancelledError`）时先 `proc.kill()` 再 `await proc.wait()` 回收后重抛（由 executor 归为 `TIMEOUT`），避免孤儿进程泄漏
 - **流式读取限制内存**：`communicate()` 全量读已废弃，改为 `_read_stream_capped` 流式读 stdout/stderr（保留前 `max_output_length×3` 字节，超出丢弃并继续 drain 防管道阻塞）
-- stdout 与 stderr 分别 `decode("utf-8", errors="replace")` 解码；结果截断由 ResultProcessor 统一处理
+- **输出解码**：`_decode_output` 双解码——优先 UTF-8（现代工具 / Python 脚本），非法字节回退系统 locale 编码（Windows 中文环境 cp936，匹配 cmd 系统命令输出）；结果截断由 ResultProcessor 统一处理
 - 返回内容：有输出则拼接 stdout（及 `--- stderr ---` 段），否则 `"(无输出)"`
 - `success = proc.returncode == 0`；`metadata` 记录 `return_code` 与 `command`
 - 异常分类：`FileNotFoundError` → `"命令不存在或未找到可执行文件"`；其它 → `"命令执行失败: ..."`
@@ -453,3 +453,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-002 问题记录](../../../../issues/integration/tools/2026-08-19-file-tools-allowed-dirs.md)（文件工具允许目录白名单）
 - [TOOLS-003 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-ssrf.md)（web_browse SSRF 防护）
 - [TOOLS-004 问题记录](../../../../issues/integration/tools/2026-08-19-memory-capped-reads.md)（工具读取内存峰值限制）
+- [TOOLS-005 问题记录](../../../../issues/integration/tools/2026-08-19-code-exec-gbk-decode.md)（code_exec 输出 GBK 解码）

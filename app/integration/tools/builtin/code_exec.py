@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import locale
 from typing import Any, ClassVar
 
 from ..base import BaseTool, ToolResult
@@ -27,6 +28,21 @@ async def _read_stream_capped(stream: asyncio.StreamReader | None, cap: int) -> 
             parts.append(chunk[:take])
             total += take
     return b"".join(parts)
+
+
+def _decode_output(raw: bytes) -> str:
+    """解码子进程输出：优先 UTF-8（现代工具 / Python 脚本），非法字节回退系统 locale 编码。
+
+    Windows 中文环境 `locale.getpreferredencoding(False)` 返回 cp936（GBK），
+    匹配 cmd.exe 系统命令（`type 报告.txt` / 良率日志）的默认输出编码。
+    """
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        encoding = locale.getpreferredencoding(False) or "utf-8"
+        return raw.decode(encoding, errors="replace")
 
 
 class CodeExecTool(BaseTool):
@@ -187,8 +203,8 @@ class CodeExecTool(BaseTool):
                 error=f"命令执行失败: {e!s}",
             )
 
-        stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
-        stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
+        stdout_str = _decode_output(stdout)
+        stderr_str = _decode_output(stderr)
 
         # 结果截断由 ResultProcessor 统一处理（head+tail）；流式读取已限制输出量，此处拼接返回
         # 构建返回内容
