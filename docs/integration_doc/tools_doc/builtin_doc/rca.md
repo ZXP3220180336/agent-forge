@@ -66,3 +66,4 @@ search_historical_rca("etch 偏离 良率 骤降") → RCA-001 佐证
 - [TOOLS-032 问题记录](../../../../issues/integration/tools/2026-08-20-rca-defect-size-um.md)（defect 尺寸输出）
 - [TOOLS-033 问题记录](../../../../issues/integration/tools/2026-08-20-rca-alerts-alert-id.md)（alerts alert_id 输出）
 - [TOOLS-034 问题记录](../../../../issues/integration/tools/2026-08-20-rca-timestamp-anchor.md)（timestamp 锚点统一）
+- [TOOLS-035 问题记录](../../../../issues/integration/tools/2026-08-20-rca-b100-timeline.md)（对照批次解耦）

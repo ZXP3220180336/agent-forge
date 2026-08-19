@@ -27,7 +27,7 @@ BATCHES: list[dict] = [
     {"batch_id": "LOT-A123", "step": "ETCH", "yield_rate": 82.0, "equipment": "ETCH-01", "timestamp": "2026-08-12 14:30", "drop": True},
     {"batch_id": "LOT-A123", "step": "CMP", "yield_rate": 83.1, "equipment": "CMP-01", "timestamp": "2026-08-13 08:00", "drop": True},
     {"batch_id": "LOT-B100", "step": "LITHO", "yield_rate": 97.2, "equipment": "LITHO-01", "timestamp": "2026-08-12 09:00", "drop": False},
-    {"batch_id": "LOT-B100", "step": "ETCH", "yield_rate": 96.9, "equipment": "ETCH-01", "timestamp": "2026-08-12 15:00", "drop": False},
+    {"batch_id": "LOT-B100", "step": "ETCH", "yield_rate": 96.9, "equipment": "ETCH-02", "timestamp": "2026-08-12 15:00", "drop": False},
 ]
 
 # ===== 设备告警 / PM（模拟 MES） =====
