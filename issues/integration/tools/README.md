@@ -25,6 +25,7 @@
 | [TOOLS-006](2026-08-19-executor-json-non-dict.md) | executor 参数 JSON 解析结果未校验 dict，非 dict 抛 TypeError 逃逸 | P1 | ✅ 已修复 | tools/executor（参数解析） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-007](2026-08-19-executor-retry-count-semantics.md) | executor retry_count 成功/失败路径口径不一致 | P2 | ✅ 已修复 | tools/executor（retry_count） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-008](2026-08-19-executor-max-retries-zero.md) | executor max_retries=0 时零次循环，工具从未执行 | P2 | ✅ 已修复 | tools/executor（重试参数） | 2026-08-19 | 2026-08-19 |
+| [TOOLS-009](2026-08-19-search-source-urls.md) | search 搜索结果与 answer 不携带来源 URL，证据不可回溯 | P1 | ✅ 已修复 | builtin/search（结果格式化） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

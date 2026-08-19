@@ -384,3 +384,78 @@ def test_code_exec_decode_output_gbk_fallback():
     """GBK 编码输出（Windows cmd 系统命令）回退系统 locale 解码，不乱码。"""
     raw = "良率异常 98%→82%".encode("gbk")
     assert _decode_output(raw) == "良率异常 98%→82%"
+
+
+class _FakeTavily:
+    """模拟 Tavily 搜索响应。"""
+
+    def __init__(self, response: dict) -> None:
+        self._response = response
+
+    def search(self, **kwargs) -> dict:
+        return self._response
+
+
+@pytest.mark.asyncio
+async def test_search_answer_includes_source_urls(monkeypatch):
+    """answer 路径来源 URL 进 metadata（证据链可回溯）。"""
+    resp = {
+        "answer": "良率骤降与 chamber 污染相关",
+        "results": [
+            {"title": "A", "content": "内容A", "url": "https://a.com"},
+            {"title": "B", "content": "内容B", "url": "https://b.com"},
+        ],
+    }
+    monkeypatch.setattr(
+        "app.integration.tools.builtin.search.TavilyClient",
+        lambda api_key: _FakeTavily(resp),
+    )
+    tool = SearchTool()
+    tool.register_config(api_key="test-key")
+
+    result = await tool.execute(query="良率 异常")
+
+    assert result.success is True
+    assert result.content == resp["answer"]
+    assert result.metadata["source"] == "tavily_answer"
+    assert result.metadata["urls"] == ["https://a.com", "https://b.com"]
+
+
+@pytest.mark.asyncio
+async def test_search_results_include_source_urls(monkeypatch):
+    """搜索结果行尾追加来源 URL（证据可回溯）。"""
+    resp = {
+        "results": [
+            {"title": "A", "content": "内容A", "url": "https://a.com"},
+            {"title": "B", "content": "内容B", "url": "https://b.com"},
+        ],
+    }
+    monkeypatch.setattr(
+        "app.integration.tools.builtin.search.TavilyClient",
+        lambda api_key: _FakeTavily(resp),
+    )
+    tool = SearchTool()
+    tool.register_config(api_key="test-key")
+
+    result = await tool.execute(query="测试")
+
+    assert result.success is True
+    assert "来源: https://a.com" in result.content
+    assert "来源: https://b.com" in result.content
+
+
+@pytest.mark.asyncio
+async def test_search_result_missing_url_tolerated(monkeypatch):
+    """Tavily 结果缺 url 字段时不崩溃（.get 兜底）。"""
+    resp = {"results": [{"title": "A", "content": "内容A"}]}
+    monkeypatch.setattr(
+        "app.integration.tools.builtin.search.TavilyClient",
+        lambda api_key: _FakeTavily(resp),
+    )
+    tool = SearchTool()
+    tool.register_config(api_key="test-key")
+
+    result = await tool.execute(query="测试")
+
+    assert result.success is True
+    assert "内容A" in result.content

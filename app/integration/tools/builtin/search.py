@@ -21,7 +21,9 @@ class SearchTool(BaseTool):
     _search_depth: ClassVar[str] = "basic"
 
     @classmethod
-    def register_config(cls, *, api_key: str = "", search_depth: str = "basic", **kwargs: Any) -> None:
+    def register_config(
+        cls, *, api_key: str = "", search_depth: str = "basic", **kwargs: Any
+    ) -> None:
         """注入 Tavily 配置（由装配根调用，避免直接依赖 settings）。"""
         cls._api_key = api_key
         cls._search_depth = search_depth
@@ -93,18 +95,27 @@ class SearchTool(BaseTool):
                 include_answer=True,
             )
 
-            # 优先返回直接答案
+            # 优先返回直接答案（来源 URL 前 3 条进 metadata，供证据链回溯）
             if response.get("answer"):
+                urls = [
+                    r.get("url")
+                    for r in response.get("results", [])[:3]
+                    if r.get("url")
+                ]
                 return ToolResult(
                     success=True,
                     content=response["answer"],
-                    metadata={"source": "tavily_answer"},
+                    metadata={"source": "tavily_answer", "urls": urls},
                 )
 
-            # 格式化搜索结果
+            # 格式化搜索结果（每行追加来源 URL，证据可回溯）
             formatted_results = []
             for result in response.get("results", []):
-                formatted_results.append(f"- {result['title']}: {result['content']}")
+                title = result.get("title", "无标题")
+                result_content = result.get("content", "")
+                url = result.get("url", "")
+                url_suffix = f"（来源: {url}）" if url else ""
+                formatted_results.append(f"- {title}: {result_content}{url_suffix}")
 
             if not formatted_results:
                 return ToolResult(
@@ -119,7 +130,7 @@ class SearchTool(BaseTool):
                 metadata={"source": "tavily_search", "count": len(formatted_results)},
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return ToolResult(
                 success=False,
                 content="",
