@@ -155,3 +155,45 @@ async def test_audit_error_code_defaults_none(caplog):
         )
 
     assert caplog.records[-1].error_code is None
+
+
+def test_audit_masks_sensitive_keys():
+    """审计参数敏感键（api_key/token/password/authorization）掩码，防凭据落盘。"""
+    auditor = ToolAuditor()
+    masked = auditor._mask_sensitive(
+        {
+            "query": "正常",
+            "api_key": "sk-secret",
+            "headers": {"Authorization": "Bearer tok"},
+            "nested": {"password": "pw", "ok": 1},
+            "monkey": "不掩码",  # key 词边界不误伤
+        }
+    )
+    assert masked["api_key"] == "***"
+    assert masked["headers"]["Authorization"] == "***"
+    assert masked["nested"]["password"] == "***"
+    assert masked["monkey"] == "不掩码"
+    assert masked["query"] == "正常"
+    assert masked["nested"]["ok"] == 1
+
+
+@pytest.mark.asyncio
+async def test_audit_redacts_sensitive_in_log(caplog):
+    """record 落日志时敏感键值被掩码（防凭据泄露到审计日志）。"""
+    auditor = ToolAuditor()
+    with caplog.at_level(logging.INFO, logger="app.events"):
+        await auditor.record(
+            tool_name="http_api",
+            risk_level=RiskLevel.L1_WRITE,
+            category="http",
+            success=False,
+            elapsed=0.5,
+            parameters={
+                "url": "https://api.x",
+                "headers": {"Authorization": "Bearer tok"},
+            },
+        )
+
+    rec = caplog.records[0]
+    assert "Bearer tok" not in rec.params  # 明文凭据不落盘
+    assert "***" in rec.params

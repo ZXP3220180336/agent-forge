@@ -16,6 +16,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import re
 import socket
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Protocol
@@ -39,6 +40,13 @@ class RiskLevel(IntEnum):
 class ToolAuditor:
     """审计留痕：记录到结构化日志（event_name="tool_call"）。不拦截执行。"""
 
+    # 敏感键名（含 api_key / token / secret / password / authorization / credential），
+    # 序列化前掩码，防凭据落盘（\b 词边界避免 monkey 等误伤）
+    _SENSITIVE_KEY_RE = re.compile(
+        r"\b(api_?key|token|secret|password|authorization|credential)\b",
+        re.IGNORECASE,
+    )
+
     def __init__(
         self,
         *,
@@ -49,6 +57,21 @@ class ToolAuditor:
         self._enabled = enabled
         self._params_max_chars = params_max_chars
         self._content_preview_chars = content_preview_chars
+
+    def _mask_sensitive(self, params: Any) -> Any:
+        """递归掩码敏感键的值（含嵌套 dict / list），保留键名与结构。"""
+        if isinstance(params, dict):
+            return {
+                k: (
+                    "***"
+                    if self._SENSITIVE_KEY_RE.search(str(k))
+                    else self._mask_sensitive(v)
+                )
+                for k, v in params.items()
+            }
+        if isinstance(params, list):
+            return [self._mask_sensitive(v) for v in params]
+        return params
 
     async def record(
         self,
@@ -76,7 +99,9 @@ class ToolAuditor:
         else:
             level = logging.INFO
 
-        params_json = json.dumps(parameters, ensure_ascii=False, default=str)
+        params_json = json.dumps(
+            self._mask_sensitive(parameters), ensure_ascii=False, default=str
+        )
         await log_event_async(
             "tool_call",
             level=level,

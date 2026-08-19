@@ -45,6 +45,7 @@
 `record()` 落一条结构化事件到 `app.events` logger（`event_name="tool_call"`），字段：`tool` / `risk_level` / `category` / `success` / `elapsed` / `retry_count` / `params` / `error` / `error_code` / `content`。
 
 - `params` 截断至 `params_max_chars`（默认 1000，防 writeFile 把整文件内容写进日志）
+- **敏感键掩码**：`params` 序列化前对 `api_key` / `token` / `secret` / `password` / `authorization` / `credential` 键值掩码为 `***`（词边界匹配，嵌套 dict / list 递归，防凭据落盘）
 - `content` 预览截断至 `content_preview_chars`（默认 200）
 - `enabled=True` 默认常开（不设 settings 开关，防静默关闭安全审计；`enabled` 参数供测试注入）
 
@@ -110,3 +111,4 @@
 - [工具模块接口文档](tools.md)（BaseTool.risk_level / requires_approval 契约）
 - [ToolService 执行流程](../../../app/integration/tools/executor.py)（审计接入点）
 - [TOOLS-011 问题记录](../../../issues/integration/tools/2026-08-19-http-api-approval-ssrf.md)（SSRF 共享防护抽取 + http_api 审批）
+- [TOOLS-016 问题记录](../../../issues/integration/tools/2026-08-19-audit-sensitive-key-masking.md)（审计参数敏感键掩码）
