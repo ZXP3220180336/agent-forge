@@ -8,6 +8,8 @@ from typing import Any, ClassVar
 
 import aiofiles
 
+from app.shared.encoding import decode_output
+
 from ..base import BaseTool, ToolResult
 from ..security import RiskLevel
 
@@ -111,11 +113,11 @@ class ReadFileTool(BaseTool):
             max_bytes = self._max_output_length * 3
             async with aiofiles.open(file_path, "rb") as file:
                 if size <= max_bytes * 2:
-                    content = (await file.read()).decode("utf-8", errors="replace")
+                    content = decode_output(await file.read())
                 else:
-                    head = (await file.read(max_bytes)).decode("utf-8", errors="replace")
+                    head = decode_output(await file.read(max_bytes))
                     await file.seek(size - max_bytes)
-                    tail = (await file.read(max_bytes)).decode("utf-8", errors="replace")
+                    tail = decode_output(await file.read(max_bytes))
                     content = head + "\n...（文件过大，仅读取首尾）\n" + tail
 
             # 正常路径返回完整内容；大文件分段读取保留首尾，截断标记由 ResultProcessor 统一生成

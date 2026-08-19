@@ -24,7 +24,7 @@ from app.integration.tools.builtin import (
     WriteFileTool,
     web_browse,
 )
-from app.integration.tools.builtin.code_exec import _decode_output
+from app.shared.encoding import decode_output
 from app.integration.tools.tool_service import ToolService
 
 
@@ -373,7 +373,7 @@ async def test_code_exec_output_capped(monkeypatch):
 )
 def test_code_exec_decode_output_utf8(raw, expected):
     """UTF-8 合法输出按 UTF-8 解码（现代工具 / Python 脚本）。"""
-    assert _decode_output(raw) == expected
+    assert decode_output(raw) == expected
 
 
 @pytest.mark.skipif(
@@ -383,7 +383,7 @@ def test_code_exec_decode_output_utf8(raw, expected):
 def test_code_exec_decode_output_gbk_fallback():
     """GBK 编码输出（Windows cmd 系统命令）回退系统 locale 解码，不乱码。"""
     raw = "良率异常 98%→82%".encode("gbk")
-    assert _decode_output(raw) == "良率异常 98%→82%"
+    assert decode_output(raw) == "良率异常 98%→82%"
 
 
 class _FakeTavily:

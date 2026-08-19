@@ -166,4 +166,4 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 - [LLM 服务层说明](../../integration_doc/llm_doc/llm.md)（LLM 调用业务事件）
 - [服务层说明](../../application_doc/README.md)（各模块日志归属）
 - [架构设计](../../architecture.md)
-- [TOOLS-018 问题记录](../../../../issues/integration/tools/2026-08-19-hooks-logger-name.md)（hooks logger 名修正）
+- [TOOLS-018 问题记录](../../../issues/integration/tools/2026-08-19-hooks-logger-name.md)（hooks logger 名修正）

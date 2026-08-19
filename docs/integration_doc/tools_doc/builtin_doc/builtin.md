@@ -339,7 +339,7 @@ stdout, stderr = await proc.communicate()
 - 空命令（`command` 去除空白后为空）直接返回失败
 - **超时 / 取消清理**：stdout/stderr 读取经 `asyncio.wait_for` 以工具自声明超时（60s）兜底；超时或 executor 外层取消（`CancelledError`）时先 `proc.kill()` 再 `await proc.wait()` 回收后重抛（由 executor 归为 `TIMEOUT`），避免孤儿进程泄漏
 - **流式读取限制内存**：`communicate()` 全量读已废弃，改为 `_read_stream_capped` 流式读 stdout/stderr（保留前 `max_output_length×3` 字节，超出丢弃并继续 drain 防管道阻塞）
-- **输出解码**：`_decode_output` 双解码——优先 UTF-8（现代工具 / Python 脚本），非法字节回退系统 locale 编码（Windows 中文环境 cp936，匹配 cmd 系统命令输出）；结果截断由 ResultProcessor 统一处理
+- **输出解码**：共享 [app/shared/encoding.py](../../../shared_doc/encoding.md) 的 `decode_output` 双解码——优先 UTF-8（现代工具 / Python 脚本），非法字节回退系统 locale 编码（Windows 中文环境 cp936，匹配 cmd 系统命令输出）；readFile 复用同一实现；结果截断由 ResultProcessor 统一处理
 - 返回内容：有输出则拼接 stdout（及 `--- stderr ---` 段），否则 `"(无输出)"`
 - `success = proc.returncode == 0`；`metadata` 记录 `return_code` 与 `command`
 - 异常分类：`FileNotFoundError` → `"命令不存在或未找到可执行文件"`；其它 → `"命令执行失败: ..."`
@@ -458,3 +458,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-009 问题记录](../../../../issues/integration/tools/2026-08-19-search-source-urls.md)（search 结果来源 URL）
 - [TOOLS-019 问题记录](../../../../issues/integration/tools/2026-08-19-search-tavily-reuse.md)（TavilyClient 实例级复用）
 - [TOOLS-020 问题记录](../../../../issues/integration/tools/2026-08-19-writefile-makedirs-async.md)（writeFile makedirs 异步化）
+- [TOOLS-021 问题记录](../../../../issues/integration/tools/2026-08-19-readfile-encoding-fallback.md)（readFile 编码回退共享）
