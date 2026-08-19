@@ -11,17 +11,43 @@ from ..base import BaseTool, ToolResult
 from ..security import RiskLevel
 
 
+def _normalize_allowed_dirs(allowed_dirs: tuple[str, ...]) -> tuple[str, ...]:
+    """规范化白名单：abspath + normcase（Windows 路径大小写不敏感）。"""
+    return tuple(os.path.normcase(os.path.abspath(d)) for d in allowed_dirs)
+
+
+def _is_path_allowed(file_path: str, allowed_dirs: tuple[str, ...]) -> bool:
+    """file_path 是否位于允许目录内（规范化比较，防 `..` 穿越 / 前缀误放行）。
+
+    - 空白名单 = 拒绝所有（fail-closed，安全默认）
+    - 允许 = 路径等于某允许目录，或是其子路径（`base + os.sep` 前缀避免 `/data` 误放行 `/database`）
+    """
+    if not allowed_dirs:
+        return False
+    candidate = os.path.normcase(os.path.abspath(file_path))
+    return any(
+        candidate == base or candidate.startswith(base + os.sep)
+        for base in allowed_dirs
+    )
+
+
 class ReadFileTool(BaseTool):
     """文件读取工具"""
 
     _max_output_length: ClassVar[int] = 100_000
+    _allowed_dirs: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
     def register_config(
-        cls, *, max_output_length: int = 100_000, **kwargs: Any
+        cls,
+        *,
+        max_output_length: int = 100_000,
+        allowed_dirs: tuple[str, ...] = (),
+        **kwargs: Any,
     ) -> None:
-        """注入内容截断配置（由装配根调用，避免直接依赖 settings）。"""
+        """注入内容截断与允许目录配置（由装配根调用，避免直接依赖 settings）。"""
         cls._max_output_length = max_output_length
+        cls._allowed_dirs = _normalize_allowed_dirs(allowed_dirs)
 
     @property
     def risk_level(self) -> RiskLevel:
@@ -69,15 +95,23 @@ class ReadFileTool(BaseTool):
         if not self.validate_parameters(**kwargs):
             return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
 
+        file_path: str = kwargs["file_path"]
+        if not _is_path_allowed(file_path, self._allowed_dirs):
+            return ToolResult(
+                success=False,
+                content="",
+                error=f"文件路径不在允许目录内，拒绝访问: {file_path}",
+            )
+
         try:
-            async with aiofiles.open(kwargs["file_path"], encoding="utf-8") as file:
+            async with aiofiles.open(file_path, encoding="utf-8") as file:
                 content = await file.read()
 
             # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
             return ToolResult(success=True, content=content)
         except FileNotFoundError:
             return ToolResult(
-                success=False, content="", error=f"文件 '{kwargs['file_path']}' 未找到"
+                success=False, content="", error=f"文件 '{file_path}' 未找到"
             )
         except Exception as e:  # noqa: BLE001
             return ToolResult(success=False, content="", error=f"读取文件失败: {e!s}")
@@ -85,6 +119,15 @@ class ReadFileTool(BaseTool):
 
 class WriteFileTool(BaseTool):
     """文件写入工具"""
+
+    _allowed_dirs: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def register_config(
+        cls, *, allowed_dirs: tuple[str, ...] = (), **kwargs: Any
+    ) -> None:
+        """注入允许目录配置（由装配根调用，避免直接依赖 settings）。"""
+        cls._allowed_dirs = _normalize_allowed_dirs(allowed_dirs)
 
     @property
     def risk_level(self) -> RiskLevel:
@@ -136,16 +179,22 @@ class WriteFileTool(BaseTool):
         if not self.validate_parameters(**kwargs):
             return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
 
+        file_path: str = kwargs["file_path"]
+        if not _is_path_allowed(file_path, self._allowed_dirs):
+            return ToolResult(
+                success=False,
+                content="",
+                error=f"文件路径不在允许目录内，拒绝访问: {file_path}",
+            )
+
         try:
             # 自动创建父目录
-            dir_path = os.path.dirname(kwargs["file_path"])
+            dir_path = os.path.dirname(file_path)
             if dir_path:
                 os.makedirs(dir_path, exist_ok=True)
 
-            async with aiofiles.open(
-                kwargs["file_path"], "w", encoding="utf-8"
-            ) as file:
+            async with aiofiles.open(file_path, "w", encoding="utf-8") as file:
                 await file.write(kwargs["content"])
-            return ToolResult(success=True, content=f"成功写入 '{kwargs['file_path']}'")
+            return ToolResult(success=True, content=f"成功写入 '{file_path}'")
         except Exception as e:  # noqa: BLE001
             return ToolResult(success=False, content="", error=f"写入文件失败: {e!s}")

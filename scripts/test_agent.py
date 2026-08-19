@@ -27,6 +27,9 @@ from app.integration.tools.builtin import ReadFileTool, SearchTool, WriteFileToo
 async def main():
     # 1. 准备依赖
     tools = ToolService()
+    # 文件工具允许目录（默认项目根），避免真实执行 readFile/writeFile 被白名单拦截
+    ReadFileTool.register_config(allowed_dirs=settings.tool_allowed_dirs)
+    WriteFileTool.register_config(allowed_dirs=settings.tool_allowed_dirs)
     for tool_cls in [SearchTool, ReadFileTool, WriteFileTool]:
         tools.register(tool_cls())
 

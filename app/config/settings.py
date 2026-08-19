@@ -27,6 +27,7 @@
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import field_validator
@@ -177,6 +178,7 @@ class Settings(BaseSettings):
     tool_max_retries: int = 3  # 工具执行最大重试次数
     tool_max_output_length: int = 100_000  # 工具输出最大字符数（code_exec、readFile）
     tool_max_content_length: int = 50_000  # 网页抓取最大字符数（web_browse）
+    tool_allowed_dirs: tuple[str, ...] = (str(Path(__file__).resolve().parents[2]),)  # 文件工具允许目录（默认项目根）
 
     # ===== Tavily 配置 =====
     tavily_api_key: str = ""

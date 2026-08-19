@@ -32,6 +32,7 @@ from app.integration.tools.builtin import (
     ReadFileTool,
     SearchTool,
     WebBrowseTool,
+    WriteFileTool,
 )
 from app.integration.tools.tool_service import ToolService
 
@@ -226,7 +227,11 @@ class Container:
             max_content_length=settings.tool_max_content_length
         )
         CodeExecTool.register_config(max_output_length=settings.tool_max_output_length)
-        ReadFileTool.register_config(max_output_length=settings.tool_max_output_length)
+        ReadFileTool.register_config(
+            max_output_length=settings.tool_max_output_length,
+            allowed_dirs=settings.tool_allowed_dirs,
+        )
+        WriteFileTool.register_config(allowed_dirs=settings.tool_allowed_dirs)
 
         # 注册内置工具到全局注册中心
         self.tool_service = ToolService(

@@ -30,6 +30,8 @@ from app.integration.tools.tool_service import ToolService
 async def test_write_and_read_file_roundtrip(tmp_path):
     """writeFile → readFile 真实读写，父目录自动创建"""
     target = tmp_path / "nested" / "out.txt"
+    WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
+    ReadFileTool.register_config(allowed_dirs=(str(tmp_path),))
     service = ToolService()
     service.register(WriteFileTool())
     service.register(ReadFileTool())
@@ -49,6 +51,7 @@ async def test_write_and_read_file_roundtrip(tmp_path):
 
 @pytest.mark.asyncio
 async def test_read_file_missing_returns_error(tmp_path):
+    ReadFileTool.register_config(allowed_dirs=(str(tmp_path),))
     service = ToolService()
     service.register(ReadFileTool())
 
@@ -128,6 +131,7 @@ async def test_read_file_large_content_truncated_head_tail(tmp_path):
     content = ("头" * 500) + ("中" * 100_000) + ("尾" * 500)
     target.write_text(content, encoding="utf-8")
 
+    ReadFileTool.register_config(allowed_dirs=(str(tmp_path),))
     service = ToolService()
     service.register(ReadFileTool())
 
@@ -140,6 +144,67 @@ async def test_read_file_large_content_truncated_head_tail(tmp_path):
     assert "头" * 500 in result.content
     assert "尾" * 500 in result.content
     assert result.metadata["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_file_outside_allowed_dir_rejected(tmp_path):
+    """白名单外路径被拒绝（readFile 不能读 .env 等敏感文件）。"""
+    ReadFileTool.register_config(allowed_dirs=(str(tmp_path),))
+    service = ToolService()
+    service.register(ReadFileTool())
+
+    result = await service.execute(
+        "readFile", {"file_path": str(tmp_path.parent / "secret.env")}
+    )
+
+    assert result.success is False
+    assert "不在允许目录内" in result.error
+    assert result.error_code is None  # 业务错误，非系统级
+
+
+@pytest.mark.asyncio
+async def test_write_file_outside_allowed_dir_rejected(tmp_path):
+    """白名单外路径被拒绝（writeFile 不能覆盖项目源码）。"""
+    WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
+    service = ToolService()
+    service.register(WriteFileTool())
+
+    result = await service.execute(
+        "writeFile",
+        {"file_path": str(tmp_path.parent / "settings.py"), "content": "x"},
+    )
+
+    assert result.success is False
+    assert "不在允许目录内" in result.error
+
+
+@pytest.mark.asyncio
+async def test_file_path_traversal_rejected(tmp_path):
+    """`..` 穿越逃出白名单被拒绝（abspath 规范化后比较）。"""
+    ReadFileTool.register_config(allowed_dirs=(str(tmp_path),))
+    service = ToolService()
+    service.register(ReadFileTool())
+
+    escape = tmp_path / ".." / "secret.env"
+    result = await service.execute("readFile", {"file_path": str(escape)})
+
+    assert result.success is False
+    assert "不在允许目录内" in result.error
+
+
+@pytest.mark.asyncio
+async def test_allowed_dir_prefix_no_misjudge(tmp_path):
+    """前缀目录不误放行：允许 <tmp>/data 时不放行 <tmp>/database（需 os.sep 分隔）。"""
+    base = tmp_path / "data"
+    ReadFileTool.register_config(allowed_dirs=(str(base),))
+    service = ToolService()
+    service.register(ReadFileTool())
+
+    sibling = tmp_path / "database" / "secret.txt"
+    result = await service.execute("readFile", {"file_path": str(sibling)})
+
+    assert result.success is False
+    assert "不在允许目录内" in result.error
 
 
 @pytest.mark.asyncio

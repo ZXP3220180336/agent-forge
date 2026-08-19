@@ -137,6 +137,7 @@ async def test_chat_send_message_react_loop(tmp_path):
     )
 
     registry = ToolService()
+    WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
     registry.register(WriteFileTool())
 
     # 2. 调用 send_message（手动传入依赖）

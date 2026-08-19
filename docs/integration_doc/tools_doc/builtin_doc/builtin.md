@@ -264,10 +264,12 @@ response = await asyncio.to_thread(
 | 风险级 | L0 只读（category=file，并发安全） |
 | 默认超时 | 5s（本地读快） |
 | 结果截断 | ResultProcessor 统一 head+tail 截断（`max_output_length`，默认 100_000） |
+| 安全限制 | 允许目录白名单（register_config 注入，默认项目根）；白名单外拒绝访问 |
 
 **实现要点：**
 
 - 返回完整文件内容，截断由 [ResultProcessor](../result_processor.md) 统一处理（head+tail）
+- **路径白名单**：`file_path` 经 `abspath + normcase` 规范化后必须位于允许目录内（等于或为子路径，`os.sep` 分隔防 `/data` 误放行 `/database`），防 `..` 穿越；白名单外返回业务错误
 - `FileNotFoundError` → `"文件 '...' 未找到"`；其它异常 → `"读取文件失败: ..."`
 
 ### 3. WriteFileTool — 写入文件
@@ -282,10 +284,12 @@ response = await asyncio.to_thread(
 | 特性 | **自动创建父目录**（`os.makedirs(dir_path, exist_ok=True)`） |
 | 风险级 | L1 写（category=file，**非并发安全** → 同工具串行化） |
 | 默认超时 | 5s（本地写快） |
+| 安全限制 | 允许目录白名单（register_config 注入，默认项目根）；白名单外拒绝访问 |
 
 **实现要点：**
 
 - 写入前对 `file_path` 的目录部分执行 `os.makedirs(..., exist_ok=True)`，无需调用方预先建目录
+- **路径白名单**：同 ReadFileTool，白名单外拒绝（不能覆盖项目源码等）
 - 成功后返回 `"成功写入 '<file_path>'"`；异常 → `"写入文件失败: ..."`
 
 ### 4. CodeExecTool — 终端命令执行
@@ -441,3 +445,4 @@ _http_client = httpx.AsyncClient(
 - [核心层](../../../domain_doc/README.md)（Agent 推理循环如何消费工具）
 - [API 文档](../../../api_doc/api.md)
 - [TOOLS-001 问题记录](../../../../issues/integration/tools/2026-08-18-subprocess-orphan-on-cancel.md)（子进程超时 / 取消清理）
+- [TOOLS-002 问题记录](../../../../issues/integration/tools/2026-08-19-file-tools-allowed-dirs.md)（文件工具允许目录白名单）

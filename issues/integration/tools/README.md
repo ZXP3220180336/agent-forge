@@ -1,7 +1,7 @@
 # 工具模块问题追踪
 
 > **用途**：登记 Integration 层工具模块（`app/integration/tools/` 及其跨模块关联方）审查/审核发现的问题，追踪从发现 → 分析 → 修复 → 验证的完整生命周期。
-> **更新日期**：2026-08-18
+> **更新日期**：2026-08-19
 > **关联**：[工具模块接口文档](../../../docs/integration_doc/tools_doc/tools.md) · [builtin 工具说明](../../../docs/integration_doc/tools_doc/builtin_doc/builtin.md)
 
 ## 状态图例
@@ -18,6 +18,7 @@
 | ID | 标题 | 优先级 | 状态 | 涉及模块 | 登记日期 | 修复日期 |
 | --- | --- | --- | --- | --- | --- | --- |
 | [TOOLS-001](2026-08-18-subprocess-orphan-on-cancel.md) | executor 超时取消后子进程孤儿泄漏 | P1 | ✅ 已修复 | builtin/code_exec（CodeExecTool） | 2026-08-18 | 2026-08-18 |
+| [TOOLS-002](2026-08-19-file-tools-allowed-dirs.md) | 文件工具无路径范围限制，可读 .env / 覆盖源码 | P1 | ✅ 已修复 | builtin/file_ops + settings / container | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 
