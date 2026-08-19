@@ -290,7 +290,7 @@ response = await asyncio.to_thread(
 
 **实现要点：**
 
-- 写入前对 `file_path` 的目录部分执行 `os.makedirs(..., exist_ok=True)`，无需调用方预先建目录
+- 写入前对 `file_path` 的目录部分执行 `os.makedirs(..., exist_ok=True)`（经 `asyncio.to_thread`，不阻塞事件循环），无需调用方预先建目录
 - **路径白名单**：同 ReadFileTool，白名单外拒绝（不能覆盖项目源码等）
 - 成功后返回 `"成功写入 '<file_path>'"`；异常 → `"写入文件失败: ..."`
 
@@ -457,3 +457,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-005 问题记录](../../../../issues/integration/tools/2026-08-19-code-exec-gbk-decode.md)（code_exec 输出 GBK 解码）
 - [TOOLS-009 问题记录](../../../../issues/integration/tools/2026-08-19-search-source-urls.md)（search 结果来源 URL）
 - [TOOLS-019 问题记录](../../../../issues/integration/tools/2026-08-19-search-tavily-reuse.md)（TavilyClient 实例级复用）
+- [TOOLS-020 问题记录](../../../../issues/integration/tools/2026-08-19-writefile-makedirs-async.md)（writeFile makedirs 异步化）

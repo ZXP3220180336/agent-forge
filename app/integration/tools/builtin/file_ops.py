@@ -2,6 +2,7 @@
 文件操作工具 - 读写文件
 """
 
+import asyncio
 import os
 from typing import Any, ClassVar
 
@@ -198,10 +199,10 @@ class WriteFileTool(BaseTool):
             )
 
         try:
-            # 自动创建父目录
+            # 自动创建父目录（同步 IO 放线程池，不阻塞事件循环）
             dir_path = os.path.dirname(file_path)
             if dir_path:
-                os.makedirs(dir_path, exist_ok=True)
+                await asyncio.to_thread(os.makedirs, dir_path, exist_ok=True)
 
             async with aiofiles.open(file_path, "w", encoding="utf-8") as file:
                 await file.write(kwargs["content"])
