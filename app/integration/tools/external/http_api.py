@@ -23,7 +23,7 @@ import httpx
 
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.base import BaseTool
-from app.integration.tools.security import RiskLevel
+from app.integration.tools.security import RiskLevel, SSRFError, ssrf_on_request
 
 # 配置注入契约：声明需要的 settings 键，loader 从装配根绑定的 config_source 取值注入
 CONFIG_KEYS = ("tool_http_timeout",)
@@ -70,6 +70,7 @@ class HttpApiTool(BaseTool):
                 timeout=self._client_timeout,
                 follow_redirects=True,
                 max_redirects=5,
+                event_hooks={"request": [ssrf_on_request]},  # 每跳请求 SSRF 校验（含重定向）
             )
         return self._client
 
@@ -84,8 +85,15 @@ class HttpApiTool(BaseTool):
         return (
             "发送 HTTP 请求到指定 URL 并返回响应内容。"
             "适用于调用 REST API、查询天气预报 / 汇率等公开接口、访问内部服务。"
-            "GET 为只读查询；POST / PUT / DELETE 会对外部系统产生副作用。"
+            "GET 为只读查询；POST / PUT / DELETE 会对外部系统产生副作用（需人工审批）。"
+            "仅支持 http / https URL；裸 IP、内网 / 环回 / 云元数据地址会被 SSRF 防护拒绝；"
+            "生产环境接入任意内部服务需配置 URL 白名单并配合审批。"
         )
+
+    @property
+    def requires_approval(self) -> bool:
+        """支持写方法（POST/PUT/DELETE 改外部状态），一律需人工审批确认。"""
+        return True
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -163,6 +171,12 @@ class HttpApiTool(BaseTool):
                 success=False,
                 content="",
                 error=f"请求超时（{self._client_timeout:.0f} 秒）: {url}",
+            )
+        except SSRFError as e:
+            return ToolResult(
+                success=False,
+                content="",
+                error=f"请求被安全策略拦截（SSRF 防护）: {e!s}",
             )
         except httpx.RequestError as e:
             return ToolResult(success=False, content="", error=f"请求失败: {e!s}")

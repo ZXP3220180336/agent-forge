@@ -6,7 +6,7 @@ import socket
 
 import pytest
 
-from app.integration.tools.builtin.web_browse import SSRFError, _check_host_sync
+from app.integration.tools.security import SSRFError, check_host_sync
 
 
 @pytest.mark.parametrize(
@@ -25,7 +25,7 @@ from app.integration.tools.builtin.web_browse import SSRFError, _check_host_sync
 def test_ssrf_blocks_bare_ips(host):
     """裸 IP（含公网）一律拒绝。"""
     with pytest.raises(SSRFError):
-        _check_host_sync(host)
+        check_host_sync(host)
 
 
 @pytest.mark.parametrize(
@@ -47,7 +47,7 @@ def test_ssrf_blocks_bare_ips(host):
 def test_ssrf_blocks_private_tld(host):
     """内网保留域名后缀拒绝。"""
     with pytest.raises(SSRFError):
-        _check_host_sync(host)
+        check_host_sync(host)
 
 
 def test_ssrf_blocks_hostname_resolving_to_private(monkeypatch):
@@ -59,7 +59,7 @@ def test_ssrf_blocks_hostname_resolving_to_private(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     with pytest.raises(SSRFError):
-        _check_host_sync("evil.example")
+        check_host_sync("evil.example")
 
 
 def test_ssrf_allows_public_resolution(monkeypatch):
@@ -69,7 +69,7 @@ def test_ssrf_allows_public_resolution(monkeypatch):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-    _check_host_sync("example.com")  # 不应抛异常
+    check_host_sync("example.com")  # 不应抛异常
 
 
 def test_ssrf_blocks_dns_failure(monkeypatch):
@@ -80,4 +80,4 @@ def test_ssrf_blocks_dns_failure(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     with pytest.raises(SSRFError):
-        _check_host_sync("no-such-host.invalid")
+        check_host_sync("no-such-host.invalid")

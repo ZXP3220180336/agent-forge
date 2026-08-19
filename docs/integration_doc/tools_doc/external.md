@@ -113,7 +113,7 @@ class MyTool(BaseTool):
 4. **信任边界**：`external/` 与应用**同信任级别**——加载即执行任意 Python 代码，只放受信任工具
 5. **无状态优先**：状态由 Agent 核心管理；持连接 / 子进程 / 定时器的工具必须实现 `on_unload()` 完整回收
 
-> **完整示例**：`app/integration/tools/external/http_api.py`（`http_api`）是随附的热插拔示例——REST API 调用工具，演示了元数据覆写（L1 写 / category=http / timeout=15）+ 生命周期钩子（`on_load` 建立 httpx 连接池 / `on_unload` 释放）+ 参数 schema（method 枚举 + url 必填）+ 异常分类归因 + **配置注入**（`CONFIG_KEYS=("tool_http_timeout",)` → `register_config` 注入超时），可作新外部工具模板。
+> **完整示例**：`app/integration/tools/external/http_api.py`（`http_api`）是随附的热插拔示例——REST API 调用工具，演示了元数据覆写（L1 写 / category=http / timeout=15 / **`requires_approval=True` 写操作需审批**）+ 生命周期钩子（`on_load` 建立 httpx 连接池 / `on_unload` 释放）+ 参数 schema（method 枚举 + url 必填）+ 异常分类归因 + **配置注入**（`CONFIG_KEYS=("tool_http_timeout",)` → `register_config` 注入超时）+ **SSRF 防护**（复用 [security.md](security.md) `ssrf_on_request`，裸 IP / 内网目标拒绝），可作新外部工具模板。
 
 ## 边界情况
 

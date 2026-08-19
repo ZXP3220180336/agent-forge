@@ -27,6 +27,7 @@
 | [TOOLS-008](2026-08-19-executor-max-retries-zero.md) | executor max_retries=0 时零次循环，工具从未执行 | P2 | ✅ 已修复 | tools/executor（重试参数） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-009](2026-08-19-search-source-urls.md) | search 搜索结果与 answer 不携带来源 URL，证据不可回溯 | P1 | ✅ 已修复 | builtin/search（结果格式化） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-010](2026-08-19-external-tool-config-injection.md) | 外部工具无配置注入通道，register_config 形同虚设 | P1 | ✅ 已修复 | tools/loader + external/http_api + tool_service/container/settings | 2026-08-19 | 2026-08-19 |
+| [TOOLS-011](2026-08-19-http-api-approval-ssrf.md) | external http_api 写操作未声明审批 + 无 SSRF 防护 | P1 | ✅ 已修复 | external/http_api + security（SSRF 共享抽取） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

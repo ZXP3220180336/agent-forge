@@ -372,7 +372,7 @@ _http_client = httpx.AsyncClient(
 - 单例由 `_get_http_client()` 维护，避免每次执行新建连接
 - 连接池随应用关闭由 `on_unload()` 回收（`ToolService.shutdown` 调用，见 [tool_service.md](../tool_service.md)）
 - `url` 不以 `http://` / `https://` 开头时自动补全 `https://`
-- **SSRF 防护**：client 注入 `event_hooks["request"]` 校验，每个请求（含重定向跳）拒绝：裸 IP（保守策略含公网）、内网保留域名（`.internal` / `.local` / `.corp` 等）、解析后命中内网·环回·链路本地·保留网段的域名（防 DNS rebinding）；DNS 解析经 `asyncio.to_thread` 不阻塞事件循环
+- **SSRF 防护**：复用 [security.py](../security.md) 共享防护——client 注入 `event_hooks["request"]`（`ssrf_on_request`），每个请求（含重定向跳）拒绝裸 IP / 内网保留域名 / 解析到内网站段；实现与规则见 [security.md](../security.md)
 - **流式读取限制内存**：`client.stream` + `aiter_bytes` 流式读响应体，HTML 解析器增量 feed，累计超 `max_content_length×4` 字节即停；body 过大时 content 追加提示、metadata 置 `truncated`
 
 **`_HTMLToTextParser`（`HTMLParser` 子类）特性：**

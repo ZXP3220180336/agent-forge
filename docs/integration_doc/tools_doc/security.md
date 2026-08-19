@@ -56,6 +56,16 @@
 - 默认 `AutoApprovalGate` 一律放行（保持「不拦截」行为）；未来接真实审批（API 确认 / 管理端审批 / 策略引擎）仅实现 `ApprovalGate` 并在 `ToolService(approval_gate=...)` 注入，Agent 层零改动
 - 审批拒绝路径同样审计留痕（覆盖全路径）
 
+### SSRF 防护（共享）
+
+`security.py` 提供 URL 主机校验（`web_browse` / `http_api` 共享，经 httpx `event_hooks["request"]` 注入每个请求含重定向跳）：
+
+- `check_host_sync` / `check_host_async`：裸 IP 拒绝（保守策略含公网）→ 内网保留后缀（`.internal` / `.local` / `.corp` 等）拒绝 → `getaddrinfo` 解析后命中内网 · 环回 · 链路本地 · 保留 · 未指定 · 组播段拒绝（防 DNS rebinding；DNS 异步版经 `asyncio.to_thread` 不阻塞）
+- `ssrf_on_request(request)`：httpx 请求钩子，请求前校验 `request.url.host`，命中抛 `SSRFError` 中断请求
+- `SSRFError`：业务拦截异常，工具捕获归因返回（如 `"请求被安全策略拦截（SSRF 防护）"`）
+
+用途：`web_browse` / `http_api` 防护 URL 直达内网 / 云元数据（`169.254.169.254`）。
+
 ## 对外接口
 
 | 方法 | 签名 | 说明 |
@@ -63,6 +73,8 @@
 | `ToolAuditor.record` | `async (*, tool_name, risk_level, category, success, elapsed, parameters, error=None, error_code=None, retry_count=0, content_preview="")` | 记录一条审计事件 |
 | `ApprovalGate.request` | `async (tool_name: str, parameters: dict) -> bool` | 审批通道协议：执行前确认，返回 False 拒绝 |
 | `AutoApprovalGate.request` | `async (tool_name: str, parameters: dict) -> bool` | 默认审批通道：恒 True 放行 |
+| `check_host_sync` / `check_host_async` | `(hostname: str) -> None` | SSRF 主机校验：裸 IP / 内网 TLD / 解析到内网站段抛 `SSRFError` |
+| `ssrf_on_request` | `async (request) -> None` | httpx 请求钩子：每跳校验 host，命中抛 `SSRFError` |
 
 调用方：`executor._audit`（每个 execute 一条最终结果，含未注册工具的兜底元数据）；`executor` 步骤 5 经 `ApprovalGate` 确认 `requires_approval` 工具。
 
@@ -97,3 +109,4 @@
 
 - [工具模块接口文档](tools.md)（BaseTool.risk_level / requires_approval 契约）
 - [ToolService 执行流程](../../../app/integration/tools/executor.py)（审计接入点）
+- [TOOLS-011 问题记录](../../../issues/integration/tools/2026-08-19-http-api-approval-ssrf.md)（SSRF 共享防护抽取 + http_api 审批）

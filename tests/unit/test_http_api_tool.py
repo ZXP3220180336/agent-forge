@@ -158,13 +158,14 @@ async def test_validation_failure():
 
 @pytest.mark.asyncio
 async def test_metadata_declarations():
-    """元数据：L1 写 / category=http / 并发安全 / 默认超时 15s。"""
+    """元数据：L1 写 / category=http / 并发安全 / 默认超时 15s / 写操作需审批。"""
     tool = HttpApiTool()
     assert tool.risk_level == RiskLevel.L1_WRITE
     assert tool.category == "http"
     assert tool.concurrency_safe is True
     assert tool.timeout == 15
     assert tool.max_output_length == 100_000
+    assert tool.requires_approval is True  # 写方法工具一律需人工审批确认
 
 
 @pytest.mark.asyncio
@@ -205,3 +206,18 @@ async def test_register_config_injects_timeout():
     finally:
         await tool.on_unload()
         HttpApiTool.register_config(tool_http_timeout=15.0)  # 复位默认
+
+
+@pytest.mark.asyncio
+async def test_ssrf_blocks_internal_url():
+    """裸 IP / 内网 URL 被 SSRF 防护拦截（不发起请求）。"""
+    tool = HttpApiTool()
+    await tool.on_load()  # 建真实 client（含 SSRF event_hooks）
+    try:
+        result = await tool.execute(url="http://127.0.0.1:8000/api")
+    finally:
+        await tool.on_unload()
+
+    assert result.success is False
+    assert "SSRF" in result.error
+    assert "裸 IP" in result.error
