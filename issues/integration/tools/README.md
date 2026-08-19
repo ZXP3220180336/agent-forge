@@ -34,6 +34,7 @@
 | [TOOLS-015](2026-08-19-executor-to-thread-cancel.md) | executor wait_for 超时对 to_thread 同步调用无法取消（无注释说明） | P3 | ✅ 已修复 | tools/executor（docstring 澄清） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-016](2026-08-19-audit-sensitive-key-masking.md) | 审计日志完整序列化参数，敏感键（API Key / Token）落盘泄露 | P3 | ✅ 已修复 | tools/security（审计脱敏） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-017](2026-08-19-normalize-error-indent.md) | normalize_error 每行 strip 破坏 traceback 缩进 | P3 | ✅ 已修复 | tools/result_processor | 2026-08-19 | 2026-08-19 |
+| [TOOLS-018](2026-08-19-hooks-logger-name.md) | hooks logger 名 services.tool_service 与模块路径不符 | P3 | ✅ 已修复 | tools/hooks（logger 名） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

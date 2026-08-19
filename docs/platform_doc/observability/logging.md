@@ -153,7 +153,8 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 | `app/main.py` | `app.main` | 启动/关闭/静态目录警告 |
 | `app/container.py` | `app.container` | 基础设施初始化（Redis/DB/工具） |
 | `app/application/session/session_manager.py` | `services.session_manager` | 缓存降级警告 |
-| `app/integration/tools/tool_service.py` | `tools.service` | 工具钩子失败 |
+| `app/integration/tools/tool_service.py` | `tools.service` | 工具 on_unload 失败 |
+| `app/integration/tools/hooks.py` | `tools.hooks` | 工具钩子执行失败 |
 
 > LLM 调用记录走本框架业务事件机制（`log_event_async("llm_call")`），输出通道统一走全局双 handler。
 
@@ -165,3 +166,4 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 - [LLM 服务层说明](../../integration_doc/llm_doc/llm.md)（LLM 调用业务事件）
 - [服务层说明](../../application_doc/README.md)（各模块日志归属）
 - [架构设计](../../architecture.md)
+- [TOOLS-018 问题记录](../../../../issues/integration/tools/2026-08-19-hooks-logger-name.md)（hooks logger 名修正）

@@ -7,7 +7,7 @@ from typing import Any
 from app.domain.ports.tool_gateway import ToolResult
 from app.platform.observability.logger import get_logger
 
-logger = get_logger("services.tool_service")
+logger = get_logger("tools.hooks")
 
 
 class ExecutionHooks:
