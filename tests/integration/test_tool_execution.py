@@ -329,6 +329,19 @@ def test_web_browse_parser_no_extra_blank_lines():
     assert parser.get_text() == "a\nb\nc\nd"  # 无连续空行
 
 
+def test_builtin_discovery_no_conflict_warns(caplog):
+    """自动发现正常路径无类名冲突告警（冲突为防御日志，真实重复类出现时告警）。"""
+    import logging
+
+    from app.integration.tools.builtin import _discover_tools
+
+    with caplog.at_level(logging.WARNING, logger="tools.builtin"):
+        tools = _discover_tools()
+
+    assert all(rec.levelno < logging.WARNING for rec in caplog.records)
+    assert "SearchTool" in tools  # 正常发现完整
+
+
 @pytest.mark.asyncio
 async def test_read_file_large_chunked_head_tail(tmp_path):
     """超大文件分段读取（head+tail），限制内存占用，保留首尾。"""
