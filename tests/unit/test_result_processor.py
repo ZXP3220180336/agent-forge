@@ -82,11 +82,25 @@ def test_normalize_error_none_to_empty():
 
 
 def test_normalize_error_strips_blank_lines():
-    """去首尾空白、压缩多余空行。"""
+    """去首尾空白、去空行、去行尾空格，保留行首缩进。"""
     processor = ResultProcessor()
-    cleaned = processor.normalize_error("  \n  错误信息A  \n\n  错误信息B  \n")
+    cleaned = processor.normalize_error("错误信息A  \n\n  错误信息B  \n")
 
-    assert cleaned == "错误信息A\n错误信息B"
+    assert cleaned == "错误信息A\n  错误信息B"
+
+
+def test_normalize_error_preserves_traceback_indent():
+    """traceback 行缩进保留（列对齐 / 代码块可读性）。"""
+    processor = ResultProcessor()
+    tb = (
+        'Traceback (most recent call last):\n'
+        '  File "app/main.py", line 10, in <module>\n'
+        '    raise ValueError("boom")\n'
+    )
+    cleaned = processor.normalize_error(tb)
+
+    assert '  File "app/main.py"' in cleaned  # 行首缩进保留
+    assert '    raise ValueError' in cleaned
 
 
 def test_normalize_error_truncates_long_error():

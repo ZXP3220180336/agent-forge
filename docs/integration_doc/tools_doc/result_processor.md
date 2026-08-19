@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | `truncate` | `(content: str, *, max_length=None, head_ratio=None) -> str` | head+tail 截断；`max_length` 缺省用 `default_max_length`（100_000），`head_ratio` 缺省 0.7 |
 | `truncate_result` | `(result: ToolResult, *, max_length=None) -> None` | 就地截断 `result.content`；截断发生时 `metadata['truncated']=True` |
-| `normalize_error` | `(error: str\|None) -> str` | 错误归一化：None→''、去空白、压缩空行、超长截断（保留头部，`max_error_length` 缺省 2_000） |
+| `normalize_error` | `(error: str\|None) -> str` | 错误归一化：None→''、去空行与行尾空白、保留行首缩进（traceback 可读性）、超长截断（保留头部，`max_error_length` 缺省 2_000） |
 
 **截断语义**：`head = int(max_length * head_ratio)`，`tail = max_length - head`，中间替换为 `marker`（默认 `\n...（内容已截断，共 {original_len} 字符，仅保留首尾）\n`）。
 
@@ -66,9 +66,10 @@ processor.truncate_result(result, max_length=100)
 
 ## 测试
 
-`tests/unit/test_result_processor.py`（10 用例）：head+tail 边界 / 自定义 head_ratio / 空内容 / truncate_result 就地标记与未触发 / normalize_error 边界。
+`tests/unit/test_result_processor.py`（11 用例）：head+tail 边界 / 自定义 head_ratio / 空内容 / truncate_result 就地标记与未触发 / normalize_error 边界（含 traceback 缩进保留）。
 
 ## 相关文档
 
 - [工具模块接口文档](tools.md)（BaseTool.max_output_length 契约）
 - [内置工具说明](builtin_doc/builtin.md)（各工具截断配置）
+- [TOOLS-017 问题记录](../../../issues/integration/tools/2026-08-19-normalize-error-indent.md)（normalize_error 缩进保留）

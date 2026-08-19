@@ -69,7 +69,9 @@ class ResultProcessor:
         """
         if not error:
             return ""
-        lines = [line.strip() for line in error.strip().splitlines() if line.strip()]
+        stripped = error.strip()
+        # 保留每行原有缩进（traceback 列对齐 / 代码块可读性），去行尾空格与空行
+        lines = [line.rstrip() for line in stripped.splitlines() if line.strip()]
         cleaned = "\n".join(lines)
         if len(cleaned) > self._max_error_length:
             cleaned = cleaned[: self._max_error_length] + "...（错误过长已截断）"
