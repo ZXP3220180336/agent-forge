@@ -109,6 +109,9 @@ class ToolExecutor:
         if timeout is None:
             timeout = tool.timeout if tool.timeout is not None else self._tool_timeout
         max_retries = max_retries if max_retries is not None else self._tool_max_retries
+        # 至少执行一次：max_retries=0（或全局配 0）意为「不重试跑一次」，
+        # clamp 到 1 避免 range(0) 零次循环产生「未执行」的静默空失败
+        max_retries = max(max_retries, 1)
 
         # 3. 解析参数（str → dict），并统一校验为「字符串键的 dict」
         if isinstance(parameters, str):

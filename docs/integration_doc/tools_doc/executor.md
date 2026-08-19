@@ -49,7 +49,7 @@
 
 ### 重试与超时
 
-`asyncio.wait_for(tool.execute(...), timeout)` 包裹每次尝试；重试循环 `range(max_retries)`（默认 3，含首次），失败后退避 `retry_delay * 2^attempt`（1s / 2s / 4s）。参数校验失败 / 未注册 / JSON 解析失败**不重试**（直接返回）。
+`asyncio.wait_for(tool.execute(...), timeout)` 包裹每次尝试；重试循环 `range(max_retries)`（默认 3，含首次；**至少执行 1 次**——`max_retries=0` 视为「不重试跑一次」，clamp 到 1），失败后退避 `retry_delay * 2^attempt`（1s / 2s / 4s）。参数校验失败 / 未注册 / JSON 解析失败**不重试**（直接返回）。
 
 **超时优先级（调用方显式 > 工具自声明 > 全局配置）**：`execute(timeout=...)` 显式传入最高优先；否则用工具声明的 `BaseTool.timeout`（如 code_exec 60s / readFile 5s）；两者均缺省时用全局 `tool_timeout`（默认 30s）。工具按自身耗时特征声明默认值，编排层可按需覆盖。
 
@@ -147,3 +147,4 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 - [registry.md](registry.md)（查工具依赖）· [stats.md](stats.md)（统计记录）· [tool_service.md](tool_service.md)（Facade 装配）
 - [TOOLS-006 问题记录](../../../issues/integration/tools/2026-08-19-executor-json-non-dict.md)（参数 JSON 非 dict 校验）
 - [TOOLS-007 问题记录](../../../issues/integration/tools/2026-08-19-executor-retry-count-semantics.md)（retry_count 口径统一）
+- [TOOLS-008 问题记录](../../../issues/integration/tools/2026-08-19-executor-max-retries-zero.md)（max_retries=0 零执行）

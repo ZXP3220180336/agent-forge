@@ -24,6 +24,7 @@
 | [TOOLS-005](2026-08-19-code-exec-gbk-decode.md) | code_exec 输出按 UTF-8 硬解码，Windows 中文环境 GBK 乱码 | P1 | ✅ 已修复 | builtin/code_exec（输出解码） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-006](2026-08-19-executor-json-non-dict.md) | executor 参数 JSON 解析结果未校验 dict，非 dict 抛 TypeError 逃逸 | P1 | ✅ 已修复 | tools/executor（参数解析） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-007](2026-08-19-executor-retry-count-semantics.md) | executor retry_count 成功/失败路径口径不一致 | P2 | ✅ 已修复 | tools/executor（retry_count） | 2026-08-19 | 2026-08-19 |
+| [TOOLS-008](2026-08-19-executor-max-retries-zero.md) | executor max_retries=0 时零次循环，工具从未执行 | P2 | ✅ 已修复 | tools/executor（重试参数） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

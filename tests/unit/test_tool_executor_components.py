@@ -356,7 +356,7 @@ class _FlakyTool(_ParamTool):
     async def execute(self, **kwargs) -> ToolResult:
         self.calls += 1
         if self.calls <= self.fail_times:
-            return ToolResult(success=False, error="flaky")
+            return ToolResult(success=False, content="", error="flaky")
         return ToolResult(success=True, content="ok")
 
 
@@ -364,7 +364,7 @@ class _AlwaysFailTool(_ParamTool):
     """始终失败。"""
 
     async def execute(self, **kwargs) -> ToolResult:
-        return ToolResult(success=False, error="always fail")
+        return ToolResult(success=False, content="", error="always fail")
 
 
 @pytest.mark.asyncio
@@ -389,3 +389,30 @@ async def test_retry_count_failure_path_is_executions():
 
     assert result.success is False
     assert result.retry_count == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_max_retries_zero_runs_once():
+    """max_retries=0 视为「不重试跑一次」，工具至少执行一次（而非零次循环）。"""
+    service = ToolService()
+    flaky = _FlakyTool(fail_times=0)  # 立即成功
+    service.register(flaky)
+
+    result = await service.execute("param_tool", {"count": 1}, max_retries=0)
+
+    assert result.success is True
+    assert flaky.calls == 1  # 执行了一次
+    assert result.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_max_retries_zero_failure_not_silent():
+    """max_retries=0 失败时返回真实归因错误（非静默 success=False, error=None）。"""
+    service = ToolService()
+    service.register(_AlwaysFailTool())
+
+    result = await service.execute("param_tool", {"count": 1}, max_retries=0)
+
+    assert result.success is False
+    assert result.error == "always fail"  # 有归因错误，非静默空失败
+    assert result.retry_count == 1
