@@ -146,6 +146,7 @@ class MyTool(BaseTool):
 - [TOOLS-012 问题记录](../../../issues/integration/tools/2026-08-19-external-maybe-refresh-io.md)（maybe_refresh TTL 限频）
 - [TOOLS-013 问题记录](../../../issues/integration/tools/2026-08-19-external-sibling-module-cache.md)（兄弟模块缓存清理）
 - [TOOLS-014 问题记录](../../../issues/integration/tools/2026-08-19-loader-scan-lock-deadlock.md)（生命周期钩子禁反向调用）
+- [TOOLS-037 问题记录](../../../issues/integration/tools/2026-08-20-http-api-error-redaction.md)（http_api 错误脱敏）
 - [ToolService 说明](tool_service.md)（execute 惰性检查入口 / refresh_external_tools）
 - [生命周期钩子](builtin_doc/builtin.md)（BaseTool 基类详解）
 - 决策记录：[ADR TOOLS-ADR-005](../../../adr/integration/tools/README.md)

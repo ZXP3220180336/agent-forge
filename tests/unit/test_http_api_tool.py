@@ -157,6 +157,22 @@ async def test_validation_failure():
 
 
 @pytest.mark.asyncio
+async def test_validation_error_does_not_leak_headers():
+    """校验失败错误信息不回显 headers（防凭据进 error/审计）。"""
+    tool = HttpApiTool()
+
+    result = await tool.execute(
+        method="TRACE",  # 非法枚举 → 校验失败
+        url="https://api.example.com/x",
+        headers={"Authorization": "Bearer secret-token"},
+    )
+
+    assert result.success is False
+    assert "参数有误" in result.error
+    assert "secret-token" not in result.error  # 凭据不回显
+
+
+@pytest.mark.asyncio
 async def test_metadata_declarations():
     """元数据：L1 写 / category=http / 并发安全 / 默认超时 15s / 写操作需审批。"""
     tool = HttpApiTool()
