@@ -45,6 +45,8 @@ ALERTS: list[dict] = [
 ]
 
 # ===== FDC 工艺参数（模拟 FDC 时序，多时间点支持窗口过滤） =====
+# status 判定阈值约定：|deviation_pct| >= 5% 判 deviated，< 5% 判 normal
+# （模拟数据按此规则生成；接真实数据源时判定逻辑由此规则承接，见 fdc_tool）
 FDC_PARAMS: list[dict] = [
     # ---- ETCH-01 chamber_pressure 时间序列：偏离随时间发展 ----
     {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "chamber_pressure", "unit": "mTorr",

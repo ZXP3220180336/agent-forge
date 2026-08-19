@@ -52,6 +52,7 @@
 | [TOOLS-033](2026-08-20-rca-alerts-alert-id.md) | RCA alerts 渲染未输出 alert_id 可引用标识 | P3 | ✅ 已修复 | rca/alerts_tool（alert_id 输出） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-034](2026-08-20-rca-timestamp-anchor.md) | RCA metadata timestamp 锚点语义不一致 | P3 | ✅ 已修复 | rca/（timestamp 统一最新） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-035](2026-08-20-rca-b100-timeline.md) | RCA 对照批次 LOT-B100 落在异常机台，时间线有张力 | P3 | ✅ 已修复 | rca/data（对照批次解耦） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-036](2026-08-20-rca-fdc-threshold.md) | RCA FDC 偏离判定阈值无显式规则 | P3 | ✅ 已修复 | rca/data（阈值契约化） | 2026-08-20 | 2026-08-20 |
 
 ## 新问题登记规范
 
