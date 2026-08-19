@@ -96,7 +96,7 @@ class ReadFileTool(BaseTool):
         """读取文件内容"""
 
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         file_path: str = kwargs["file_path"]
         if not _is_path_allowed(file_path, self._allowed_dirs):
@@ -190,7 +190,7 @@ class WriteFileTool(BaseTool):
         """写入文件内容"""
 
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         file_path: str = kwargs["file_path"]
         if not _is_path_allowed(file_path, self._allowed_dirs):

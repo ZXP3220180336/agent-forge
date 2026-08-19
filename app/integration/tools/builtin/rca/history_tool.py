@@ -54,7 +54,7 @@ class SearchHistoricalRcaTool(BaseTool):
     async def execute(self, **kwargs) -> ToolResult:
         """关键词匹配历史案例（RAG embedding 召回为后续增强）。"""
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         query: str = kwargs["query"]
         top_k: int = int(kwargs.get("top_k", 3))

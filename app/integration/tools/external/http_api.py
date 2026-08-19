@@ -140,7 +140,7 @@ class HttpApiTool(BaseTool):
     async def execute(self, **kwargs) -> ToolResult:
         """发送 HTTP 请求（业务错误走返回值，不让异常抛出）。"""
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         method = str(kwargs.get("method", "GET")).upper()
         url: str = kwargs["url"]

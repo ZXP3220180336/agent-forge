@@ -244,7 +244,7 @@ class WebBrowseTool(BaseTool):
         """异步获取并解析网页内容"""
 
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         url: str = kwargs["url"]
 

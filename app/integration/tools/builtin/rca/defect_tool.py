@@ -47,7 +47,7 @@ class QueryDefectMapTool(BaseTool):
     async def execute(self, **kwargs) -> ToolResult:
         """查模拟缺陷检测数据，返回 wafer 缺陷分布。"""
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         batch_id: str = kwargs["batch_id"]
         wafer_id = kwargs.get("wafer_id")

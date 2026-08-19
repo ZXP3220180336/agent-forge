@@ -158,6 +158,15 @@ class BaseTool(ABC):
         """
         return not self.validation_issues(**kwargs)
 
+    def _invalid_params_result(self, **kwargs) -> ToolResult:
+        """参数校验失败的结果：统一错误格式（中文归因，供 LLM 修正）。
+
+        各工具 execute 校验兜底共用，避免重复 `ToolResult(success=False, content="", error=...)`。
+        """
+        return ToolResult(
+            success=False, content="", error=f"参数有误: {kwargs!s}"
+        )
+
     def validation_issues(self, **kwargs) -> list[str]:
         """返回参数校验问题（中文描述列表）；空列表 = 通过。
 

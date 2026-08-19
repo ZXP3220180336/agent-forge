@@ -86,7 +86,7 @@ class SearchTool(BaseTool):
             ToolResult: 搜索结果
         """
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         api_key = self._api_key
 

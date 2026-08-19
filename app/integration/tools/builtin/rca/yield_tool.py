@@ -49,7 +49,7 @@ class QueryBatchYieldTool(BaseTool):
     async def execute(self, **kwargs) -> ToolResult:
         """查模拟 YMS 数据，返回按 step 的良率记录（含骤降标记）。"""
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         batch_id: str = kwargs["batch_id"]
         time_range = kwargs.get("time_range")

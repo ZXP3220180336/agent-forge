@@ -57,7 +57,7 @@ class QueryEquipmentAlertsTool(BaseTool):
     async def execute(self, **kwargs) -> ToolResult:
         """查模拟 MES 数据，返回告警 / PM 列表。"""
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         equipment_id = kwargs.get("equipment_id")
         alert_type = kwargs.get("alert_type")

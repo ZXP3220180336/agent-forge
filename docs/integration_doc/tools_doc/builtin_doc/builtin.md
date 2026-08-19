@@ -467,3 +467,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-026 问题记录](../../../../issues/integration/tools/2026-08-20-web-browse-parser-blank-lines.md)（块标签空行测试锁定）
 - [TOOLS-027 问题记录](../../../../issues/integration/tools/2026-08-20-builtin-duplicate-class-warning.md)（发现类名冲突告警）
 - [TOOLS-028 问题记录](../../../../issues/integration/tools/2026-08-20-builtin-lazy-comment.md)（惰性加载注释修正）
+- [TOOLS-031 问题记录](../../../../issues/integration/tools/2026-08-20-invalid-params-result-extract.md)（校验失败分支抽取）

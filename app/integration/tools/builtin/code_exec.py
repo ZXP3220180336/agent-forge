@@ -121,7 +121,7 @@ class CodeExecTool(BaseTool):
         """异步执行终端命令"""
 
         if not self.validate_parameters(**kwargs):
-            return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
+            return self._invalid_params_result(**kwargs)
 
         command: str = kwargs["command"].strip()
         # 空串归一为 None（cwd 用当前进程目录），避免 cwd="" 抛异常
