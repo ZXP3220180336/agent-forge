@@ -43,6 +43,7 @@ class _HTMLToTextParser(HTMLParser):
         self._title = ""
         self._in_title = False
         self._in_pre = False
+        self._in_link = 0  # <a> 嵌套计数：>0 表示文本处于链接内（`</a>` 后不误计入链接文本）
         self._last_was_block = False
 
     def handle_starttag(self, tag, attrs):
@@ -53,6 +54,7 @@ class _HTMLToTextParser(HTMLParser):
             self._in_title = True
             return
         if tag == "a":
+            self._in_link += 1
             for name, val in attrs:
                 if name == "href" and val and not val.startswith(("#", "javascript:")):
                     self._links.append(("", val))
@@ -70,11 +72,27 @@ class _HTMLToTextParser(HTMLParser):
         if tag == "title":
             self._in_title = False
             return
+        if tag == "a":
+            self._in_link -= 1
+            return
         if tag == "pre":
             self._in_pre = False
         if tag in ("p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"):
             self._text_parts.append("\n")
             self._last_was_block = True
+
+    def _append_text(self, text: str) -> None:
+        """追加文本：在链接内时更新链接显示文本，并联动块标记。
+
+        handle_data 与 handle_entityref 共用——HTML 实体在链接内也能更新链接文本，
+        且 `</a>` 后文本（_in_link=0）不误计入链接显示文本。
+        """
+        if self._in_link > 0 and self._links:
+            last_text, last_url = self._links[-1]
+            if not last_text:
+                self._links[-1] = (text.strip()[:80], last_url)
+        self._text_parts.append(text)
+        self._last_was_block = False
 
     def handle_data(self, data):
         if self._skip_tag:
@@ -87,20 +105,13 @@ class _HTMLToTextParser(HTMLParser):
             self._title = text.strip()
             return
 
-        # 更新最后一个链接的显示文本
-        if self._links:
-            last_text, last_url = self._links[-1]
-            if not last_text:
-                self._links[-1] = (text.strip()[:80], last_url)
-
-        self._text_parts.append(text)
-        self._last_was_block = False
+        self._append_text(text)
 
     def handle_entityref(self, name):
         if not self._skip_tag:
             # Python 3.9+ 移除了 HTMLParser.unescape，使用 html.unescape 替代
             char = html_module.unescape(f"&{name};")
-            self._text_parts.append(char)
+            self._append_text(char)
 
     def get_text(self) -> str:
         """获取纯文本"""

@@ -303,6 +303,24 @@ async def test_web_browse_config_injects_timeout():
         await WebBrowseTool().on_unload()  # 复位并关闭
 
 
+def test_web_browse_parser_entity_in_link():
+    """HTML 实体在链接内更新链接显示文本（handle_entityref 联动）。"""
+    parser = web_browse._HTMLToTextParser(base_url="https://example.com")
+    parser.feed('<a href="/x">&amp;foo</a>')
+
+    assert "&foo" in parser.get_links_formatted()
+
+
+def test_web_browse_parser_text_after_anchor_not_in_link():
+    """`</a>` 后文本不误计入上一个链接显示文本。"""
+    parser = web_browse._HTMLToTextParser(base_url="https://example.com")
+    parser.feed('<a href="/x">link</a> 后续文本')
+
+    links = parser.get_links_formatted()
+    assert "后续文本" not in links
+    assert "link" in links
+
+
 @pytest.mark.asyncio
 async def test_read_file_large_chunked_head_tail(tmp_path):
     """超大文件分段读取（head+tail），限制内存占用，保留首尾。"""

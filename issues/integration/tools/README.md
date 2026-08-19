@@ -41,6 +41,7 @@
 | [TOOLS-022](2026-08-19-code-exec-workdir-empty.md) | code_exec workdir 空串传 cwd="" 抛异常 | P3 | ✅ 已修复 | builtin/code_exec（workdir 归一） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-023](2026-08-19-web-browse-config-injection.md) | web_browse 连接层超时/重定向硬编码，未走 register_config | P3 | ✅ 已修复 | builtin/web_browse（连接层注入） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-024](2026-08-19-web-browse-encoding-comment.md) | web_browse 编码注释与实现不一致（缺策略说明） | P3 | ✅ 已修复 | builtin/web_browse（注释澄清） | 2026-08-19 | 2026-08-19 |
+| [TOOLS-025](2026-08-20-web-browse-parser-consistency.md) | web_browse HTML 实体未联动链接文本，`</a>` 后文本误计入链接 | P3 | ✅ 已修复 | builtin/web_browse（parser） | 2026-08-20 | 2026-08-20 |
 
 ## 新问题登记规范
 

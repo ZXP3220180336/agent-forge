@@ -463,3 +463,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-022 问题记录](../../../../issues/integration/tools/2026-08-19-code-exec-workdir-empty.md)（workdir 空串归一）
 - [TOOLS-023 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-config-injection.md)（web_browse 连接层注入）
 - [TOOLS-024 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-encoding-comment.md)（编码策略注释澄清）
+- [TOOLS-025 问题记录](../../../../issues/integration/tools/2026-08-20-web-browse-parser-consistency.md)（parser 实体/链接一致性）
