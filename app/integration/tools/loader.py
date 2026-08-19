@@ -79,6 +79,7 @@ class ExternalToolLoader:
         )
         self._signature: tuple[Any, ...] | None = None  # 上次扫描的目录签名
         self._file_tools: dict[str, list[str]] = {}  # 绝对路径 -> 该文件拥有的工具名
+        self._file_modules: dict[str, set[str]] = {}  # 绝对路径 -> 该文件导入的模块名（工具模块 + 兄弟模块）
         self._file_sigs: dict[
             str, tuple[int, int]
         ] = {}  # 绝对路径 -> 上次扫描的 (mtime, size)
@@ -190,10 +191,21 @@ class ExternalToolLoader:
         if config:
             register_config(**config)
 
+    @staticmethod
+    def _drop_modules(before: set[str]) -> None:
+        """清理导入过程中新增的 sys.modules 条目（工具模块 + 其兄弟模块）。
+
+        工具文件相对导入的兄弟模块（如 `_helper.py`）若不清理，重载时
+        `from . import _helper` 命中旧缓存，多文件工具「变更 → 下次生效」失效。
+        """
+        for name in set(sys.modules) - before:
+            sys.modules.pop(name, None)
+
     async def _load_file(self, path: str, file_sig: tuple[int, int]) -> bool:
         """加载一个外部工具文件：导入模块 → 收集工具类 → 实例化 + on_load → 注册。
 
         返回是否注册了至少一个工具（用于更新文件签名）。文件级失败 → 回滚 + False。
+        导入时快照 sys.modules，卸载 / 回滚时清理工具模块及其兄弟模块（防旧缓存）。
         """
         module_name = self._module_name(path)
         sys.modules.pop(module_name, None)  # 防御上次残留
@@ -201,15 +213,22 @@ class ExternalToolLoader:
 
         try:
             importlib.import_module(_EXTERNAL_PKG)  # 确保包已注册（相对导入依赖）
+        except Exception as e:  # noqa: BLE001
+            logger.warning("外部工具包导入失败，跳过: %s: %s", path, e)
+            return False
+
+        before = set(sys.modules)  # exec 前快照：导入新增条目（工具模块 + 兄弟）待追踪
+        try:
             module = await asyncio.to_thread(self._exec_module_sync, module_name, path)
         except Exception as e:  # noqa: BLE001
-            sys.modules.pop(module_name, None)
+            self._drop_modules(before)
             logger.warning("外部工具文件导入失败，跳过: %s: %s", path, e)
             return False
+        imported = set(sys.modules) - before
 
         tool_classes = _collect_tool_classes(module)
         if not tool_classes:
-            sys.modules.pop(module_name, None)
+            self._drop_modules(before)
             logger.warning("外部工具文件无 BaseTool 子类，跳过: %s", path)
             return False
 
@@ -237,16 +256,17 @@ class ExternalToolLoader:
                         "外部工具回滚时 on_unload 失败: %s: %s", tool.name, unload_err
                     )
                 self._service.unregister(tool.name)
-            sys.modules.pop(module_name, None)
+            self._drop_modules(before)
             logger.warning("外部工具加载失败，已回滚本文件: %s: %s", path, e)
             return False
 
         if not registered:
-            sys.modules.pop(module_name, None)
+            self._drop_modules(before)
             logger.warning("外部工具文件无可用工具，跳过: %s", path)
             return False
 
         self._file_tools[path] = [t.name for t in registered]
+        self._file_modules[path] = imported  # 追踪工具模块 + 兄弟模块（卸载时清理）
         logger.info("外部工具已注册: %s", [t.name for t in registered])
         return True
 
@@ -265,7 +285,9 @@ class ExternalToolLoader:
                     )
                 self._service.unregister(name)
             logger.info("外部工具卸载: %s", name)
-        sys.modules.pop(self._module_name(path), None)
+        # 清理本次导入的全部模块（工具模块 + 兄弟模块），防重载用到旧兄弟代码
+        for module_name in self._file_modules.pop(path, set()):
+            sys.modules.pop(module_name, None)
 
     async def _reload_file(self, path: str, file_sig: tuple[int, int]) -> None:
         """重载：nuke-and-repave（先卸载旧实例再加载新实例）。"""

@@ -29,6 +29,7 @@
 | [TOOLS-010](2026-08-19-external-tool-config-injection.md) | 外部工具无配置注入通道，register_config 形同虚设 | P1 | ✅ 已修复 | tools/loader + external/http_api + tool_service/container/settings | 2026-08-19 | 2026-08-19 |
 | [TOOLS-011](2026-08-19-http-api-approval-ssrf.md) | external http_api 写操作未声明审批 + 无 SSRF 防护 | P1 | ✅ 已修复 | external/http_api + security（SSRF 共享抽取） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-012](2026-08-19-external-maybe-refresh-io.md) | maybe_refresh 每次 execute 同步磁盘 IO 上事件循环 | P3 | ✅ 已修复 | tools/loader（maybe_refresh TTL） | 2026-08-19 | 2026-08-19 |
+| [TOOLS-013](2026-08-19-external-sibling-module-cache.md) | 外部工具卸载仅清理自身模块，兄弟模块缓存残留致重载失效 | P3 | ✅ 已修复 | tools/loader（模块缓存管理） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

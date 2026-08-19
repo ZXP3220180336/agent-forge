@@ -14,7 +14,9 @@ ExternalToolLoader 单元测试
 """
 
 import os
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -382,3 +384,35 @@ async def test_maybe_refresh_expired_ttl_rechecks(
 
     await loader.maybe_refresh()
     assert service.get("beta") is not None
+
+
+def test_drop_modules_cleans_new_entries():
+    """_drop_modules 清理导入新增条目，保留快照前已有模块。"""
+    before = set(sys.modules)
+    ghost = ModuleType("app.integration.tools.external._ghost")
+    sys.modules["app.integration.tools.external._ghost"] = ghost
+
+    ExternalToolLoader._drop_modules(before)
+
+    assert "app.integration.tools.external._ghost" not in sys.modules
+    assert before <= set(sys.modules)  # 原有模块不受影响
+
+
+@pytest.mark.asyncio
+async def test_unload_cleans_sibling_modules(service, loader, tmp_path):
+    """卸载清理工具文件导入的兄弟模块（防重载用旧兄弟代码）。"""
+    _write_tool_file(tmp_path, "a.py", _tool_source("alpha"))
+    await loader.scan_once()
+
+    # 模拟：工具文件加载时导入了兄弟模块（真实场景 _load_file 快照记录）
+    path = str(tmp_path / "a.py")
+    loader._file_modules[path].add("app.integration.tools.external._helper")
+    sys.modules["app.integration.tools.external._helper"] = ModuleType(
+        "app.integration.tools.external._helper"
+    )
+
+    (tmp_path / "a.py").unlink()
+    await loader.scan_once()  # 删除 → 卸载
+
+    assert "app.integration.tools.external._helper" not in sys.modules
+    assert service.get("alpha") is None
