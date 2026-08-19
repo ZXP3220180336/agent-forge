@@ -88,6 +88,7 @@ execute(name, parameters, timeout, max_retries, retry_delay)
     2. 解析执行参数：timeout = 调用方显式 or tool.timeout（自声明）or 全局 tool_timeout
        · max_retries = 调用方显式 or 全局 tool_max_retries
     3. 参数解析：str → json.loads（失败 → 审计 → 返回 "参数 JSON 解析失败: {e}"）
+       · 结果必须为**字符串键 dict**——数组/标量/null（LLM 误输出）或非 str 键 dict → 审计 → 返回 JSON_PARSE（避免 `**parameters` 抛 TypeError 逃逸）
     4. jsonschema 校验：issues = tool.validation_issues(**parameters)
        · 非空 → 审计 → 返回 "参数验证失败: {归因列表}"        # 可归因，非 kwargs 转储
     5. 人工审批：if tool.requires_approval → await approval_gate.request(name, parameters)
@@ -144,3 +145,4 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 - [工具模块接口文档](tools.md)（ToolService.execute 入口）
 - [validator.md](validator.md) · [result_processor.md](result_processor.md) · [security.md](security.md)（校验 / 截断 / 审计接入点）
 - [registry.md](registry.md)（查工具依赖）· [stats.md](stats.md)（统计记录）· [tool_service.md](tool_service.md)（Facade 装配）
+- [TOOLS-006 问题记录](../../../issues/integration/tools/2026-08-19-executor-json-non-dict.md)（参数 JSON 非 dict 校验）

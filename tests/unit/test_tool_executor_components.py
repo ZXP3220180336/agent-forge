@@ -303,3 +303,44 @@ async def test_prune_tool_lock_skips_held():
     lock.release()
     executor.prune_tool_lock("x")
     assert "x" not in executor._tool_locks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_json", ["[1,2,3]", "null", "42", '"str"', "true"]
+)
+async def test_execute_non_dict_json_rejected(bad_json):
+    """LLM 返回数组/标量/null 参数时归 JSON_PARSE，不逃逸 TypeError。"""
+    service = ToolService()
+    service.register(_ParamTool())
+
+    result = await service.execute("param_tool", bad_json)
+
+    assert result.success is False
+    assert result.error_code == ErrorCode.JSON_PARSE
+    assert "JSON 对象" in result.error
+
+
+@pytest.mark.asyncio
+async def test_execute_non_str_key_dict_rejected():
+    """含非 str 键的 dict 参数归 JSON_PARSE（**parameters 会 TypeError）。"""
+    service = ToolService()
+    service.register(_ParamTool())
+
+    result = await service.execute("param_tool", {1: "a"})
+
+    assert result.success is False
+    assert result.error_code == ErrorCode.JSON_PARSE
+    assert "JSON 对象" in result.error
+
+
+@pytest.mark.asyncio
+async def test_execute_list_parameters_rejected():
+    """直接传 list 参数归 JSON_PARSE（非 str 分支同样校验）。"""
+    service = ToolService()
+    service.register(_ParamTool())
+
+    result = await service.execute("param_tool", [1, 2])
+
+    assert result.success is False
+    assert result.error_code == ErrorCode.JSON_PARSE

@@ -110,7 +110,7 @@ class ToolExecutor:
             timeout = tool.timeout if tool.timeout is not None else self._tool_timeout
         max_retries = max_retries if max_retries is not None else self._tool_max_retries
 
-        # 3. 解析参数（str → dict）
+        # 3. 解析参数（str → dict），并统一校验为「字符串键的 dict」
         if isinstance(parameters, str):
             try:
                 parameters = json.loads(parameters)
@@ -125,6 +125,21 @@ class ToolExecutor:
                 )
                 await self._audit(tool, parameters, result, started_at=started_at)
                 return result
+        # LLM 可能返回数组 / 标量 / null，或调用方误传非 str 键 dict——一律归 JSON_PARSE，
+        # 否则后续 **parameters 抛 TypeError 逃逸编排层（违反「不让异常抛出」契约）
+        if not isinstance(parameters, dict) or any(
+            not isinstance(k, str) for k in parameters
+        ):
+            result = ToolResult(
+                success=False,
+                content="",
+                error=self._result_processor.normalize_error(
+                    f"参数必须为 JSON 对象（字符串键），收到 {type(parameters).__name__}"
+                ),
+                error_code=ErrorCode.JSON_PARSE,
+            )
+            await self._audit(tool, parameters, result, started_at=started_at)
+            return result
 
         # 4. 参数前置校验（jsonschema 全量校验，错误可归因）
         issues = tool.validation_issues(**parameters)

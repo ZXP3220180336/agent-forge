@@ -22,6 +22,7 @@
 | [TOOLS-003](2026-08-19-web-browse-ssrf.md) | web_browse SSRF：任意 URL + 重定向无主机/网络约束 | P1 | ✅ 已修复 | builtin/web_browse（WebBrowseTool） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-004](2026-08-19-memory-capped-reads.md) | 工具整文件/整响应读入内存，截断发生在读取之后 | P1 | ✅ 已修复 | builtin/file_ops + code_exec + web_browse | 2026-08-19 | 2026-08-19 |
 | [TOOLS-005](2026-08-19-code-exec-gbk-decode.md) | code_exec 输出按 UTF-8 硬解码，Windows 中文环境 GBK 乱码 | P1 | ✅ 已修复 | builtin/code_exec（输出解码） | 2026-08-19 | 2026-08-19 |
+| [TOOLS-006](2026-08-19-executor-json-non-dict.md) | executor 参数 JSON 解析结果未校验 dict，非 dict 抛 TypeError 逃逸 | P1 | ✅ 已修复 | tools/executor（参数解析） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 
