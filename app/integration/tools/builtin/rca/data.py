@@ -115,8 +115,9 @@ HISTORY: list[dict] = [
 def _in_range(timestamp: str, time_range: str | None) -> bool:
     """ISO 格式时间范围过滤（`'start~end'`，缺省端不限；同格式字符串比较）。
 
-    - 两端须含完整时间，**缺日期的一端自动补对端日期**
-      （支持 `'2026-08-12 08:00~11:00'` → end 补为同日 11:00）
+    - 一端含完整日期、另一端缺日期 → 缺的端补对端日期（`'2026-08-12 08:00~11:00'`）
+    - 单边 / 双边纯时间（`'08:00~'` / `'~20:00'` / `'08:00~20:00'`）→ 补**记录自身日期**
+      （当天窗口），避免纯时间与全日期字符串字典序比较静默失效
     - start / end 可整体缺省（`'~2026-08-12 11:00'` / `'2026-08-12 08:00~'`）
     """
     if not time_range:
@@ -129,6 +130,10 @@ def _in_range(timestamp: str, time_range: str | None) -> bool:
             start = end[:10] + " " + start
         elif " " not in end and " " in start:  # end 仅时间 → 补 start 日期
             end = start[:10] + " " + end
+    if start and " " not in start:  # 单边纯时间 → 补记录当日日期（当天窗口）
+        start = timestamp[:10] + " " + start
+    if end and " " not in end:
+        end = timestamp[:10] + " " + end
     if start and timestamp < start:
         return False
     if end and timestamp > end:

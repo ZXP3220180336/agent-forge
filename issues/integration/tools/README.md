@@ -45,6 +45,7 @@
 | [TOOLS-026](2026-08-20-web-browse-parser-blank-lines.md) | web_browse 连续块标签换行观感（复核已防 + 测试锁定） | P3 | ✅ 已修复 | builtin/web_browse（parser 测试锁定） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-027](2026-08-20-builtin-duplicate-class-warning.md) | builtin 自动发现类名冲突静默覆盖 | P3 | ✅ 已修复 | builtin/__init__（发现告警） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-028](2026-08-20-builtin-lazy-comment.md) | builtin「惰性加载」注释与实现语义不符 | P3 | ✅ 已修复 | builtin/__init__（注释修正） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-029](2026-08-20-rca-in-range-single-time.md) | RCA _in_range 单边纯时间过滤静默失效 | P3 | ✅ 已修复 | rca/data（_in_range 补日期） | 2026-08-20 | 2026-08-20 |
 
 ## 新问题登记规范
 

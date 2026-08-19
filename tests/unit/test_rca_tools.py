@@ -12,7 +12,7 @@
 import pytest
 
 from app.integration.tools.builtin.rca.alerts_tool import QueryEquipmentAlertsTool
-from app.integration.tools.builtin.rca.data import query_fdc, query_yield
+from app.integration.tools.builtin.rca.data import _in_range, query_fdc, query_yield
 from app.integration.tools.builtin.rca.defect_tool import QueryDefectMapTool
 from app.integration.tools.builtin.rca.fdc_tool import QueryFdcParamsTool
 from app.integration.tools.builtin.rca.history_tool import SearchHistoricalRcaTool
@@ -203,3 +203,20 @@ async def test_time_range_end_short_form():
     assert late.success is True
     assert "12.0%" in late.content
     assert "⚠ 偏离" in late.content
+
+
+def test_in_range_single_time_only():
+    """单边 / 双边纯时间补记录当日日期（当天窗口），不再静默失效。"""
+    assert _in_range("2026-08-12 09:00", "08:00~") is True
+    assert _in_range("2026-08-12 07:00", "08:00~") is False  # 当天 08:00 前不匹配
+    assert _in_range("2026-08-12 19:00", "~20:00") is True
+    assert _in_range("2026-08-12 21:00", "~20:00") is False
+    assert _in_range("2026-08-12 12:00", "08:00~20:00") is True
+    assert _in_range("2026-08-12 07:00", "08:00~20:00") is False
+    assert _in_range("2026-08-12 21:00", "08:00~20:00") is False
+
+
+def test_in_range_mixed_full_and_time():
+    """一端完整日期另一端缺日期仍补对端日期（原语义保留）。"""
+    assert _in_range("2026-08-12 10:00", "2026-08-12 08:00~11:00") is True
+    assert _in_range("2026-08-12 12:00", "2026-08-12 08:00~11:00") is False
