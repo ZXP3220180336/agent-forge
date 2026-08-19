@@ -344,3 +344,41 @@ async def test_load_injects_config_from_source(service, tmp_path):
     tool = service.get("cfg_tool")
     assert tool is not None
     assert tool._timeout == 25.0  # register_config 已收到注入值
+
+
+@pytest.mark.asyncio
+async def test_maybe_refresh_ttl_skips_within_interval(
+    service, loader, tmp_path, monkeypatch
+):
+    """TTL 内连续 maybe_refresh 短路，不重复磁盘 stat（热路径零 IO）。"""
+    _write_tool_file(tmp_path, "a.py", _tool_source("alpha"))
+    await loader.scan_once()
+
+    stat_calls = {"n": 0}
+    orig_signature = ExternalToolLoader._dir_signature
+
+    def spy(self):
+        stat_calls["n"] += 1
+        return orig_signature(self)
+
+    monkeypatch.setattr(ExternalToolLoader, "_dir_signature", spy)
+
+    await loader.maybe_refresh()  # 首次：检查（stat 1 次）
+    await loader.maybe_refresh()  # TTL 内二次：短路，不 stat
+
+    assert stat_calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_maybe_refresh_expired_ttl_rechecks(
+    service, loader, tmp_path, monkeypatch
+):
+    """TTL 到期后 maybe_refresh 重新检查（变更最多延迟 1s 生效）。"""
+    _write_tool_file(tmp_path, "a.py", _tool_source("alpha"))
+    await loader.scan_once()
+
+    _write_tool_file(tmp_path, "b.py", _tool_source("beta"))
+    loader._last_dir_check = 0.0  # 强制 TTL 过期（模拟 ≥1s 后再次调用）
+
+    await loader.maybe_refresh()
+    assert service.get("beta") is not None

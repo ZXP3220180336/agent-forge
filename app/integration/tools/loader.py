@@ -20,6 +20,7 @@ import importlib
 import importlib.util
 import inspect
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -37,6 +38,8 @@ logger = get_logger("tools.external")
 _EXTERNAL_PKG = "app.integration.tools.external"
 # 默认扫描目录：external/ 包的物理路径（可经构造注入其它目录）
 _DEFAULT_EXTERNAL_DIR = str(Path(__file__).parent / "external")
+# 目录签名检查 TTL（秒）：热路径磁盘 stat 频率上限（1s 内不重扫，变更最多延迟 1s 生效）
+_DIR_SIGNATURE_TTL = 1.0
 
 
 def _collect_tool_classes(module: ModuleType) -> list[type[BaseTool]]:
@@ -79,13 +82,22 @@ class ExternalToolLoader:
         self._file_sigs: dict[
             str, tuple[int, int]
         ] = {}  # 绝对路径 -> 上次扫描的 (mtime, size)
+        self._last_dir_check = 0.0  # 上次目录签名 stat 时间（monotonic，TTL 用）
         self._scan_lock = asyncio.Lock()
 
     # ===== 对外接口 =====
 
     async def maybe_refresh(self) -> None:
-        """execute 入口调用：目录签名变化才重扫（签名不变零开销返回）。"""
-        if self._dir_signature() == self._signature:
+        """execute 入口调用：TTL 内零磁盘 IO，签名变化才重扫（变更最多延迟 1s 生效）。
+
+        目录签名（glob + stat）经 `asyncio.to_thread` 执行，不阻塞事件循环；
+        TTL（`_DIR_SIGNATURE_TTL`）限制热路径 stat 频率（1s 内最多一次）。
+        """
+        now = time.monotonic()
+        if now - self._last_dir_check < _DIR_SIGNATURE_TTL:
+            return  # TTL 内复用上次签名结果，不做磁盘 IO
+        self._last_dir_check = now
+        if await asyncio.to_thread(self._dir_signature) == self._signature:
             return
         await self.scan_once()
 

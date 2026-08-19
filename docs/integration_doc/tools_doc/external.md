@@ -28,7 +28,7 @@
 ## 设计目标
 
 1. **零重启动态加载**：外部工具文件放入目录 → 下一次工具调用（`execute` 入口惰性检查）即注册生效，无需重启进程
-2. **对齐工业标准「变更 → 下次调用生效」**：无后台任务，避免后台轮询的生命周期管理成本
+2. **对齐工业标准「变更 → 下次调用（最迟 TTL 1s）生效」**：无后台任务、无后台轮询；TTL 限制磁盘 stat 频率，热路径零 IO
 3. **生命周期完整**：加载 `on_load()` / 卸载 `on_unload()` / 健康 `health_check()`，资源可完整回收
 4. **全链路留痕**：加载 / 重载 / 卸载 / 冲突拒绝 / 失败均结构化日志，配合调用审计覆盖全链路
 5. **内置工具权威**：与已注册工具重名 → 拒绝加载（防误覆盖 builtin）
@@ -37,10 +37,10 @@
 
 ### execute 惰性检查
 
-`ToolService.execute` 入口先调 `maybe_refresh()`：对比**目录签名**（文件集 + 各文件 mtime/size）与上次扫描值，**无变化则零开销返回**，变化才重扫。因此：
+`ToolService.execute` 入口先调 `maybe_refresh()`：**TTL（`_DIR_SIGNATURE_TTL` = 1s）内零磁盘 IO**（复用上次签名结果），到期后对比**目录签名**（文件集 + 各文件 mtime/size，经 `asyncio.to_thread` 执行不阻塞事件循环）与上次扫描值，**无变化则零开销返回**，变化才重扫。因此：
 
-- 外部工具文件新增 / 修改 / 删除后，**下一次任意工具调用即生效**（无需后台任务）
-- 目录工具文件少（<几十个），每次 execute 的 glob+stat 为微秒-百微秒级
+- 外部工具文件新增 / 修改 / 删除后，**下一次工具调用（最迟 1s TTL 后）生效**（无需后台任务）
+- **热路径 IO 上限**：磁盘 stat 频率 ≤ 1 次/秒（TTL 缓存），不随 execute 调用次数线性增长；stat 放线程池不阻塞事件循环
 - 并发 execute 经 `asyncio.Lock` + 签名二次检查防重复扫描
 
 ### 加载 / 重载 / 卸载
@@ -136,12 +136,13 @@ class MyTool(BaseTool):
 
 ## 测试状态
 
-`tests/unit/test_tool_loader.py`（18 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
+`tests/unit/test_tool_loader.py`（20 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / maybe_refresh TTL 短路 / maybe_refresh TTL 过期重检 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
 
 ## 相关文档
 
 - [工具模块接口文档](tools.md)（BaseTool / ToolService / external 定位）
 - [TOOLS-010 问题记录](../../../issues/integration/tools/2026-08-19-external-tool-config-injection.md)（外部工具配置注入通道）
+- [TOOLS-012 问题记录](../../../issues/integration/tools/2026-08-19-external-maybe-refresh-io.md)（maybe_refresh TTL 限频）
 - [ToolService 说明](tool_service.md)（execute 惰性检查入口 / refresh_external_tools）
 - [生命周期钩子](builtin_doc/builtin.md)（BaseTool 基类详解）
 - 决策记录：[ADR TOOLS-ADR-005](../../../adr/integration/tools/README.md)
