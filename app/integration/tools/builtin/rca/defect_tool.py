@@ -63,7 +63,7 @@ class QueryDefectMapTool(BaseTool):
         for r in records:
             lines.append(
                 f"- {r['wafer_id']}: 模式={r['pattern']}，缺陷数={r['defect_count']}，"
-                f"主导类型={r['top_type']}（{r['sampled_at']}）"
+                f"主导类型={r['top_type']}（尺寸 {r['size_um']}um，{r['sampled_at']}）"
             )
 
         return ToolResult(

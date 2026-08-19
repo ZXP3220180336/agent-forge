@@ -64,12 +64,13 @@ async def test_query_fdc_detects_pressure_deviation():
 
 @pytest.mark.asyncio
 async def test_query_defect_center_cluster_particle():
-    """LOT-A123 缺陷：center_cluster 模式 + particle 主导类型。"""
+    """LOT-A123 缺陷：center_cluster 模式 + particle 主导类型 + 尺寸佐证。"""
     result = await QueryDefectMapTool().execute(batch_id="LOT-A123")
 
     assert result.success is True
     assert "center_cluster" in result.content
     assert "particle" in result.content
+    assert "尺寸 1.8um" in result.content  # particle 尺寸佐证 chamber 污染证据链
     assert result.metadata["batch_id"] == "LOT-A123"
 
 

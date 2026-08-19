@@ -48,6 +48,7 @@
 | [TOOLS-029](2026-08-20-rca-in-range-single-time.md) | RCA _in_range 单边纯时间过滤静默失效 | P3 | ✅ 已修复 | rca/data（_in_range 补日期） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-030](2026-08-20-rca-time-range-dry.md) | RCA time_range 过滤逻辑三处重复 | P3 | ✅ 已修复 | rca/data（_apply_time_range 抽取） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-031](2026-08-20-invalid-params-result-extract.md) | 工具参数校验失败分支复制 6 次 | P3 | ✅ 已修复 | tools/base（_invalid_params_result） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-032](2026-08-20-rca-defect-size-um.md) | RCA defect 渲染未输出 particle 尺寸（size_um） | P3 | ✅ 已修复 | rca/defect_tool（尺寸输出） | 2026-08-20 | 2026-08-20 |
 
 ## 新问题登记规范
 
