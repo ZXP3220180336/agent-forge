@@ -9,6 +9,26 @@ from ..base import BaseTool, ToolResult
 from ..security import RiskLevel
 
 
+async def _read_stream_capped(stream: asyncio.StreamReader | None, cap: int) -> bytes:
+    """流式读取流：保留前 cap 字节，超出部分丢弃（继续 drain 防子进程管道阻塞）。
+
+    内存峰值 ≈ cap（而非子进程全部输出）；输出过长时保留头部信息。
+    """
+    if stream is None:
+        return b""
+    parts: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await stream.read(8192)
+        if not chunk:
+            break
+        if total < cap:
+            take = min(len(chunk), cap - total)
+            parts.append(chunk[:take])
+            total += take
+    return b"".join(parts)
+
+
 class CodeExecTool(BaseTool):
     """终端命令执行工具"""
 
@@ -134,17 +154,20 @@ class CodeExecTool(BaseTool):
         # 超时 / 取消时主动终止子进程，避免孤儿进程泄漏：
         # executor 外层 asyncio.wait_for 超时会对本协程注入 CancelledError，
         # 此处捕获后先 kill 子进程再重抛，保证进程与管道被回收。
+        # stdout/stderr 流式读取限制内存峰值（保留前部 + drain 防阻塞）。
+        cap_bytes = self._max_output_length * 3  # UTF-8 中文最多 3 字节/字符
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self.timeout
+                asyncio.gather(
+                    _read_stream_capped(proc.stdout, cap_bytes),
+                    _read_stream_capped(proc.stderr, cap_bytes),
+                ),
+                timeout=self.timeout,
             )
+            returncode = await proc.wait()  # 流式读后等待进程退出，确保 returncode 已填充
         except TimeoutError:
             proc.kill()
-            # kill 只是发信号，进程不会瞬间消失；
-            # 同时子进程的 stdout/stderr 管道还处于打开状态。
-            # 再次调用communicate()：等待进程真正退出、
-            # 消费完管道缓冲区、关闭 IO 管道，避免文件句柄泄漏。
-            await proc.communicate()  # kill 后再次 communicate 关闭管道并等待退出
+            await proc.wait()  # kill 后等待进程退出，回收句柄
             return ToolResult(
                 success=False,
                 content="",
@@ -152,12 +175,12 @@ class CodeExecTool(BaseTool):
             )
         except asyncio.CancelledError:
             proc.kill()
-            await proc.communicate()
+            await proc.wait()
             raise
         except Exception as e:  # noqa: BLE001
-            # communicate 阶段异常：尽力终止子进程后归因，不留孤儿
+            # 读取阶段异常：尽力终止子进程后归因，不留孤儿
             proc.kill()
-            await proc.communicate()
+            await proc.wait()
             return ToolResult(
                 success=False,
                 content="",
@@ -167,7 +190,7 @@ class CodeExecTool(BaseTool):
         stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
         stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
 
-        # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
+        # 结果截断由 ResultProcessor 统一处理（head+tail）；流式读取已限制输出量，此处拼接返回
         # 构建返回内容
         parts = []
         if stdout_str:
@@ -177,12 +200,12 @@ class CodeExecTool(BaseTool):
 
         content = "".join(parts) if parts else "(无输出)"
 
-        success = proc.returncode == 0
+        success = returncode == 0
         return ToolResult(
             success=success,
             content=content,
             metadata={
-                "return_code": proc.returncode,
+                "return_code": returncode,
                 "command": command,
             },
         )

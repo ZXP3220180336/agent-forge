@@ -104,10 +104,20 @@ class ReadFileTool(BaseTool):
             )
 
         try:
-            async with aiofiles.open(file_path, encoding="utf-8") as file:
-                content = await file.read()
+            # 大文件分段读取（head+tail），限制内存峰值；最终截断标记仍由 ResultProcessor 统一生成
+            # UTF-8 中文最多 3 字节/字符，单段取 max_output_length×3 字节 ≈ 可容纳 max_output_length 字符
+            size = os.path.getsize(file_path)
+            max_bytes = self._max_output_length * 3
+            async with aiofiles.open(file_path, "rb") as file:
+                if size <= max_bytes * 2:
+                    content = (await file.read()).decode("utf-8", errors="replace")
+                else:
+                    head = (await file.read(max_bytes)).decode("utf-8", errors="replace")
+                    await file.seek(size - max_bytes)
+                    tail = (await file.read(max_bytes)).decode("utf-8", errors="replace")
+                    content = head + "\n...（文件过大，仅读取首尾）\n" + tail
 
-            # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
+            # 正常路径返回完整内容；大文件分段读取保留首尾，截断标记由 ResultProcessor 统一生成
             return ToolResult(success=True, content=content)
         except FileNotFoundError:
             return ToolResult(

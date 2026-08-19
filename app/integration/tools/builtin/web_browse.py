@@ -308,49 +308,61 @@ class WebBrowseTool(BaseTool):
         client = _get_http_client()
 
         try:
-            response = await client.get(url)
+            # 流式读取响应体（限制内存峰值），HTML 解析器增量 feed；超限即停
+            async with client.stream("GET", url) as response:
+                if response.status_code >= 400:
+                    return ToolResult(
+                        success=False,
+                        content="",
+                        error=f"HTTP {response.status_code}: {response.reason_phrase}",
+                        metadata={"url": url, "status_code": response.status_code},
+                    )
 
-            if response.status_code >= 400:
-                return ToolResult(
-                    success=False,
-                    content="",
-                    error=f"HTTP {response.status_code}: {response.reason_phrase}",
-                    metadata={"url": url, "status_code": response.status_code},
-                )
+                content_type = response.headers.get("content-type", "")
+                encoding = response.charset_encoding or "utf-8"
+                parser = _HTMLToTextParser(base_url=str(response.url))
 
-            # 检测编码
-            content_type = response.headers.get("content-type", "")
-            html_text = response.text
+                cap_bytes = self._max_content_length * 4  # UTF-8 中文 3B/字符 + 缓冲
+                size = 0
+                body_truncated = False
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > cap_bytes:
+                        body_truncated = True
+                        break
+                    parser.feed(chunk.decode(encoding, errors="replace"))
+                parser.close()
 
-            # 解析 HTML
-            parser = _HTMLToTextParser(base_url=str(response.url))
-            parser.feed(html_text)
+                page_text = parser.get_text()
+                page_title = parser.get_title()
+                links_block = parser.get_links_formatted()
 
-            page_text = parser.get_text()
-            page_title = parser.get_title()
-            links_block = parser.get_links_formatted()
+                # 结果截断由 ResultProcessor 统一处理（head+tail）；body 过大时流式截断并标记
+                content_parts = [
+                    f"标题: {page_title}",
+                    f"来源: {response.url}",
+                    "",
+                    page_text,
+                ]
+                if body_truncated:
+                    content_parts.append("\n...（网页内容过大，仅保留前部）")
+                if links_block:
+                    content_parts.append(links_block)
 
-            # 结果截断由 ResultProcessor 统一处理（head+tail），此处返回完整内容
-            # 构建返回
-            content_parts = [
-                f"标题: {page_title}",
-                f"来源: {response.url}",
-                "",
-                page_text,
-            ]
-            if links_block:
-                content_parts.append(links_block)
-
-            return ToolResult(
-                success=True,
-                content="\n".join(content_parts),
-                metadata={
+                metadata: dict[str, Any] = {
                     "url": str(response.url),
                     "title": page_title,
                     "status_code": response.status_code,
                     "content_type": content_type,
-                },
-            )
+                }
+                if body_truncated:
+                    metadata["truncated"] = True
+
+                return ToolResult(
+                    success=True,
+                    content="\n".join(content_parts),
+                    metadata=metadata,
+                )
 
         except httpx.TimeoutException:
             return ToolResult(

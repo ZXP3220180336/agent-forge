@@ -269,6 +269,7 @@ response = await asyncio.to_thread(
 **实现要点：**
 
 - 返回完整文件内容，截断由 [ResultProcessor](../result_processor.md) 统一处理（head+tail）
+- **大文件分段读取**：`os.path.getsize` 预检，超阈值（单段 `max_output_length×3` 字节 × 2）时二进制 seek 分段读 head+tail（内存受限），保留首尾；最终截断标记仍由 ResultProcessor 统一生成
 - **路径白名单**：`file_path` 经 `abspath + normcase` 规范化后必须位于允许目录内（等于或为子路径，`os.sep` 分隔防 `/data` 误放行 `/database`），防 `..` 穿越；白名单外返回业务错误
 - `FileNotFoundError` → `"文件 '...' 未找到"`；其它异常 → `"读取文件失败: ..."`
 
@@ -335,7 +336,8 @@ stdout, stderr = await proc.communicate()
 
 - **黑名单匹配方式**：`startswith` 前缀匹配（大小写不敏感），例如 `rm -rf /` 会拦截 `RM -RF /xxx`；但**不拦截** `... && rm -rf /` 这类非前缀位置的危险子串，属已知局限
 - 空命令（`command` 去除空白后为空）直接返回失败
-- **超时 / 取消清理**：`communicate()` 经 `asyncio.wait_for` 以工具自声明超时（60s）兜底；超时或 executor 外层取消（`CancelledError`）时先 `proc.kill()` 再二次 `communicate()` 回收管道后重抛（由 executor 归为 `TIMEOUT`），避免孤儿进程泄漏
+- **超时 / 取消清理**：stdout/stderr 读取经 `asyncio.wait_for` 以工具自声明超时（60s）兜底；超时或 executor 外层取消（`CancelledError`）时先 `proc.kill()` 再 `await proc.wait()` 回收后重抛（由 executor 归为 `TIMEOUT`），避免孤儿进程泄漏
+- **流式读取限制内存**：`communicate()` 全量读已废弃，改为 `_read_stream_capped` 流式读 stdout/stderr（保留前 `max_output_length×3` 字节，超出丢弃并继续 drain 防管道阻塞）
 - stdout 与 stderr 分别 `decode("utf-8", errors="replace")` 解码；结果截断由 ResultProcessor 统一处理
 - 返回内容：有输出则拼接 stdout（及 `--- stderr ---` 段），否则 `"(无输出)"`
 - `success = proc.returncode == 0`；`metadata` 记录 `return_code` 与 `command`
@@ -371,6 +373,7 @@ _http_client = httpx.AsyncClient(
 - 连接池随应用关闭由 `on_unload()` 回收（`ToolService.shutdown` 调用，见 [tool_service.md](../tool_service.md)）
 - `url` 不以 `http://` / `https://` 开头时自动补全 `https://`
 - **SSRF 防护**：client 注入 `event_hooks["request"]` 校验，每个请求（含重定向跳）拒绝：裸 IP（保守策略含公网）、内网保留域名（`.internal` / `.local` / `.corp` 等）、解析后命中内网·环回·链路本地·保留网段的域名（防 DNS rebinding）；DNS 解析经 `asyncio.to_thread` 不阻塞事件循环
+- **流式读取限制内存**：`client.stream` + `aiter_bytes` 流式读响应体，HTML 解析器增量 feed，累计超 `max_content_length×4` 字节即停；body 过大时 content 追加提示、metadata 置 `truncated`
 
 **`_HTMLToTextParser`（`HTMLParser` 子类）特性：**
 
@@ -449,3 +452,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-001 问题记录](../../../../issues/integration/tools/2026-08-18-subprocess-orphan-on-cancel.md)（子进程超时 / 取消清理）
 - [TOOLS-002 问题记录](../../../../issues/integration/tools/2026-08-19-file-tools-allowed-dirs.md)（文件工具允许目录白名单）
 - [TOOLS-003 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-ssrf.md)（web_browse SSRF 防护）
+- [TOOLS-004 问题记录](../../../../issues/integration/tools/2026-08-19-memory-capped-reads.md)（工具读取内存峰值限制）

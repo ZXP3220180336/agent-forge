@@ -220,18 +220,24 @@ async def test_web_browse_on_unload_closes_client():
     assert web_browse._http_client is None
 
 
+class _FakeStream:
+    """模拟子进程管道流：read 挂起（进程持续运行），直到被取消。"""
+
+    async def read(self, n: int = -1) -> bytes:
+        await asyncio.sleep(30)
+        return b""
+
+
 class _FakeSubprocessProc:
-    """模拟长跑子进程：首次 communicate 挂起（被取消），kill 后清理立即返回。"""
+    """模拟长跑子进程：stdout/stderr 流读取挂起，等待外层超时取消。"""
 
     def __init__(self) -> None:
         self.killed = False
-        self._communicate_count = 0
+        self.stdout = _FakeStream()
+        self.stderr = _FakeStream()
 
-    async def communicate(self) -> tuple[bytes, bytes]:
-        self._communicate_count += 1
-        if self._communicate_count == 1:
-            await asyncio.sleep(30)  # 首次：模拟长时间运行，等待外层超时取消
-        return b"", b""  # 二次（kill 后清理管道）：立即返回
+    async def wait(self) -> int:
+        return 0
 
     def kill(self) -> None:
         self.killed = True
@@ -275,3 +281,81 @@ async def test_web_browse_rejects_ssrf_target():
     assert result.success is False
     assert "SSRF" in result.error
     assert "裸 IP" in result.error
+
+
+@pytest.mark.asyncio
+async def test_read_file_large_chunked_head_tail(tmp_path):
+    """超大文件分段读取（head+tail），限制内存占用，保留首尾。"""
+    target = tmp_path / "huge.txt"
+    head_pad = "A" * 50_000
+    mid = "B" * 600_000
+    tail_pad = "Z" * 50_000
+    target.write_text(head_pad + mid + tail_pad, encoding="utf-8")
+
+    tool = ReadFileTool()
+    tool.register_config(allowed_dirs=(str(tmp_path),))
+
+    result = await tool.execute(file_path=str(target))
+
+    assert result.success is True
+    assert "仅读取首尾" in result.content  # 工具层分段 marker
+    assert "A" * 50_000 in result.content  # 头部保留
+    assert "Z" * 50_000 in result.content  # 尾部保留
+    assert ("B" * 600_000) not in result.content  # 中间被丢弃
+    # 内存受限：分段读取量 ≈ 2×单段（head+tail），远小于完整文件 700k
+    assert len(result.content) <= 620_000
+
+
+class _FakeHugeStream:
+    """模拟大输出管道流。"""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def read(self, n: int = -1) -> bytes:
+        if not self._data:
+            return b""
+        chunk = self._data[:n]
+        self._data = self._data[len(chunk) :]
+        return chunk
+
+
+class _FakeHugeProc:
+    """模拟输出 40 万字节的子进程。"""
+
+    def __init__(self) -> None:
+        self.killed = False
+        self.stdout = _FakeHugeStream(b"A" * 400_000)
+        self.stderr = _FakeHugeStream(b"")
+
+    async def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+@pytest.mark.asyncio
+async def test_code_exec_output_capped(monkeypatch):
+    """子进程超大输出被流式截断（保留前部），限制内存。"""
+    captured: dict[str, _FakeHugeProc] = {}
+
+    async def fake_create_subprocess_shell(*args, **kwargs) -> _FakeHugeProc:
+        proc = _FakeHugeProc()
+        captured["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(
+        "app.integration.tools.builtin.code_exec.asyncio.create_subprocess_shell",
+        fake_create_subprocess_shell,
+    )
+
+    service = ToolService()
+    service.register(CodeExecTool())
+
+    result = await service.execute("code_exec", {"command": "gen huge output"})
+
+    assert result.success is True  # returncode 0
+    # 输出被限制在 cap（max_output_length×3=300k）附近，而非完整 40 万
+    assert len(result.content) <= 310_000
+    assert result.content.startswith("A")
