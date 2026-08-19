@@ -262,3 +262,16 @@ async def test_code_exec_timeout_kills_subprocess(monkeypatch):
     assert "工具执行超时" in result.error
     # 关键：子进程已被 kill，executor 超时未导致孤儿进程残留
     assert captured["proc"].killed is True
+
+
+@pytest.mark.asyncio
+async def test_web_browse_rejects_ssrf_target():
+    """内网裸 IP / 环回目标被 SSRF 防护拦截，不发起真实请求。"""
+    service = ToolService()
+    service.register(WebBrowseTool())
+
+    result = await service.execute("web_browse", {"url": "http://127.0.0.1:8000/api"})
+
+    assert result.success is False
+    assert "SSRF" in result.error
+    assert "裸 IP" in result.error

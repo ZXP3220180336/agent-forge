@@ -353,7 +353,7 @@ stdout, stderr = await proc.communicate()
 | HTML 解析 | 自实现 `_HTMLToTextParser`，基于标准库 `html.parser`，零额外依赖 |
 | 风险级 | L0 只读（category=web，并发安全） |
 | 默认超时 | 15s（与内部 httpx 超时一致） |
-| 安全限制 | 超时 15s、最大重定向 5（结果截断由 ResultProcessor 统一处理，`max_output_length` 默认 50_000） |
+| 安全限制 | 超时 15s、最大重定向 5、**SSRF 防护**（裸 IP / 内网 TLD / 内网站段拒绝，含重定向跳；结果截断由 ResultProcessor 统一处理，`max_output_length` 默认 50_000） |
 
 **HTTP 客户端（全局单例，连接池复用）：**
 
@@ -363,12 +363,14 @@ _http_client = httpx.AsyncClient(
     max_redirects=5,
     timeout=15.0,
     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Chrome/120.0.0.0 Safari/537.36"},
+    event_hooks={"request": [_ssrf_on_request]},
 )
 ```
 
 - 单例由 `_get_http_client()` 维护，避免每次执行新建连接
 - 连接池随应用关闭由 `on_unload()` 回收（`ToolService.shutdown` 调用，见 [tool_service.md](../tool_service.md)）
 - `url` 不以 `http://` / `https://` 开头时自动补全 `https://`
+- **SSRF 防护**：client 注入 `event_hooks["request"]` 校验，每个请求（含重定向跳）拒绝：裸 IP（保守策略含公网）、内网保留域名（`.internal` / `.local` / `.corp` 等）、解析后命中内网·环回·链路本地·保留网段的域名（防 DNS rebinding）；DNS 解析经 `asyncio.to_thread` 不阻塞事件循环
 
 **`_HTMLToTextParser`（`HTMLParser` 子类）特性：**
 
@@ -446,3 +448,4 @@ _http_client = httpx.AsyncClient(
 - [API 文档](../../../api_doc/api.md)
 - [TOOLS-001 问题记录](../../../../issues/integration/tools/2026-08-18-subprocess-orphan-on-cancel.md)（子进程超时 / 取消清理）
 - [TOOLS-002 问题记录](../../../../issues/integration/tools/2026-08-19-file-tools-allowed-dirs.md)（文件工具允许目录白名单）
+- [TOOLS-003 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-ssrf.md)（web_browse SSRF 防护）

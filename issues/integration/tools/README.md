@@ -19,6 +19,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | [TOOLS-001](2026-08-18-subprocess-orphan-on-cancel.md) | executor 超时取消后子进程孤儿泄漏 | P1 | ✅ 已修复 | builtin/code_exec（CodeExecTool） | 2026-08-18 | 2026-08-18 |
 | [TOOLS-002](2026-08-19-file-tools-allowed-dirs.md) | 文件工具无路径范围限制，可读 .env / 覆盖源码 | P1 | ✅ 已修复 | builtin/file_ops + settings / container | 2026-08-19 | 2026-08-19 |
+| [TOOLS-003](2026-08-19-web-browse-ssrf.md) | web_browse SSRF：任意 URL + 重定向无主机/网络约束 | P1 | ✅ 已修复 | builtin/web_browse（WebBrowseTool） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

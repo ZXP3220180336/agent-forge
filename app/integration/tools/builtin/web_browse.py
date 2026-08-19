@@ -2,7 +2,10 @@
 网页浏览工具 - 获取并解析网页内容
 """
 
+import asyncio
 import html as html_module
+import ipaddress
+import socket
 from html.parser import HTMLParser
 from typing import Any, ClassVar
 from urllib.parse import urljoin
@@ -131,6 +134,77 @@ class _HTMLToTextParser(HTMLParser):
         return f"\n\n页面链接：\n{result}"
 
 
+# ===== SSRF 防护：拒绝内网 / 环回 / 保留网段与内网保留域名 =====
+
+# 内网 / 保留 TLD 后缀（DNS 私有域，解析结果不可信或指向内网）
+_PRIVATE_TLD_SUFFIXES: tuple[str, ...] = (
+    ".local",
+    ".localhost",
+    ".internal",
+    ".corp",
+    ".home",
+    ".lan",
+    ".intranet",
+    ".private",
+    ".test",
+    ".example",
+)
+
+
+class SSRFError(Exception):
+    """目标 URL 命中 SSRF 防护规则。"""
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """命中内网 / 环回 / 链路本地 / 保留 / 未指定 / 组播段（IPv4-mapped IPv6 先归一）。"""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+    )
+
+
+def _check_host_sync(hostname: str) -> None:
+    """校验主机名：裸 IP / 内网保留域名 / 解析后命中内网站段 → 抛 SSRFError。"""
+    # 1. 裸 IP：一律拒绝（保守策略，仅允许域名访问）
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        raise SSRFError(f"目标为裸 IP，拒绝访问: {hostname}")
+
+    # 2. 内网保留域名后缀
+    lowered = hostname.rstrip(".").lower()
+    if any(lowered.endswith(suffix) for suffix in _PRIVATE_TLD_SUFFIXES):
+        raise SSRFError(f"目标域名命中内网保留后缀，拒绝访问: {hostname}")
+
+    # 3. 域名解析：任一 IP 命中拦截段即拒绝（防 DNS rebinding）
+    try:
+        infos = socket.getaddrinfo(lowered, None)
+    except socket.gaierror as e:
+        raise SSRFError(f"目标域名解析失败: {hostname}") from e
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if _is_blocked_ip(ip):
+            raise SSRFError(f"目标域名 {hostname} 解析到内网/环回地址: {ip}")
+
+
+async def _check_host(hostname: str) -> None:
+    """异步版：DNS 解析经 asyncio.to_thread，不阻塞事件循环。"""
+    await asyncio.to_thread(_check_host_sync, hostname)
+
+
+async def _ssrf_on_request(request: httpx.Request) -> None:
+    """每个请求（含重定向跳）前校验目标 host，命中防护规则即中断。"""
+    await _check_host(request.url.host)
+
+
 # 全局复用的 httpx 客户端（连接池复用）
 _http_client: httpx.AsyncClient | None = None
 
@@ -150,6 +224,7 @@ def _get_http_client() -> httpx.AsyncClient:
                     "Chrome/120.0.0.0 Safari/537.36"
                 ),
             },
+            event_hooks={"request": [_ssrf_on_request]},
         )
     return _http_client
 
@@ -288,6 +363,12 @@ class WebBrowseTool(BaseTool):
                 success=False,
                 content="",
                 error=f"重定向次数过多: {url}",
+            )
+        except SSRFError as e:
+            return ToolResult(
+                success=False,
+                content="",
+                error=f"请求被安全策略拦截（SSRF 防护）: {e!s}",
             )
         except httpx.RequestError as e:
             return ToolResult(
