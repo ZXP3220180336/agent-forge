@@ -112,6 +112,7 @@ class MyTool(BaseTool):
 3. **单文件自包含**：建议一个文件一个工具，共享逻辑放 `_` 前缀文件（不参与扫描）；跨文件 `from . import helper` 的兄弟模块随工具文件加载 / 卸载一起清理（`_load_file` 快照 sys.modules 追踪，`_unload_file` 一并 pop），改 helper 后重载工具文件即生效（TOOLS-013 修复「兄弟模块缓存残留」）
 4. **信任边界**：`external/` 与应用**同信任级别**——加载即执行任意 Python 代码，只放受信任工具
 5. **无状态优先**：状态由 Agent 核心管理；持连接 / 子进程 / 定时器的工具必须实现 `on_unload()` 完整回收
+6. **生命周期钩子禁反向调用**：`on_load` / `on_unload` 内禁止调用 `execute`（加载流程持 `_scan_lock`（不可重入），反向调用会经 `maybe_refresh` → `scan_once` 二次加锁死锁，见 TOOLS-014）
 
 > **完整示例**：`app/integration/tools/external/http_api.py`（`http_api`）是随附的热插拔示例——REST API 调用工具，演示了元数据覆写（L1 写 / category=http / timeout=15 / **`requires_approval=True` 写操作需审批**）+ 生命周期钩子（`on_load` 建立 httpx 连接池 / `on_unload` 释放）+ 参数 schema（method 枚举 + url 必填）+ 异常分类归因 + **配置注入**（`CONFIG_KEYS=("tool_http_timeout",)` → `register_config` 注入超时）+ **SSRF 防护**（复用 [security.md](security.md) `ssrf_on_request`，裸 IP / 内网目标拒绝），可作新外部工具模板。
 
@@ -144,6 +145,7 @@ class MyTool(BaseTool):
 - [TOOLS-010 问题记录](../../../issues/integration/tools/2026-08-19-external-tool-config-injection.md)（外部工具配置注入通道）
 - [TOOLS-012 问题记录](../../../issues/integration/tools/2026-08-19-external-maybe-refresh-io.md)（maybe_refresh TTL 限频）
 - [TOOLS-013 问题记录](../../../issues/integration/tools/2026-08-19-external-sibling-module-cache.md)（兄弟模块缓存清理）
+- [TOOLS-014 问题记录](../../../issues/integration/tools/2026-08-19-loader-scan-lock-deadlock.md)（生命周期钩子禁反向调用）
 - [ToolService 说明](tool_service.md)（execute 惰性检查入口 / refresh_external_tools）
 - [生命周期钩子](builtin_doc/builtin.md)（BaseTool 基类详解）
 - 决策记录：[ADR TOOLS-ADR-005](../../../adr/integration/tools/README.md)

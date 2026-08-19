@@ -103,7 +103,12 @@ class ExternalToolLoader:
         await self.scan_once()
 
     async def scan_once(self) -> None:
-        """应用磁盘 diff（新增 / 修改 / 删除），更新目录签名。可手动调用（幂等）。"""
+        """应用磁盘 diff（新增 / 修改 / 删除），更新目录签名。可手动调用（幂等）。
+
+        注意：`_scan_lock` 为 asyncio.Lock（不可重入），加载流程在锁内 await 用户
+        `on_load` / `on_unload`——生命周期钩子内**禁止反向调用 execute**
+        （会经 maybe_refresh → scan_once 二次加锁死锁）。
+        """
         async with self._scan_lock:
             sig = self._dir_signature()
             if sig == self._signature:
