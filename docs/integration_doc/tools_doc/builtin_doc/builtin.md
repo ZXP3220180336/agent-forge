@@ -246,6 +246,7 @@ response = await asyncio.to_thread(
 )
 ```
 
+- **客户端复用**：`TavilyClient` 实例级单例（`_get_client`，api_key 变化时重建），对齐 web_browse httpx 单例的复用意图
 - 搜索深度取 `self._search_depth`（由装配根经 `register_config` 注入 settings 值，可选 `"basic"` / `"advanced"`）
 - 返回**优先取直接答案**：`response.get("answer")` 非空时直接返回，`metadata["source"] = "tavily_answer"` 且 `metadata["urls"]` = 前 3 条来源 URL（证据链可回溯）
 - 否则格式化搜索结果列表（`- 标题: 内容`，行尾追加 `（来源: url）`），`metadata` 记录 `source="tavily_search"` 与 `count`
@@ -455,3 +456,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-004 问题记录](../../../../issues/integration/tools/2026-08-19-memory-capped-reads.md)（工具读取内存峰值限制）
 - [TOOLS-005 问题记录](../../../../issues/integration/tools/2026-08-19-code-exec-gbk-decode.md)（code_exec 输出 GBK 解码）
 - [TOOLS-009 问题记录](../../../../issues/integration/tools/2026-08-19-search-source-urls.md)（search 结果来源 URL）
+- [TOOLS-019 问题记录](../../../../issues/integration/tools/2026-08-19-search-tavily-reuse.md)（TavilyClient 实例级复用）

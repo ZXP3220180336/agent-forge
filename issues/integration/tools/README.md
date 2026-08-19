@@ -35,6 +35,7 @@
 | [TOOLS-016](2026-08-19-audit-sensitive-key-masking.md) | 审计日志完整序列化参数，敏感键（API Key / Token）落盘泄露 | P3 | ✅ 已修复 | tools/security（审计脱敏） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-017](2026-08-19-normalize-error-indent.md) | normalize_error 每行 strip 破坏 traceback 缩进 | P3 | ✅ 已修复 | tools/result_processor | 2026-08-19 | 2026-08-19 |
 | [TOOLS-018](2026-08-19-hooks-logger-name.md) | hooks logger 名 services.tool_service 与模块路径不符 | P3 | ✅ 已修复 | tools/hooks（logger 名） | 2026-08-19 | 2026-08-19 |
+| [TOOLS-019](2026-08-19-search-tavily-reuse.md) | search 每次 execute 新建 TavilyClient，未复用 | P3 | ✅ 已修复 | builtin/search（客户端复用） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

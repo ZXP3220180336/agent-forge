@@ -459,3 +459,27 @@ async def test_search_result_missing_url_tolerated(monkeypatch):
 
     assert result.success is True
     assert "内容A" in result.content
+
+
+@pytest.mark.asyncio
+async def test_search_reuses_tavily_client(monkeypatch):
+    """TavilyClient 实例级复用（多次 execute 不重复构造）。"""
+    calls = {"n": 0}
+
+    class _CountingTavily:
+        def __init__(self, api_key):
+            calls["n"] += 1
+
+        def search(self, **kwargs):
+            return {"results": []}
+
+    monkeypatch.setattr(
+        "app.integration.tools.builtin.search.TavilyClient", _CountingTavily
+    )
+    tool = SearchTool()
+    tool.register_config(api_key="test-key")
+
+    await tool.execute(query="a")
+    await tool.execute(query="b")
+
+    assert calls["n"] == 1  # 复用单例

@@ -20,6 +20,18 @@ class SearchTool(BaseTool):
     _api_key: ClassVar[str] = ""
     _search_depth: ClassVar[str] = "basic"
 
+    def __init__(self) -> None:
+        # 实例级 TavilyClient 单例（复用，api_key 变化时重建），对齐 web_browse httpx 单例
+        self._client: TavilyClient | None = None
+        self._client_api_key: str = ""
+
+    def _get_client(self, api_key: str) -> TavilyClient:
+        """获取 TavilyClient（实例级复用；api_key 变化时重建）。"""
+        if self._client is None or self._client_api_key != api_key:
+            self._client = TavilyClient(api_key=api_key)
+            self._client_api_key = api_key
+        return self._client
+
     @classmethod
     def register_config(
         cls, *, api_key: str = "", search_depth: str = "basic", **kwargs: Any
@@ -86,7 +98,7 @@ class SearchTool(BaseTool):
             )
 
         try:
-            tavily = TavilyClient(api_key=api_key)
+            tavily = self._get_client(api_key)
             # 同步 IO 放入独立线程，不阻塞事件循环
             response = await asyncio.to_thread(
                 tavily.search,
