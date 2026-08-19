@@ -72,6 +72,7 @@ class QueryDefectMapTool(BaseTool):
             metadata={
                 "source": "mock_defect",
                 "batch_id": batch_id,
-                "timestamp": records[0]["sampled_at"],
+                # 证据链统一锚点：结果集最近时间点（最新采样，与 yield 口径一致）
+                "timestamp": records[-1]["sampled_at"],
             },
         )

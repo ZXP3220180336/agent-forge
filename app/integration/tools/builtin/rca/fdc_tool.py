@@ -83,6 +83,7 @@ class QueryFdcParamsTool(BaseTool):
             metadata={
                 "source": "mock_fdc",
                 "equipment_id": equipment_id,
-                "timestamp": records[0]["timestamp"],
+                # 证据链统一锚点：结果集最近时间点（最新记录，与 yield 口径一致）
+                "timestamp": records[-1]["timestamp"],
             },
         )
