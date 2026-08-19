@@ -43,11 +43,12 @@ async def test_query_batch_yield_not_found():
 
 @pytest.mark.asyncio
 async def test_query_alerts_filters_by_equipment():
-    """ETCH-01 告警：chamber pressure ALARM + PM 记录。"""
+    """ETCH-01 告警：chamber pressure ALARM + PM 记录 + alert_id 可引用。"""
     result = await QueryEquipmentAlertsTool().execute(equipment_id="ETCH-01")
 
     assert result.success is True
     assert "chamber pressure" in result.content
+    assert "[ALM-1001]" in result.content  # 证据链可引用唯一标识
     assert result.metadata["source"] == "mock_mes"
 
 

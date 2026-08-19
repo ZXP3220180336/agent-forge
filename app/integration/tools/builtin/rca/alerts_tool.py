@@ -79,7 +79,7 @@ class QueryEquipmentAlertsTool(BaseTool):
         lines = [f"设备告警 / PM 记录（共 {len(records)} 条）："]
         for r in records:
             lines.append(
-                f"- [{r['alert_type']}/{r['severity']}] {r['equipment_id']}: "
+                f"- [{r['alert_id']}] [{r['alert_type']}/{r['severity']}] {r['equipment_id']}: "
                 f"{r['message']}（{r['timestamp']}）"
             )
 
