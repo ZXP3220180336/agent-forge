@@ -124,7 +124,8 @@ class CodeExecTool(BaseTool):
             return ToolResult(success=False, content="", error=f"参数有误: {kwargs!s}")
 
         command: str = kwargs["command"].strip()
-        workdir: str | None = kwargs.get("workdir")
+        # 空串归一为 None（cwd 用当前进程目录），避免 cwd="" 抛异常
+        workdir: str | None = kwargs.get("workdir") or None
 
         if not command:
             return ToolResult(success=False, content="", error="命令不能为空")

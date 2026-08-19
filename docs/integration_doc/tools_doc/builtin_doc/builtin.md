@@ -459,3 +459,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-019 问题记录](../../../../issues/integration/tools/2026-08-19-search-tavily-reuse.md)（TavilyClient 实例级复用）
 - [TOOLS-020 问题记录](../../../../issues/integration/tools/2026-08-19-writefile-makedirs-async.md)（writeFile makedirs 异步化）
 - [TOOLS-021 问题记录](../../../../issues/integration/tools/2026-08-19-readfile-encoding-fallback.md)（readFile 编码回退共享）
+- [TOOLS-022 问题记录](../../../../issues/integration/tools/2026-08-19-code-exec-workdir-empty.md)（workdir 空串归一）

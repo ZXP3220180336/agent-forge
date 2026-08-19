@@ -38,6 +38,7 @@
 | [TOOLS-019](2026-08-19-search-tavily-reuse.md) | search 每次 execute 新建 TavilyClient，未复用 | P3 | ✅ 已修复 | builtin/search（客户端复用） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-020](2026-08-19-writefile-makedirs-async.md) | writeFile os.makedirs 同步阻塞事件循环 | P3 | ✅ 已修复 | builtin/file_ops（makedirs 异步化） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-021](2026-08-19-readfile-encoding-fallback.md) | readFile 仅 UTF-8 解码无 GBK 回退，中文文件乱码 | P3 | ✅ 已修复 | builtin/file_ops + shared/encoding | 2026-08-19 | 2026-08-19 |
+| [TOOLS-022](2026-08-19-code-exec-workdir-empty.md) | code_exec workdir 空串传 cwd="" 抛异常 | P3 | ✅ 已修复 | builtin/code_exec（workdir 归一） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

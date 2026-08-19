@@ -363,6 +363,21 @@ async def test_code_exec_output_capped(monkeypatch):
     assert result.content.startswith("A")
 
 
+@pytest.mark.asyncio
+async def test_code_exec_empty_workdir_ok():
+    """workdir 空串归一为 None（cwd 用默认），不抛异常。"""
+    service = ToolService()
+    service.register(CodeExecTool())
+
+    result = await service.execute(
+        "code_exec",
+        {"command": f'"{sys.executable}" -c "print(1)"', "workdir": ""},
+    )
+
+    assert result.success is True
+    assert "1" in result.content
+
+
 @pytest.mark.parametrize(
     "raw, expected",
     [
