@@ -464,3 +464,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-023 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-config-injection.md)（web_browse 连接层注入）
 - [TOOLS-024 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-encoding-comment.md)（编码策略注释澄清）
 - [TOOLS-025 问题记录](../../../../issues/integration/tools/2026-08-20-web-browse-parser-consistency.md)（parser 实体/链接一致性）
+- [TOOLS-026 问题记录](../../../../issues/integration/tools/2026-08-20-web-browse-parser-blank-lines.md)（块标签空行测试锁定）

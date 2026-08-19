@@ -321,6 +321,14 @@ def test_web_browse_parser_text_after_anchor_not_in_link():
     assert "link" in links
 
 
+def test_web_browse_parser_no_extra_blank_lines():
+    """连续块标签不产生多余空行（_last_was_block 防重复换行）。"""
+    parser = web_browse._HTMLToTextParser(base_url="https://example.com")
+    parser.feed("<p>a</p><p>b</p><ul><li>c</li><li>d</li></ul>")
+
+    assert parser.get_text() == "a\nb\nc\nd"  # 无连续空行
+
+
 @pytest.mark.asyncio
 async def test_read_file_large_chunked_head_tail(tmp_path):
     """超大文件分段读取（head+tail），限制内存占用，保留首尾。"""
