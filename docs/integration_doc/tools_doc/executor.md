@@ -146,3 +146,4 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 - [validator.md](validator.md) · [result_processor.md](result_processor.md) · [security.md](security.md)（校验 / 截断 / 审计接入点）
 - [registry.md](registry.md)（查工具依赖）· [stats.md](stats.md)（统计记录）· [tool_service.md](tool_service.md)（Facade 装配）
 - [TOOLS-006 问题记录](../../../issues/integration/tools/2026-08-19-executor-json-non-dict.md)（参数 JSON 非 dict 校验）
+- [TOOLS-007 问题记录](../../../issues/integration/tools/2026-08-19-executor-retry-count-semantics.md)（retry_count 口径统一）

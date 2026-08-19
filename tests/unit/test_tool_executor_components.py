@@ -344,3 +344,48 @@ async def test_execute_list_parameters_rejected():
 
     assert result.success is False
     assert result.error_code == ErrorCode.JSON_PARSE
+
+
+class _FlakyTool(_ParamTool):
+    """前 fail_times 次执行失败，之后成功。"""
+
+    def __init__(self, fail_times: int = 1) -> None:
+        self.fail_times = fail_times
+        self.calls = 0
+
+    async def execute(self, **kwargs) -> ToolResult:
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            return ToolResult(success=False, error="flaky")
+        return ToolResult(success=True, content="ok")
+
+
+class _AlwaysFailTool(_ParamTool):
+    """始终失败。"""
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(success=False, error="always fail")
+
+
+@pytest.mark.asyncio
+async def test_retry_count_success_path_is_executions():
+    """成功路径 retry_count = 实际执行次数（前 2 次失败，第 3 次成功 → 3）。"""
+    service = ToolService(tool_max_retries=3)
+    service.register(_FlakyTool(fail_times=2))
+
+    result = await service.execute("param_tool", {"count": 1}, retry_delay=0)
+
+    assert result.success is True
+    assert result.retry_count == 3  # 3 次尝试成功，非 0 基索引 2
+
+
+@pytest.mark.asyncio
+async def test_retry_count_failure_path_is_executions():
+    """全败路径 retry_count = 实际执行次数（3 次全败 → 3，与成功路径口径一致）。"""
+    service = ToolService(tool_max_retries=3)
+    service.register(_AlwaysFailTool())
+
+    result = await service.execute("param_tool", {"count": 1}, retry_delay=0)
+
+    assert result.success is False
+    assert result.retry_count == 3

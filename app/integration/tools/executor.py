@@ -215,10 +215,11 @@ class ToolExecutor:
                     timeout=timeout,
                 )
 
-                # 填充执行元数据
+                # 填充执行元数据：retry_count = 实际执行次数（第 1 次尝试 = 1，0 基索引 +1），
+                # 成功 / 失败路径口径一致（全败路径用 actual_retries = 同一语义）
                 elapsed = time.monotonic() - start_time
                 result.execution_time = round(elapsed, 4)
-                result.retry_count = attempt
+                result.retry_count = attempt + 1
 
                 if result.success:
                     # 统一结果截断（head+tail），随后统计、钩子、返回
@@ -260,7 +261,7 @@ class ToolExecutor:
                 wait = retry_delay * (2**attempt)
                 await asyncio.sleep(wait)
 
-        # 所有重试均失败
+        # 所有重试均失败：retry_count = 实际执行次数（每轮循环 +1，与成功路径 attempt+1 口径一致）
         result = last_result or ToolResult(
             success=False,
             content="",

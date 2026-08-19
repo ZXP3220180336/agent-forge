@@ -211,7 +211,7 @@ class ToolResult:
     error_code: ErrorCode | None = None   # 系统级失败分类（业务错误为 None，见 tools.md）
     metadata: dict[str, Any] | None = None   # 额外元数据（来源、状态码、截断标记等）
     execution_time: float | None = None      # 执行耗时（秒），executor 自动填充
-    retry_count: int = 0                     # 实际重试次数，executor 自动填充
+    retry_count: int = 0                     # 实际执行次数（含首次，成功/失败口径一致），executor 自动填充
 ```
 
 - `__str__`：成功时返回 `content`，失败时返回 `错误: {error}`
