@@ -371,6 +371,7 @@ _http_client = httpx.AsyncClient(
 ```
 
 - 单例由 `_get_http_client()` 维护，避免每次执行新建连接
+- **连接层配置注入**：超时（默认 15s）与最大重定向（默认 5）经 `register_config(timeout=..., max_redirects=...)` 注入，非硬编码（启动注入早于首次 execute → client 首次构建用注入值）
 - 连接池随应用关闭由 `on_unload()` 回收（`ToolService.shutdown` 调用，见 [tool_service.md](../tool_service.md)）
 - `url` 不以 `http://` / `https://` 开头时自动补全 `https://`
 - **SSRF 防护**：复用 [security.py](../security.md) 共享防护——client 注入 `event_hooks["request"]`（`ssrf_on_request`），每个请求（含重定向跳）拒绝裸 IP / 内网保留域名 / 解析到内网站段；实现与规则见 [security.md](../security.md)
@@ -460,3 +461,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-020 问题记录](../../../../issues/integration/tools/2026-08-19-writefile-makedirs-async.md)（writeFile makedirs 异步化）
 - [TOOLS-021 问题记录](../../../../issues/integration/tools/2026-08-19-readfile-encoding-fallback.md)（readFile 编码回退共享）
 - [TOOLS-022 问题记录](../../../../issues/integration/tools/2026-08-19-code-exec-workdir-empty.md)（workdir 空串归一）
+- [TOOLS-023 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-config-injection.md)（web_browse 连接层注入）

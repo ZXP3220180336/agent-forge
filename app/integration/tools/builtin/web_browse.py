@@ -141,8 +141,8 @@ def _get_http_client() -> httpx.AsyncClient:
     if _http_client is None:
         _http_client = httpx.AsyncClient(
             follow_redirects=True,
-            max_redirects=5,
-            timeout=15.0,
+            max_redirects=WebBrowseTool._max_redirects,
+            timeout=WebBrowseTool._timeout,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -159,13 +159,22 @@ class WebBrowseTool(BaseTool):
     """网页浏览工具"""
 
     _max_content_length: ClassVar[int] = 50_000
+    _timeout: ClassVar[float] = 15.0  # httpx 连接层超时（秒），经 register_config 注入
+    _max_redirects: ClassVar[int] = 5  # 最大重定向数，经 register_config 注入
 
     @classmethod
     def register_config(
-        cls, *, max_content_length: int = 50_000, **kwargs: Any
+        cls,
+        *,
+        max_content_length: int = 50_000,
+        timeout: float = 15.0,
+        max_redirects: int = 5,
+        **kwargs: Any,
     ) -> None:
-        """注入网页内容截断配置（由装配根调用，避免直接依赖 settings）。"""
+        """注入网页内容截断 / 连接层超时 / 重定向配置（由装配根调用，避免直接依赖 settings）。"""
         cls._max_content_length = max_content_length
+        cls._timeout = timeout
+        cls._max_redirects = max_redirects
 
     async def on_unload(self) -> None:
         """关闭全局 httpx 连接池（内置工具随应用生命周期，由 ToolService.shutdown 调用）。
