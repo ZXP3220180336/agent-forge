@@ -31,6 +31,7 @@
 | [TOOLS-012](2026-08-19-external-maybe-refresh-io.md) | maybe_refresh 每次 execute 同步磁盘 IO 上事件循环 | P3 | ✅ 已修复 | tools/loader（maybe_refresh TTL） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-013](2026-08-19-external-sibling-module-cache.md) | 外部工具卸载仅清理自身模块，兄弟模块缓存残留致重载失效 | P3 | ✅ 已修复 | tools/loader（模块缓存管理） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-014](2026-08-19-loader-scan-lock-deadlock.md) | loader _scan_lock 在生命周期钩子 await 期间持有，反向调用 execute 死锁 | P3 | ✅ 已修复 | tools/loader（锁约束） | 2026-08-19 | 2026-08-19 |
+| [TOOLS-015](2026-08-19-executor-to-thread-cancel.md) | executor wait_for 超时对 to_thread 同步调用无法取消（无注释说明） | P3 | ✅ 已修复 | tools/executor（docstring 澄清） | 2026-08-19 | 2026-08-19 |
 
 ## 新问题登记规范
 

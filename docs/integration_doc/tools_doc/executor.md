@@ -148,3 +148,4 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 - [TOOLS-006 问题记录](../../../issues/integration/tools/2026-08-19-executor-json-non-dict.md)（参数 JSON 非 dict 校验）
 - [TOOLS-007 问题记录](../../../issues/integration/tools/2026-08-19-executor-retry-count-semantics.md)（retry_count 口径统一）
 - [TOOLS-008 问题记录](../../../issues/integration/tools/2026-08-19-executor-max-retries-zero.md)（max_retries=0 零执行）
+- [TOOLS-015 问题记录](../../../issues/integration/tools/2026-08-19-executor-to-thread-cancel.md)（to_thread 超时不可取消语义）

@@ -203,7 +203,13 @@ class ToolExecutor:
         max_retries: int,
         retry_delay: float,
     ) -> ToolResult:
-        """重试循环：超时保护 + 渐进式退避 + 成功截断 + 统计 + 钩子。"""
+        """重试循环：超时保护 + 渐进式退避 + 成功截断 + 统计 + 钩子。
+
+        超时语义：`wait_for` 超时取消的是执行协程；工具内部经 `asyncio.to_thread`
+        包装的同步 SDK 调用（如 Tavily 搜索）**无法被取消**——线程池线程会继续
+        运行至底层返回，超时后资源不立即释放。这是 `to_thread` + 超时的固有行为
+        （非泄漏），勿误读为「超时 = 调用已终止」。
+        """
         name = tool.name
         last_error: str | None = None
         last_error_code: ErrorCode | None = None
