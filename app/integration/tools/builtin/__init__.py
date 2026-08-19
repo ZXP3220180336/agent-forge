@@ -50,7 +50,7 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
 
 
 def __getattr__(name: str) -> type[BaseTool]:
-    """惰性加载：在访问属性时从自动发现结果中查找"""
+    """属性访问兜底：普通属性查找失败后，从自动发现结果中返回工具类。"""
     tools = _discover_tools()
     if name in tools:
         return tools[name]

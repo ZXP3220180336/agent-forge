@@ -44,7 +44,7 @@ app/integration/tools/
 
 - **零注册成本**：新增工具只需在 `builtin/` 下创建文件并继承 `BaseTool`，无需修改任何注册代码
 - **自动发现**：`builtin/__init__.py` 在包导入时自动扫描目录，收集所有可实例化的 `BaseTool` 子类
-- **惰性属性访问**：通过模块级 `__getattr__` / `__dir__` 支持 `from app.integration.tools.builtin import SearchTool` 式导入
+- **属性访问兜底**：通过模块级 `__getattr__` / `__dir__` 支持 `from app.integration.tools.builtin import SearchTool` 式导入（发现已在包导入时完成，`__getattr__` 仅作属性查找兜底）
 - **独立职责**：每个工具只实现 `BaseTool` 的抽象接口，参数验证、超时、重试、统计、并发控制统一由 [ToolExecutor](../executor.md)（经 ToolService 门面）负责
 
 **架构定位**：工具层在架构分层中位于服务层之下、基础设施之上。
@@ -64,7 +64,7 @@ Tool 层 (BaseTool)            ← builtin 子模块，每个工具一个 execut
 
 ## 自动发现机制
 
-`builtin/__init__.py`（62 行）实现了一套「扫描目录 + 反射收集 + 惰性访问」的自动发现机制。
+`builtin/__init__.py`（62 行）实现了一套「扫描目录 + 反射收集 + 属性访问兜底」的自动发现机制。
 
 ### 发现流程
 
@@ -108,7 +108,7 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
 - 模块导入失败会**记录 warning 后跳过**（`except Exception` + `logger.warning`），因此单个工具文件有语法/依赖错误时，其余工具仍可正常发现，且失败会暴露在日志中（`tools.builtin`）便于排障
 - `inspect.getmembers` 会遍历模块内的所有类（含被 import 进来的类），但最终收录仍由 `issubclass` 过滤，实践中只有本文件定义的工具类符合条件
 
-### 惰性访问与触发时机
+### 属性访问兜底与触发时机
 
 ```python
 def __getattr__(name: str) -> type[BaseTool]:
@@ -465,3 +465,5 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-024 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-encoding-comment.md)（编码策略注释澄清）
 - [TOOLS-025 问题记录](../../../../issues/integration/tools/2026-08-20-web-browse-parser-consistency.md)（parser 实体/链接一致性）
 - [TOOLS-026 问题记录](../../../../issues/integration/tools/2026-08-20-web-browse-parser-blank-lines.md)（块标签空行测试锁定）
+- [TOOLS-027 问题记录](../../../../issues/integration/tools/2026-08-20-builtin-duplicate-class-warning.md)（发现类名冲突告警）
+- [TOOLS-028 问题记录](../../../../issues/integration/tools/2026-08-20-builtin-lazy-comment.md)（惰性加载注释修正）
