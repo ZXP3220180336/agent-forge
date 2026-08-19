@@ -45,7 +45,7 @@
 
 ### 加载 / 重载 / 卸载
 
-- **加载**：`importlib.util.spec_from_file_location` 动态导入 → 收集 `BaseTool` 子类（过滤规则与 builtin 一致）→ 实例化 → `on_load()` → 冲突检查 → `service.register`
+- **加载**：`importlib.util.spec_from_file_location` 动态导入 → 收集 `BaseTool` 子类（过滤规则与 builtin 一致）→ **配置注入（`CONFIG_KEYS` → `register_config`）** → 实例化 → `on_load()` → 冲突检查 → `service.register`
 - **重载**（mtime 或 size 变化）：nuke-and-repave —— 先卸载旧实例再加载新实例；在飞 execute 持 per-tool 锁时 `prune_tool_lock` 跳过（executor 保证串行化不破坏）
 - **卸载**（文件删除）：`on_unload()` → `service.unregister` → 清理 `sys.modules`
 - **模块名**：合法标识符文件名用真实包名（`app.integration.tools.external.<stem>`，保证文件内相对导入与 loader 恒等）；非法标识符（`my-tool.py`）回退 sha1 哈希模块名
@@ -82,7 +82,17 @@ loader 每次操作记录结构化日志（`app.tools.external`）：加载成�
 from app.integration.tools.base import BaseTool
 from app.domain.ports.tool_gateway import ToolResult
 
+CONFIG_KEYS = ("tool_http_timeout",)  # 可选：声明需要的 settings 配置键（loader 经 config_source 注入）
+
 class MyTool(BaseTool):
+    _timeout = 15.0  # 默认值（settings 未配置时兜底）
+
+    @classmethod
+    def register_config(cls, *, tool_http_timeout=None, **kwargs) -> None:
+        """可选：接收 loader 注入的配置（对齐内置工具 register_config 风格）。"""
+        if tool_http_timeout is not None:
+            cls._timeout = tool_http_timeout
+
     @property
     def name(self) -> str: return "my_tool"          # 全局唯一，不与内置冲突
     @property
@@ -98,12 +108,12 @@ class MyTool(BaseTool):
 **约定要点**：
 
 1. **命名唯一**：`name` 不得与 builtin（10 个：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse` / `query_batch_yield` / `query_equipment_alerts` / `query_fdc_params` / `query_defect_map` / `search_historical_rca`）或已加载工具冲突
-2. **配置自取**：外部工具**自行读环境变量**等配置（容器不知道其存在，不注入 `register_config`）
+2. **配置注入**：模块级声明 `CONFIG_KEYS`（settings 键元组）+ 类实现 `register_config`——loader 加载时从装配根绑定的 `config_source`（settings 读取器）取值注入，路径与内置工具一致（TOOLS-010 前为「自行读环境变量」）；未声明 `CONFIG_KEYS` 或不实现 `register_config` 则跳过注入
 3. **单文件自包含**：建议一个文件一个工具，共享逻辑放 `_` 前缀文件（不参与扫描，需重启生效——跨文件 `from . import helper` 存在传递性陈旧，只改 helper 不会重载依赖方）
 4. **信任边界**：`external/` 与应用**同信任级别**——加载即执行任意 Python 代码，只放受信任工具
 5. **无状态优先**：状态由 Agent 核心管理；持连接 / 子进程 / 定时器的工具必须实现 `on_unload()` 完整回收
 
-> **完整示例**：`app/integration/tools/external/http_api.py`（`http_api`）是随附的热插拔示例——REST API 调用工具，演示了元数据覆写（L1 写 / category=http / timeout=15）+ 生命周期钩子（`on_load` 建立 httpx 连接池 / `on_unload` 释放）+ 参数 schema（method 枚举 + url 必填）+ 异常分类归因，可作新外部工具模板。
+> **完整示例**：`app/integration/tools/external/http_api.py`（`http_api`）是随附的热插拔示例——REST API 调用工具，演示了元数据覆写（L1 写 / category=http / timeout=15）+ 生命周期钩子（`on_load` 建立 httpx 连接池 / `on_unload` 释放）+ 参数 schema（method 枚举 + url 必填）+ 异常分类归因 + **配置注入**（`CONFIG_KEYS=("tool_http_timeout",)` → `register_config` 注入超时），可作新外部工具模板。
 
 ## 边界情况
 
@@ -126,11 +136,12 @@ class MyTool(BaseTool):
 
 ## 测试状态
 
-`tests/unit/test_tool_loader.py`（15 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / 排除规则 / 非法文件名。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
+`tests/unit/test_tool_loader.py`（18 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
 
 ## 相关文档
 
 - [工具模块接口文档](tools.md)（BaseTool / ToolService / external 定位）
+- [TOOLS-010 问题记录](../../../issues/integration/tools/2026-08-19-external-tool-config-injection.md)（外部工具配置注入通道）
 - [ToolService 说明](tool_service.md)（execute 惰性检查入口 / refresh_external_tools）
 - [生命周期钩子](builtin_doc/builtin.md)（BaseTool 基类详解）
 - 决策记录：[ADR TOOLS-ADR-005](../../../adr/integration/tools/README.md)

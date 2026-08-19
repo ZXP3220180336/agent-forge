@@ -38,6 +38,7 @@ class ToolService:
         result_processor: ResultProcessor | None = None,
         auditor: ToolAuditor | None = None,
         approval_gate: ApprovalGate | None = None,
+        external_config_source: Callable[[str], Any] | None = None,
     ) -> None:
         self._registry = ToolRegistry()
         self._stats = ToolStatsCollector()
@@ -57,7 +58,10 @@ class ToolService:
             tool_max_retries=tool_max_retries,
         )
         # 外部工具热加载器（execute 惰性检查：无后台任务，见 loader.py）
-        self._external_loader = ExternalToolLoader(self)
+        # 配置注入：装配根绑定的 settings 读取器 → 外部工具 CONFIG_KEYS 注册
+        self._external_loader = ExternalToolLoader(
+            self, config_source=external_config_source
+        )
 
     # ===== 注册管理（→ Registry + Stats 双写） =====
 

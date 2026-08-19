@@ -342,6 +342,7 @@ Pydantic 类型验证
 | `TOOL_MAX_OUTPUT_LENGTH`  | int  | 100000 | 工具输出截断长度（字符数）     |
 | `TOOL_MAX_CONTENT_LENGTH` | int  | 50000  | 网页抓取最大内容长度（字符数） |
 | `TOOL_ALLOWED_DIRS`       | list | 项目根 | 文件工具允许目录白名单（JSON 数组，默认项目根） |
+| `TOOL_HTTP_TIMEOUT`       | float | 15 | external http_api 示例工具请求超时（秒） |
 
 **使用场景：**
 
@@ -350,6 +351,7 @@ Pydantic 类型验证
 - `TOOL_MAX_OUTPUT_LENGTH`：影响 `readFile` 和 `code_exec` 的输出截断
 - `TOOL_MAX_CONTENT_LENGTH`：影响 `web_browse` 的网页内容截断
 - `TOOL_ALLOWED_DIRS`：`readFile` / `writeFile` 的允许目录白名单，白名单外路径拒绝访问（`..` 穿越与大小写经规范化处理）；默认项目根，示例：`TOOL_ALLOWED_DIRS=["/data/yield"]`
+- `TOOL_HTTP_TIMEOUT`：external `http_api` 示例工具请求超时（经 loader 配置注入 `CONFIG_KEYS`，见 [external.md](../integration_doc/tools_doc/external.md)）
 
 **聚合属性 `tool_config` 返回：**
 

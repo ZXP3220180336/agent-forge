@@ -238,6 +238,7 @@ class Container:
             max_concurrent_tools=settings.agent_max_concurrent_tools,
             tool_timeout=settings.tool_timeout,
             tool_max_retries=settings.tool_max_retries,
+            external_config_source=lambda key: getattr(settings, key, None),
         )
         try:
             registered = self.tool_service.init_default_tools()

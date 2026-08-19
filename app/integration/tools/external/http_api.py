@@ -11,11 +11,13 @@ executor 全量横切关注点（参数校验 / 超时 / 重试 / 截断 / 审�
 - 生命周期钩子：on_load 建立 httpx 连接池 / on_unload 释放（资源可完整回收）
 - 参数 schema：enum（method）+ required（url）+ 可选 headers/body
 - 业务错误走返回值（ToolResult），不让异常抛出；异常分类归因
+- **配置注入**：模块级 `CONFIG_KEYS` 声明 settings 配置键，loader 经 config_source
+  注入 `register_config`（对齐内置工具风格，不硬编码——见 TOOLS-010）
 
 与内置 web_browse（HTML → 文本）互补：本工具直接调用 REST API 拿 JSON。
 """
 
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -23,12 +25,25 @@ from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.base import BaseTool
 from app.integration.tools.security import RiskLevel
 
-# HTTP 客户端连接层超时（秒），与工具自声明 timeout 一致（executor 外层同值）
-_CLIENT_TIMEOUT = 15.0
+# 配置注入契约：声明需要的 settings 键，loader 从装配根绑定的 config_source 取值注入
+CONFIG_KEYS = ("tool_http_timeout",)
+
+# settings 未配置时的默认值（不硬编码运行时配置，默认值兜底）
+_DEFAULT_TIMEOUT = 15.0
 
 
 class HttpApiTool(BaseTool):
     """发送 HTTP 请求并返回响应（REST API / 天气 / 汇率 / 内部服务等 JSON 接口）。"""
+
+    _client_timeout: ClassVar[float] = _DEFAULT_TIMEOUT
+
+    @classmethod
+    def register_config(
+        cls, *, tool_http_timeout: float | None = None, **kwargs: Any
+    ) -> None:
+        """注入请求超时配置（由 ExternalToolLoader 加载时调用，对齐内置工具 register_config 风格）。"""
+        if tool_http_timeout is not None:
+            cls._client_timeout = tool_http_timeout
 
     def __init__(self) -> None:
         self._client: httpx.AsyncClient | None = None
@@ -52,7 +67,7 @@ class HttpApiTool(BaseTool):
         """
         if self._client is None:
             self._client = httpx.AsyncClient(
-                timeout=_CLIENT_TIMEOUT,
+                timeout=self._client_timeout,
                 follow_redirects=True,
                 max_redirects=5,
             )
@@ -147,7 +162,7 @@ class HttpApiTool(BaseTool):
             return ToolResult(
                 success=False,
                 content="",
-                error=f"请求超时（{_CLIENT_TIMEOUT:.0f} 秒）: {url}",
+                error=f"请求超时（{self._client_timeout:.0f} 秒）: {url}",
             )
         except httpx.RequestError as e:
             return ToolResult(success=False, content="", error=f"请求失败: {e!s}")

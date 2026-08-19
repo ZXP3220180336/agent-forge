@@ -294,3 +294,53 @@ async def test_hyphen_filename_loaded(service, loader, tmp_path):
 
     assert service.get("mytool") is not None
     assert (await service.execute("mytool", {})).content == "ok"
+
+
+# 声明 CONFIG_KEYS + register_config 的外部工具源码（配置注入契约演示）
+_CONFIG_TOOL_SOURCE = '''\
+from app.integration.tools.base import BaseTool
+from app.domain.ports.tool_gateway import ToolResult
+
+CONFIG_KEYS = ("custom_timeout",)
+
+class CfgTool(BaseTool):
+    _timeout = 5.0
+    @classmethod
+    def register_config(cls, *, custom_timeout=None, **kw):
+        if custom_timeout is not None:
+            cls._timeout = custom_timeout
+    @property
+    def name(self): return "cfg_tool"
+    @property
+    def description(self): return "config tool"
+    @property
+    def parameters(self): return {"type": "object", "properties": {}, "required": []}
+    async def execute(self, **kwargs): return ToolResult(success=True, content="ok")
+'''
+
+
+@pytest.mark.asyncio
+async def test_load_without_config_source_keeps_default(service, loader, tmp_path):
+    """无 config_source 时跳过注入（工具保持模块默认配置，不报错）。"""
+    _write_tool_file(tmp_path, "cfg_tool.py", _CONFIG_TOOL_SOURCE)
+    await loader.scan_once()
+
+    tool = service.get("cfg_tool")
+    assert tool is not None
+    assert tool._timeout == 5.0  # 默认值，未被注入
+
+
+@pytest.mark.asyncio
+async def test_load_injects_config_from_source(service, tmp_path):
+    """模块声明 CONFIG_KEYS 时，loader 经 config_source 注入 register_config（对齐内置工具风格）。"""
+    _write_tool_file(tmp_path, "cfg_tool.py", _CONFIG_TOOL_SOURCE)
+    loader = ExternalToolLoader(
+        service,
+        default_directory=str(tmp_path),
+        config_source=lambda k: 25.0 if k == "custom_timeout" else None,
+    )
+    await loader.scan_once()
+
+    tool = service.get("cfg_tool")
+    assert tool is not None
+    assert tool._timeout == 25.0  # register_config 已收到注入值

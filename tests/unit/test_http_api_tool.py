@@ -191,3 +191,17 @@ async def test_lazy_client_when_no_on_load():
     assert result.success is True
     assert result.content != ""
     await tool.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_register_config_injects_timeout():
+    """register_config 注入请求超时（loader 配置注入路径，移除硬编码 _CLIENT_TIMEOUT）。"""
+    HttpApiTool.register_config(tool_http_timeout=25.0)
+    tool = HttpApiTool()
+    try:
+        assert tool._client_timeout == 25.0  # 类级配置被注入
+        client = tool._ensure_client()
+        assert client.timeout.connect == 25.0  # 连接层超时使用注入值
+    finally:
+        await tool.on_unload()
+        HttpApiTool.register_config(tool_http_timeout=15.0)  # 复位默认

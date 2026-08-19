@@ -179,6 +179,7 @@ class Settings(BaseSettings):
     tool_max_output_length: int = 100_000  # 工具输出最大字符数（code_exec、readFile）
     tool_max_content_length: int = 50_000  # 网页抓取最大字符数（web_browse）
     tool_allowed_dirs: tuple[str, ...] = (str(Path(__file__).resolve().parents[2]),)  # 文件工具允许目录（默认项目根）
+    tool_http_timeout: float = 15.0  # external http_api 示例工具请求超时（秒）
 
     # ===== Tavily 配置 =====
     tavily_api_key: str = ""

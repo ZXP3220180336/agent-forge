@@ -20,6 +20,7 @@ import importlib
 import importlib.util
 import inspect
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -64,8 +65,10 @@ class ExternalToolLoader:
         service: ToolService,
         *,
         default_directory: str | None = None,
+        config_source: Callable[[str], Any] | None = None,
     ) -> None:
         self._service = service
+        self._config_source = config_source  # 配置提供者：键 → 值（装配根绑定 settings）
         self._directory = (
             Path(default_directory)
             if default_directory
@@ -156,6 +159,25 @@ class ExternalToolLoader:
         spec.loader.exec_module(module)
         return module
 
+    def _inject_config(self, cls: type[BaseTool], module: ModuleType) -> None:
+        """外部工具配置注入：模块声明 `CONFIG_KEYS` 时，从 config_source 取值调 register_config。
+
+        内置工具由装配根 `register_config` 注入（settings）；外部工具自动加载无装配根，
+        配置经 loader 的 `config_source`（装配根绑定的 settings 读取器）注入——路径对齐内置风格，
+        避免外部工具配置被静默忽略（见 TOOLS-010）。
+        """
+        register_config = getattr(cls, "register_config", None)
+        keys: tuple[str, ...] = getattr(module, "CONFIG_KEYS", ())
+        if not keys or not register_config or self._config_source is None:
+            return
+        config = {
+            key: value
+            for key in keys
+            if (value := self._config_source(key)) is not None
+        }
+        if config:
+            register_config(**config)
+
     async def _load_file(self, path: str, file_sig: tuple[int, int]) -> bool:
         """加载一个外部工具文件：导入模块 → 收集工具类 → 实例化 + on_load → 注册。
 
@@ -183,6 +205,7 @@ class ExternalToolLoader:
         registered: list[BaseTool] = []
         try:
             for cls in tool_classes:
+                self._inject_config(cls, module)
                 tool = cls()
                 await tool.on_load()
                 if self._service.get(tool.name) is not None:
