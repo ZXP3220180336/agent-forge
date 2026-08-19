@@ -462,3 +462,4 @@ _http_client = httpx.AsyncClient(
 - [TOOLS-021 问题记录](../../../../issues/integration/tools/2026-08-19-readfile-encoding-fallback.md)（readFile 编码回退共享）
 - [TOOLS-022 问题记录](../../../../issues/integration/tools/2026-08-19-code-exec-workdir-empty.md)（workdir 空串归一）
 - [TOOLS-023 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-config-injection.md)（web_browse 连接层注入）
+- [TOOLS-024 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-encoding-comment.md)（编码策略注释澄清）

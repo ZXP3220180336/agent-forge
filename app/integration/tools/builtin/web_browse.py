@@ -254,6 +254,8 @@ class WebBrowseTool(BaseTool):
                     )
 
                 content_type = response.headers.get("content-type", "")
+                # 编码检测：Content-Type charset（charset_encoding）优先，缺失默认 utf-8；
+                # 逐 chunk 按该编码解码（errors="replace" 防非法字节崩溃）
                 encoding = response.charset_encoding or "utf-8"
                 parser = _HTMLToTextParser(base_url=str(response.url))
 
