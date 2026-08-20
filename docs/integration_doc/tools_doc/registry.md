@@ -68,7 +68,7 @@ tools = service.get_openai_tools()      # Schema 导出（实际经 selector）
 
 ## 测试
 
-`tests/unit/test_tool_registry_metadata.py`（3 用例）：`all_tools` / `list_by_risk` / `list_by_category` 过滤正确性。注册 / 注销 / 重名路径经 `test_tools.py` 与集成测试间接覆盖。
+`tests/unit/test_tool_registry_metadata.py`（6 用例）：`all_tools` / `list_by_risk` / `list_by_category` 过滤正确性、注销已注册工具、注销不存在工具返回 False、重名注册抛 `ValueError`（不覆盖）。
 
 ## 相关文档
 

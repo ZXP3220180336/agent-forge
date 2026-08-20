@@ -5,6 +5,8 @@ ToolRegistry 元数据查询单元测试
     all_tools / list_by_risk / list_by_category 过滤正确性
 """
 
+import pytest
+
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.registry import ToolRegistry
 from app.integration.tools.security import RiskLevel
@@ -105,3 +107,26 @@ def test_list_by_category_filters():
     assert [t.name for t in reg.list_by_category("file")] == ["write"]
     assert [t.name for t in reg.list_by_category("code")] == ["exec"]
     assert reg.list_by_category("none") == []
+
+
+def test_unregister_removes_tool():
+    """注销已注册工具返回 True，工具从容器移除。"""
+    reg = _registry()
+    assert reg.unregister("read") is True
+    assert reg.get("read") is None
+    assert "read" not in reg.list_tools()
+
+
+def test_unregister_missing_returns_false():
+    """注销不存在的工具返回 False，不抛异常。"""
+    reg = _registry()
+    assert reg.unregister("no_such_tool") is False
+
+
+def test_register_duplicate_raises():
+    """重复注册同名工具抛 ValueError，原实例不被覆盖。"""
+    reg = _registry()
+    with pytest.raises(ValueError, match="已存在"):
+        reg.register(_ReadTool())
+    # 原实例仍在（不覆盖）
+    assert reg.get("read").name == "read"
