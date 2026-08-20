@@ -96,8 +96,8 @@ execute(name, parameters, timeout, max_retries, retry_delay)
     6. 执行（concurrency_safe=False 时 per-tool 锁串行化）：
        重试循环 for attempt in range(max_retries)：
        · asyncio.wait_for(tool.execute(**parameters), timeout)
-       · 成功 → ResultProcessor.truncate_result(result, tool.max_output_length)
-              → 填 execution_time / retry_count → 统计 → 钩子 → 返回
+       · 成功 → 填 execution_time / retry_count → ResultProcessor.truncate_result(result, tool.max_output_length)
+              → 统计 → 钩子 → 返回
        · 返回失败 / 超时 / 异常 → 记 error（normalize_error）→ 统计
        · attempt < max_retries-1 → 退避 asyncio.sleep(retry_delay * 2^attempt)
     7. 审计最终结果（成功 / 失败均 1 条）→ 返回
@@ -134,7 +134,7 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 
 ## 测试状态
 
-`tests/unit/test_tool_executor_components.py`（8 用例）：校验失败归因 / 成功截断 / `concurrency_safe` 串行化与并行 / 审计各路径（成功 / 未注册 / 校验失败 / 工具失败）。既有 `test_tools.py`（信号量 / 基本执行 / 异常释放）+ `test_agent.py`（并行顺序）为回归护栏。
+`tests/unit/test_tool_executor_components.py`（20 用例）：校验失败归因 / 成功截断 / `concurrency_safe` 串行化与并行 / 审计各路径（成功 / 未注册 / 校验失败 / 工具失败）/ 超时优先级三档（调用方显式 > 工具自声明 > 全局）/ 未捕获异常→UNKNOWN / prune_tool_lock 跳过持锁 / 参数 JSON 非 dict、非 str 键 dict、数组拒绝 / retry_count 成功与失败口径 / max_retries=0 两次执行。既有 `test_tools.py`（信号量 / 基本执行 / 异常释放）+ `test_agent.py`（并行顺序）为回归护栏。
 
 ## 设计决策
 
