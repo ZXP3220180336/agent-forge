@@ -65,6 +65,7 @@
 | [TOOLS-046](2026-08-20-fact-duplication.md) | 工具模块文档事实重复（5 处） | P3 | ✅ 已修复 | docs（tools/tool_service/builtin/rca/external） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-047](2026-08-20-fact-duplication-residual.md) | 工具模块文档事实重复收敛遗漏（3 处） | P3 | ✅ 已修复 | docs（tools/executor/external/builtin） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-048](2026-08-20-doc-drift.md) | 工具模块文档轻微漂移与覆盖不全（3 处） | P3 | ✅ 已修复 | docs（builtin/README） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-049](2026-08-20-code-review-fixes.md) | 工具模块代码审查修复批次（重试归因 / SSRF CGNAT / 审计脱敏 / 外部工具冷启动 / RCA 时间锚点 + 15 次要） | P1 | ✅ 已修复 | tools/* + rca/ + container | 2026-08-20 | 2026-08-20 |
 
 ## 新问题登记规范
 

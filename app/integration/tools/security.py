@@ -40,12 +40,18 @@ class RiskLevel(IntEnum):
 class ToolAuditor:
     """审计留痕：记录到结构化日志（event_name="tool_call"）。不拦截执行。"""
 
-    # 敏感键名（含 api_key / token / secret / password / authorization / credential），
-    # 序列化前掩码，防凭据落盘（\b 词边界避免 monkey 等误伤）
+    # 敏感键名（含 api_key / token / secret / password / authorization / credential，
+    # 覆盖驼峰 apiKey / accessToken / passwd 变体与复数），序列化前掩码，防凭据落盘
+    #（词边界避免 monkey 等误伤；(?i) 内联忽略大小写；authoriz\w* / credential\w* 覆盖后缀）
     _SENSITIVE_KEY_RE = re.compile(
-        r"\b(api_?key|token|secret|password|authorization|credential)\b",
-        re.IGNORECASE,
+        r"(?i)\b(api_?key|token|secret|passw(?:ord|d)?|authoriz\w*|credential\w*)\b"
     )
+    # 文本级敏感模式（error / content_preview 兜底掩码）：键值对 / Bearer / sk- 前缀
+    _TEXT_MASK_RE = re.compile(
+        r"(?i)((?:api_?key|token|secret|passw(?:ord|d)?|authoriz\w*|credential\w*)\s*[=:])([^\s,;，；'\"{}]+)"
+    )
+    _BEARER_RE = re.compile(r"(?i)(\bbearer\s+)([A-Za-z0-9._~+/=-]+)")
+    _SK_PREFIX_RE = re.compile(r"\bsk-[A-Za-z0-9]{8,}\b")
 
     def __init__(
         self,
@@ -72,6 +78,18 @@ class ToolAuditor:
         if isinstance(params, list):
             return [self._mask_sensitive(v) for v in params]
         return params
+
+    def _mask_sensitive_text(self, text: str) -> str:
+        """文本级敏感值掩码（error / content_preview 兜底，防自由文本泄露凭据）。
+
+        与键名掩码（_mask_sensitive）互补：自由文本没有键结构，按常见敏感模式
+        掩码——`api_key=...` / `"token": ...` 键值对（保留分隔符）、`Bearer xxx`、
+        `sk-xxx` 前缀。仅掩码匹配值，不破坏其余文本（traceback 可读性）。
+        """
+        text = self._TEXT_MASK_RE.sub(lambda m: m.group(1) + "***", text)
+        text = self._BEARER_RE.sub(lambda m: m.group(1) + "***", text)
+        text = self._SK_PREFIX_RE.sub("sk-***", text)
+        return text
 
     async def record(
         self,
@@ -112,9 +130,12 @@ class ToolAuditor:
             elapsed=round(elapsed, 4),
             retry_count=retry_count,
             params=params_json[: self._params_max_chars],
-            error=error,
+            # error / content 为自由文本，走文本级掩码后落盘（防凭据经错误信息 / 页面内容泄露）
+            error=self._mask_sensitive_text(error) if error else error,
             error_code=error_code.name if error_code else None,
-            content=content_preview[: self._content_preview_chars],
+            content=self._mask_sensitive_text(content_preview)[
+                : self._content_preview_chars
+            ],
         )
 
 
@@ -153,7 +174,7 @@ class SSRFError(Exception):
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """命中内网 / 环回 / 链路本地 / 保留 / 未指定 / 组播段（IPv4-mapped IPv6 先归一）。"""
+    """命中内网 / 环回 / 链路本地 / 保留 / 未指定 / 组播 / 非公网站段（IPv4-mapped IPv6 先归一）。"""
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
     return (
@@ -163,6 +184,7 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_reserved
         or ip.is_unspecified
         or ip.is_multicast
+        or not ip.is_global  # CGNAT（100.64.0.0/10，RFC 6598）等全部 is_* 均为 False，「非公网」兜底拦截
     )
 
 
@@ -181,7 +203,7 @@ def check_host_sync(hostname: str) -> None:
     if any(lowered.endswith(suffix) for suffix in _PRIVATE_TLD_SUFFIXES):
         raise SSRFError(f"目标域名命中内网保留后缀，拒绝访问: {hostname}")
 
-    # 3. 域名解析：任一 IP 命中拦截段即拒绝（防 DNS rebinding）
+    # 3. 域名解析：任一 IP 命中拦截段即拒绝（缓解 DNS rebinding——解析层一次性校验，连接层无法复核）
     try:
         infos = socket.getaddrinfo(lowered, None)
     except socket.gaierror as e:

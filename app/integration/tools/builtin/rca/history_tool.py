@@ -57,7 +57,7 @@ class SearchHistoricalRcaTool(BaseTool):
             return self._invalid_params_result(**kwargs)
 
         query: str = kwargs["query"]
-        top_k: int = int(kwargs.get("top_k", 3))
+        top_k: int = kwargs.get("top_k", 3)  # jsonschema 已保证 integer（1-5）
         cases = search_history(query, top_k=top_k)
 
         if not cases:

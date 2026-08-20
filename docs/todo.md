@@ -1,3 +1,15 @@
+# 2026-08-20 工具模块代码审查修复（TOOLS-049）
+
+> 来源：工具模块整体代码审查（四维度：正确性 / 安全 / 性能 / 规范）。完整生命周期见 [TOOLS-049 问题记录](../issues/integration/tools/2026-08-20-code-review-fixes.md)。
+
+- [x] **重要项 5**：executor 重试全败归因 / SSRF CGNAT 盲区 / 审计脱敏 error+content / 外部工具冷启动扫描 / RCA 证据链时间锚点（各带回归测试）
+- [x] **次要项 15**：executor（execution_time/注释）、loader（_drop_modules 前缀过滤）、assembler（单工具失败隔离）、security（敏感键正则/DNS 注释）、result_processor（docstring）、validator（完整路径）、tool_gateway（__str__ 兜底）、prompts（截断提示）、RCA（FDC 判定/空结果归因/冗余 int）、hooks（async 注释）
+- [x] **取舍项保持现状**：validator schema 缓存 / 嵌套 additionalProperties / getaddrinfo 超时 / loader 重载竞态 / scan_once 线程化 / 裸 IP 拒绝（ADR 保守策略）
+- [x] **文档同步**：executor / security / rca / tool_service / external + ALIGNMENT verify
+- [x] **全量回归**：uv run pytest 通过
+
+---
+
 # RateLimiter 审核问题修复计划
 
 > 来源：`docs/llm/rate_limiter.md` 附录「2026-08-01 代码审核记录」6 个遗留问题。

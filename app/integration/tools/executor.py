@@ -54,7 +54,7 @@ class ToolExecutor:
         self._approval_gate = approval_gate or AutoApprovalGate()
         self._tool_timeout = tool_timeout
         self._tool_max_retries = tool_max_retries
-        # 信号量必须构造期创建（asyncio.Semaphore 与事件循环绑定）
+        # 信号量构造期创建：asyncio 原语 3.10+ 惰性绑定事件循环，构造期创建仅需保证实例就绪
         self._tool_semaphore = asyncio.Semaphore(max_concurrent_tools)
         # per-tool 锁：concurrency_safe=False 的工具同实例内串行化
         self._tool_locks: dict[str, asyncio.Lock] = {}
@@ -108,6 +108,8 @@ class ToolExecutor:
         # 2. 解析执行参数：调用方显式 > 工具自声明 > 全局配置（max_retries 仅调用方 / 全局两档）
         if timeout is None:
             timeout = tool.timeout if tool.timeout is not None else self._tool_timeout
+        # 语义说明：max_retries 实际为「最大执行次数」（range(max_retries)），重试 = 次数 - 1；
+        # 参数名沿契约保留（避免 ToolGateway 契约变动），此处注明避免误解
         max_retries = max_retries if max_retries is not None else self._tool_max_retries
         # 至少执行一次：max_retries=0（或全局配 0）意为「不重试跑一次」，
         # clamp 到 1 避免 range(0) 零次循环产生「未执行」的静默空失败
@@ -252,6 +254,8 @@ class ToolExecutor:
                     f"工具执行超时（{timeout}秒）"
                 )
                 last_error_code = ErrorCode.TIMEOUT
+                # 覆盖上次业务失败结果：全败收尾统一归因「最近一次失败」（超时优先于更早的业务失败）
+                last_result = None
                 elapsed = time.monotonic() - start_time
                 self._stats.record(name, success=False, elapsed=elapsed)
 
@@ -260,6 +264,8 @@ class ToolExecutor:
                     f"工具执行异常: {e!s}"
                 )
                 last_error_code = ErrorCode.UNKNOWN
+                # 同上：异常覆盖更早的业务失败，避免错误归因错位（审计 / 证据链按最终失败归类）
+                last_result = None
                 elapsed = time.monotonic() - start_time
                 self._stats.record(name, success=False, elapsed=elapsed)
 
@@ -271,6 +277,7 @@ class ToolExecutor:
                 await asyncio.sleep(wait)
 
         # 所有重试均失败：retry_count = 实际执行次数（每轮循环 +1，与成功路径 attempt+1 口径一致）
+        # last_result 仅保留「最近一次业务失败」；最后一次为超时 / 异常时回退到 last_error / last_error_code
         result = last_result or ToolResult(
             success=False,
             content="",
@@ -279,7 +286,8 @@ class ToolExecutor:
             retry_count=actual_retries,
         )
         result.retry_count = actual_retries
-        result.execution_time = result.execution_time or 0.0
+        if result.execution_time is None:
+            result.execution_time = 0.0
         return result
 
     def _tool_lock(self, name: str) -> asyncio.Lock:

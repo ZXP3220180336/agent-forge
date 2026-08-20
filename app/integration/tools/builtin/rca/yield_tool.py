@@ -55,6 +55,13 @@ class QueryBatchYieldTool(BaseTool):
         time_range = kwargs.get("time_range")
         records = query_yield(batch_id, time_range=time_range)
         if not records:
+            if time_range:
+                # 区分「窗口内无记录」与「批次不存在」：窗口过滤不应把前者归因为后者
+                return ToolResult(
+                    success=False,
+                    content="",
+                    error=f"批次 '{batch_id}' 在指定时间窗口内无良率记录",
+                )
             return ToolResult(
                 success=False, content="", error=f"未找到批次 '{batch_id}' 的良率记录"
             )
@@ -73,6 +80,7 @@ class QueryBatchYieldTool(BaseTool):
             metadata={
                 "source": "mock_yms",
                 "batch_id": batch_id,
-                "timestamp": records[-1]["timestamp"],
+                # 证据链统一锚点：结果集最近时间点（最新记录，max 取时间最大，与数据顺序无关）
+                "timestamp": max(records, key=lambda r: r["timestamp"])["timestamp"],
             },
         )

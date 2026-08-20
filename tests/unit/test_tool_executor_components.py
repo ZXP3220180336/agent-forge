@@ -416,3 +416,58 @@ async def test_execute_max_retries_zero_failure_not_silent():
     assert result.success is False
     assert result.error == "always fail"  # 有归因错误，非静默空失败
     assert result.retry_count == 1
+
+
+class _TimeoutAfterBusinessFailTool(_ParamTool):
+    """第 1 次返回业务失败，第 2 次起 sleep 触发超时（验证最终归因 = 最近失败）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(self, **kwargs) -> ToolResult:
+        self.calls += 1
+        if self.calls == 1:
+            return ToolResult(success=False, content="", error="业务失败")
+        await asyncio.sleep(0.2)
+        return ToolResult(success=True, content="ok")
+
+
+@pytest.mark.asyncio
+async def test_retry_final_timeout_overrides_earlier_business_failure():
+    """业务失败后超时 → 全败归因最近失败（TIMEOUT 优先于更早业务失败，防归因错位）。"""
+    service = ToolService(tool_max_retries=2, tool_timeout=0.05)
+    service.register(_TimeoutAfterBusinessFailTool())
+
+    result = await service.execute("param_tool", {"count": 1}, retry_delay=0)
+
+    assert result.success is False
+    assert result.error_code == ErrorCode.TIMEOUT
+    assert "超时" in result.error
+    assert result.retry_count == 2
+
+
+class _ExplodeAfterBusinessFailTool(_ParamTool):
+    """第 1 次返回业务失败，第 2 次起抛未捕获异常。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(self, **kwargs) -> ToolResult:
+        self.calls += 1
+        if self.calls == 1:
+            return ToolResult(success=False, content="", error="业务失败")
+        raise RuntimeError("boom")
+
+
+@pytest.mark.asyncio
+async def test_retry_final_exception_overrides_earlier_business_failure():
+    """业务失败后异常 → 全败归因最近失败（UNKNOWN 优先于更早业务失败）。"""
+    service = ToolService(tool_max_retries=2)
+    service.register(_ExplodeAfterBusinessFailTool())
+
+    result = await service.execute("param_tool", {"count": 1}, retry_delay=0)
+
+    assert result.success is False
+    assert result.error_code == ErrorCode.UNKNOWN
+    assert "boom" in result.error
+    assert result.retry_count == 2

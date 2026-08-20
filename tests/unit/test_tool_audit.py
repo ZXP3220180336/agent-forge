@@ -197,3 +197,64 @@ async def test_audit_redacts_sensitive_in_log(caplog):
     rec = caplog.records[0]
     assert "Bearer tok" not in rec.params  # 明文凭据不落盘
     assert "***" in rec.params
+
+
+@pytest.mark.asyncio
+async def test_audit_masks_error_text(caplog):
+    """error 为自由文本时文本级掩码（api_key=... 明文不落盘，键名保留）。"""
+    auditor = ToolAuditor()
+    with caplog.at_level(logging.INFO, logger="app.events"):
+        await auditor.record(
+            tool_name="http_api",
+            risk_level=RiskLevel.L1_WRITE,
+            category="http",
+            success=False,
+            elapsed=0.5,
+            parameters={},
+            error="调用失败: api_key=sk-secret123 认证被拒",
+        )
+
+    rec = caplog.records[0]
+    assert "sk-secret123" not in rec.error
+    assert "api_key=" in rec.error  # 键名保留（供归因）
+    assert "***" in rec.error
+
+
+@pytest.mark.asyncio
+async def test_audit_masks_content_bearer(caplog):
+    """content_preview 含 Bearer token → 掩码后落盘。"""
+    auditor = ToolAuditor()
+    with caplog.at_level(logging.INFO, logger="app.events"):
+        await auditor.record(
+            tool_name="web_browse",
+            risk_level=RiskLevel.L0_READONLY,
+            category="web",
+            success=True,
+            elapsed=0.5,
+            parameters={},
+            content_preview="Dashboard Bearer eyJhbGciOiJIUzI1NiJ9 data",
+        )
+
+    rec = caplog.records[0]
+    assert "eyJhbGciOiJIUzI1NiJ9" not in rec.content
+    assert "Bearer ***" in rec.content
+
+
+@pytest.mark.asyncio
+async def test_audit_masks_sk_prefix_in_text(caplog):
+    """content 含独立 sk- 前缀 token → 掩码。"""
+    auditor = ToolAuditor()
+    with caplog.at_level(logging.INFO, logger="app.events"):
+        await auditor.record(
+            tool_name="search",
+            risk_level=RiskLevel.L0_READONLY,
+            category="search",
+            success=True,
+            elapsed=0.1,
+            parameters={},
+            content_preview="query done sk-abcdef1234567890 result",
+        )
+
+    rec = caplog.records[0]
+    assert "sk-abcdef1234567890" not in rec.content
+    assert "sk-***" in rec.content

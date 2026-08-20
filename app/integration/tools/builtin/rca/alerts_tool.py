@@ -70,6 +70,13 @@ class QueryEquipmentAlertsTool(BaseTool):
 
         if not records:
             scope = equipment_id or "全部设备"
+            if time_range:
+                # 区分「窗口内无记录」与「设备无告警」：窗口过滤不应把前者归因为后者
+                return ToolResult(
+                    success=False,
+                    content="",
+                    error=f"{scope} 在指定时间窗口内无告警 / PM 记录",
+                )
             return ToolResult(
                 success=False,
                 content="",
@@ -89,7 +96,7 @@ class QueryEquipmentAlertsTool(BaseTool):
             metadata={
                 "source": "mock_mes",
                 "equipment_id": equipment_id or "all",
-                # 证据链统一锚点：结果集最近时间点（最新记录，与 yield 口径一致）
-                "timestamp": records[-1]["timestamp"],
+                # 证据链统一锚点：结果集最近时间点（最新记录，max 取时间最大，与数据顺序无关）
+                "timestamp": max(records, key=lambda r: r["timestamp"])["timestamp"],
             },
         )

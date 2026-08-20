@@ -108,7 +108,7 @@ def init_default_tools(self) -> list[str]:
 
 - `builtin.__all__` 由 `_discover_tools()` 自动扫描生成（见 [builtin.md](builtin_doc/builtin.md)）
 - **幂等判断用实例 `tool.name`**（如 `"search"`）而非类名（`SearchTool`），避免重复注册
-- 单工具实例化失败会中断装配循环，`Container` 捕获后降级（`[WARN] 工具初始化失败`）
+- 单工具实例化失败仅跳过该工具并记 warning（不影响其余注册与启动，`ToolAssembler` 内 try/except）
 
 ### 外部工具热加载
 
@@ -117,6 +117,7 @@ def init_default_tools(self) -> list[str]:
 - 惰性检查对齐工业标准「变更 → 下次调用生效」，**无后台任务**
 - 外部工具自动获得 executor 全量横切关注点（校验 / 超时 / 重试 / 截断 / 审计 / 并发 / 审批）
 - `refresh_external_tools()` 手动触发同语义重扫（供未来管理接口）
+- **冷启动可见**：container 启动时主动 `refresh_external_tools()` 扫描一次，外部工具对 LLM 的 `get_openai_tools()` 注入立即可见（`execute` 惰性检查只覆盖运行期增量）
 
 ### 生命周期回收 `shutdown`
 

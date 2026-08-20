@@ -40,6 +40,7 @@ class ResultProcessor:
         """head+tail 截断：len ≤ max_length 原样返回；否则保留前 head + 后 tail。
 
         head = int(max_length * head_ratio)，tail = 余量，中间替换为截断标记。
+        注意：截断结果实际长度 = head + tail + marker 长度（marker 不计入 max_length 上限）。
         """
         limit = self._default_max_length if max_length is None else max_length
         if len(content) <= limit:
@@ -63,9 +64,10 @@ class ResultProcessor:
             result.metadata["truncated"] = True
 
     def normalize_error(self, error: str | None) -> str:
-        """错误归一化：None→''；去首尾空白；压缩多余空行；超长截断（保留头部）。
+        """错误归一化：None→''；去首尾空白；删除空行；超长截断（保留头部）。
 
-        保留换行结构（traceback 可读性），只压缩连续空行。
+        删除全部空白行（含单空行）是现有实现与测试锚定的行为——traceback 可读性
+        依赖行首缩进而非空行分隔，故不保留空行结构。
         """
         if not error:
             return ""

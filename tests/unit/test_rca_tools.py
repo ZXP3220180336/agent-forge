@@ -12,7 +12,12 @@
 import pytest
 
 from app.integration.tools.builtin.rca.alerts_tool import QueryEquipmentAlertsTool
-from app.integration.tools.builtin.rca.data import _in_range, query_fdc, query_yield
+from app.integration.tools.builtin.rca.data import (
+    _deviation_status,
+    _in_range,
+    query_fdc,
+    query_yield,
+)
 from app.integration.tools.builtin.rca.defect_tool import QueryDefectMapTool
 from app.integration.tools.builtin.rca.fdc_tool import QueryFdcParamsTool
 from app.integration.tools.builtin.rca.history_tool import SearchHistoricalRcaTool
@@ -111,6 +116,16 @@ async def test_validation_failure_missing_required():
 
     assert result.success is False
     assert "参数有误" in result.error
+
+
+@pytest.mark.asyncio
+async def test_validation_error_does_not_leak_values():
+    """校验失败错误只回显键名，不回显 kwargs 值（防凭据经 error/审计泄露）。"""
+    result = await QueryBatchYieldTool().execute(batch_id=123)  # 类型错误
+
+    assert result.success is False
+    assert result.error == "参数有误: batch_id"
+    assert "123" not in result.error
 
 
 @pytest.mark.asyncio
@@ -222,3 +237,44 @@ def test_in_range_mixed_full_and_time():
     """一端完整日期另一端缺日期仍补对端日期（原语义保留）。"""
     assert _in_range("2026-08-12 10:00", "2026-08-12 08:00~11:00") is True
     assert _in_range("2026-08-12 12:00", "2026-08-12 08:00~11:00") is False
+
+
+@pytest.mark.asyncio
+async def test_alerts_evidence_anchor_ignores_data_order():
+    """证据链时间锚点 = 结果集最大时间（非末位）：窗口过滤后末位不是最大时锚点仍正确。"""
+    # 窗口排除 ALM-1005（08-13 07:00），剩余 ALM-1001~1004（末位 09:30 非最大）
+    result = await QueryEquipmentAlertsTool().execute(
+        time_range="2026-08-12 00:00~2026-08-12 23:59"
+    )
+
+    assert result.success is True
+    assert result.metadata["timestamp"] == "2026-08-12 13:25"  # ALM-1002，非末位 ALM-1004
+
+
+@pytest.mark.asyncio
+async def test_yield_time_range_empty_distinguishes_from_not_found():
+    """批次存在但窗口内无记录 → 归因「窗口内无记录」，非「批次不存在」（不误导 LLM 证据链）。"""
+    result = await QueryBatchYieldTool().execute(
+        batch_id="LOT-A123", time_range="2026-08-20 00:00~2026-08-21 00:00"
+    )
+
+    assert result.success is False
+    assert "窗口" in result.error
+    assert "未找到批次" not in result.error
+
+
+def test_fdc_deviation_threshold_contract():
+    """FDC 偏离判定契约化：|deviation_pct| >= 5% 判 deviated（含负偏）。"""
+    assert _deviation_status(4.9) == "normal"
+    assert _deviation_status(5.0) == "deviated"
+    assert _deviation_status(-5.0) == "deviated"
+    assert _deviation_status(-4.9) == "normal"
+
+
+def test_query_fdc_derives_status_from_threshold():
+    """query_fdc 按契约阈值派生 status（4.9→normal / 8.9→deviated），不依赖数据源预置值。"""
+    records = query_fdc("ETCH-01")
+    by_dev = {r["deviation_pct"]: r["status"] for r in records}
+    assert by_dev[4.9] == "normal"
+    assert by_dev[8.9] == "deviated"
+    assert by_dev[12.0] == "deviated"

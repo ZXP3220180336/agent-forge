@@ -45,8 +45,16 @@ ALERTS: list[dict] = [
 ]
 
 # ===== FDC 工艺参数（模拟 FDC 时序，多时间点支持窗口过滤） =====
-# status 判定阈值约定：|deviation_pct| >= 5% 判 deviated，< 5% 判 normal
-# （模拟数据按此规则生成；接真实数据源时判定逻辑由此规则承接，见 fdc_tool）
+# status 判定阈值契约：|deviation_pct| >= DEVIATION_THRESHOLD_PCT 判 deviated，否则 normal。
+# 由 query_fdc 按阈值派生 status（覆盖数据源预置字段），消除「数据源字段与契约阈值漂移」。
+DEVIATION_THRESHOLD_PCT = 5.0
+
+
+def _deviation_status(deviation_pct: float) -> str:
+    """按契约阈值判定偏离状态：|deviation_pct| >= 5% → deviated，否则 normal。"""
+    return "deviated" if abs(deviation_pct) >= DEVIATION_THRESHOLD_PCT else "normal"
+
+
 FDC_PARAMS: list[dict] = [
     # ---- ETCH-01 chamber_pressure 时间序列：偏离随时间发展 ----
     {"equipment_id": "ETCH-01", "process_step": "ETCH", "parameter": "chamber_pressure", "unit": "mTorr",
@@ -178,11 +186,15 @@ def query_fdc(
     process_step: str | None = None,
     time_range: str | None = None,
 ) -> list[dict]:
-    """按机台（及可选 step / 时间窗口）查 FDC 参数。"""
+    """按机台（及可选 step / 时间窗口）查 FDC 参数。
+
+    status 按契约阈值（DEVIATION_THRESHOLD_PCT）由 deviation_pct 派生，不依赖数据源预置值。
+    """
     result = [r for r in FDC_PARAMS if r["equipment_id"] == equipment_id]
     if process_step:
         result = [r for r in result if r["process_step"] == process_step]
-    return _apply_time_range(result, time_range)
+    filtered = _apply_time_range(result, time_range)
+    return [{**r, "status": _deviation_status(r["deviation_pct"])} for r in filtered]
 
 
 def query_defects(batch_id: str, wafer_id: str | None = None) -> list[dict]:

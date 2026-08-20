@@ -2,11 +2,16 @@
 web_browse SSRF 防护单元测试
 """
 
+import ipaddress
 import socket
 
 import pytest
 
-from app.integration.tools.security import SSRFError, check_host_sync
+from app.integration.tools.security import (
+    SSRFError,
+    _is_blocked_ip,
+    check_host_sync,
+)
 
 
 @pytest.mark.parametrize(
@@ -81,3 +86,20 @@ def test_ssrf_blocks_dns_failure(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     with pytest.raises(SSRFError):
         check_host_sync("no-such-host.invalid")
+
+
+def test_ssrf_blocks_cgnat_shared_address():
+    """CGNAT 共享地址段（100.64.0.0/10，RFC 6598）命中拦截（is_* 全 False 的兜底网段）。"""
+    assert _is_blocked_ip(ipaddress.ip_address("100.64.0.1")) is True
+    assert _is_blocked_ip(ipaddress.ip_address("100.127.255.254")) is True
+
+
+def test_ssrf_blocks_hostname_resolving_to_cgnat(monkeypatch):
+    """域名解析到 CGNAT 网段 → 拒绝（SSRF 标准绕过网段）。"""
+
+    def fake_getaddrinfo(host, port):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("100.64.0.1", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(SSRFError):
+        check_host_sync("cg.example.com")

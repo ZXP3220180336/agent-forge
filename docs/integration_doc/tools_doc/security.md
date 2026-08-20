@@ -45,7 +45,8 @@
 `record()` 落一条结构化事件到 `app.events` logger（`event_name="tool_call"`），字段：`tool` / `risk_level` / `category` / `success` / `elapsed` / `retry_count` / `params` / `error` / `error_code` / `content`。
 
 - `params` 截断至 `params_max_chars`（默认 1000，防 writeFile 把整文件内容写进日志）
-- **敏感键掩码**：`params` 序列化前对 `api_key` / `token` / `secret` / `password` / `authorization` / `credential` 键值掩码为 `***`（词边界匹配，嵌套 dict / list 递归，防凭据落盘）
+- **敏感键掩码**：`params` 序列化前对 `api_key` / `token` / `secret` / `password` / `authorization` / `credential` 键值掩码为 `***`（词边界匹配，覆盖驼峰 / passwd / 复数变体，嵌套 dict / list 递归，防凭据落盘）
+- **error / content 文本级掩码**：自由文本无键结构，按敏感模式兜底掩码（`key=值` 键值对保留分隔符 / `Bearer xxx` / `sk-xxx` 前缀），防错误信息与页面内容经审计日志泄露凭据
 - `content` 预览截断至 `content_preview_chars`（默认 200）
 - `enabled=True` 默认常开（不设 settings 开关，防静默关闭安全审计；`enabled` 参数供测试注入）
 
@@ -61,7 +62,7 @@
 
 `security.py` 提供 URL 主机校验（`web_browse` / `http_api` 共享，经 httpx `event_hooks["request"]` 注入每个请求含重定向跳）：
 
-- `check_host_sync` / `check_host_async`：裸 IP 拒绝（保守策略含公网）→ 内网保留后缀（`.internal` / `.local` / `.corp` 等）拒绝 → `getaddrinfo` 解析后命中内网 · 环回 · 链路本地 · 保留 · 未指定 · 组播段拒绝（防 DNS rebinding；DNS 异步版经 `asyncio.to_thread` 不阻塞）
+- `check_host_sync` / `check_host_async`：裸 IP 拒绝（保守策略含公网）→ 内网保留后缀（`.internal` / `.local` / `.corp` 等）拒绝 → `getaddrinfo` 解析后命中内网 · 环回 · 链路本地 · 保留 · 未指定 · 组播 · **非公网站段**拒绝（`not ip.is_global` 兜底拦截 CGNAT 100.64.0.0/10 等 `is_*` 全 False 的绕过网段；DNS rebinding 为解析层缓解，连接层无法复核；DNS 异步版经 `asyncio.to_thread` 不阻塞）
 - `ssrf_on_request(request)`：httpx 请求钩子，请求前校验 `request.url.host`，命中抛 `SSRFError` 中断请求
 - `SSRFError`：业务拦截异常，工具捕获归因返回（如 `"请求被安全策略拦截（SSRF 防护）"`）
 
@@ -99,7 +100,7 @@
 
 ## 测试状态
 
-`tests/unit/test_tool_audit.py`（10 用例）：RiskLevel 排序 / record 字段完整性 / L2→WARNING、L0→INFO / enabled=False 静默 / params 截断 / error_code 字段 / error_code 默认 None / 敏感键掩码（params 脱敏 / 审计日志脱敏）。
+`tests/unit/test_tool_audit.py`（13 用例）：RiskLevel 排序 / record 字段完整性 / L2→WARNING、L0→INFO / enabled=False 静默 / params 截断 / error_code 字段 / error_code 默认 None / 敏感键掩码（params 脱敏 / 审计日志脱敏 / error 文本脱敏 / content Bearer 与 sk- 脱敏）。
 `tests/unit/test_tool_approval.py`（5 用例）：审批通道——默认放行 / 拒绝拦截 / 不触发 / 审计留痕。
 
 ## 设计决策

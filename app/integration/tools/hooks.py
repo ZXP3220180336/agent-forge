@@ -17,7 +17,10 @@ class ExecutionHooks:
         self._hooks: list[Callable] = []
 
     def add(self, hook: Callable) -> None:
-        """添加钩子。签名：async def hook(tool_name, parameters, result)。"""
+        """添加钩子。签名：async def hook(tool_name, parameters, result)。
+
+        钩子应为 async 函数（同步钩子在事件循环内执行，阻塞 IO 会阻塞主循环）。
+        """
         self._hooks.append(hook)
 
     async def run(

@@ -41,7 +41,7 @@ class ToolResult:
     def __str__(self) -> str:
         if self.success:
             return self.content
-        return f"错误: {self.error}"
+        return f"错误: {self.error or '未知错误'}"
 
 
 @runtime_checkable

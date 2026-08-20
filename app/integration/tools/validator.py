@@ -105,9 +105,9 @@ class ParameterValidator:
         return f"参数 '{field}' {error.message}"
 
     def _field_name(self, error: Any) -> str:
-        """从 error.path 取末段作为字段名；无 path 时兜底 '参数'。"""
+        """从 error.path 拼完整路径（嵌套字段保留父路径，对 LLM 归因更精确）；无 path 兜底 '参数'。"""
         if error.path:
-            return str(error.path[-1])
+            return ".".join(str(p) for p in error.path)
         return "参数"
 
     def _extract_quoted(self, message: str) -> str:

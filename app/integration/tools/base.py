@@ -162,10 +162,11 @@ class BaseTool(ABC):
         """参数校验失败的结果：统一错误格式（中文归因，供 LLM 修正）。
 
         各工具 execute 校验兜底共用，避免重复 `ToolResult(success=False, content="", error=...)`。
+        只回显键名不回显值：kwargs 可能含凭据（如 headers 的 Authorization），
+        完整 repr 会经 error → 审计日志 → LLM 泄露（见审计脱敏策略）。
         """
-        return ToolResult(
-            success=False, content="", error=f"参数有误: {kwargs!s}"
-        )
+        keys = ", ".join(kwargs) or "无参数"
+        return ToolResult(success=False, content="", error=f"参数有误: {keys}")
 
     def validation_issues(self, **kwargs) -> list[str]:
         """返回参数校验问题（中文描述列表）；空列表 = 通过。

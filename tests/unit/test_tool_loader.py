@@ -91,6 +91,16 @@ async def test_load_new_tool(service, loader, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scanned_tools_visible_to_openai_tools(service, loader, tmp_path):
+    """外部工具扫描注册后注入 LLM 工具列表（get_openai_tools 可见，冷启动扫描的价值点）。"""
+    _write_tool_file(tmp_path, "echo_tool.py", _tool_source("echo"))
+    await loader.scan_once()
+
+    names = {t["function"]["name"] for t in service.get_openai_tools()}
+    assert "echo" in names
+
+
+@pytest.mark.asyncio
 async def test_add_file_on_later_scan(service, loader, tmp_path):
     """已有目录再新增文件 → 下次 scan 注册。"""
     _write_tool_file(tmp_path, "a.py", _tool_source("alpha"))
@@ -396,6 +406,22 @@ def test_drop_modules_cleans_new_entries():
 
     assert "app.integration.tools.external._ghost" not in sys.modules
     assert before <= set(sys.modules)  # 原有模块不受影响
+
+
+def test_drop_modules_keeps_third_party_packages():
+    """_drop_modules 只清理工具包命名空间，保留工具拉入的第三方共享包（防单例漂移）。"""
+    before = set(sys.modules)
+    ghost = ModuleType("app.integration.tools.external._ghost")
+    third_party = ModuleType("fake_third_party_pkg")
+    sys.modules["app.integration.tools.external._ghost"] = ghost
+    sys.modules["fake_third_party_pkg"] = third_party
+
+    ExternalToolLoader._drop_modules(before)
+    try:
+        assert "app.integration.tools.external._ghost" not in sys.modules
+        assert "fake_third_party_pkg" in sys.modules  # 第三方共享包保留
+    finally:
+        sys.modules.pop("fake_third_party_pkg", None)
 
 
 @pytest.mark.asyncio

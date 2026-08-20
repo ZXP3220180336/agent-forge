@@ -198,13 +198,16 @@ class ExternalToolLoader:
 
     @staticmethod
     def _drop_modules(before: set[str]) -> None:
-        """清理导入过程中新增的 sys.modules 条目（工具模块 + 其兄弟模块）。
+        """清理导入过程中新增的 sys.modules 条目（仅工具包命名空间下的模块）。
 
-        工具文件相对导入的兄弟模块（如 `_helper.py`）若不清理，重载时
-        `from . import _helper` 命中旧缓存，多文件工具「变更 → 下次生效」失效。
+        工具模块 + 相对导入的兄弟模块（如 `app.integration.tools.external._helper`）
+        若不清理，重载时命中旧缓存，「变更 → 下次生效」失效。
+        只清 `_EXTERNAL_PKG` 前缀：工具文件拉入的第三方包（如 requests）属共享库，
+        逐出会触发其它协程下次 import 重新执行模块体（单例身份漂移），须保留。
         """
         for name in set(sys.modules) - before:
-            sys.modules.pop(name, None)
+            if name.startswith(_EXTERNAL_PKG):
+                sys.modules.pop(name, None)
 
     async def _load_file(self, path: str, file_sig: tuple[int, int]) -> bool:
         """加载一个外部工具文件：导入模块 → 收集工具类 → 实例化 + on_load → 注册。

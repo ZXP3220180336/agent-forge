@@ -49,7 +49,9 @@
 
 ### 重试与超时
 
-`asyncio.wait_for(tool.execute(...), timeout)` 包裹每次尝试；重试循环 `range(max_retries)`（默认 3，含首次；**至少执行 1 次**——`max_retries=0` 视为「不重试跑一次」，clamp 到 1），失败后退避 `retry_delay * 2^attempt`（1s / 2s / 4s）。参数校验失败 / 未注册 / JSON 解析失败**不重试**（直接返回）。
+`asyncio.wait_for(tool.execute(...), timeout)` 包裹每次尝试；重试循环 `range(max_retries)`（`max_retries` 实为**最大执行次数**——重试 = 次数 - 1，参数名沿契约保留；默认 3，含首次；**至少执行 1 次**——`max_retries=0` 视为「不重试跑一次」，clamp 到 1），失败后退避 `retry_delay * 2^attempt`（1s / 2s / 4s）。参数校验失败 / 未注册 / JSON 解析失败**不重试**（直接返回）。
+
+**全败归因**：重试耗尽后的最终失败归因 = **最近一次尝试**——业务失败记录其业务码；后续超时 / 异常会**覆盖**更早的业务失败（最终 `error_code` 反映真正的最后一次失败，避免把最终超时归因到早前业务错误）。
 
 **超时优先级（调用方显式 > 工具自声明 > 全局配置）**：`execute(timeout=...)` 显式传入最高优先；否则用工具声明的 `BaseTool.timeout`（如 code_exec 60s / readFile 5s）；两者均缺省时用全局 `tool_timeout`（默认 30s）。工具按自身耗时特征声明默认值，编排层可按需覆盖。
 
@@ -77,7 +79,7 @@ ToolExecutor（依赖注入，无 settings 直接依赖）
 └── _tool_locks          → per-tool 串行化锁（concurrency_safe=False）
 ```
 
-组件全部构造期注入（`ToolService` 装配，可自定义替换），信号量构造期创建（与事件循环绑定）。
+组件全部构造期注入（`ToolService` 装配，可自定义替换），信号量构造期创建（asyncio 原语 3.10+ 惰性绑定事件循环，构造期创建仅保证实例就绪）。
 
 ## 执行流程
 
@@ -134,7 +136,7 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 
 ## 测试状态
 
-`tests/unit/test_tool_executor_components.py`（20 用例）：校验失败归因 / 成功截断 / `concurrency_safe` 串行化与并行 / 审计各路径（成功 / 未注册 / 校验失败 / 工具失败）/ 超时优先级三档（调用方显式 > 工具自声明 > 全局）/ 未捕获异常→UNKNOWN / prune_tool_lock 跳过持锁 / 参数 JSON 非 dict、非 str 键 dict、数组拒绝 / retry_count 成功与失败口径 / max_retries=0 两次执行。既有 `test_tools.py`（信号量 / 基本执行 / 异常释放）+ `test_agent.py`（并行顺序）为回归护栏。
+`tests/unit/test_tool_executor_components.py`（26 用例）：校验失败归因 / 成功截断 / `concurrency_safe` 串行化与并行 / 审计各路径（成功 / 未注册 / 校验失败 / 工具失败）/ 超时优先级三档（调用方显式 > 工具自声明 > 全局）/ 未捕获异常→UNKNOWN / prune_tool_lock 跳过持锁 / 参数 JSON 非 dict、非 str 键 dict、数组拒绝 / retry_count 成功与失败口径 / max_retries=0 两次执行 / **全败归因最近失败**（业务失败后超时 → TIMEOUT；业务失败后异常 → UNKNOWN）。既有 `test_tools.py`（信号量 / 基本执行 / 异常释放）+ `test_agent.py`（并行顺序）为回归护栏。
 
 ## 设计决策
 

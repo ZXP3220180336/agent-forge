@@ -247,6 +247,12 @@ class Container:
             self._errors.append(f"工具初始化失败: {e}")
             logger.warning("工具初始化失败（服务降级）: %s", e)
 
+        # 冷启动即扫描外部工具：get_openai_tools() 对 LLM 可见（execute 惰性检查仅覆盖运行期增量）
+        try:
+            await self.tool_service.refresh_external_tools()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("外部工具冷启动扫描失败（不影响启动）: %s", e)
+
         # 5. 任务调度服务（并发 Agent 任务信号量）
         self.task_service = TaskService(
             max_concurrent=settings.agent_max_concurrent_tasks

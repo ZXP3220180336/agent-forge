@@ -72,7 +72,7 @@ loader 每次操作记录结构化日志（`app.tools.external`）：加载成�
 | `maybe_refresh` | `async () -> None` | execute 入口调用：目录签名变化才重扫（签名不变零开销返回） |
 | `scan_once` | `async () -> None` | 手动重扫：应用磁盘 diff（新增 / 修改 / 删除），幂等 |
 
-`ToolService` 封装（对外入口）：`execute` 内部自动惰性检查；`refresh_external_tools()` 手动触发重扫。
+`ToolService` 封装（对外入口）：`execute` 内部自动惰性检查；`refresh_external_tools()` 手动触发重扫；container 启动时主动调一次（外部工具冷启动即对 LLM 的 `get_openai_tools()` 注入可见）。
 
 ## 外部工具编写约定
 
