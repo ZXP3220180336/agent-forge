@@ -1,7 +1,7 @@
 # 工具模块问题追踪
 
 > **用途**：登记 Integration 层工具模块（`app/integration/tools/` 及其跨模块关联方）审查/审核发现的问题，追踪从发现 → 分析 → 修复 → 验证的完整生命周期。
-> **更新日期**：2026-08-19
+> **更新日期**：2026-08-20
 > **关联**：[工具模块接口文档](../../../docs/integration_doc/tools_doc/tools.md) · [builtin 工具说明](../../../docs/integration_doc/tools_doc/builtin_doc/builtin.md)
 
 ## 状态图例
@@ -54,6 +54,13 @@
 | [TOOLS-035](2026-08-20-rca-b100-timeline.md) | RCA 对照批次 LOT-B100 落在异常机台，时间线有张力 | P3 | ✅ 已修复 | rca/data（对照批次解耦） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-036](2026-08-20-rca-fdc-threshold.md) | RCA FDC 偏离判定阈值无显式规则 | P3 | ✅ 已修复 | rca/data（阈值契约化） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-037](2026-08-20-http-api-error-redaction.md) | http_api 校验失败回显完整参数，headers 凭据泄露 | P3 | ✅ 已修复 | external/http_api（错误脱敏） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-038](2026-08-20-security-doc-stale.md) | security.md 文档状态与代码不符（脱敏表述 + 审计测试数） | P3 | ✅ 已修复 | docs security.md | 2026-08-20 | 2026-08-20 |
+| [TOOLS-039](2026-08-20-rca-doc-stale.md) | rca.md 证据链 metadata 描述不符 + 测试数 | P3 | ✅ 已修复 | docs rca.md | 2026-08-20 | 2026-08-20 |
+| [TOOLS-040](2026-08-20-builtin-doc-stale.md) | builtin.md 8 处文档状态与代码不符 | P3 | ✅ 已修复 | docs builtin.md | 2026-08-20 | 2026-08-20 |
+| [TOOLS-041](2026-08-20-registry-test-coverage.md) | registry.md 测试覆盖夸大 + 注销/重名无测试 | P3 | ✅ 已修复 | registry + test_tool_registry_metadata | 2026-08-20 | 2026-08-20 |
+| [TOOLS-042](2026-08-20-executor-doc-stale.md) | executor.md 测试数 + 成功分支顺序不符 | P3 | ✅ 已修复 | docs executor.md | 2026-08-20 | 2026-08-20 |
+| [TOOLS-043](2026-08-20-tool-service-doc-stale.md) | tool_service.md 内置工具枚举过时（5→10） | P3 | ✅ 已修复 | docs tool_service.md | 2026-08-20 | 2026-08-20 |
+| [TOOLS-044](2026-08-20-selector-comment-stale.md) | selector.py 代码注释陈旧（5→10 工具） | P3 | ✅ 已修复 | tools/selector.py | 2026-08-20 | 2026-08-20 |
 
 ## 新问题登记规范
 
