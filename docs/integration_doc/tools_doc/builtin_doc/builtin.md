@@ -64,7 +64,7 @@ Tool 层 (BaseTool)            ← builtin 子模块，每个工具一个 execut
 
 ## 自动发现机制
 
-`builtin/__init__.py`（67 行）实现了一套「扫描目录 + 反射收集 + 属性访问兜底」的自动发现机制。
+`builtin/__init__.py`（66 行）实现了一套「扫描目录 + 反射收集 + 属性访问兜底」的自动发现机制。
 
 ### 发现流程
 
@@ -393,7 +393,7 @@ _http_client = httpx.AsyncClient(
 - **跳过 `<script>` / `<style>` 内容**（`_skip_tag` 标志），只保留正文
 - 提取 `<title>` 页面标题；`pre` 标签保留原始空白（不 strip）
 - 块级元素（`BLOCK_TAGS`：p, div, br, h1-h6, li, tr, td, th, blockquote, pre）自动换行
-- 收集 `<a>` 链接：过滤 `#` 与 `javascript:` 开头 href；链接显示文本截断 80 字符；`get_links_formatted(max_links=20)` 用 `urljoin(base_url, url)` 转绝对地址并**去重**，按 Markdown `[text](url)` 格式输出
+- 收集 `<a>` 链接：过滤 `#` 与 `javascript:` 开头 href；链接显示文本截断 80 字符；`get_links_formatted(max_links=20)` 用 `urljoin(base_url, url)` 转绝对地址并**去重**，按 Markdown `[text](url)` 格式输出（无显示文本的链接输出裸地址）；链接数超过 `max_links`（20）时追加 `...（还有 N 个链接）` 提示
 - HTML 实体解码用 `html.unescape()`（Python 3.9+ 移除了 `HTMLParser.unescape`，注释中已注明）
 
 **返回内容结构（多行拼接）：**

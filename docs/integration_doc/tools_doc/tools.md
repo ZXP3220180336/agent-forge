@@ -116,27 +116,26 @@ ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#
 
 ## 内置工具
 
-`builtin/` 自动发现 `BaseTool` 子类（无需注册代码）。各工具风险分级与分类：
+`builtin/` 自动发现 `BaseTool` 子类（无需注册代码）。10 个内置工具及其注册名：
 
-| 工具 | 注册名 | 风险级 | 分类 | 并发安全 | 默认超时 |
-| --- | --- | --- | --- | --- | --- |
-| SearchTool | `search` | L0 只读 | search | ✅ | 15s |
-| ReadFileTool | `readFile` | L0 只读 | file | ✅ | 5s |
-| WriteFileTool | `writeFile` | L1 写 | file | ❌ 串行化 | 5s |
-| CodeExecTool | `code_exec` | L2 危险 | code | ❌ 串行化 | 60s |
-| WebBrowseTool | `web_browse` | L0 只读 | web | ✅ | 15s |
-| QueryBatchYieldTool | `query_batch_yield` | L0 只读 | yield | ✅ | 30s |
-| QueryEquipmentAlertsTool | `query_equipment_alerts` | L0 只读 | equipment | ✅ | 30s |
-| QueryFdcParamsTool | `query_fdc_params` | L0 只读 | fdc | ✅ | 30s |
-| QueryDefectMapTool | `query_defect_map` | L0 只读 | defect | ✅ | 30s |
-| SearchHistoricalRcaTool | `search_historical_rca` | L0 只读 | history | ✅ | 30s |
+| 工具 | 注册名 | 职责 |
+| --- | --- | --- |
+| SearchTool | `search` | 网络搜索（Tavily） |
+| ReadFileTool | `readFile` | 读取文件 |
+| WriteFileTool | `writeFile` | 写入文件 |
+| CodeExecTool | `code_exec` | 终端命令执行 |
+| WebBrowseTool | `web_browse` | 网页内容抓取 |
+| QueryBatchYieldTool | `query_batch_yield` | 批次良率查询 |
+| QueryEquipmentAlertsTool | `query_equipment_alerts` | 设备告警 / PM 查询 |
+| QueryFdcParamsTool | `query_fdc_params` | FDC 参数偏离查询 |
+| QueryDefectMapTool | `query_defect_map` | 缺陷模式查询 |
+| SearchHistoricalRcaTool | `search_historical_rca` | 历史案例检索 |
 
-详见 [内置工具说明](builtin_doc/builtin.md)。工具实例化不依赖外部服务（API Key 执行时才需要），个别注册失败不影响启动。
+各工具实现细节（风险分级 / 分类 / 并发安全 / 默认超时 / 参数 Schema）见 [内置工具说明](builtin_doc/builtin.md)；RCA 场景工具契约见 [RCA 工具说明](builtin_doc/rca.md)。工具实例化不依赖外部服务（API Key 执行时才需要），个别注册失败不影响启动。
 
 ## 外部工具（热加载）
 
 `external/` 目录下的 `BaseTool` 子类由 `ExternalToolLoader` 动态发现并注册（对齐工业热插拔「内嵌式可信插件」档）。惰性检查 / 生命周期钩子 / 配置注入 / 信任边界 / 编写约定见 [外部工具热加载](external.md)——状态只在此维护，本文不重复。
-
 
 ## 配置关联
 

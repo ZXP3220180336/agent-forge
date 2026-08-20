@@ -63,6 +63,8 @@
 | [TOOLS-044](2026-08-20-selector-comment-stale.md) | selector.py 代码注释陈旧（5→10 工具） | P3 | ✅ 已修复 | tools/selector.py | 2026-08-20 | 2026-08-20 |
 | [TOOLS-045](2026-08-20-evolution-narrative-residual.md) | 工具模块文档演进叙事残留（4 处） | P3 | ✅ 已修复 | docs（result_processor/builtin/external） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-046](2026-08-20-fact-duplication.md) | 工具模块文档事实重复（5 处） | P3 | ✅ 已修复 | docs（tools/tool_service/builtin/rca/external） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-047](2026-08-20-fact-duplication-residual.md) | 工具模块文档事实重复收敛遗漏（3 处） | P3 | ✅ 已修复 | docs（tools/executor/external/builtin） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-048](2026-08-20-doc-drift.md) | 工具模块文档轻微漂移与覆盖不全（3 处） | P3 | ✅ 已修复 | docs（builtin/README） | 2026-08-20 | 2026-08-20 |
 
 ## 新问题登记规范
 

@@ -162,7 +162,7 @@ app/integration/
 | `ToolAssembler` | assembler.py | 内置工具幂等装配 |
 | `ExternalToolLoader` | loader.py | 外部工具热加载（execute 惰性检查 + 生命周期钩子） |
 
-**内置工具**（`builtin/` 自动发现，`BaseTool` 子类即注册）：`search`（Tavily 搜索）/ `readFile` / `writeFile` / `code_exec`（危险命令黑名单 + L2 分级）/ `web_browse`（自实现 HTML→文本解析）。风险分级见 [安全文档](tools_doc/security.md)。
+**内置工具**（`builtin/` 自动发现，`BaseTool` 子类即注册）：`search`（Tavily 搜索）/ `readFile` / `writeFile` / `code_exec`（危险命令黑名单 + L2 分级）/ `web_browse`（自实现 HTML→文本解析）/ RCA 5 工具（`query_batch_yield` 等，见 [RCA 工具](tools_doc/builtin_doc/rca.md)）。风险分级见 [安全文档](tools_doc/security.md)。
 
 **外部工具**（`external/` + `ExternalToolLoader`）：文件放入目录即被 `execute` 惰性检查发现，下次调用生效（无后台任务），见 [外部工具热加载](tools_doc/external.md)。
 

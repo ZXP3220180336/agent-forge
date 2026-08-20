@@ -107,7 +107,7 @@ class MyTool(BaseTool):
 
 **约定要点**：
 
-1. **命名唯一**：`name` 不得与 builtin（10 个：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse` / `query_batch_yield` / `query_equipment_alerts` / `query_fdc_params` / `query_defect_map` / `search_historical_rca`）或已加载工具冲突
+1. **命名唯一**：`name` 不得与 builtin（内置工具注册名清单见 [builtin.md](builtin_doc/builtin.md)「开发新工具要点」）或已加载工具冲突
 2. **配置注入**：模块级声明 `CONFIG_KEYS`（settings 键元组）+ 类实现 `register_config`——loader 加载时从装配根绑定的 `config_source`（settings 读取器）取值注入，路径与内置工具一致；未声明 `CONFIG_KEYS` 或不实现 `register_config` 则跳过注入
 3. **单文件自包含**：建议一个文件一个工具，共享逻辑放 `_` 前缀文件（不参与扫描）；跨文件 `from . import helper` 的兄弟模块随工具文件加载 / 卸载一起清理（`_load_file` 快照 sys.modules 追踪，`_unload_file` 一并 pop），改 helper 后重载工具文件即生效
 4. **信任边界**：`external/` 与应用**同信任级别**——加载即执行任意 Python 代码，只放受信任工具
