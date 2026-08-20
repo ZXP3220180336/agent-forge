@@ -134,7 +134,7 @@ def init_default_tools(self) -> list[str]:
 ## 使用示例
 
 ```python
-# 执行内置工具（search / readFile / writeFile / code_exec / web_browse）
+# 执行内置工具（共 10 个：search / readFile / writeFile / code_exec / web_browse + RCA 5 个，此处以 search 为例）
 result = await container.tool_service.execute(
     name="search",
     parameters={"query": "良率 RCA 案例"},
