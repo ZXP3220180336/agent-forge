@@ -61,6 +61,8 @@
 | [TOOLS-042](2026-08-20-executor-doc-stale.md) | executor.md 测试数 + 成功分支顺序不符 | P3 | ✅ 已修复 | docs executor.md | 2026-08-20 | 2026-08-20 |
 | [TOOLS-043](2026-08-20-tool-service-doc-stale.md) | tool_service.md 内置工具枚举过时（5→10） | P3 | ✅ 已修复 | docs tool_service.md | 2026-08-20 | 2026-08-20 |
 | [TOOLS-044](2026-08-20-selector-comment-stale.md) | selector.py 代码注释陈旧（5→10 工具） | P3 | ✅ 已修复 | tools/selector.py | 2026-08-20 | 2026-08-20 |
+| [TOOLS-045](2026-08-20-evolution-narrative-residual.md) | 工具模块文档演进叙事残留（4 处） | P3 | ✅ 已修复 | docs（result_processor/builtin/external） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-046](2026-08-20-fact-duplication.md) | 工具模块文档事实重复（5 处） | P3 | ✅ 已修复 | docs（tools/tool_service/builtin/rca/external） | 2026-08-20 | 2026-08-20 |
 
 ## 新问题登记规范
 

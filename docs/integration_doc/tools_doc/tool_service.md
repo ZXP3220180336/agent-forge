@@ -112,11 +112,10 @@ def init_default_tools(self) -> list[str]:
 
 ### 外部工具热加载
 
-`execute` 入口先调 `ExternalToolLoader.maybe_refresh()`：对比 `external/` 目录签名（文件集 + mtime/size），**无变化零开销返回**，变化才重扫（加载 / 重载 / 卸载）。详见 [external.md](external.md)。
+`execute` 入口先调 `ExternalToolLoader.maybe_refresh()`：对比 `external/` 目录签名，变化才重扫（加载 / 重载 / 卸载）。机制 / 生命周期钩子 / 约定见 [external.md](external.md)，本处只列 Facade 视角要点：
 
 - 惰性检查对齐工业标准「变更 → 下次调用生效」，**无后台任务**
 - 外部工具自动获得 executor 全量横切关注点（校验 / 超时 / 重试 / 截断 / 审计 / 并发 / 审批）
-- 生命周期钩子 `on_load()` / `on_unload()` / `health_check()` 由 loader 消费（见 [tools.md](tools.md) BaseTool 契约）
 - `refresh_external_tools()` 手动触发同语义重扫（供未来管理接口）
 
 ### 生命周期回收 `shutdown`
@@ -170,15 +169,7 @@ await container.tool_service.refresh_external_tools()
 
 ## 配置关联
 
-相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config_doc/config.md)）：
-
-| 配置项 | 默认值 | 使用位置 | 说明 |
-| --- | --- | --- | --- |
-| `agent_max_concurrent_tools` | `3` | executor 信号量 | 单任务最大并发工具数 |
-| `tool_timeout` | `30` | `execute` 默认超时（秒） | 单次执行超时 |
-| `tool_max_retries` | `3` | `execute` 默认重试次数 | 最大执行次数（含首次） |
-| `tool_max_output_length` | `100000` | readFile / code_exec 结果截断 | 工具输出最大字符数 |
-| `tool_max_content_length` | `50000` | web_browse 结果截断 | 网页抓取最大字符数 |
+相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config_doc/config.md) 工具配置 / Agent 并发控制节）。
 
 > ToolService 构造时读取 `agent_max_concurrent_tools` 创建信号量；`timeout` / `max_retries` 为调用方可覆盖的默认值。截断上限经内置工具 `register_config` 注入后由 `max_output_length` 属性暴露。
 

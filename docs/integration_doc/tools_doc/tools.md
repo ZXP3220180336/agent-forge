@@ -80,21 +80,7 @@ class ToolGateway(Protocol):
 
 ### `ToolService` 方法
 
-| 方法 | 签名 | 说明 |
-| --- | --- | --- |
-| `register` | `(tool: BaseTool) -> None` | 注册工具；重名抛 ValueError，同时初始化统计 |
-| `unregister` | `(name: str) -> bool` | 注销工具及其统计与 per-tool 锁 |
-| `get` | `(name: str) -> BaseTool \| None` | 获取工具实例 |
-| `list_tools` | `() -> list[str]` | 列出全部工具名 |
-| `list_by_risk` | `(risk_level: RiskLevel) -> list[BaseTool]` | 按风险等级过滤（预留管理界面） |
-| `list_by_category` | `(category: str) -> list[BaseTool]` | 按功能域过滤（预留管理界面） |
-| `get_openai_tools` | `() -> list[dict]` | OpenAI Tool Schema（经选择器选出注入子集） |
-| `get_openai_responses` | `() -> list[dict]` | OpenAI Response Schema（全量） |
-| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0) -> ToolResult` | 执行工具（信号量 + 校验 + 重试 + 截断 + 审计） |
-| `get_stats` | `(name=None) -> dict \| ToolStats \| None` | 单工具或全量统计 |
-| `get_all_stats_summary` | `() -> dict` | 全量统计摘要 |
-| `add_execution_hook` | `(hook: Callable) -> None` | 注册执行钩子（成功路径通知） |
-| `init_default_tools` | `() -> list[str]` | 注册全部内置工具（幂等），返回新增类名列表 |
+ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#toolservice-方法)；本处只列领域契约 `ToolGateway`（见上）。
 
 ### `BaseTool` 抽象契约
 
@@ -149,26 +135,12 @@ class ToolGateway(Protocol):
 
 ## 外部工具（热加载）
 
-`external/` 目录下的 `BaseTool` 子类由 `ExternalToolLoader` 动态发现并注册（对齐工业热插拔「内嵌式可信插件」档，机制详解见 [external.md](external.md)）：
+`external/` 目录下的 `BaseTool` 子类由 `ExternalToolLoader` 动态发现并注册（对齐工业热插拔「内嵌式可信插件」档）。惰性检查 / 生命周期钩子 / 配置注入 / 信任边界 / 编写约定见 [外部工具热加载](external.md)——状态只在此维护，本文不重复。
 
-- **惰性检查**：`execute` 入口对比目录签名，文件新增 / 修改 / 删除后**下一次工具调用即生效**（无后台任务）
-- **生命周期**：`on_load()` / `on_unload()` / `health_check()` 钩子，资源可完整回收
-- **同名拒绝**：与内置 / 已加载工具重名 → 跳过（builtin 权威）
-- **信任边界**：加载即执行任意代码，只放受信任工具；外部工具自行读环境变量配置（容器不注入）
-- **编写约定**：见 [外部工具编写约定](external.md#外部工具编写约定)
 
 ## 配置关联
 
-配置经 `container.py` 注入（tools 模块零 settings 依赖）。相关配置项见 [config 文档](../../config_doc/config.md)：
-
-| 配置项 | 默认值 | 使用位置 |
-| --- | --- | --- |
-| `agent_max_concurrent_tools` | 3 | executor 信号量 |
-| `tool_timeout` | 30 | execute 默认超时（秒）；优先级：调用方显式 > 工具自声明 `timeout` > 本配置 |
-| `tool_max_retries` | 3 | execute 默认重试次数 |
-| `tool_max_output_length` | 100_000 | readFile / code_exec 结果截断 |
-| `tool_max_content_length` | 50_000 | web_browse 结果截断 |
-| `tavily_api_key` / `tavily_search_depth` | "" / "basic" | SearchTool |
+配置经 `container.py` 注入（tools 模块零 settings 依赖）。配置项 / 默认值 / 使用场景见 [config 文档](../../config_doc/config.md)（工具配置 / Agent 并发控制 / Tavily 配置节），本处不重复。
 
 ## 相关文档
 
