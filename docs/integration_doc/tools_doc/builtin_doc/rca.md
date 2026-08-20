@@ -11,7 +11,7 @@
 
 1. **落地产品主链路场景工具**：良率工程师可经 Agent 完成「查良率 → 查告警 → 查 FDC → 查缺陷 → 查历史」的 RCA 排查链
 2. **模拟数据固定可复现**：围绕 LOT-A123 根因故事（非随机），演示与测试稳定；未来接真实数据源仅替换 `data.py`
-3. **证据链 metadata**：每个工具结果带 `source` / 查询键 / `timestamp`（产品「证据链」亮点的载体）
+3. **证据链 metadata**：每个工具结果带数据来源 `source` / 查询键 / 时间戳（`search_historical_rca` 以 `top_confidence` 替代时间戳——metadata 为 `source` / `query` / `top_k` / `top_confidence`；其余 4 工具带 `timestamp` 锚点）——产品「证据链」亮点的载体
 
 ## 工具契约（全部 L0 只读）
 
@@ -54,7 +54,7 @@ search_historical_rca("etch 偏离 良率 骤降") → RCA-001 佐证
 
 ## 测试状态
 
-`tests/unit/test_rca_tools.py`（15 用例）：各工具正常查询 + 证据链 metadata / 参数校验 / 业务未找到 / LOT-A123 根因故事（骤降、FDC 偏离、center_cluster、历史命中）/ 数据可复现 / init_default_tools 装配 10 工具 / 时间窗口过滤（P0-1，含单侧缺省）/ 相关度置信度（P0-2）。
+`tests/unit/test_rca_tools.py`（17 用例）：各工具正常查询 + 证据链 metadata / 参数校验 / 业务未找到 / LOT-A123 根因故事（骤降、FDC 偏离、center_cluster、历史命中）/ 数据可复现 / init_default_tools 装配 10 工具 / 时间窗口过滤（P0-1：FDC 偏离发展、yield 过滤、单侧缺省、end 短格式、`_in_range` 单侧纯时间与混合窗口）/ 相关度置信度（P0-2）。
 
 ## 相关文档
 
