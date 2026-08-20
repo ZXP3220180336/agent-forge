@@ -64,7 +64,7 @@ Tool 层 (BaseTool)            ← builtin 子模块，每个工具一个 execut
 
 ## 自动发现机制
 
-`builtin/__init__.py`（62 行）实现了一套「扫描目录 + 反射收集 + 属性访问兜底」的自动发现机制。
+`builtin/__init__.py`（67 行）实现了一套「扫描目录 + 反射收集 + 属性访问兜底」的自动发现机制。
 
 ### 发现流程
 
@@ -90,6 +90,8 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
             if (issubclass(obj, BaseTool)
                     and obj is not BaseTool
                     and not getattr(obj, "__abstractmethods__", None)):
+                if name in _tool_classes:
+                    logger.warning("工具类名冲突，后者覆盖 %s: %s", name, obj)
                 _tool_classes[name] = obj
     return _tool_classes
 ```
@@ -107,6 +109,7 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
 - 字典的键是**类名**（如 `"SearchTool"`），不是工具的 `name` 属性（如 `"search"`）——二者在 `BaseTool` 设计中是分离的
 - 模块导入失败会**记录 warning 后跳过**（`except Exception` + `logger.warning`），因此单个工具文件有语法/依赖错误时，其余工具仍可正常发现，且失败会暴露在日志中（`tools.builtin`）便于排障
 - `inspect.getmembers` 会遍历模块内的所有类（含被 import 进来的类），但最终收录仍由 `issubclass` 过滤，实践中只有本文件定义的工具类符合条件
+- 类名冲突会**记录 warning 后后者覆盖**（`logger.warning("工具类名冲突，后者覆盖 %s: %s")`）——跨模块类名重复时以发现顺序后者为准，靠日志暴露冲突便于排障（见 TOOLS-027）
 
 ### 属性访问兜底与触发时机
 
@@ -261,7 +264,7 @@ response = await asyncio.to_thread(
 | --- | --- |
 | 描述 | 读取指定路径的文本文件内容 |
 | 参数 | `file_path: string`（必填，绝对路径） |
-| 执行方式 | `aiofiles.open(path, encoding="utf-8")` 异步读取 |
+| 执行方式 | `aiofiles.open(path, "rb")` 二进制读取 + `decode_output` 双解码（UTF-8 → 系统 locale 回退） |
 | 风险级 | L0 只读（category=file，并发安全） |
 | 默认超时 | 5s（本地读快） |
 | 结果截断 | ResultProcessor 统一 head+tail 截断（`max_output_length`，默认 100_000） |
@@ -332,12 +335,20 @@ proc = await asyncio.create_subprocess_shell(
     stderr=asyncio.subprocess.PIPE,
     cwd=workdir,
 )
-stdout, stderr = await proc.communicate()
+cap_bytes = self._max_output_length * 3  # UTF-8 中文最多 3 字节/字符
+stdout, stderr = await asyncio.wait_for(
+    asyncio.gather(
+        _read_stream_capped(proc.stdout, cap_bytes),
+        _read_stream_capped(proc.stderr, cap_bytes),
+    ),
+    timeout=self.timeout,
+)
+returncode = await proc.wait()
 ```
 
 - **黑名单匹配方式**：`startswith` 前缀匹配（大小写不敏感），例如 `rm -rf /` 会拦截 `RM -RF /xxx`；但**不拦截** `... && rm -rf /` 这类非前缀位置的危险子串，属已知局限
 - 空命令（`command` 去除空白后为空）直接返回失败
-- **超时 / 取消清理**：stdout/stderr 读取经 `asyncio.wait_for` 以工具自声明超时（60s）兜底；超时或 executor 外层取消（`CancelledError`）时先 `proc.kill()` 再 `await proc.wait()` 回收后重抛（由 executor 归为 `TIMEOUT`），避免孤儿进程泄漏
+- **超时 / 取消清理**：stdout/stderr 读取经 `asyncio.wait_for` 以工具自声明超时（60s）兜底；内部超时（`TimeoutError`）→ 先 `proc.kill()` 再 `await proc.wait()` 回收后直接返回失败结果「命令执行超时（60 秒）」（不重抛）；executor 外层取消（`CancelledError`）→ 同样 kill + 回收后**重抛**（由 executor 归为 `TIMEOUT`），避免孤儿进程泄漏
 - **流式读取限制内存**：`communicate()` 全量读已废弃，改为 `_read_stream_capped` 流式读 stdout/stderr（保留前 `max_output_length×3` 字节，超出丢弃并继续 drain 防管道阻塞）
 - **输出解码**：共享 [app/shared/encoding.py](../../../shared_doc/encoding.md) 的 `decode_output` 双解码——优先 UTF-8（现代工具 / Python 脚本），非法字节回退系统 locale 编码（Windows 中文环境 cp936，匹配 cmd 系统命令输出）；readFile 复用同一实现；结果截断由 ResultProcessor 统一处理
 - 返回内容：有输出则拼接 stdout（及 `--- stderr ---` 段），否则 `"(无输出)"`
@@ -363,10 +374,10 @@ stdout, stderr = await proc.communicate()
 ```python
 _http_client = httpx.AsyncClient(
     follow_redirects=True,
-    max_redirects=5,
-    timeout=15.0,
+    max_redirects=WebBrowseTool._max_redirects,   # 经 register_config 注入，默认 5
+    timeout=WebBrowseTool._timeout,               # 经 register_config 注入，默认 15.0
     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Chrome/120.0.0.0 Safari/537.36"},
-    event_hooks={"request": [_ssrf_on_request]},
+    event_hooks={"request": [ssrf_on_request]},   # 共享 SSRF 防护（security.py）
 )
 ```
 
@@ -400,7 +411,7 @@ _http_client = httpx.AsyncClient(
 
 - HTTP 状态码 >= 400 → 失败，`metadata` 记录 `url` 与 `status_code`
 - 成功时 `metadata` 记录 `url`、`title`、`status_code`、`content_type`
-- 异常分类：`httpx.TimeoutException` → `"请求超时（15 秒）"`；`httpx.TooManyRedirects` → `"重定向次数过多"`；`httpx.RequestError` → `"请求失败"`；其它 → `"页面解析失败"`
+- 异常分类：`httpx.TimeoutException` → `"请求超时（15 秒）"`；`httpx.TooManyRedirects` → `"重定向次数过多"`；`SSRFError` → `"请求被安全策略拦截（SSRF 防护）"`；`httpx.RequestError` → `"请求失败"`；其它 → `"页面解析失败"`
 
 ---
 
@@ -410,7 +421,7 @@ _http_client = httpx.AsyncClient(
 
 `query_batch_yield`（批次良率）/ `query_equipment_alerts`（设备告警）/ `query_fdc_params`（FDC 参数偏离）/ `query_defect_map`（缺陷模式）/ `search_historical_rca`（历史案例检索）。
 
-- 全部 **L0 只读**，返回内容带**证据链 metadata**（`source` / 查询键 / `timestamp`）
+- 全部 **L0 只读**，返回内容带**证据链 metadata**（`source` / 查询键 / `timestamp`；`search_historical_rca` 为 `source` / `query` / `top_k` / `top_confidence`，无 timestamp）
 - 数据为**固定模拟数据**（LOT-A123 根因故事 + 对照组，可复现）；`search_historical_rca` 当前为关键词匹配，RAG（embedding 召回）列为后续增强
 - 契约 / 排查链示例 / 模拟数据详见 [RCA 工具说明](rca.md)
 
