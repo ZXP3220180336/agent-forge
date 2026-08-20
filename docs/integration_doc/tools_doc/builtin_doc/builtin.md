@@ -349,7 +349,7 @@ returncode = await proc.wait()
 - **黑名单匹配方式**：`startswith` 前缀匹配（大小写不敏感），例如 `rm -rf /` 会拦截 `RM -RF /xxx`；但**不拦截** `... && rm -rf /` 这类非前缀位置的危险子串，属已知局限
 - 空命令（`command` 去除空白后为空）直接返回失败
 - **超时 / 取消清理**：stdout/stderr 读取经 `asyncio.wait_for` 以工具自声明超时（60s）兜底；内部超时（`TimeoutError`）→ 先 `proc.kill()` 再 `await proc.wait()` 回收后直接返回失败结果「命令执行超时（60 秒）」（不重抛）；executor 外层取消（`CancelledError`）→ 同样 kill + 回收后**重抛**（由 executor 归为 `TIMEOUT`），避免孤儿进程泄漏
-- **流式读取限制内存**：`communicate()` 全量读已废弃，改为 `_read_stream_capped` 流式读 stdout/stderr（保留前 `max_output_length×3` 字节，超出丢弃并继续 drain 防管道阻塞）
+- **流式读取限制内存**：`_read_stream_capped` 流式读 stdout/stderr（保留前 `max_output_length×3` 字节，超出丢弃并继续 drain 防管道阻塞）
 - **输出解码**：共享 [app/shared/encoding.py](../../../shared_doc/encoding.md) 的 `decode_output` 双解码——优先 UTF-8（现代工具 / Python 脚本），非法字节回退系统 locale 编码（Windows 中文环境 cp936，匹配 cmd 系统命令输出）；readFile 复用同一实现；结果截断由 ResultProcessor 统一处理
 - 返回内容：有输出则拼接 stdout（及 `--- stderr ---` 段），否则 `"(无输出)"`
 - `success = proc.returncode == 0`；`metadata` 记录 `return_code` 与 `command`
@@ -422,7 +422,7 @@ _http_client = httpx.AsyncClient(
 `query_batch_yield`（批次良率）/ `query_equipment_alerts`（设备告警）/ `query_fdc_params`（FDC 参数偏离）/ `query_defect_map`（缺陷模式）/ `search_historical_rca`（历史案例检索）。
 
 - 全部 **L0 只读**，返回内容带**证据链 metadata**（`source` / 查询键 / `timestamp`；`search_historical_rca` 为 `source` / `query` / `top_k` / `top_confidence`，无 timestamp）
-- 数据为**固定模拟数据**（LOT-A123 根因故事 + 对照组，可复现）；`search_historical_rca` 当前为关键词匹配，RAG（embedding 召回）列为后续增强
+- 数据为**固定模拟数据**（LOT-A123 根因故事 + 对照组，可复现）
 - 契约 / 排查链示例 / 模拟数据详见 [RCA 工具说明](rca.md)
 
 ---

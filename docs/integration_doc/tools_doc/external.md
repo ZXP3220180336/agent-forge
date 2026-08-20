@@ -108,11 +108,11 @@ class MyTool(BaseTool):
 **约定要点**：
 
 1. **命名唯一**：`name` 不得与 builtin（10 个：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse` / `query_batch_yield` / `query_equipment_alerts` / `query_fdc_params` / `query_defect_map` / `search_historical_rca`）或已加载工具冲突
-2. **配置注入**：模块级声明 `CONFIG_KEYS`（settings 键元组）+ 类实现 `register_config`——loader 加载时从装配根绑定的 `config_source`（settings 读取器）取值注入，路径与内置工具一致（TOOLS-010 前为「自行读环境变量」）；未声明 `CONFIG_KEYS` 或不实现 `register_config` 则跳过注入
-3. **单文件自包含**：建议一个文件一个工具，共享逻辑放 `_` 前缀文件（不参与扫描）；跨文件 `from . import helper` 的兄弟模块随工具文件加载 / 卸载一起清理（`_load_file` 快照 sys.modules 追踪，`_unload_file` 一并 pop），改 helper 后重载工具文件即生效（TOOLS-013 修复「兄弟模块缓存残留」）
+2. **配置注入**：模块级声明 `CONFIG_KEYS`（settings 键元组）+ 类实现 `register_config`——loader 加载时从装配根绑定的 `config_source`（settings 读取器）取值注入，路径与内置工具一致；未声明 `CONFIG_KEYS` 或不实现 `register_config` 则跳过注入
+3. **单文件自包含**：建议一个文件一个工具，共享逻辑放 `_` 前缀文件（不参与扫描）；跨文件 `from . import helper` 的兄弟模块随工具文件加载 / 卸载一起清理（`_load_file` 快照 sys.modules 追踪，`_unload_file` 一并 pop），改 helper 后重载工具文件即生效
 4. **信任边界**：`external/` 与应用**同信任级别**——加载即执行任意 Python 代码，只放受信任工具
 5. **无状态优先**：状态由 Agent 核心管理；持连接 / 子进程 / 定时器的工具必须实现 `on_unload()` 完整回收
-6. **生命周期钩子禁反向调用**：`on_load` / `on_unload` 内禁止调用 `execute`（加载流程持 `_scan_lock`（不可重入），反向调用会经 `maybe_refresh` → `scan_once` 二次加锁死锁，见 TOOLS-014）
+6. **生命周期钩子禁反向调用**：`on_load` / `on_unload` 内禁止调用 `execute`（加载流程持 `_scan_lock`，反向调用会死锁，见 [TOOLS-014 问题记录](../../../issues/integration/tools/2026-08-19-loader-scan-lock-deadlock.md)）
 
 > **完整示例**：`app/integration/tools/external/http_api.py`（`http_api`）是随附的热插拔示例——REST API 调用工具，演示了元数据覆写（L1 写 / category=http / timeout=15 / **`requires_approval=True` 写操作需审批**）+ 生命周期钩子（`on_load` 建立 httpx 连接池 / `on_unload` 释放）+ 参数 schema（method 枚举 + url 必填）+ 异常分类归因 + **配置注入**（`CONFIG_KEYS=("tool_http_timeout",)` → `register_config` 注入超时）+ **SSRF 防护**（复用 [security.md](security.md) `ssrf_on_request`，裸 IP / 内网目标拒绝），可作新外部工具模板。
 
