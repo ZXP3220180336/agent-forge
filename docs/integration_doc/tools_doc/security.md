@@ -94,12 +94,12 @@
 1. **未注册工具**：审计兜底 `tool_name` 保留原始名、`risk_level=L0_READONLY`、`category="unknown"`
 2. **参数非 dict**（JSON 解析失败的原始字符串）：审计包装为 `{"raw": str}`，截断 500 字符
 3. **审计失败**：`log_event_async` 异常不影响工具执行（尽力而为）
-4. **密钥脱敏**：列为未来增强（params 截断已降低泄露面）
+4. **密钥脱敏**：已实现（见上方「ToolAuditor 审计」敏感键掩码）——`params` 序列化前掩码敏感键值，params 截断之外再降凭据泄露面
 5. **`requires_approval`**：由 executor 经 `ApprovalGate` 确认，默认 `AutoApprovalGate` 放行；接入真实审批前勿误以为已拦截
 
 ## 测试状态
 
-`tests/unit/test_tool_audit.py`（8 用例）：RiskLevel 排序 / record 字段完整性 / L2→WARNING、L0→INFO / enabled=False 静默 / params 截断 / error_code 字段 / error_code 默认 None。
+`tests/unit/test_tool_audit.py`（10 用例）：RiskLevel 排序 / record 字段完整性 / L2→WARNING、L0→INFO / enabled=False 静默 / params 截断 / error_code 字段 / error_code 默认 None / 敏感键掩码（params 脱敏 / 审计日志脱敏）。
 `tests/unit/test_tool_approval.py`（5 用例）：审批通道——默认放行 / 拒绝拦截 / 不触发 / 审计留痕。
 
 ## 设计决策
