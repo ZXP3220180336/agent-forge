@@ -1,5 +1,5 @@
 # ============================================
-# core/agent/executor.py - ReAct 执行引擎
+# domain/agent/executor.py - ReAct 执行引擎
 # ============================================
 """
 ReAct Agent 实现

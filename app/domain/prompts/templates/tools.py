@@ -1,5 +1,5 @@
 # ============================================
-# core/prompts/templates/tools.py - 工具调用提示词
+# domain/prompts/templates/tools.py - 工具调用提示词
 # ============================================
 
 TOOL_FORMAT_PROMPT = """你可以调用以下工具来完成任务：

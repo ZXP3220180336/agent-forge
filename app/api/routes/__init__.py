@@ -1,5 +1,5 @@
 # ============================================
-# routers/__init__.py
+# routes/__init__.py
 # ============================================
 
 from .chat import router as chat_router

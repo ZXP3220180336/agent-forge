@@ -1,5 +1,5 @@
 # ============================================
-# core/prompts/templates/planning.py - 规划提示词
+# domain/prompts/templates/planning.py - 规划提示词
 # ============================================
 """
 规划提示词（预留 Phase 2）

@@ -1,5 +1,5 @@
 # ============================================
-# routers/chat_router.py - 聊天相关 API 路由
+# routes/chat.py - 聊天相关 API 路由
 # ============================================
 
 from fastapi import APIRouter, Depends, HTTPException

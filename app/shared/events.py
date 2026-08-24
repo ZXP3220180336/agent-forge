@@ -1,11 +1,11 @@
 # ============================================
-# core/events.py - Agent/LLM 层共享 SSE 事件定义
+# shared/events.py - Agent/LLM 层共享 SSE 事件定义
 # ============================================
 """
 统一 SSE 事件类型与构建函数
 ============================
 
-LLM 层（llm_service.py）和 Agent 层（core/agent/）共用此模块，
+LLM 层（llm_service.py）和 Agent 层（executor.py）共用此模块，
 确保两端产出的事件格式一致。
 
 LLM 层产出的事件：

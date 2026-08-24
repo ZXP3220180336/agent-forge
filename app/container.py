@@ -1,5 +1,5 @@
 # ============================================
-# container.py - 装配根（Composition Root，原 app_state.py）
+# container.py - 装配根（Composition Root）
 # ============================================
 
 import asyncio

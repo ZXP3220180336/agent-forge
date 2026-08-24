@@ -1,5 +1,5 @@
 # ============================================
-# core/prompts/templates/system.py - 系统提示词
+# domain/prompts/templates/system.py - 系统提示词
 # ============================================
 
 SYSTEM_PROMPT = """你是 AI Agent，一个能调用工具的智能助手。
