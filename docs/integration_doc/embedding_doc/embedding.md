@@ -2,7 +2,7 @@
 
 > **更新日期**：2026-08-04
 > **模块**：`app/integration/embedding/embedding_service.py`
-> **文档定位**：EmbeddingService 独立说明 —— 文本向量化（单条 / 批量 / 内存缓存）。
+> **文档定位**：EmbeddingService 独立说明 —— 文本向量化（单条 / 批量 / 内存缓存），结构实现 EmbeddingPort 端口。
 
 ---
 
@@ -31,16 +31,19 @@ EmbeddingService 是系统的**文本向量化服务**，封装 OpenAI 兼容的
 ### 与其它服务的关系
 
 ```text
-调用方（记忆服务 / 检索模块 / 向量库写入）
-        │
+领域层消费者（Phase D YieldRcaService / 记忆服务）
+        │  依赖 EmbeddingPort 抽象
         ▼
+EmbeddingPort（app/domain/ports/embedding_port.py）
+        ▲ 结构实现（依赖倒置）
 EmbeddingService（embed / embed_batch / clear_cache / cache_size）
         │
         └──────► AsyncOpenAI（client.chat.completions 同 client，GET /embeddings）
 ```
 
+- `EmbeddingService` 结构实现 `EmbeddingPort` 端口（见 [domain 端口](../../domain_doc/README.md)），领域层消费者只依赖抽象
+- 当前零运行时调用方（RAG 接线在 Phase D：`search_historical_rca` 历史案例向量化）
 - `Container.initialize()` 中复用 `ClientManager.get_client("main")` 作为 client（见 [集成层总览](../README.md)）
-- 是记忆服务（`MemoryService`，预留）规划中「长期记忆向量化」的候选能力（见 [记忆系统（预留）](../../domain_doc/memory_doc/memory.md)）
 
 ### 构造参数
 

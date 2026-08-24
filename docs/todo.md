@@ -1,3 +1,16 @@
+# 2026-08-24 Embedding 端口化落地（Phase B 剩余任务 #4，最后一项）
+
+> 架构文档端口层目标：EmbeddingPort。孤儿服务 EmbeddingService 端口化（结构实现），补测试；RAG 接线留 Phase D。
+
+- [x] `app/domain/ports/embedding_port.py`：EmbeddingPort 协议（embed / embed_batch），ports/__init__ 登记
+- [x] `embedding_service.py`：docstring 标注结构实现 EmbeddingPort（签名已匹配，构造依赖保持）
+- [x] 新增 test_embedding.py（9 用例）：单文本/批量保序/分批切批/缓存命中/缓存穿透/disable_cache/空输入/clear_cache
+- [x] 文档：ALIGNMENT（embedding_service ✅ + 端口登记）/ architecture（EmbeddingPort ✅、Phase B 全完成）/ embedding.md / domain README
+- [x] ADR：`adr/integration/embedding/2026-08-24-embedding-port.md`
+- [x] 验证：全量 pytest + verify_alignment 通过
+
+---
+
 # 2026-08-24 types 通用类型落地（Phase B 剩余任务 #3，最小集）
 
 > 架构文档共享内核目标：通用类型 / 标识。最小集只做有真实消费方的类型（SessionId/UserId 标识 + Messages 消息别名），不做 Task 枚举（Phase C）。

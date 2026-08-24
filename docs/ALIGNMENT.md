@@ -34,6 +34,7 @@
 | app/domain/memory/memory_service.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/short_term.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/working.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
+| app/domain/ports/embedding_port.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 EmbeddingService 测试覆盖 |
 | app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 Agent/LLM 测试覆盖 |
 | app/domain/ports/token_counter.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 TiktokenTokenCounter 测试覆盖 |
 | app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
@@ -54,7 +55,7 @@
 | app/infrastructure/models/database/tool_log.py | ⬜ | docs/infrastructure_doc/model_doc/model.md | (无) | 空文件待实现 |
 | app/integration/vector_store/base.py | ⬜ | docs/integration_doc/README.md | (无) | 空文件待实现 |
 | app/integration/vector_store/milvus.py | ⬜ | docs/integration_doc/README.md | (无) | 空文件待实现 |
-| app/integration/embedding/embedding_service.py | 🔶 | docs/integration_doc/embedding_doc/embedding.md | (无) | 已实现未接线；待补测试 |
+| app/integration/embedding/embedding_service.py | ✅ | docs/integration_doc/embedding_doc/embedding.md | tests/unit/test_embedding.py | 文本向量化（结构实现 EmbeddingPort；RAG 接线待 Phase D） |
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
 | app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪 |
 | app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；专属测试覆盖 fallback 传递/结算 |

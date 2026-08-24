@@ -18,7 +18,7 @@ from openai import AsyncOpenAI
 
 class EmbeddingService:
     """
-    向量化服务。
+    向量化服务（结构实现 EmbeddingPort 端口，见 app/domain/ports/embedding_port.py）。
 
     支持：
     - 单文本嵌入

@@ -110,6 +110,16 @@ Agent 是核心层的**决策与行动核心**，负责编排 LLM 推理与工�
 
 ---
 
+## 领域端口契约（EmbeddingPort）
+
+`app/domain/ports/embedding_port.py` 定义领域层对文本向量化的抽象契约（依赖倒置：领域层消费者依赖该协议，集成层 `EmbeddingService` 结构实现之）：
+
+- **`EmbeddingPort`（Protocol）**：`embed(text)`（单文本）/ `embed_batch(texts)`（批量，自动分批保序）两个方法签名
+
+**详见** [embedding_service 实现](../integration_doc/embedding_doc/embedding.md)
+
+---
+
 ## Prompts 提示词
 
 核心层的**指令层**，为 Agent 提供系统/工具/规划等场景的提示词模板：

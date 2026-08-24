@@ -185,7 +185,8 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | --- | --- | --- | --- | --- |
 | LLMGateway / ToolGateway / TokenCounter | 领域依赖的 LLM / 工具 / token 抽象 | ✅ 三者均已实现（TokenCounter 含 get_encoder/content_to_text 单一事实源） | ✅ | — |
 | Session / Message / Task Repository | 持久化抽象 | ⬜ 未实现 | 🔶 | Phase A |
-| CachePort / VectorStorePort / EmbeddingPort | 缓存 / 向量 / 嵌入抽象 | ⬜ 未实现 | 🔶 | Phase A/B |
+| CachePort / VectorStorePort | 缓存 / 向量抽象 | ⬜ 未实现 | 🔶 | Phase A/D |
+| EmbeddingPort | 嵌入抽象 | ✅ `app/domain/ports/embedding_port.py`（EmbeddingService 结构实现） | ✅ | — |
 | EventPublisher / IdGenerator | 事件发布、ID 生成 | ⬜ 未实现 | 🔶 | Phase B |
 
 #### 集成层
@@ -196,7 +197,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | 可靠性链（重试 / 熔断 / 限流 / 整流 / 结构化降级） | 外部调用可靠性 | ✅ 已实现（llm/ 子包） | ✅ | — |
 | ToolService（拆分 Facade）+ builtin 10 工具 | 工具执行（实现 ToolGateway） | ✅ Facade 聚合六大子组件（Registry/Selector/Validator/Executor/ResultProcessor/Auditor） | ✅ | — |
 | RCA 工具（良率 / 告警 / FDC / wafer / 历史检索） | 良率分析工具链 | ✅ 已实现（builtin/rca 5 工具） | ✅ | — |
-| EmbeddingService（实现 EmbeddingPort） | 文本向量化 | ✅ 已实现（孤儿） | 🔶 | Phase D |
+| EmbeddingService（实现 EmbeddingPort） | 文本向量化 | ✅ 已实现（结构实现 EmbeddingPort；RAG 接线待 Phase D） | 🔶 | Phase D |
 | VectorStore adapter（Milvus） | 向量库检索 | ⬜ 空文件 | 🔶 | Phase D |
 
 #### 基础设施层
@@ -494,7 +495,7 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 - LLMService / ToolService 实现端口；配置注入推广（AgentContext / 内置工具 / TaskService / LLMService Facade）
 - ToolService 拆分（Registry/Executor/Stats/Hooks/Assembler）；dependencies.py 薄化；EmbeddingService 补 getter
 
-架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；TokenCounter 端口落地（tiktoken 隔离到集成层，应用层经端口计数）；统一异常体系落地（shared/exceptions.py，7 异常收敛 + 错误码）；通用类型落地（shared/types.py，标识与消息别名）；DI 统一（C7 部分）；C10 范例升级为全局规范。`🔶 大部分完成（Embedding getter 待做）`
+架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；TokenCounter 端口落地（tiktoken 隔离到集成层，应用层经端口计数）；统一异常体系落地（shared/exceptions.py，7 异常收敛 + 错误码）；通用类型落地（shared/types.py，标识与消息别名）；Embedding 端口化（领域层嵌入抽象 EmbeddingPort，RAG 接线待 Phase D）；DI 统一（C7 部分）；C10 范例升级为全局规范。`✅ Phase B 目标全部达成`
 
 ### Phase C 应用与编排层
 
