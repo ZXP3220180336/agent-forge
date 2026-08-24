@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from app.domain.ports.tool_gateway import ErrorCode
 from app.platform.observability.logger import log_event_async
+from app.shared.exceptions import SSRFError
 
 if TYPE_CHECKING:
     import httpx
@@ -42,7 +43,7 @@ class ToolAuditor:
 
     # 敏感键名（含 api_key / token / secret / password / authorization / credential，
     # 覆盖驼峰 apiKey / accessToken / passwd 变体与复数），序列化前掩码，防凭据落盘
-    #（词边界避免 monkey 等误伤；(?i) 内联忽略大小写；authoriz\w* / credential\w* 覆盖后缀）
+    # （词边界避免 monkey 等误伤；(?i) 内联忽略大小写；authoriz\w* / credential\w* 覆盖后缀）
     _SENSITIVE_KEY_RE = re.compile(
         r"(?i)\b(api_?key|token|secret|passw(?:ord|d)?|authoriz\w*|credential\w*)\b"
     )
@@ -167,10 +168,6 @@ _PRIVATE_TLD_SUFFIXES: tuple[str, ...] = (
     ".test",
     ".example",
 )
-
-
-class SSRFError(Exception):
-    """目标 URL 命中 SSRF 防护规则。"""
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

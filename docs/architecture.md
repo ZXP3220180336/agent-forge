@@ -220,7 +220,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
 | events.py（迁移 + 拆分） | 事件类型 / 领域事件 / SSE 序列化 / EventPublisher | ✅ 位于 `app/shared/` | ✅ | — |
-| exceptions.py（异常体系 → 错误码） | 统一异常与错误码 | 🔶 `app/shared/exceptions.py`（空待实现） | 🔶 | Phase B |
+| exceptions.py（异常体系 → 错误码） | 统一异常与错误码 | ✅ `app/shared/exceptions.py`（统一异常树 + AppErrorCode，7 异常收敛） | ✅ | — |
 | types.py | 通用类型 / 标识 | ⬜ 未实现 | 🔶 | Phase B |
 
 #### 横切与装配根
@@ -500,7 +500,7 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 - LLMService / ToolService 实现端口；配置注入推广（AgentContext / 内置工具 / TaskService / LLMService Facade）
 - ToolService 拆分（Registry/Executor/Stats/Hooks/Assembler）；dependencies.py 薄化；EmbeddingService 补 getter
 
-架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；TokenCounter 端口落地（tiktoken 隔离到集成层，应用层经端口计数）；DI 统一（C7 部分）；C10 范例升级为全局规范。`🔶 大部分完成（exceptions / types / Embedding getter 待做）`
+架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；TokenCounter 端口落地（tiktoken 隔离到集成层，应用层经端口计数）；统一异常体系落地（shared/exceptions.py，7 异常收敛 + 错误码）；DI 统一（C7 部分）；C10 范例升级为全局规范。`🔶 大部分完成（types / Embedding getter 待做）`
 
 ### Phase C 应用与编排层
 

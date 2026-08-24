@@ -26,29 +26,13 @@ from jsonschema import Draft7Validator, ValidationError, validate
 
 from app.integration.llm.retry import ErrorCategory, classify_error
 from app.platform.observability.logger import get_logger
+from app.shared.exceptions import (
+    StructuredRefusalError,
+    StructuredToolCallError,
+    StructuredTruncationError,
+)
 
 logger = get_logger("llm.structured")
-
-
-class StructuredExtractionError(Exception):
-    """结构化提取的 API 边界失败基类（截断/拒答/工具调用），短路不进入降级链。"""
-
-
-class StructuredTruncationError(StructuredExtractionError):
-    """输出被 max_tokens 截断，扩 token 重试后仍不完整。"""
-
-
-class StructuredRefusalError(StructuredExtractionError):
-    """模型拒答（内容安全策略触发），不强行 repair。"""
-
-
-class StructuredToolCallError(StructuredExtractionError):
-    """模型选择调用工具而非输出 JSON（finish_reason=tool_calls）。
-
-    与截断/拒答同级：模型已明确放弃输出结构化数据，降级到更宽松的约束
-    （JSON mode / 纯 prompt）对「模型要调用工具」无意义——反复降级只会
-    浪费调用。短路不进入降级链，抛给调用方按工具调用处理。
-    """
 
 
 # 截断/拒答的 finish_reason 判定集合（问题 2 三态检查）。
@@ -237,7 +221,9 @@ def _collect_schema_error_summaries(
         summaries = []
         for e in Draft7Validator(schema).iter_errors(parsed):
             path = "/".join(str(p) for p in e.absolute_path) or "<root>"
-            summaries.append(f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}")
+            summaries.append(
+                f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}"
+            )
         return summaries
     except Exception as e:  # noqa: BLE001  schema 非法（UnknownType / SchemaError / TypeError）
         logger.error("Schema 校验器异常（schema 可能非法）: %s", e)

@@ -1,3 +1,16 @@
+# 2026-08-24 exceptions 统一异常体系落地（Phase B 剩余任务 #2）
+
+> 架构文档共享内核目标：统一异常与错误码。7 个平级散落异常收敛到 `app/shared/exceptions.py`，集成层 re-export。
+
+- [x] `app/shared/exceptions.py`：AppError 根 + NonRetryableError/BusinessError 两支 + AppErrorCode（7 码）
+- [x] 收敛：retry/structured/security/validator 删本地定义 + re-export（测试零断裂，相关 135 passed）
+- [x] 新增 test_exceptions.py（8 用例）：树结构 / 错误码 / message / ValueError 多重继承 / re-export 兼容
+- [x] 文档：error_handling.md（异常树 + 清单表）/ ALIGNMENT / architecture / todo
+- [x] ADR：`adr/shared/exceptions/2026-08-24-exception-hierarchy.md`
+- [x] 验证：全量 pytest + verify_alignment 通过
+
+---
+
 # 2026-08-24 TokenCounter 端口落地（Phase B 剩余任务 #1）
 
 > 架构约束「零外部框架依赖层」：tiktoken 隔离到集成层。端口 + 实现 + ContextManager 改造 + 测试 + 文档 + ADR 全链路。

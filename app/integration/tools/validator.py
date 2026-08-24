@@ -16,16 +16,14 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from app.shared.exceptions import ParameterValidationError
+
 
 @dataclass(frozen=True)
 class ValidationIssue:
     """单条参数校验问题（中文友好描述，供 LLM 归因）。"""
 
     message: str  # 完整中文描述（含字段名），如 "缺少必填参数 'file_path'"
-
-
-class ParameterValidationError(ValueError):
-    """参数校验失败（携带归因错误信息）。"""
 
 
 # Python 类型名 → JSON Schema 类型名（错误信息语义一致）

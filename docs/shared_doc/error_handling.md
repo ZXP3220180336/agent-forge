@@ -18,7 +18,7 @@
 - [CancelledError 的约定](#cancellederror-的约定)
 - [配置错误的快速失败](#配置错误的快速失败)
 - [异常自然传播 vs 显式 raise](#异常自然传播-vs-显式-raise)
-- [LLM 模块自定义异常清单](#llm-模块自定义异常清单)
+- [项目级统一异常体系](#项目级统一异常体系)
 - [检查清单](#检查清单)
 - [相关文档](#相关文档)
 
@@ -212,15 +212,37 @@ encoder = tiktoken.encoding_for_model(model)  # 若抛异常，直接向上传�
 
 ---
 
-## LLM 模块自定义异常清单
+## 项目级统一异常体系
 
-| 异常 | 基类 | 触发 | 调用方处理 |
-| --- | --- | --- | --- |
-| `CircuitBreakerOpenError` | `Exception` | 熔断 OPEN 且无 fallback | 等待冷却或降级到备用链路 |
-| `StructuredExtractionError` | `Exception` | 结构化提取的 API 边界失败基类 | —（中间基类） |
-| `StructuredTruncationError` | `StructuredExtractionError` | 截断扩 token 重试后仍不完整 | 由 `extract` 捕获返回 None；业务层可提示「输出过长」 |
-| `StructuredRefusalError` | `StructuredExtractionError` | 模型拒答（安全策略） | 捕获转安全兜底/文案，**不强行 repair** |
-| `StructuredToolCallError` | `StructuredExtractionError` | 模型选择调用工具而非输出 JSON | 捕获按工具调用走 Agent 循环 |
+全项目自定义异常收敛到共享内核 `app/shared/exceptions.py`，按「可恢复性 + 业务边界」组织，每个异常关联业务错误码（`AppErrorCode`，供 Phase D error_handler 映射 HTTP 状态码）：
+
+```text
+AppError（根，code 默认 INTERNAL）
+├── NonRetryableError    不可恢复：向上抛，调用方决策
+│   ├── CircuitBreakerOpenError     code=CIRCUIT_OPEN
+│   └── ParameterValidationError    code=VALIDATION（多重继承 ValueError）
+└── BusinessError        业务边界：具名短路，调用方差异化处理
+    ├── StructuredExtractionError   中间基类
+    │   ├── StructuredTruncationError   code=LLM_TRUNCATED
+    │   ├── StructuredRefusalError      code=LLM_REFUSAL
+    │   └── StructuredToolCallError     code=LLM_TOOL_CALL
+    └── SSRFError                  code=SSRF_BLOCKED
+```
+
+### 异常清单
+
+| 异常 | 基类 | code | 触发 | 调用方处理 |
+| --- | --- | --- | --- | --- |
+| `CircuitBreakerOpenError` | `NonRetryableError` | `CIRCUIT_OPEN` | 熔断 OPEN 且无 fallback | 等待冷却或降级到备用链路 |
+| `ParameterValidationError` | `NonRetryableError` + `ValueError` | `VALIDATION` | 工具参数校验失败 | 修复参数后重试（LLM 归因闭环） |
+| `StructuredExtractionError` | `BusinessError` | `INTERNAL`（继承默认） | 结构化提取的 API 边界失败基类 | —（中间基类） |
+| `StructuredTruncationError` | `StructuredExtractionError` | `LLM_TRUNCATED` | 截断扩 token 重试后仍不完整 | 由 `extract` 捕获返回 None；业务层可提示「输出过长」 |
+| `StructuredRefusalError` | `StructuredExtractionError` | `LLM_REFUSAL` | 模型拒答（安全策略） | 捕获转安全兜底/文案，**不强行 repair** |
+| `StructuredToolCallError` | `StructuredExtractionError` | `LLM_TOOL_CALL` | 模型选择调用工具而非输出 JSON | 捕获按工具调用走 Agent 循环 |
+| `SSRFError` | `BusinessError` | `SSRF_BLOCKED` | 目标 URL 命中 SSRF 防护 | 捕获转 `ToolResult(success=False)` |
+
+> **定义位置**：所有异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export（如 `from app.shared.exceptions import CircuitBreakerOpenError`）——raise 点与测试 `import` 路径不变。
+> **三类码的边界**：`AppErrorCode`（对外业务码）与 `ErrorCategory`（LLM 传输分类）、工具层 `ErrorCode`（工具执行系统码）正交，互不替代。
 
 ---
 
