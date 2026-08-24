@@ -1,6 +1,6 @@
 # ToolService 工具服务说明文档
 
-> **更新日期**：2026-08-17
+> **更新日期**：2026-08-24
 > **模块**：`app/integration/tools/tool_service.py`
 > **文档定位**：ToolService 独立说明 —— 工具系统的对外统一入口（容器 + 执行 + 统计 + 钩子 + 内置工具装配 + 选择 + 校验 + 截断 + 审计）。
 > **状态**：✅ 已实现
@@ -134,7 +134,7 @@ def init_default_tools(self) -> list[str]:
 ## 使用示例
 
 ```python
-# 执行内置工具（共 10 个：search / readFile / writeFile / code_exec / web_browse + RCA 5 个，此处以 search 为例）
+# 执行内置工具（共 10 个，清单见 [tools.md](tools.md)，此处以 search 为例）
 result = await container.tool_service.execute(
     name="search",
     parameters={"query": "良率 RCA 案例"},

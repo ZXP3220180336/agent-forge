@@ -70,7 +70,7 @@ llm_service._count_prompt_tokens（别名 import get_encoder / content_to_text�
 
 ### 计数口径
 
-`count_messages_tokens` 沿用 OpenAI 官方 messages token 估算规则（与 ContextManager 原有口径一致）：
+`count_messages_tokens` 沿用 OpenAI 官方 messages token 估算规则（与 ContextManager 委托计数口径一致）：
 
 - 每条消息固定 **+4** 格式开销
 - content 经 `content_to_text` 归一化后精确计数
@@ -81,11 +81,11 @@ llm_service._count_prompt_tokens（别名 import get_encoder / content_to_text�
 
 ### content 防御
 
-`count_messages_tokens` 内部对 content 归一化（`content_to_text`），content 键存在但为 `None`（工具报错等场景）或为多模态 list 时不再抛 TypeError——该缺陷在 LLM 模块已修复（`2026-08-16-empty-content-refusal-misjudge` 批次），此实现内建同类防御。
+`count_messages_tokens` 内部对 content 归一化（`content_to_text`）：content 键存在但为 `None`（工具报错等场景）或为多模态 list 时，归一化为文本后计数，不抛 TypeError。
 
 ### 编码器缓存
 
-`get_encoder` 按模型名缓存（`_encoder_cache`），同一模型重复解析返回同一对象；与 `llm_service` 原有 `_get_encoder` 语义一致。
+`get_encoder` 按模型名缓存（`_encoder_cache`），同一模型重复解析返回同一对象；`llm_service._get_encoder` 以别名 import 复用同一实现。
 
 ---
 

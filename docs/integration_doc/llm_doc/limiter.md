@@ -1,7 +1,7 @@
 # Limiter 客户端限流设计文档
 
 > **模块**：`app/integration/llm/reservation_limiter.py`（reserve/settle 形态，生产唯一）
-> **更新日期**：2026-08-16
+> **更新日期**：2026-08-24
 > **职责**：LLM API 调用的客户端限流（RPM + TPM 双 Token Bucket）
 > **状态**：✅ 已实现
 > **学习参考**：acquire 形态限流（`RateLimiter`/`RateLimiterManager`）与 5 类参考算法（LeakyBucket/FixedWindow/SlidingWindowLog/SlidingWindowCounter/GCRA）已从生产移除，代码作为学习资料完整保留在本文档「组件详解」一栏
@@ -329,7 +329,7 @@ class RateLimiterManager:
 - **懒加载**：首次 `get()` 才创建，按 `register_config()` 注入的配置构建（未注入的 key 用默认值）
 - **同步无竞态**：`get` 无 await，GIL 下天然原子，不会双实例
 - **`reset()`**：配置变更或测试时清空缓存
-- **配置注入（学习参考）**：子模块不直接依赖 settings——原本由 `Container.initialize()` 读 settings 组装 `RateLimiterConfig` 后调 `register_config()` 注入；随 acquire 形态移除后不再注入。model_key 由外部传入，不内置白名单（对齐 ClientManager）
+- **配置注入**：子模块不直接依赖 settings，配置经 `register_config()` 由装配根注入。model_key 由外部传入，不内置白名单（对齐 ClientManager）
 
 ### Reservation — 预留对象（终态幂等）
 
@@ -978,7 +978,7 @@ async_generate() / generate()
 
 **统一闭环**：每个 reserve 必配结算——create 失败 `cancel()` 全额退，create 成功后一切出口 `settle(actual)` 退 TPM 差；迭代硬取消由 `finally` 兜底，无 reservation 泄漏。
 
-**关键点**：reserve 位于 call_fn 内部，**每次真实请求**（原始调用、retry 内部重试、整流重试）都重新 reserve。整流重试每轮重新进入 `retry.execute`，再次 reserve；测试已断言 `calls["acquire"] == 2`（整流 2 轮）。fallback 不参与 reserve（备用模型防突发无意义，独立于主模型配额）。
+**关键点**：reserve 位于 call_fn 内部，**每次真实请求**（原始调用、retry 内部重试、整流重试）都重新 reserve。整流重试每轮重新进入 `retry.execute`，再次 reserve；测试已断言 `calls["reserve"] == 2`（整流 2 轮）。fallback 不参与 reserve（备用模型防突发无意义，独立于主模型配额）。
 
 **acquire 形态流程**（学习参考，已从生产移除）：
 

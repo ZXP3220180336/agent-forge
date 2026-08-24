@@ -1,6 +1,6 @@
 # 路由层说明文档
 
-> **更新日期**：2026-08-04
+> **更新日期**：2026-08-24
 > **文档定位**：路由层（`app/api/routes/`）的定位、已实现路由的端点/请求模型/处理流程、预留路由规划与依赖注入方式。
 > **当前已实现**：`chat.py`（聊天，SSE 流式）、`session.py`（会话 CRUD）。`admin.py` / `agent.py` / `tool.py` 均为**预留空文件**，尚未落地任何逻辑。
 
@@ -81,7 +81,7 @@ app/api/routes/
 
 ### chat — 聊天路由
 
-**文件**：`app/api/routes/chat.py`（约 143 行）
+**文件**：`app/api/routes/chat.py`（136 行）
 **路由定义**：`router = APIRouter(prefix="/api", tags=["聊天"])`
 
 #### `POST /api/chat/send` — 发送消息（流式 SSE）
@@ -133,7 +133,7 @@ app/api/routes/
 
 ### session — 会话管理路由
 
-**文件**：`app/api/routes/session.py`（约 117 行）
+**文件**：`app/api/routes/session.py`（101 行）
 **路由定义**：`router = APIRouter(prefix="/api", tags=["会话管理"])`
 
 所有端点均注入 `get_current_user` + `get_session_manager`；除 `POST /session/create` 外的读取 / 删除端点都先做会话存在性（404）与归属（403）校验。
@@ -223,18 +223,7 @@ app/api/routes/
 
 ### 认证实现（当前形态）
 
-`get_current_user` 当前为**模拟 Token 解析**（非 JWT）：
-
-```python
-async def get_current_user(authorization: str = Header(None)) -> str:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="未授权")
-    return "user_" + authorization[:8]
-```
-
-- 缺少 `Authorization: Bearer <token>` 头 → `401 未授权`
-- 有 Token 时不做签名 / 有效期校验，仅字符串截取拼出 `user_id`（`"user_" + token 前 8 字符`）
-- 代码注释明确「实际项目使用 JWT/OAuth」，迁移到中间件层是既定规划（见 [middleware_doc/auth 设计要点](../middleware_doc/middleware.md)）
+`get_current_user` 当前为**模拟 Token 解析**（非 JWT），由 `app/api/deps.py` 提供：缺 `Authorization` 头抛 `401`，有 Token 时仅字符串截取拼出 `user_id`（不校验签名/有效期）。实现与契约见 [api.md 认证方式](../api.md)；迁移到中间件层是既定规划（见 [middleware 认证设计要点](../middleware_doc/middleware.md)）。
 
 ---
 

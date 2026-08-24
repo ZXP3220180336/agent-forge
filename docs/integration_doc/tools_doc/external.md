@@ -1,6 +1,6 @@
 # 外部工具热加载（ExternalToolLoader）说明文档
 
-> **更新日期**：2026-08-17
+> **更新日期**：2026-08-24
 > **模块**：`app/integration/tools/loader.py`
 > **职责**：从外部目录发现 `BaseTool` 子类并纳入注册中心 —— 加载 / 重载 / 卸载 / 生命周期钩子 / 全链路留痕
 > **状态**：✅ 已实现
@@ -137,7 +137,7 @@ class MyTool(BaseTool):
 
 ## 测试状态
 
-`tests/unit/test_tool_loader.py`（22 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / maybe_refresh TTL 短路 / maybe_refresh TTL 过期重检 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）/ 兄弟模块清理（_drop_modules + 卸载清理）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
+`tests/unit/test_tool_loader.py`（24 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / maybe_refresh TTL 短路 / maybe_refresh TTL 过期重检 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）/ 兄弟模块清理（_drop_modules + 卸载清理）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
 
 ## 相关文档
 

@@ -98,10 +98,11 @@ uv run python -c "from app.domain.agent.executor import ReActAgent; print('OK')"
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/chat/send` | 发送消息（SSE 流式响应，驱动 ReAct Agent 循环） |
-| POST | `/api/session` | 创建会话 |
-| GET | `/api/session` | 会话列表（分页/搜索） |
-| GET | `/api/session/{id}` | 会话详情 |
-| DELETE | `/api/session/{id}` | 删除会话 |
+| POST | `/api/session/create` | 创建会话 |
+| GET | `/api/sessions` | 会话列表 |
+| GET | `/api/session/{session_id}` | 会话详情 |
+| GET | `/api/session/{session_id}/history` | 会话历史消息 |
+| DELETE | `/api/session/{session_id}` | 删除会话 |
 
 > admin / agent / tool 路由与中间件为预留实现，详见 [docs/api_doc/api.md](docs/api_doc/api.md)。
 

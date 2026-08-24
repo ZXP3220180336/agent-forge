@@ -1,6 +1,6 @@
 # EmbeddingService 文本向量化说明文档
 
-> **更新日期**：2026-08-04
+> **更新日期**：2026-08-24
 > **模块**：`app/integration/embedding/embedding_service.py`
 > **文档定位**：EmbeddingService 独立说明 —— 文本向量化（单条 / 批量 / 内存缓存），结构实现 EmbeddingPort 端口。
 

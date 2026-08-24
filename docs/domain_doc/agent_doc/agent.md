@@ -227,8 +227,8 @@ IDLE → THINKING → (工具调用) → WAITING → THINKING → ... → COMPLE
 ```python
 @dataclass
 class AgentContext:
-    session_id: str                    # 会话标识（必填）
-    user_id: str                       # 用户标识（必填）
+    session_id: SessionId                # 会话标识（必填，app/shared/types.py NewType）
+    user_id: UserId                      # 用户标识（必填，app/shared/types.py NewType）
 
     # 参数控制（默认值为字面量；生产值由装配根 container 注入覆盖）
     max_iterations: int = 10       # 默认 10

@@ -1,6 +1,6 @@
 # API 说明文档
 
-> **更新日期**：2026-08-03
+> **更新日期**：2026-08-24
 > **文档定位**：现有 REST API 端点、请求/响应模型、SSE 事件格式与认证方式。
 > **当前已实现**：chat / session 路由。admin / agent / tool 路由为预留（见「预留路由」）。
 
@@ -32,7 +32,7 @@
 
 ```
 Authorization: Bearer <token>
-→ 解析出 user_id = "user_" + token 前 8 字符
+→ 解析出 user_id = "user_" + authorization 头前 8 字符（含 Bearer 前缀，非纯 token）
 ```
 
 - 缺少 `Authorization` 头 → `401 未授权`

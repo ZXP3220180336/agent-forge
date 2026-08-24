@@ -1,6 +1,6 @@
 # ContextManager 上下文管理说明文档
 
-> **更新日期**：2026-08-04
+> **更新日期**：2026-08-24
 > **模块**：`app/application/context/context_manager.py`
 > **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、经 TokenCounter 端口精确计数、超限截断。
 
@@ -59,7 +59,7 @@ TaskService.run_agent() → Agent → LLMService（消费组装好的 messages�
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `count_tokens` | `(text: str) -> int` | 委托 TokenCounter 端口精确计算文本 token 数 |
-| `count_messages_tokens` | `(messages: list[dict]) -> int` | 委托 TokenCounter 端口计算 messages 总 token：每条消息 +4 格式开销、`name` 额外 +1、末尾 +2 回复开销 |
+| `count_messages_tokens` | `(messages: list[dict]) -> int` | 委托 TokenCounter 端口计算 messages 总 token（计数规则见 [token_counter.md](../../integration_doc/llm_doc/token_counter.md)） |
 | `build_messages` | `(session_id, user_message, max_rounds=20) -> tuple[list[dict], int]` | 组装完整 messages，超限自动截断，返回 `(messages, total_tokens)` |
 | `_truncate_messages` | `(messages, max_tokens) -> list[dict]` | 保留 system prompt 与最近对话，丢弃最早历史直到不超限 |
 
@@ -76,15 +76,6 @@ token 计量职责已下放到集成层 `TiktokenTokenCounter`（`app/integratio
 - 该模块同时承载 `get_encoder` / `content_to_text`，供 LLM 层复用（单一事实源）
 
 **详见** [token_counter 实现](../../integration_doc/llm_doc/token_counter.md)
-
-### Token 计数规则
-
-`count_messages_tokens`（经 TokenCounter 端口）沿用 OpenAI 官方 messages token 估算规则：
-
-- 每条消息固定 **+4** 格式开销
-- 消息内容经 `count_tokens` 精确计算
-- 消息带 `name` 字段额外 **+1**
-- 整体末尾固定 **+2** 回复格式开销
 
 ### `build_messages` 组装策略
 

@@ -1,15 +1,15 @@
 # LLMService 编排设计文档
 
 > **模块**：`app/integration/llm/llm_service.py`
-> **更新日期**：2026-08-16
-> **职责**：LLM 网关统一 Facade——组织 7 组件协作完成一次 LLM 调用（可靠性链 +
+> **更新日期**：2026-08-24
+> **职责**：LLM 网关统一 Facade——组织 8 组件协作完成一次 LLM 调用（可靠性链 +
 > 配额结算闭环 + 事件日志）
 > **状态**：✅ 已实现
 > **定位**：对外接口契约见 [llm.md](llm.md)（模块对外接口文档）；本文档解释
 > `LLMService` **内部如何组织组件工作**（编排机制，供内部维护者 / 集成方）
 > **配套**：实现领域端口 `LLMGateway`；依赖 `ClientManager` / `RetryHandler` /
 > `StreamingRectifier` / `StreamParser` / `ReservationLimiter` / `StructuredOutput` /
-> `CostTracker`
+> `CostTracker`；复用 `token_counter` 的 `get_encoder` / `content_to_text`（TokenCounter 端口实现）
 
 ---
 
@@ -114,7 +114,7 @@ async def _rate_limited_call(adaptive, limiter, client, kwargs, active, ...):
 
 `async_generate` 的整流循环（`StreamingRectifier.rectified_stream`）每次 attempt 重新调用
 `create_fn`（即 `_rate_limited_call`）——重新 `reserve` + `create`。整流重试每轮都是
-**新请求**，重新扣配额（测试断言整流 2 轮 `calls["acquire"] == 2`）。
+**新请求**，重新扣配额（测试断言整流 2 轮 `calls["reserve"] == 2`）。
 
 fallback（备用模型）**不参与 reserve**：备用链路防突发无意义，独立于主模型配额。
 

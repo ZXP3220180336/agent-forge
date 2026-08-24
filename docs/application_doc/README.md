@@ -1,6 +1,6 @@
 # 应用层与集成层说明文档
 
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-24
 > **文档定位**：应用层（`app/application/`）与集成层（`app/integration/`）的模块说明，覆盖模块概述、实现状态、各模块核心功能与使用示例。LLM 子包细节见 [LLM 层文档](../integration_doc/llm_doc/llm.md)。
 
 ---
@@ -79,7 +79,7 @@ app/application/
 └── task/task_service.py        ← TaskService 任务级并发信号量
 
 app/integration/
-├── llm/                        ← LLMService + 子包（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker）
+├── llm/                        ← LLMService + 子包（ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / TokenCounter）
 ├── tools/                      ← ToolService 与 10 个内置工具（5 通用 + 5 RCA）
 └── embedding/embedding_service.py  ← EmbeddingService 文本向量化
 
@@ -229,7 +229,7 @@ sessions, total = await container.session_manager.list_sessions_v2(
 ### 核心功能
 
 1. **消息组装**：system prompt + 历史对话 + 当前用户输入，拼接为 LLM 可接受的 messages 格式
-2. **Token 精确控制**：用 tiktoken 逐条计算消息与总上下文的 token 消耗，确保不超模型限制
+2. **Token 精确控制**：经 [TokenCounter 端口](../integration_doc/llm_doc/token_counter.md) 逐条计算消息与总上下文的 token 消耗，确保不超模型限制
 3. **窗口管理**：超出 `max_context_tokens - max_output_tokens` 时，从最早的历史消息开始丢弃
 4. **成本核算基础**：为每次请求提供 token 数据，供计费与监控
 
@@ -237,8 +237,8 @@ sessions, total = await container.session_manager.list_sessions_v2(
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `count_tokens` | `(text: str) -> int` | 用 tiktoken 精确计算文本 token 数 |
-| `count_messages_tokens` | `(messages: list[dict]) -> int` | 每条消息 +4 格式开销、`name` 额外 +1、末尾 +2 回复开销 |
+| `count_tokens` | `(text: str) -> int` | 经 TokenCounter 端口精确计算文本 token 数 |
+| `count_messages_tokens` | `(messages: list[dict]) -> int` | 经 TokenCounter 端口计算 messages 总 token（计数规则见 token_counter.md） |
 | `build_messages` | `(session_id, user_message, max_rounds=20) -> tuple[list[dict], int]` | 组装完整 messages，返回 `(messages, total_tokens)` |
 | `_truncate_messages` | `(messages, max_tokens) -> list[dict]` | 保留 system prompt 与最近对话，丢弃最早历史 |
 
@@ -251,7 +251,7 @@ sessions, total = await container.session_manager.list_sessions_v2(
 4. 计算 token；超过 available_tokens（max_context - max_output）→ 截断
 ```
 
-- 编码器：按 `model_name` 解析 tiktoken encoder；未知模型回退 `cl100k_base`
+- 编码器解析：由 TokenCounter 端口实现 `TiktokenTokenCounter` 按 `model_name` 解析，未知模型回退 `cl100k_base`（详见 [token_counter.md](../integration_doc/llm_doc/token_counter.md)）
 - 截断只丢弃历史，始终保留 system prompt 和最新的 user 消息
 
 ### 使用示例

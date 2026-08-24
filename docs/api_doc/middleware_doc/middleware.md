@@ -1,6 +1,6 @@
 # 中间件层说明文档
 
-> **更新日期**：2026-08-03
+> **更新日期**：2026-08-24
 > **文档定位**：中间件层（`app/api/middleware/`）的定位、实现状态与预留规划。
 > **当前已实现**：无。`auth.py` / `rate_limit.py` / `error_handler.py` 均为**预留空文件**，尚未落地任何逻辑。
 
@@ -69,25 +69,9 @@ app/api/middleware/
 
 ### 2. 认证当前由依赖注入模拟
 
-当前认证由 `app/api/deps.py` 的 `get_current_user()` 实现，是**模拟 Token 解析**，非真正的 JWT / OAuth：
+当前认证由 `app/api/deps.py` 的 `get_current_user()` 模拟 Token 解析（非 JWT / OAuth）：缺 `Authorization` 头抛 `401`，有 Token 时仅字符串截取拼接 `user_id`（不校验签名/有效期）。实现细节见 [api.md 认证方式](../api.md)。
 
-```python
-async def get_current_user(
-    authorization: str = Header(None),
-) -> str:
-    """从 Token 中解析用户 ID（实际项目使用 JWT/OAuth）"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="未授权")
-    # 模拟解析 token，返回 user_id
-    # 实际项目中替换为 JWT 验证
-    return "user_" + authorization[:8]
-```
-
-要点：
-
-- 缺少 `Authorization` 头 → 直接抛 `401 未授权`
-- 有 Token 时不校验签名与有效期，仅做字符串截取拼接 `user_id`
-- 代码注释明确标注「实际项目中替换为 JWT 验证」，即认证从依赖注入形态迁移到中间件形态是既定规划
+认证从依赖注入形态迁移到中间件形态是既定规划（`auth.py` 预留空文件即为此准备）。
 
 ### 3. main.py 仅配置 CORS + SPA 回退
 

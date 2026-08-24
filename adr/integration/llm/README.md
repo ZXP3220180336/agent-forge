@@ -1,7 +1,7 @@
 # LLM 模块决策记录（ADR）
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/`）的结构性/契约性设计决策，记录 Context → Decision → Consequences 完整前因后果，供追溯与复用。
-> **更新日期**：2026-08-16
+> **更新日期**：2026-08-24
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [问题追踪](../../../issues/integration/llm/README.md)
 
 ## 状态图例
@@ -27,6 +27,7 @@
 | [LLM-ADR-009](2026-08-02-reserve-settle-semantics.md) | reserve/settle 预留-结算形态（按实际 usage 退差） | ✅ 已采纳 | reservation_limiter / llm_service | 2026-08-02 |
 | [LLM-ADR-010](2026-08-06-adaptive-reserve-output-estimator.md) | 自适应预留（Fenic 式）：高分位输出估算替代固定 max_tokens | ✅ 已采纳 | reservation_limiter | 2026-08-06 |
 | [LLM-ADR-011](2026-08-04-llm-event-logging.md) | LLM 层日志：全局 JSON 结构化 + llm_call 业务事件 | ✅ 已采纳 | utils(logger) / llm | 2026-08-04 |
+| [LLM-ADR-012](2026-08-24-token-counter-port.md) | TokenCounter 端口：tiktoken 隔离到集成层（依赖倒置 + 单一事实源） | ✅ 已采纳 | ports/token_counter / token_counter / context_manager / llm_service | 2026-08-24 |
 
 ## 新决策登记规范
 

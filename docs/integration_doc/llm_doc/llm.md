@@ -1,7 +1,7 @@
 # LLM 网关对外接口文档
 
 > **对应代码**：`app/integration/llm/`
-> **更新日期**：2026-08-16
+> **更新日期**：2026-08-24
 > **文档定位**：LLM 模块（`app/integration/llm/`）对外接口文档——`LLMService` Facade
 > 的接口契约 + 内部组件导航；服务对象为 LLM 网关的**外部调用方**（领域层 / 应用层 /
 > API 层）
@@ -50,7 +50,8 @@ app/integration/llm/
 ├── streaming_rectifier.py     ← StreamingRectifier 流式整流重试
 ├── structured.py              ← StructuredOutput 结构化输出
 ├── reservation_limiter.py     ← ReservationLimiter 客户端限流
-└── cost_tracker.py            ← CostTracker 成本计算
+├── cost_tracker.py            ← CostTracker 成本计算
+└── token_counter.py           ← TokenCounter 端口实现（get_encoder / content_to_text / TiktokenTokenCounter）
 ```
 
 ### 设计原则
@@ -168,7 +169,7 @@ cost = LLMService.calculate_cost(
 
 ## 内部实现组织
 
-> 内部 7 组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
+> 内部 8 组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
 > 本文展开——双处维护必然漂移，Rule 1「一个事实一个家」）。
 
 | 组件 | 文件 | 职责 | 设计文档 |
@@ -180,6 +181,7 @@ cost = LLMService.calculate_cost(
 | `StructuredOutput` | structured.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则） | [structure.md](structure.md) |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流（RPM + TPM 双桶，reserve/settle + 自适应预留） | [limiter.md](limiter.md) |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配 + 会话级累计） | [cost_tracker.md](cost_tracker.md) |
+| `TokenCounter` | token_counter.py | TokenCounter 端口实现（编码器解析 / content 归一化 / 消息计数） | [token_counter.md](token_counter.md) |
 
 **组件间协作**（可靠性链）：`ReservationLimiter`（事前限流）→ `RetryHandler`
 （重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流）→
@@ -206,8 +208,8 @@ cost = LLMService.calculate_cost(
 
 - [集成层说明](../README.md)（层总览：LLM 网关在集成层中的位置）
 - 组件子文档：client / retry / streaming / streaming_rectifier / structure / limiter /
-  cost_tracker（见「内部实现组织」）
+  cost_tracker / token_counter（见「内部实现组织」）
 - [架构设计](../../architecture.md)（分层与演进路径）
 - [全局日志框架](../../platform_doc/observability/logging.md)（`llm_call` 业务事件）
-- 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~011）
+- 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~012）
 - 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~037）

@@ -1,6 +1,6 @@
 # SessionManager 会话管理说明文档
 
-> **更新日期**：2026-08-04
+> **更新日期**：2026-08-24
 > **模块**：`app/application/session/session_manager.py`
 > **文档定位**：SessionManager 独立说明 —— 会话生命周期管理、Redis 热缓存 + DB 持久化、分页 / 搜索 / 统计。
 
@@ -65,6 +65,8 @@ SessionManager ──► Redis（热缓存：session:{id} / user_sessions:... / 
 | `list_sessions` | `(user_id, limit=20, offset=0, include_stats=True) -> list[dict]` | 活跃会话列表，第一页走 Redis 缓存（30s TTL） |
 | `list_sessions_v2` | `(user_id, limit=20, offset=0, status="active", keyword=None, start_date=None, end_date=None, sort_by="updated_at", sort_order="desc", include_stats=True) -> tuple[list, int]` | 增强版：搜索 / 筛选 / 排序 + 总数统计 |
 | `_get_session_stats` | `(session_id, db) -> dict` | 聚合查询消息数 / Token 数 / 最后消息时间，60s 缓存 |
+
+> 类型标注：`session_id` 为 `SessionId`、`user_id` 为 `UserId`（`app/shared/types.py` NewType）
 
 ---
 

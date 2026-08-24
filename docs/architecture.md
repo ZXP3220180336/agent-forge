@@ -1,6 +1,6 @@
 # 架构设计文档
 
-> **更新日期**：2026-08-15
+> **更新日期**：2026-08-24
 > **文档定位**：系统整体架构的**工业级目标蓝图** + 现状对照 + 演进路线。以目标架构为主线；现状耦合作为对照依据；演进路径标注「已实现 / 进行中 / 待规划」。模块级细节见各模块说明文档（见文末「相关文档」）。
 > **状态徽标**：✅ 已实现 ｜ 🔶 进行中 ｜ ⬜ 待规划
 
@@ -120,7 +120,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 │ ⑤ 能力 / 集成层 Capability     │      │ ⑥ 基础设施层 Infrastructure            │
 │   app/integration/             │      │   app/infrastructure/（由空转实）       │
 │  LLM 网关：LLMService +        │      │  db/engine.py + db/repos/              │
-│   llm/ 7 组件（实现 LLMGateway）│      │   （SqlSession/Message/Task Repo）     │
+│   llm/ 8 组件（实现 LLMGateway）│      │   （SqlSession/Message/Task Repo）     │
 │  工具：ToolService（拆分 Facade）│      │  redis/client + redis/cache.py        │
 │   + builtin 10 工具（含 RCA 5）  │      │   （RedisCache + NullCache 真降级）    │
 │  嵌入：EmbeddingService         │      │  mq/ 队列 · store/ 存储 · http/       │
@@ -435,7 +435,7 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 
 ## 现状耦合与差距
 
-> 以下为 2026-08-15 代码现状。C3 / C4 / C5 / C6 / C8 已解决；C1 / C2 / C7 部分 / C9 仍待处理。
+> 以下为 2026-08-24 代码现状。C3 / C4 / C5 / C6 / C8 已解决；C1 / C2 / C7 部分 / C9 仍待处理。
 
 ### 现状分层
 
@@ -443,9 +443,9 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 接入层 app/api              chat/session ✅；deps.py ✅；task/agent/admin + 中间件 ⬜
 应用层 app/application      session/context/task ✅；TaskScheduler 队列/编排 ⬜
 领域层 app/domain           Agent 内核 ✅（依赖 ports）；memory/planner ⬜
-集成层 app/integration      LLM ✅；ToolService（Facade 六大子组件）✅；Embedding 孤儿
+集成层 app/integration      LLM ✅；ToolService（Facade 六大子组件）✅；Embedding ✅（EmbeddingPort 结构实现，RAG 接线待 Phase D）
 基础设施层 app/infrastructure  models/database ✅；db/redis 仍由 container 管 ⬜
-共享内核 app/shared         events ✅；exceptions（空）；types 待建
+共享内核 app/shared         events ✅；exceptions ✅；types ✅
 横切 app/platform           observability/logger ✅（metrics ⬜）；安全 ⬜
 装配根 app/container        Container 唯一组装 ✅
 ```

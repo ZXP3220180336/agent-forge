@@ -1,6 +1,6 @@
 # 工具安全与审计（RiskLevel / ToolAuditor / ApprovalGate）说明文档
 
-> **更新日期**：2026-08-17
+> **更新日期**：2026-08-24
 > **模块**：`app/integration/tools/security.py`
 > **职责**：工具风险分级标注 + 执行审计留痕（结构化日志）
 > **状态**：✅ 已实现
@@ -33,10 +33,12 @@
 
 | 级别 | 值 | 含义 | 本项目工具 |
 | --- | --- | --- | --- |
-| `L0_READONLY` | 0 | 只读，无破坏性 | search / readFile / web_browse |
-| `L1_WRITE` | 1 | 可修改数据，影响可控 | writeFile |
+| `L0_READONLY` | 0 | 只读，无破坏性 | search / readFile / web_browse + RCA 5 工具 |
+| `L1_WRITE` | 1 | 可修改数据，影响可控 | writeFile / 外部示例 http_api（写） |
 | `L2_DANGEROUS` | 2 | 潜在不可逆影响 | code_exec（另有黑名单业务拦截） |
 | `L3_DISABLED` | 3 | 禁用（预留：风险过高禁止注册） | — |
+
+> 各工具完整分级见 [rca.md](builtin_doc/rca.md) / [external.md](external.md)。
 
 `IntEnum` 可排序（`L2 > L1`），便于「是否 ≥ 危险级」判断。日志级别按分级映射：L0/L1→INFO、L2→WARNING、L3→ERROR，方便 ops 按级别检索。
 

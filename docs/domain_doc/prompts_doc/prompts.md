@@ -1,9 +1,9 @@
 # 提示词模块说明文档
 
-> **更新日期**：2026-08-03
+> **更新日期**：2026-08-24
 > **模块**：`app/domain/prompts/`
-> **实现状态**：✅ 已实现（planning 模板为预留 draft）
-> **架构定位**：核心层的提示词管理，为 Agent 提供系统/工具/规划等场景的提示词模板
+> **实现状态**：🔶 已实现（组件就绪，测试待补；planning 模板为预留 draft）
+> **架构定位**：领域层的提示词管理，为 Agent 提供系统/工具/规划等场景的提示词模板
 
 ---
 
@@ -39,11 +39,11 @@ PromptManager.build_system_prompt()
 
 | 文件 | 状态 | 内容 |
 | --- | --- | --- |
-| `__init__.py`（8行） | ✅ | 子包导出 |
-| `base.py`（19行） | ✅ | `PromptTemplate` 基类 |
-| `manager.py`（22行） | ✅ | `PromptManager` 管理器 |
-| `templates/system.py`（25行） | ✅ | `SYSTEM_PROMPT` 系统提示词 |
-| `templates/tools.py`（12行） | ✅ | `TOOL_FORMAT_PROMPT` 工具格式提示词 |
+| `__init__.py`（8行） | 🔶 | 子包导出 |
+| `base.py`（19行） | 🔶 | `PromptTemplate` 基类（待补测试） |
+| `manager.py`（22行） | 🔶 | `PromptManager` 管理器（待补测试） |
+| `templates/system.py`（25行） | 🔶 | `SYSTEM_PROMPT` 系统提示词（待补测试） |
+| `templates/tools.py`（13行） | 🔶 | `TOOL_FORMAT_PROMPT` 工具格式提示词（待补测试） |
 | `templates/planning.py`（18行） | 🔶 | `PLANNING_PROMPT` 规划提示词（draft，Phase 2 预留） |
 
 ---
@@ -80,7 +80,7 @@ class PromptTemplate:
 
 ### 工具格式提示词（TOOL_FORMAT_PROMPT）
 
-用于向 LLM 说明工具的格式规范，通过 `format(tools=...)` 注入工具描述列表。
+用于向 LLM 说明工具的格式规范，通过 `format(tools=...)` 注入工具描述列表；并提示 LLM：工具返回结果可能被截断（截断处含标记与原长度），可缩小查询范围后再次调用获取完整信息。
 
 ### 规划提示词（PLANNING_PROMPT，预留）
 
@@ -109,6 +109,6 @@ messages = [{"role": "system", "content": system_prompt}]
 
 ## 相关文档
 
-- [核心层说明](../../domain_doc/README.md)
+- [领域层说明](../../domain_doc/README.md)
 - [Agent 模块详解](../../domain_doc/agent_doc/agent.md)
 - [架构设计](../../architecture.md)

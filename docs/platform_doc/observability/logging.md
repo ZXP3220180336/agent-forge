@@ -152,9 +152,9 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 | `app/platform/observability/logger.py` | `app.events` | 业务事件（`llm_call` 等） |
 | `app/main.py` | `app.main` | 启动/关闭/静态目录警告 |
 | `app/container.py` | `app.container` | 基础设施初始化（Redis/DB/工具） |
-| `app/application/session/session_manager.py` | `services.session_manager` | 缓存降级警告 |
-| `app/integration/tools/tool_service.py` | `tools.service` | 工具 on_unload 失败 |
-| `app/integration/tools/hooks.py` | `tools.hooks` | 工具钩子执行失败 |
+| `app/application/session/session_manager.py` | `app.services.session_manager` | 缓存降级警告 |
+| `app/integration/tools/tool_service.py` | `app.tools.service` | 工具 on_unload 失败 |
+| `app/integration/tools/hooks.py` | `app.tools.hooks` | 工具钩子执行失败 |
 
 > LLM 调用记录走本框架业务事件机制（`log_event_async("llm_call")`），输出通道统一走全局双 handler。
 

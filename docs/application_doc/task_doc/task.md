@@ -140,6 +140,8 @@ TaskService（调度枢纽）
 
 ## 数据模型
 
+> ⬜ 规划模型：以下 `Task` / `SubTask` / `TaskState` 为多 Agent 编排（Phase C）的目标数据结构；当前 `task_service.py` 仅实现并发信号量（`Semaphore` + `run_agent`），未定义这些类型。
+
 ### `Task` — 任务
 
 ```python

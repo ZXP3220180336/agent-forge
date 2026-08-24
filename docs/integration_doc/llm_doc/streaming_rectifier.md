@@ -1,7 +1,7 @@
 # StreamingRectifier 设计文档
 
 > **模块**：`app/integration/llm/streaming_rectifier.py`
-> **更新日期**：2026-08-16
+> **更新日期**：2026-08-24
 > **职责**：流式整流重试策略——「首 token 前中断 → 重新 create + 重新迭代」，已产出 token 后中断则放弃
 > **状态**：✅ 已实现
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
@@ -228,8 +228,8 @@ async_generate → rectified_stream（整流循环）
 
 ## 测试状态
 
-- `tests/unit/test_streaming_rectifier.py`（11 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / **硬取消 finally settle(None) 保留配额（LLM-003）** / **settle 中途取消 finally settle(None) 收尾** / 429 整流尊重 Retry-After（封顶到 max_delay）/ **整流清理复位 refusal（拒绝类死流不残留元数据）**
-- `tests/unit/test_stream_rectify.py`（21 用例，经 `LLMService.async_generate` 间接覆盖）：整流/结算/事件/日志/熔断 feeding 全链路断言
+- `tests/unit/test_streaming_rectifier.py`（12 用例，直接覆盖整流策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / **硬取消 finally settle(None) 保留配额（LLM-003）** / **settle 中途取消 finally settle(None) 收尾** / 429 整流尊重 Retry-After（封顶到 max_delay）/ **整流清理复位 refusal（拒绝类死流不残留元数据）**
+- `tests/unit/test_stream_rectify.py`（22 用例，经 `LLMService.async_generate` 间接覆盖）：整流/结算/事件/日志/熔断 feeding 全链路断言
 - **LLM-001 失败信号透传**：`test_stream_rectify.py` 四个失败出口补 `result.error` 断言（create 失败 / 迭代放弃 / 用户取消）；`test_agent.py` 新增 ReActAgent 遇 LLM 失败第 1 轮短路返回失败结果用例
 
 ---

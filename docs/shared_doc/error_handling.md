@@ -104,7 +104,7 @@
             └─ 可恢复（超时/5xx/429）→ return None（调用方按「业务无结果」降级）
 ```
 
-**设计意图**（B3 契约，2026-08-09）：`generate()` 对**可恢复错误**（超时/5xx/429）可靠性层已重试耗尽后返回 None，调用方（structured）按降级处理；对**不可恢复错误**（4xx/认证/熔断开启/未知异常）向上抛——这些是调用方问题或下游拒绝，降级无意义（会白打降级请求），调用方需感知并决策（修参数/换 key/告警）。**注意**：这个契约是 `generate()` 独有；`async_generate()` 走「错误转事件」契约（见下），两者刻意不同。
+**设计意图**（B3 契约）：`generate()` 对**可恢复错误**（超时/5xx/429）可靠性层已重试耗尽后返回 None，调用方（structured）按降级处理；对**不可恢复错误**（4xx/认证/熔断开启/未知异常）向上抛——这些是调用方问题或下游拒绝，降级无意义（会白打降级请求），调用方需感知并决策（修参数/换 key/告警）。**注意**：这个契约是 `generate()` 独有；`async_generate()` 走「错误转事件」契约（见下），两者刻意不同。
 
 ### `async_generate()` —— 流式，「错误转事件」契约
 
@@ -142,7 +142,7 @@ extract()
 
 1. **`except Exception` 只捕获该层该处理的错误**：`generate()`/`async_generate()` 的 `except Exception` 覆盖 `retry.execute` 的调用——配置错误（`_build_chat_kwargs` 内的 `get_model`）在 **try 块外**，能自然穿透不被吞。
 2. **请求构建阶段异常永不吞**：`_build_chat_kwargs`、`_count_prompt_tokens` 等「请求组装」代码若产生异常（未注册 key、编码器缺失），应在 try 外 fail fast，而不是被 facade 的 `except Exception` 吞掉。
-3. **structured 的 `except Exception` 防什么**（B3 后）：`generate()` 已把可恢复错误转 None、不可恢复错误 re-raise，structured 的 `except Exception` 再做一次分类——`NON_RETRYABLE` re-raise、可恢复降级（兜底防御）。作为兜底合理；真正区分靠 `classify_error`。
+3. **structured 的 `except Exception` 防什么**：`generate()` 已把可恢复错误转 None、不可恢复错误 re-raise，structured 的 `except Exception` 再做一次分类——`NON_RETRYABLE` re-raise、可恢复降级（兜底防御）。作为兜底合理；真正区分靠 `classify_error`。
 4. **可靠性层已重试的异常，上层不要重复处理**：`retry.execute` 内部完成重试/退避/熔断，抛出的就是「最终状态」异常；上层只需决策「要不要降级/短路」，不要再重试。
 5. **限流模块（reserve/settle/cancel）异常不被吞**：`generate()`/`async_generate()` 的 `except Exception` 只覆盖 `retry.execute` 的调用；限流三阶段都在捕获范围外——
    - **reserve（预留）**：在 `_rate_limited_call` 的 try 之前，异常直接传播（CancelledError 穿透 BaseException；普通异常被 `classify_error` 归 NON_RETRYABLE re-raise）
