@@ -29,5 +29,5 @@ def test_newtype_distinct():
 
 
 def test_messages_alias():
-    """Messages 别名运行时等价 list[dict]"""
-    assert Messages == list[dict]
+    """Messages 别名（PEP 695 type 语句）值等价 list[dict]"""
+    assert Messages.__value__ == list[dict]

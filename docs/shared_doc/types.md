@@ -28,7 +28,7 @@
 `app/shared/types.py` 集中定义跨模块复用的**标识符**与**类型别名**：
 
 1. **`SessionId` / `UserId`（NewType）**：标识符类型。运行时是恒等函数（`SessionId("s1")` 返回 `"s1"` 本身，零开销），纯类型标注——让类型检查器区分「会话标识」与「用户标识」等不同用途的 str，避免把 `user_id` 当 `session_id` 传。
-2. **`Messages`（TypeAlias）**：LLM 消息列表别名（`list[dict]`），在端口契约处统一表达「OpenAI messages 格式」。
+2. **`Messages`（PEP 695 `type` 别名）**：LLM 消息列表别名（`type Messages = list[dict]`），在端口契约处统一表达「OpenAI messages 格式」。
 
 ### 与其它类型体系的关系
 
@@ -42,7 +42,7 @@
 | --- | --- | --- |
 | `SessionId` | `NewType("SessionId", str)` | 会话标识（SessionManager 方法参数、AgentContext 字段） |
 | `UserId` | `NewType("UserId", str)` | 用户标识（SessionManager 方法参数、AgentContext 字段） |
-| `Messages` | `TypeAlias = list[dict]` | LLM 消息列表（llm_gateway / token_counter 端口契约） |
+| `Messages` | `type Messages = list[dict]`（PEP 695） | LLM 消息列表（llm_gateway / token_counter 端口契约） |
 
 ---
 

@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-from typing import NewType, TypeAlias
+from typing import NewType
 
 # 标识符（NewType：运行时恒等返回 str，纯类型标注，区分不同用途的标识）
 SessionId = NewType("SessionId", str)  # 会话标识
 UserId = NewType("UserId", str)  # 用户标识
 
-# 类型别名
-Messages: TypeAlias = list[dict]  # LLM 消息列表（OpenAI messages 格式）
+# 类型别名（PEP 695 type 语句，Python 3.14 标准写法）
+type Messages = list[dict]  # LLM 消息列表（OpenAI messages 格式）

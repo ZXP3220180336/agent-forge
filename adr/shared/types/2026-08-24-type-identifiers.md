@@ -18,7 +18,7 @@
 **在 `app/shared/types.py` 定义最小集：`SessionId`/`UserId`（NewType）+ `Messages`（TypeAlias），改造核心签名标注。**
 
 1. **`NewType` 而非强类型类**：运行时恒等返回 str（`SessionId("s1") is "s1"`）、零开销，与存量裸 `str` 完全兼容——签名从 `str` 改 `SessionId` 后测试零断裂（test_session_manager 等传裸 str 不受影响）。
-2. **`Messages` 用 `typing.TypeAlias` 而非 PEP 695 `type` 语句**：项目零 PEP 695 用法（23 文件走 typing 侧），保持风格统一；Python 3.14 两者皆可，选保守一致。
+2. **`Messages` 用 PEP 695 `type` 语句**（`type Messages = list[dict]`）：Python 3.14 标准写法、IDE（Pylance）推荐；TypeAliasType 惰性求值，运行时 `Messages` 非 `list[dict]` 同一对象（`==` 为 False，测试断言用 `__value__`）。
 3. **改造范围 = 签名标注，边界保持 `str`**：
    - 可改：SessionManager 9 方法（含 delete_session/hard_delete_session 补标注）、`ContextManager.build_messages`、`AgentContext` 字段、端口契约（llm_gateway ×3 + token_counter）
    - 边界保持 `str`：Pydantic schemas、`deps.get_current_user` 返回值、路由 HTTP 参数、SQLAlchemy Column、dict key——不改造（API/持久化边界是 str 的天然接口）
