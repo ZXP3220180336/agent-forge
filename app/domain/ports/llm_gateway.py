@@ -9,6 +9,8 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any, Protocol, runtime_checkable
 
+from app.shared.types import Messages
+
 
 class StreamResult:
     """LLM 单轮流式生成的结果载体（领域契约）。"""
@@ -32,7 +34,7 @@ class LLMGateway(Protocol):
 
     async def async_generate(
         self,
-        messages: list[dict],
+        messages: Messages,
         tools: list[dict] | None = None,
         temperature: float = 0.2,
         max_tokens: int = 4096,
@@ -45,7 +47,7 @@ class LLMGateway(Protocol):
 
     async def generate(
         self,
-        messages: list[dict],
+        messages: Messages,
         tools: list[dict] | None = None,
         temperature: float = 0,
         max_tokens: int = 1024,
@@ -55,7 +57,7 @@ class LLMGateway(Protocol):
 
     async def generate_structured(
         self,
-        messages: list[dict],
+        messages: Messages,
         schema: dict[str, Any],
         model_key: str = "fast",
         max_tokens: int | None = None,

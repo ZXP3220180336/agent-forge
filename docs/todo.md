@@ -1,3 +1,17 @@
+# 2026-08-24 types 通用类型落地（Phase B 剩余任务 #3，最小集）
+
+> 架构文档共享内核目标：通用类型 / 标识。最小集只做有真实消费方的类型（SessionId/UserId 标识 + Messages 消息别名），不做 Task 枚举（Phase C）。
+
+- [x] `app/shared/types.py`：SessionId/UserId（NewType）+ Messages（TypeAlias）
+- [x] 签名标注：SessionManager 9 方法 + ContextManager.build_messages + AgentContext 字段 + 端口契约（llm_gateway/token_counter）
+- [x] 边界保持 str：Pydantic schemas / deps / 路由 / SQLAlchemy Column / dict key
+- [x] 新增 test_types.py（4 用例）：NewType 运行时恒等 + 别名等价
+- [x] 文档：types.md（新建）/ ALIGNMENT / architecture / todo
+- [x] ADR：`adr/shared/types/2026-08-24-type-identifiers.md`
+- [x] 验证：全量 pytest + verify_alignment 通过
+
+---
+
 # 2026-08-24 exceptions 统一异常体系落地（Phase B 剩余任务 #2）
 
 > 架构文档共享内核目标：统一异常与错误码。7 个平级散落异常收敛到 `app/shared/exceptions.py`，集成层 re-export。
@@ -31,7 +45,7 @@
 > 来源：工具模块整体代码审查（四维度：正确性 / 安全 / 性能 / 规范）。完整生命周期见 [TOOLS-049 问题记录](../issues/integration/tools/2026-08-20-code-review-fixes.md)。
 
 - [x] **重要项 5**：executor 重试全败归因 / SSRF CGNAT 盲区 / 审计脱敏 error+content / 外部工具冷启动扫描 / RCA 证据链时间锚点（各带回归测试）
-- [x] **次要项 15**：executor（execution_time/注释）、loader（_drop_modules 前缀过滤）、assembler（单工具失败隔离）、security（敏感键正则/DNS 注释）、result_processor（docstring）、validator（完整路径）、tool_gateway（__str__ 兜底）、prompts（截断提示）、RCA（FDC 判定/空结果归因/冗余 int）、hooks（async 注释）
+- [x] **次要项 15**：executor（execution_time/注释）、loader（_drop_modules 前缀过滤）、assembler（单工具失败隔离）、security（敏感键正则/DNS 注释）、result_processor（docstring）、validator（完整路径）、tool_gateway（**str** 兜底）、prompts（截断提示）、RCA（FDC 判定/空结果归因/冗余 int）、hooks（async 注释）
 - [x] **取舍项保持现状**：validator schema 缓存 / 嵌套 additionalProperties / getaddrinfo 超时 / loader 重载竞态 / scan_once 线程化 / 裸 IP 拒绝（ADR 保守策略）
 - [x] **文档同步**：executor / security / rca / tool_service / external + ALIGNMENT verify
 - [x] **全量回归**：uv run pytest 通过
@@ -69,7 +83,7 @@
 6 个审核问题全部修复，测试 13/13 通过（rate_limiter）+ 37/37（stream_rectify + retry）无回归。
 
 | 问题 | 修复方式 | 验证 |
-|---|---|---|
+| --- | --- | --- |
 | 1 | `TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行 | `test_bucket_zero_refill_disabled` |
 | 2 | 锁外 sleep 循环重检 | `test_bucket_wait_does_not_block_others` / `test_bucket_cancel_does_not_corrupt_state` |
 | 3 | `_count_prompt_tokens` 加 `max_tokens` 输出余量 | 37 测试无回归 |
@@ -80,7 +94,7 @@
 ## 关联文件
 
 | 文件 | 改动 |
-|---|---|
+| --- | --- |
 | `app/services/llm/rate_limiter.py` | TokenBucket.acquire / RateLimiter.acquire / docstring |
 | `app/services/llm/llm_service.py` | `_count_prompt_tokens` 输出余量（问题 3） |
 | `tests/unit/test_rate_limiter.py` | 新增各问题回归测试 |

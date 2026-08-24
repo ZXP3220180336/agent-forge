@@ -30,6 +30,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.models.database import MessageModel, SessionModel
+from app.shared.types import SessionId, UserId
 
 
 class SessionManager:
@@ -48,7 +49,7 @@ class SessionManager:
 
     async def create_session(
         self,
-        user_id: str,
+        user_id: UserId,
         system_prompt: str | None = None,
         title: str | None = None,
     ) -> dict:
@@ -83,7 +84,7 @@ class SessionManager:
 
         return session_data
 
-    async def get_session(self, session_id: str) -> dict | None:
+    async def get_session(self, session_id: SessionId) -> dict | None:
         """获取会话信息（Redis → DB 缓存穿透保护）"""
         # 1. 查 Redis
         cached = await self.redis.get(f"session:{session_id}")
@@ -144,7 +145,7 @@ class SessionManager:
 
     async def get_messages(
         self,
-        session_id: str,
+        session_id: SessionId,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
@@ -190,7 +191,7 @@ class SessionManager:
 
     async def add_message(
         self,
-        session_id: str,
+        session_id: SessionId,
         role: str,
         content: str,
         reasoning_content: str | None = None,
@@ -219,7 +220,7 @@ class SessionManager:
             await db.commit()
     """
 
-    async def delete_session(self, session_id):
+    async def delete_session(self, session_id: SessionId):
         """软删除会话（推荐）"""
         await self.redis.delete(f"session:{session_id}")
         async with self.db_session() as db:
@@ -231,7 +232,7 @@ class SessionManager:
             await db.execute(stmt)
             await db.commit()
 
-    async def hard_delete_session(self, session_id):
+    async def hard_delete_session(self, session_id: SessionId):
         """物理删除（仅管理员/定时任务使用）"""
         await self.redis.delete(f"session:{session_id}")
         async with self.db_session() as db:
@@ -245,7 +246,7 @@ class SessionManager:
 
     async def list_sessions(
         self,
-        user_id: str,
+        user_id: UserId,
         limit: int = 20,
         offset: int = 0,
         include_stats: bool = True,
@@ -326,7 +327,7 @@ class SessionManager:
 
     async def _get_session_stats(
         self,
-        session_id: str,
+        session_id: SessionId,
         db: AsyncSession,
     ) -> dict:
         """
@@ -369,7 +370,7 @@ class SessionManager:
 
     async def list_sessions_v2(
         self,
-        user_id: str,
+        user_id: UserId,
         limit: int = 20,
         offset: int = 0,
         status: str | None = "active",  # active / archived / deleted / None(全部)

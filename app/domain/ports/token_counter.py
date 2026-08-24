@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from app.shared.types import Messages
+
 
 @runtime_checkable
 class TokenCounter(Protocol):
@@ -16,6 +18,6 @@ class TokenCounter(Protocol):
         """计算单段文本的 token 数。"""
         ...
 
-    def count_messages_tokens(self, messages: list[dict]) -> int:
+    def count_messages_tokens(self, messages: Messages) -> int:
         """计算 messages 列表的总 token 数（含每条消息格式开销与末尾回复开销）。"""
         ...

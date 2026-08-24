@@ -7,6 +7,7 @@
 
 from app.application.session.session_manager import SessionManager
 from app.domain.ports.token_counter import TokenCounter
+from app.shared.types import SessionId
 
 
 class ContextManager:
@@ -40,7 +41,7 @@ class ContextManager:
 
     async def build_messages(
         self,
-        session_id: str,
+        session_id: SessionId,
         user_message: str,
         max_rounds: int = 20,
     ) -> tuple[list[dict], int]:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.shared.types import Messages
+
 # =====================================================================
 # 编码器解析（进程内缓存）
 # =====================================================================
@@ -78,7 +80,7 @@ class TiktokenTokenCounter:
         """计算单段文本的 token 数。"""
         return len(self._encoder.encode(text))
 
-    def count_messages_tokens(self, messages: list[dict]) -> int:
+    def count_messages_tokens(self, messages: Messages) -> int:
         """计算 messages 列表的总 token 数（含格式开销，content 防御归一化）。"""
         total = 0
         for msg in messages:

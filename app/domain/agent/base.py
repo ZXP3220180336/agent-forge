@@ -27,6 +27,7 @@ from typing import Any
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 from app.shared.events import build_error_event, build_info_event
+from app.shared.types import SessionId, UserId
 
 
 class AgentState(Enum):
@@ -50,8 +51,8 @@ class AgentContext:
     """
 
     # 会话标识
-    session_id: str
-    user_id: str
+    session_id: SessionId
+    user_id: UserId
 
     # 参数控制（默认值与配置默认一致；生产值由装配根注入，可被调用方覆盖）
     max_iterations: int = 10
