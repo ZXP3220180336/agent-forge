@@ -131,9 +131,9 @@ deepseek-chat → deepseek-reasoner）。配置跨 provider 模型会打到主�
 （回复格式开销），+ `max_tokens` 作为输出上限的保守估算——TPM 桶按「请求可能消耗的
 最大 token」扣减，宁可高估不错放。
 
-`_content_to_text` 归一化：None → 空串；str → 原样；多模态 list（OpenAI 格式
-`[{"type": "text", "text": ...}]`）→ 只取文本片段拼接，图片等非文本条目不参与估算
-（避免 `encode(None)` 抛 TypeError）。
+`_content_to_text`（来自 [token_counter.py](token_counter.md)，别名注入）归一化：None → 空串；
+str → 原样；多模态 list（OpenAI 格式 `[{"type": "text", "text": ...}]`）→ 只取文本片段拼接，
+图片等非文本条目不参与估算（避免 `encode(None)` 抛 TypeError）。
 
 ---
 
@@ -210,8 +210,9 @@ reservation，供 create 成功后的 settle 读取（跨 create 与结算传递
 
 `_count_prompt_tokens(model_key, messages, max_tokens=0)`：TPM 桶扣减的估算量 =
 prompt（每消息 +4 + content token + name +1，末尾 +2）+ `max_tokens` 输出余量。
-`_get_encoder` 按模型解析 tiktoken 编码器（进程内缓存，未知模型回退 `cl100k_base`）；
-`_content_to_text` 归一化多模态 content（见「核心概念·TPM 估算」）。
+`_get_encoder` / `_content_to_text` 由 [token_counter.py](token_counter.md) 提供（别名
+注入，单一事实源）：按模型解析 tiktoken 编码器（进程内缓存，未知模型回退 `cl100k_base`）
+并归一化多模态 content（见「核心概念·TPM 估算」）。
 
 ### LLMService 编排方法
 

@@ -4,6 +4,7 @@
 """
 
 from .llm_gateway import LLMGateway, StreamResult
+from .token_counter import TokenCounter
 from .tool_gateway import ToolGateway, ToolResult
 
-__all__ = ["LLMGateway", "StreamResult", "ToolGateway", "ToolResult"]
+__all__ = ["LLMGateway", "StreamResult", "TokenCounter", "ToolGateway", "ToolResult"]

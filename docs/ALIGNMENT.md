@@ -22,7 +22,7 @@
 | app/api/schemas/request.py | 🔶 | docs/api_doc/api.md | (无) | 请求 DTO；随路由测试覆盖 |
 | app/api/schemas/response.py | 🔶 | docs/api_doc/api.md | (无) | 响应 DTO；随路由测试覆盖 |
 | app/api/schemas/agent.py | ⬜ | docs/api_doc/api.md | (无) | 空文件待实现（Agent DTO） |
-| app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断 |
+| app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断（计数经 TokenCounter 端口） |
 | app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 三合一待拆分 |
 | app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | 并发闸门 |
 | app/domain/agent/base.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | Agent 基类与数据定义 |
@@ -35,6 +35,7 @@
 | app/domain/memory/short_term.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/working.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 Agent/LLM 测试覆盖 |
+| app/domain/ports/token_counter.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 TiktokenTokenCounter 测试覆盖 |
 | app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
 | app/domain/prompts/base.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
 | app/domain/prompts/manager.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 已实现零引用；待接线/测试 |
@@ -62,6 +63,7 @@
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |
 | app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流 |
 | app/integration/llm/structured.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | 结构化三级降级 |
+| app/integration/llm/token_counter.py | ✅ | docs/integration_doc/llm_doc/token_counter.md | tests/unit/test_token_counter.py | TokenCounter 端口实现（get_encoder/content_to_text/TiktokenTokenCounter） |
 | app/integration/tools/assembler.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/integration/test_tool_execution.py | 内置工具幂等装配 |
 | app/integration/tools/base.py | ✅ | docs/integration_doc/tools_doc/tools.md | tests/unit/test_tool_validator.py | BaseTool 抽象 + 元数据（风险/分类/并发安全/超时）+ 校验委托 + 生命周期钩子 |
 | app/integration/tools/executor.py | ✅ | docs/integration_doc/tools_doc/executor.md | tests/unit/test_tool_executor_components.py | 执行编排：校验归因/截断/审计/串行化/超时优先级 |

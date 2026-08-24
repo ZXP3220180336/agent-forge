@@ -118,7 +118,7 @@ async def test_initialize_happy_path(monkeypatch):
     assert c.session_manager is not None
     assert c.session_manager.redis is fake_redis
     assert c.context_manager is not None
-    assert c.context_manager.model_name == settings.llm_model_id
+    assert c.context_manager.token_counter is not None
     assert c.llm_service is not None
     assert c.tool_service is not None
     # 10 个内置工具（5 通用 + 5 RCA）+ external/ 示例 http_api（冷启动扫描注册，外部工具对 LLM 可见）

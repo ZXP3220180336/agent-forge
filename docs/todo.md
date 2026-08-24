@@ -1,3 +1,18 @@
+# 2026-08-24 TokenCounter 端口落地（Phase B 剩余任务 #1）
+
+> 架构约束「零外部框架依赖层」：tiktoken 隔离到集成层。端口 + 实现 + ContextManager 改造 + 测试 + 文档 + ADR 全链路。
+
+- [x] `app/domain/ports/token_counter.py`：TokenCounter 协议（count_tokens / count_messages_tokens），`ports/__init__.py` 登记
+- [x] `app/integration/llm/token_counter.py`：get_encoder / content_to_text / TiktokenTokenCounter（tiktoken 唯一使用点）
+- [x] `llm_service.py`：`_get_encoder`/`_content_to_text` 迁出 + 别名 import（单一事实源，test_llm_service 零断裂）
+- [x] `context_manager.py`：去 tiktoken、注入 TokenCounter、count_* 委托（顺带修复 content=None 潜在 TypeError）
+- [x] 测试：新增 test_token_counter.py（8 用例）+ 适配 test_context_manager / test_api / test_chat_flow / test_container
+- [x] 文档：ALIGNMENT / domain README / context.md / architecture / token_counter.md / llm_service.md / deps 注释
+- [x] ADR：`adr/integration/llm/2026-08-24-token-counter-port.md`
+- [x] 验证：全量 562 passed + verify_alignment 通过
+
+---
+
 # 2026-08-20 工具模块代码审查修复（TOOLS-049）
 
 > 来源：工具模块整体代码审查（四维度：正确性 / 安全 / 性能 / 规范）。完整生命周期见 [TOOLS-049 问题记录](../issues/integration/tools/2026-08-20-code-review-fixes.md)。

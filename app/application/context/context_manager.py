@@ -1,20 +1,19 @@
 """
 上下文管理器
 - 负责从会话历史中组装 messages
-- 自动进行 Token 计数和截断
+- 经 TokenCounter 端口自动进行 Token 计数和截断
 - 支持历史摘要压缩
 """
 
-import tiktoken
-
 from app.application.session.session_manager import SessionManager
+from app.domain.ports.token_counter import TokenCounter
 
 
 class ContextManager:
     """
     上下文管理模块是整个多轮对话系统的核心调度器，它负责：
     1. 消息组装：从会话历史中提取消息，拼接成 LLM 可接受的格式
-    2. Token 精确控制：计算每条消息和总上下文的 Token 消耗，确保不超过模型限制
+    2. Token 精确控制：经 TokenCounter 端口计算每条消息和总上下文的 Token 消耗，确保不超过模型限制
     3. 窗口管理：当上下文超出限制时，自动截断或压缩历史
     4. 成本核算：为每次请求提供 Token 消耗数据，用于计费和监控
     """
@@ -22,35 +21,22 @@ class ContextManager:
     def __init__(
         self,
         session_manager: SessionManager,
-        model_name: str = "gpt-4",
+        token_counter: TokenCounter,
         max_context_tokens: int = 128000,
         max_output_tokens: int = 4096,
     ):
         self.session_manager = session_manager
-        self.model_name = model_name
+        self.token_counter = token_counter
         self.max_context_tokens = max_context_tokens
         self.max_output_tokens = max_output_tokens
 
-        # 使用 tiktoken 进行精确 Token 计数
-        try:
-            self.encoder = tiktoken.encoding_for_model(model_name)
-        except KeyError:
-            self.encoder = tiktoken.get_encoding("cl100k_base")
-
     def count_tokens(self, text: str) -> int:
-        """精确计算 Token 数量"""
-        return len(self.encoder.encode(text))
+        """精确计算 Token 数量（委托 TokenCounter 端口）"""
+        return self.token_counter.count_tokens(text)
 
     def count_messages_tokens(self, messages: list[dict]) -> int:
-        """计算 messages 列表的总 Token 数"""
-        total = 0
-        for msg in messages:
-            total += 4  # 每条消息的格式开销
-            total += self.count_tokens(msg.get("content", ""))
-            if msg.get("name"):
-                total += 1
-        total += 2  # 回复格式开销
-        return total
+        """计算 messages 列表的总 Token 数（委托 TokenCounter 端口）"""
+        return self.token_counter.count_messages_tokens(messages)
 
     async def build_messages(
         self,

@@ -14,6 +14,7 @@ from app.application.context.context_manager import ContextManager
 from app.application.task.task_service import TaskService
 from app.container import container
 from app.domain.ports.llm_gateway import StreamResult
+from app.integration.llm.token_counter import TiktokenTokenCounter
 from app.integration.tools.tool_service import ToolService
 from app.main import app
 
@@ -83,7 +84,7 @@ def _wire(monkeypatch, session, llm_script=None):
     """把 container 单例服务替换为 fake。"""
     fake_sm = FakeSessionManager(session)
     monkeypatch.setattr(container, "session_manager", fake_sm)
-    monkeypatch.setattr(container, "context_manager", ContextManager(fake_sm))
+    monkeypatch.setattr(container, "context_manager", ContextManager(fake_sm, TiktokenTokenCounter("gpt-4")))
     monkeypatch.setattr(container, "llm_service", FakeLLM(llm_script or []))
     monkeypatch.setattr(container, "tool_service", ToolService())
     monkeypatch.setattr(container, "task_service", TaskService())

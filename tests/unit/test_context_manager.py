@@ -1,11 +1,13 @@
 """app/application/context/context_manager.py ContextManager 单元测试
 
-使用手写 _FakeSessionManager（无 mock 库），tiktoken 为真实使用。
+使用手写 _FakeSessionManager（无 mock 库），token 计数为真实 tiktoken
+（经 TiktokenTokenCounter 注入，与实现层一致）。
 """
 
 import pytest
 
 from app.application.context.context_manager import ContextManager
+from app.integration.llm.token_counter import TiktokenTokenCounter
 
 
 class _FakeSessionManager:
@@ -25,33 +27,27 @@ class _FakeSessionManager:
 
 
 def test_count_tokens_basic():
-    cm = ContextManager(_FakeSessionManager(), "gpt-4")
+    cm = ContextManager(_FakeSessionManager(), TiktokenTokenCounter("gpt-4"))
     assert cm.count_tokens("hello world") == 2
 
 
 def test_count_messages_tokens_overhead():
     """每条消息 +4 开销，末尾 +2"""
-    cm = ContextManager(_FakeSessionManager(), "gpt-4")
+    cm = ContextManager(_FakeSessionManager(), TiktokenTokenCounter("gpt-4"))
     msg = [{"role": "user", "content": "hello"}]
     assert cm.count_messages_tokens(msg) == 4 + cm.count_tokens("hello") + 2
 
 
 def test_count_messages_tokens_with_name():
     """带 name 字段额外 +1"""
-    cm = ContextManager(_FakeSessionManager(), "gpt-4")
+    cm = ContextManager(_FakeSessionManager(), TiktokenTokenCounter("gpt-4"))
     msg = [{"role": "user", "content": "hello", "name": "bob"}]
     assert cm.count_messages_tokens(msg) == 4 + cm.count_tokens("hello") + 1 + 2
 
 
-def test_encoding_fallback_on_unknown_model():
-    """未知模型名触发 KeyError → 回退 cl100k_base"""
-    cm = ContextManager(_FakeSessionManager(), model_name="definitely-not-a-model")
-    assert cm.encoder.name == "cl100k_base"
-
-
 @pytest.mark.asyncio
 async def test_build_messages_raises_when_session_missing():
-    cm = ContextManager(_FakeSessionManager(session=None), "gpt-4")
+    cm = ContextManager(_FakeSessionManager(session=None), TiktokenTokenCounter("gpt-4"))
     with pytest.raises(ValueError, match="Session s1 not found"):
         await cm.build_messages("s1", "hi")
 
@@ -66,7 +62,7 @@ async def test_build_messages_assembles_system_history_user():
             {"role": "assistant", "content": "b"},
         ],
     )
-    cm = ContextManager(fake, "gpt-4")
+    cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"))
     messages, total = await cm.build_messages("s1", "hello", max_rounds=20)
 
     assert messages == [
@@ -82,7 +78,7 @@ async def test_build_messages_assembles_system_history_user():
 @pytest.mark.asyncio
 async def test_build_messages_passes_custom_max_rounds():
     fake = _FakeSessionManager(session={"system_prompt": "sys"})
-    cm = ContextManager(fake, "gpt-4")
+    cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"))
     await cm.build_messages("s1", "hello", max_rounds=3)
     assert fake.calls == [("s1", 6)]
 
@@ -97,7 +93,7 @@ async def test_build_messages_truncates_when_over_budget():
             for i in range(6)
         ],
     )
-    cm = ContextManager(fake, "gpt-4", max_context_tokens=40, max_output_tokens=4)
+    cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"), max_context_tokens=40, max_output_tokens=4)
     messages, total = await cm.build_messages("s1", "hello")
 
     assert total <= 36  # available = 40 - 4
@@ -108,7 +104,7 @@ async def test_build_messages_truncates_when_over_budget():
 
 def test_truncate_messages_keeps_system_and_user():
     """预算足够全部保留；预算极小仅保留 system + user"""
-    cm = ContextManager(_FakeSessionManager(), "gpt-4")
+    cm = ContextManager(_FakeSessionManager(), TiktokenTokenCounter("gpt-4"))
     system = {"role": "system", "content": "sys"}
     user = {"role": "user", "content": "hello"}
     history = [{"role": "user", "content": f"h{i} " + "y" * 50} for i in range(3)]
@@ -123,7 +119,7 @@ def test_truncate_messages_keeps_system_and_user():
 
 def test_truncate_messages_keeps_newest_history_first():
     """预算不足时保留最新历史，丢弃最早"""
-    cm = ContextManager(_FakeSessionManager(), "gpt-4")
+    cm = ContextManager(_FakeSessionManager(), TiktokenTokenCounter("gpt-4"))
     system = {"role": "system", "content": "sys"}
     user = {"role": "user", "content": "hello"}
     oldest = {"role": "user", "content": "old " + "z" * 100}  # 很长

@@ -44,8 +44,8 @@ async def get_context_manager() -> ContextManager:
     """
     获取上下文管理器实例（依赖注入）。
 
-    ContextManager 依赖 SessionManager 来获取历史消息，
-    并依赖 tiktoken 编码器来计算 Token 数。
+    ContextManager 依赖 SessionManager 获取历史消息，
+    并经 TokenCounter 端口（tiktoken）计算 Token 数。
     """
     if container.context_manager is None:
         raise RuntimeError(

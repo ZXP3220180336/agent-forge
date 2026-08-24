@@ -27,6 +27,7 @@ from app.integration.llm import (
     StructuredOutput,
 )
 from app.integration.llm.llm_service import LLMService
+from app.integration.llm.token_counter import TiktokenTokenCounter
 from app.integration.tools.builtin import (
     CodeExecTool,
     ReadFileTool,
@@ -128,7 +129,7 @@ class Container:
 
         self.context_manager = ContextManager(
             session_manager=self.session_manager,
-            model_name=settings.llm_model_id,
+            token_counter=TiktokenTokenCounter(model=settings.llm_model_id),
             max_context_tokens=settings.max_context_tokens,
             max_output_tokens=settings.max_output_tokens,
         )

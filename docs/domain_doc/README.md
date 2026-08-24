@@ -100,6 +100,16 @@ Agent 是核心层的**决策与行动核心**，负责编排 LLM 推理与工�
 
 ---
 
+## 领域端口契约（TokenCounter）
+
+`app/domain/ports/token_counter.py` 定义领域层对 token 计量的抽象契约（依赖倒置：应用层 `ContextManager` 依赖该协议，集成层 `TiktokenTokenCounter` 结构实现之）：
+
+- **`TokenCounter`（Protocol）**：`count_tokens(text)`（单文本）/ `count_messages_tokens(messages)`（消息列表，含格式开销）两个方法签名
+
+**详见** [token_counter 实现](../integration_doc/llm_doc/token_counter.md)
+
+---
+
 ## Prompts 提示词
 
 核心层的**指令层**，为 Agent 提供系统/工具/规划等场景的提示词模板：

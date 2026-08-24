@@ -2,7 +2,7 @@
 
 > **更新日期**：2026-08-04
 > **模块**：`app/application/context/context_manager.py`
-> **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、tiktoken 精确计数、超限截断。
+> **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、经 TokenCounter 端口精确计数、超限截断。
 
 ---
 
@@ -24,7 +24,7 @@
 ContextManager 是多轮对话系统的**上下文调度器**，位于服务层，是 Chat 链路中「拿到会话 → 组装请求」的关键一步，负责：
 
 1. **消息组装**：从会话历史提取消息，拼接成 LLM 可接受的 messages 格式
-2. **Token 精确控制**：用 tiktoken 逐条计算消息与总上下文的 token 消耗，确保不超模型限制
+2. **Token 精确控制**：经 TokenCounter 端口逐条计算消息与总上下文的 token 消耗，确保不超模型限制
 3. **窗口管理**：超出可用窗口时，从最早的历史消息开始丢弃
 4. **成本核算基础**：为每次请求提供 token 数据，供计费与监控
 
@@ -40,7 +40,7 @@ ContextManager（组装 + 计数 + 截断）
 TaskService.run_agent() → Agent → LLMService（消费组装好的 messages）
 ```
 
-- 唯一外部依赖是 `SessionManager`（构造参数注入），不直接接触 Redis / DB
+- 构造依赖 `SessionManager`（会话数据）与 `TokenCounter` 端口（token 计数），均注入传入，不直接接触 Redis / DB / tiktoken
 - 上游调用方：`app/api/routes/chat.py`（`POST /api/chat/send` 第 3 步构建上下文）
 
 ### 构造参数
@@ -48,7 +48,7 @@ TaskService.run_agent() → Agent → LLMService（消费组装好的 messages�
 | 参数 | 默认值 | 来源 | 说明 |
 | --- | --- | --- | --- |
 | `session_manager` | 必填 | `Container` 注入 | 会话数据来源 |
-| `model_name` | `"gpt-4"` | `settings.llm_model_id` | 用于解析 tiktoken encoder |
+| `token_counter` | 必填 | `Container` 注入 | TokenCounter 端口实现（tiktoken 适配器） |
 | `max_context_tokens` | `128000` | `settings.max_context_tokens` | 上下文 token 上限 |
 | `max_output_tokens` | `4096` | `settings.max_output_tokens` | 输出 token 预算 |
 
@@ -58,8 +58,8 @@ TaskService.run_agent() → Agent → LLMService（消费组装好的 messages�
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `count_tokens` | `(text: str) -> int` | 用 tiktoken 编码器精确计算文本 token 数 |
-| `count_messages_tokens` | `(messages: list[dict]) -> int` | 计算 messages 列表总 token：每条消息 +4 格式开销、`name` 额外 +1、末尾 +2 回复开销 |
+| `count_tokens` | `(text: str) -> int` | 委托 TokenCounter 端口精确计算文本 token 数 |
+| `count_messages_tokens` | `(messages: list[dict]) -> int` | 委托 TokenCounter 端口计算 messages 总 token：每条消息 +4 格式开销、`name` 额外 +1、末尾 +2 回复开销 |
 | `build_messages` | `(session_id, user_message, max_rounds=20) -> tuple[list[dict], int]` | 组装完整 messages，超限自动截断，返回 `(messages, total_tokens)` |
 | `_truncate_messages` | `(messages, max_tokens) -> list[dict]` | 保留 system prompt 与最近对话，丢弃最早历史直到不超限 |
 
@@ -67,21 +67,19 @@ TaskService.run_agent() → Agent → LLMService（消费组装好的 messages�
 
 ## 关键实现详解
 
-### tiktoken 编码器解析
+### Token 计数端口化
 
-```python
-try:
-    self.encoder = tiktoken.encoding_for_model(model_name)
-except KeyError:
-    self.encoder = tiktoken.get_encoding("cl100k_base")
-```
+token 计量职责已下放到集成层 `TiktokenTokenCounter`（`app/integration/llm/token_counter.py`），`ContextManager` 仅持 `TokenCounter` 端口引用并委托：
 
-- 按 `model_name` 解析对应编码器；未知模型抛 `KeyError` 时回退 `cl100k_base`
-- 编码器在 `__init__` 中解析一次并缓存为实例属性，`count_tokens` 不再重复解析
+- 端口 `TokenCounter`（`app/domain/ports/token_counter.py`）：`count_tokens` / `count_messages_tokens` 两个方法
+- 实现 `TiktokenTokenCounter`：构造时按模型解析 tiktoken 编码器（未知模型回退 `cl100k_base`），`count_messages_tokens` 内含 content 归一化防御（None / 多模态 list 不崩溃）
+- 该模块同时承载 `get_encoder` / `content_to_text`，供 LLM 层复用（单一事实源）
+
+**详见** [token_counter 实现](../../integration_doc/llm_doc/token_counter.md)
 
 ### Token 计数规则
 
-`count_messages_tokens` 沿用 OpenAI 官方 messages token 估算规则：
+`count_messages_tokens`（经 TokenCounter 端口）沿用 OpenAI 官方 messages token 估算规则：
 
 - 每条消息固定 **+4** 格式开销
 - 消息内容经 `count_tokens` 精确计算
@@ -159,7 +157,7 @@ count = container.context_manager.count_tokens("分析这批不良率")
 | `max_context_tokens` | `128000` | `build_messages` 截断窗口上限 | 上下文 token 上限 |
 | `max_output_tokens` | `4096` | `available_tokens = context - output` | 为输出预留的 token 预算 |
 | `max_history_rounds` | `20` | — | 配置存在，但 `build_messages` 用**参数默认值** `max_rounds=20`，未读取此配置 |
-| `llm_model_id` | `gpt-4` | `model_name` 构造参数 | 决定 tiktoken 编码器 |
+| `llm_model_id` | `gpt-4` | `TiktokenTokenCounter` 构造参数 | 决定 tiktoken 编码器（经 TokenCounter 端口） |
 
 > **注意**：`max_history_rounds` 与 `build_messages` 的 `max_rounds` 参数默认值相同（20），但当前实现并未将配置绑定到方法参数——`Container.initialize()` 构造 `ContextManager` 时也未传 `max_history_rounds`。
 

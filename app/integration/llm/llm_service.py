@@ -27,6 +27,8 @@ from app.integration.llm.cost_tracker import CostTracker
 from app.integration.llm.reservation_limiter import Reservation
 from app.integration.llm.retry import ErrorCategory, classify_error
 from app.integration.llm.streaming_rectifier import RectifierContext
+from app.integration.llm.token_counter import content_to_text as _content_to_text
+from app.integration.llm.token_counter import get_encoder as _get_encoder
 from app.platform.observability.logger import fill_llm_event_fields
 
 # =====================================================================
@@ -147,59 +149,6 @@ async def _rate_limited_call(
 # =====================================================================
 
 
-_encoder_cache: dict[str, Any] = {}
-
-
-def _get_encoder(model: str) -> Any:
-    """按模型名解析 tiktoken 编码器（进程内缓存，未知模型回退 cl100k_base）。
-
-    与 ContextManager 的编码器解析逻辑一致；此处独立缓存是因为
-    LLM 层拿到的 messages 是实时最终版（ReAct 每轮追加工具结果），
-    不能复用上层的上下文预算计数。
-    """
-    if model in _encoder_cache:
-        return _encoder_cache[model]
-    try:
-        import tiktoken
-
-        encoder = tiktoken.encoding_for_model(model)
-    except KeyError:
-        # 未知模型无专属编码器 → 回退通用 cl100k_base（token 估算足够）。
-        # 只捕获 KeyError：tiktoken 缺失（ImportError）是硬依赖损坏，应自然
-        # 传播 fail fast，不被此兜底掩盖。
-        encoder = tiktoken.get_encoding("cl100k_base")
-    _encoder_cache[model] = encoder
-    return encoder
-
-
-def _content_to_text(content: Any) -> str:
-    """将消息 content 归一化为可编码文本（供 token 估算）。
-
-    - None（工具报错等缺 content 场景）→ 空串
-    - str → 原样
-    - 多模态 list（OpenAI 格式 `[{"type": "text", "text": ...}, ...]`）→
-      只取文本片段拼接；图片等非文本条目不参与 token 估算
-
-    修复前 `encoder.encode(msg.get("content", ""))`：content 键存在但为
-    None（`or ""` 兜不住，list 是 truthy 也不触发）时 encode 抛 TypeError，
-    限流预留阶段崩溃整次调用。
-    """
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and item.get("type") == "text":
-                parts.append(item.get("text", ""))
-        return " ".join(parts)
-    # 非 str/list 的异常形状：不崩，保守回退空串（宁可低估不崩）
-    return ""
-
-
 def _count_prompt_tokens(
     model_key: str,
     messages: list[dict],
@@ -207,7 +156,7 @@ def _count_prompt_tokens(
 ) -> int:
     """估算一次 LLM 调用的 token 消耗（prompt + 输出余量，供 TPM 限流扣减）。
 
-    prompt 口径与 ContextManager.count_messages_tokens 一致：
+    prompt 口径与 TiktokenTokenCounter.count_messages_tokens 一致：
         每条消息 +4（格式开销）+ content token 数 + name 额外 +1；
         末尾 +2（回复格式开销）。
 

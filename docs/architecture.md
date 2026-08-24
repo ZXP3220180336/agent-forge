@@ -189,7 +189,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
-| LLMGateway / ToolGateway / TokenCounter | 领域依赖的 LLM / 工具 / token 抽象 | ✅ LLMGateway/ToolGateway + StreamResult/ToolResult 已实现（TokenCounter 待规划） | ✅ | — |
+| LLMGateway / ToolGateway / TokenCounter | 领域依赖的 LLM / 工具 / token 抽象 | ✅ 三者均已实现（TokenCounter 含 get_encoder/content_to_text 单一事实源） | ✅ | — |
 | Session / Message / Task Repository | 持久化抽象 | ⬜ 未实现 | 🔶 | Phase A |
 | CachePort / VectorStorePort / EmbeddingPort | 缓存 / 向量 / 嵌入抽象 | ⬜ 未实现 | 🔶 | Phase A/B |
 | EventPublisher / IdGenerator | 事件发布、ID 生成 | ⬜ 未实现 | 🔶 | Phase B |
@@ -500,7 +500,7 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 - LLMService / ToolService 实现端口；配置注入推广（AgentContext / 内置工具 / TaskService / LLMService Facade）
 - ToolService 拆分（Registry/Executor/Stats/Hooks/Assembler）；dependencies.py 薄化；EmbeddingService 补 getter
 
-架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；DI 统一（C7 部分）；C10 范例升级为全局规范。`🔶 大部分完成（TokenCounter 端口 / exceptions / types / Embedding getter 待做）`
+架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；TokenCounter 端口落地（tiktoken 隔离到集成层，应用层经端口计数）；DI 统一（C7 部分）；C10 范例升级为全局规范。`🔶 大部分完成（exceptions / types / Embedding getter 待做）`
 
 ### Phase C 应用与编排层
 
