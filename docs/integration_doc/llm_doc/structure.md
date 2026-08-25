@@ -11,32 +11,35 @@
 
 ## 📋 目录
 
-- [设计目标](#设计目标)
-- [核心概念解释](#核心概念解释)
-  - [结构化输出（Structured Outputs）](#结构化输出structured-outputs)
-  - [什么时候该使用结构化输出？](#什么时候该使用结构化输出)
-  - [JSON Schema](#json-schema)
-  - [JSON mode vs Structured Outputs](#json-mode-vs-structured-outputs)
-  - [strict mode](#strict-mode)
-  - [finish\_reason / refusal](#finish_reason--refusal)
-  - [正则提取 / constrained decoding](#正则提取--constrained-decoding)
-  - [三级降级](#三级降级)
-- [架构总览](#架构总览)
-- [组件详解](#组件详解)
-  - [\_build\_json\_schema\_request — 原生 JSON Schema 请求](#_build_json_schema_request--原生-json-schema-请求)
-  - [\_build\_json\_mode\_request — JSON mode 请求](#_build_json_mode_request--json-mode-请求)
-  - [extract — 三级降级编排](#extract--三级降级编排)
-  - [\_try\_extract — 单级提取（response\_format 形态）](#_try_extract--单级提取response_format-形态)
-  - [\_fallback\_extract — 正则兜底提取（无 response\_format）](#_fallback_extract--正则兜底提取无-response_format)
-- [执行流程](#执行流程)
-- [对外接口](#对外接口)
-- [边界情况](#边界情况)
-- [配置项清单](#配置项清单)
-- [测试状态](#测试状态)
-- [与重试/限流的分层配合](#与重试限流的分层配合)
-- [设计决策](#设计决策)
-- [问题记录](#问题记录)
-- [相关文档](#相关文档)
+- [StructuredOutput 结构化输出设计文档](#structuredoutput-结构化输出设计文档)
+  - [📋 目录](#-目录)
+  - [设计目标](#设计目标)
+  - [核心概念解释](#核心概念解释)
+    - [结构化输出（Structured Outputs）](#结构化输出structured-outputs)
+    - [什么时候该使用结构化输出？](#什么时候该使用结构化输出)
+    - [JSON Schema](#json-schema)
+    - [Schema 是契约（来自 Agent 行为实验验证）](#schema-是契约来自-agent-行为实验验证)
+    - [JSON mode vs Structured Outputs](#json-mode-vs-structured-outputs)
+    - [strict mode](#strict-mode)
+    - [finish\_reason / refusal](#finish_reason--refusal)
+    - [正则提取 / constrained decoding](#正则提取--constrained-decoding)
+    - [三级降级](#三级降级)
+  - [架构总览](#架构总览)
+  - [组件详解](#组件详解)
+    - [\_build\_json\_schema\_request — 原生 JSON Schema 请求](#_build_json_schema_request--原生-json-schema-请求)
+    - [\_build\_json\_mode\_request — JSON mode 请求](#_build_json_mode_request--json-mode-请求)
+    - [extract — 三级降级编排](#extract--三级降级编排)
+    - [\_try\_extract — 单级提取（response\_format 形态）](#_try_extract--单级提取response_format-形态)
+    - [\_fallback\_extract — 正则兜底提取（无 response\_format）](#_fallback_extract--正则兜底提取无-response_format)
+  - [执行流程](#执行流程)
+  - [对外接口](#对外接口)
+  - [边界情况](#边界情况)
+  - [配置项清单](#配置项清单)
+  - [测试状态](#测试状态)
+  - [与重试/限流的分层配合](#与重试限流的分层配合)
+  - [设计决策](#设计决策)
+  - [问题记录](#问题记录)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -91,6 +94,23 @@
   "required": ["name"]
 }
 ```
+
+### Schema 是契约（来自 Agent 行为实验验证）
+
+> 依据：learning-agent 项目的结构化输出实验（把 `unit` 字段类型误设为 `number`，实测 Agent 行为）。此处只留工业级结论。
+
+**实验事实**：`unit` 语义是单位（应为字符串），Schema 却要求 `number`。Agent 出现两种行为：
+
+1. **妥协式迎合**：输出 `unit:"华氏度"` 被拒 → 归因回喂 → 改出 `unit:86` **通过校验但语义错**（模型为满足错误契约，把数值硬塞进该是字符串的字段，confidence 还是 1）。
+2. **重试到死**：`unit:"°F"` → `unit:None` → `unit:None`，回喂上限耗尽放弃——Schema 自相矛盾时，归因重试无法收敛。
+
+**三条工业结论**：
+
+1. **Schema 是「正确答案的契约」，契约错则校验过的结果也错**：模型不会坚持正确语义，而是**妥协式迎合**——「校验通过」≠「语义正确」，校验只是入口约束、不是最终验收（对应上文「Structured Outputs 通过 ≠ 业务可用」）。
+2. **只用 `type` 不够，要用 `enum`/`pattern` 锁语义取值**：`"unit": {"type": "string"}` 允许任意字符串，`{"type": "string", "enum": ["°F", "°C"]}` 才锁定范围。Schema 约束力越弱，模型自由发挥空间越大。
+3. **`_REASK_MAX_RETRIES` 是必要护栏**：无解 Schema 会让归因重试空转，上限防止「无论怎么改都过不了」时无限烧 token。
+
+与 [tools.md](../tools_doc/tools.md) 的「三层语义信号」呼应：工具**输入** schema 决定 Agent 会不会用，输出 schema 决定 Agent 交不交得了正确结果——**契约质量决定 Agent 行为质量**（输入、输出两侧同一课）。
 
 ### JSON mode vs Structured Outputs
 
