@@ -102,6 +102,7 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 ## 相关文档
 
 - [ReActStrategy 策略组件](react.md)
+- [ReAct 工业级对标基准](react_benchmark.md)（能力基准与差距清单）
 - [领域层说明](../README.md)
 - [Agent 模块对外接口文档](../agent_doc/agent.md)（含 [ReActAgent 桥接组件](../agent_doc/executor.md)）
 - [架构设计](../../architecture.md)
