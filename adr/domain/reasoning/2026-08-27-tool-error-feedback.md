@@ -15,11 +15,12 @@
 3. **SSE 事件**：`build_tool_result_event` 同步改用 `feedback`（前端可见失败原因）。
 4. **无效工具名不写额外分支**：NOT_REGISTERED 失败自然走失败回喂，模型可见「工具未注册」。
 5. **顺带修复 AGENT-001**：`except json.JSONDecodeError, KeyError:` → `except (json.JSONDecodeError, KeyError):` 显式元组（同函数内）。
+6. **参数 JSON 解析失败降级**：解析失败不执行工具（避免空参执行的错误掩盖 / 副作用），构造失败 `ToolResult`（`error="参数 JSON 解析失败: ..."`, `error_code=JSON_PARSE`）走失败回喂分支——模型可见原因自纠，错误码进证据链。
 
 ## Consequences
 
-- ✅ 模型自愈闭环：失败 / 无效工具的错误文本回喂，下一轮 LLM 可纠正。
+- ✅ 模型自愈闭环：失败 / 无效工具 / 解析失败的错误文本回喂，下一轮 LLM 可纠正。
 - ✅ 证据链完整：`outcome.tool_calls` 含 `error` / `error_code`，供根因报告归因。
-- ✅ 新增 3 单元测试（失败回喂 / 证据链记录 / 无效工具名）。
+- ✅ 新增 4 单元测试（失败回喂 / 证据链记录 / 无效工具名 / 解析失败不执行工具）。
 - ⚠️ 回喂截断 2000 字符沿用（失败文本通常短，完整进模型）；成功路径行为不变。
 - 📌 `error_code` 进证据链不进回喂（模型收到文本已足够，枚举值留审计 / 证据链）。

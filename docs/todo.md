@@ -1,3 +1,14 @@
+# 2026-08-27 解析 / JSON 失败降级（核心必备 #7）
+
+> 对标确认解析失败静默降级空参（掩盖错误）。修复：解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂闭环。
+
+- [x] `react.py` _execute_one：解析失败不执行工具，构造失败 ToolResult 回喂 + JSON_PARSE 证据链
+- [x] 测试：1 用例（不执行 / 回喂解析失败 / 证据链 JSON_PARSE）
+- [x] 文档：react.md / react_benchmark.md（#7 ✅，12 完备 / 0 部分 / 1 缺失）+ ADR 并入
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-27 工具异常回喂 + 无效工具名处理（核心必备 #5/#6，P0）
 
 > 对标 [react_benchmark.md](domain_doc/reasoning_doc/react_benchmark.md) 确认工具失败信息不回喂模型：失败 `content=""` 回喂空串，模型无法自愈；`error` 未进证据链。修复根因 = 失败信息在两个出口同时丢失。

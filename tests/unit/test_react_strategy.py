@@ -454,6 +454,34 @@ async def test_react_unknown_tool_feedback():
 
 
 @pytest.mark.asyncio
+async def test_react_parse_failure_no_execute_and_feedback():
+    """工具参数 JSON 解析失败 → 不执行工具 + 回喂解析失败 + 证据链 JSON_PARSE。"""
+    probe = _DelayTool("probe", delay=0.001)
+    tools = _make_registry(tools=[probe])
+    strategy = ReActStrategy(llm=_NoopLLM(), tools=tools)
+    tool_calls = [
+        {
+            "id": "call_p",
+            "type": "function",
+            "function": {"name": "probe", "arguments": "{invalid json"},
+        }
+    ]
+    messages = []
+
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1):
+        pass
+
+    # 工具未被真正执行（解析失败短路，避免空参执行的错误掩盖 / 副作用）
+    assert probe.exec_started == []
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert "解析失败" in tool_msgs[0]["content"]
+    # 证据链：系统错误码 JSON_PARSE + 失败原因
+    assert strategy._tool_call_records[0]["error_code"] == "JSON_PARSE"
+    assert "解析失败" in strategy._tool_call_records[0]["error"]
+
+
+@pytest.mark.asyncio
 async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
     """execute_tool_calls：tool_messages 顺序保持 = tool_calls 输入顺序。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)

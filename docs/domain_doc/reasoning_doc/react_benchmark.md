@@ -27,8 +27,8 @@
 
 ## 结论先行
 
-- **核心循环结构完成度约 85%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限 / 工具失败回喂全部到位。
-- **核心必备 13 项对照：11 完备 / 1 部分 / 1 缺失**（⚠️：解析/JSON 降级仍静默空参；缺失：上下文预算）。
+- **核心循环结构完成度约 90%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限 / 工具失败回喂 / 解析降级全部到位。
+- **核心必备 13 项对照：12 完备 / 0 部分 / 1 缺失**（唯一缺失：上下文预算）。
 - **剩余最实质差距**：上下文预算管理——工具结果总量无护栏，长任务可击穿上下文窗口。
 - **架构加分**：策略模式解耦（`reasoning → ports + shared`）、端口抽象、独立测试，模块划分优于多数工业级框架。
 
@@ -87,7 +87,7 @@
 | 4 | 超限降级 | ✅ | 迭代超限用 `last_result` 兜底，无结果则 `error="LLM 未返回任何结果"`——等价 LangChain `force` 语义，不抛裸异常（[react.py:214-234](../../../app/domain/reasoning/react.py#L214-L234)） |
 | 5 | 工具异常回喂 | ✅ | 失败回喂 `str(result)`（"错误: <error>"），模型可感知失败自愈（[react.py:308](../../../app/domain/reasoning/react.py#L308)）；`error`/`error_code` 进证据链记录（[react.py:310](../../../app/domain/reasoning/react.py#L310)） |
 | 6 | 无效工具名处理 | ✅ | NOT_REGISTERED 失败走同一失败回喂分支，模型可见「工具未注册」；证据链记录 `error_code`（同 #5） |
-| 7 | 解析 / JSON 失败降级 | ⚠️ | `except json.JSONDecodeError, KeyError:` 静默降级空参——LangChain 用 `handle_parsing_errors` 回喂错误文本自纠，本项目是「静默吞掉」非「自愈」（[react.py:291](../../../app/domain/reasoning/react.py#L291)） |
+| 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（[react.py:290-303](../../../app/domain/reasoning/react.py#L290-L303)） |
 | 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（[react.py:145-161](../../../app/domain/reasoning/react.py#L145-L161)） |
 | 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符（[react.py:323-329](../../../app/domain/reasoning/react.py#L323-L329)）。小瑕疵：截断无 `[truncated]` 标记 |
 | 10 | 上下文预算管理 | ❌ | 无 trim / compaction / 消息预算。`max_iterations=10` × 工具结果 2000 字符无总量护栏，长任务可击穿上下文窗口 |
@@ -142,6 +142,7 @@
 
 > ✅ 已完成（2026-08-27）：时间上限（`asyncio.timeout` 包裹循环 + 超时降级，生产值 `agent_timeout=300`）。
 > ✅ 已完成（2026-08-27）：工具失败回喂 + 无效工具名处理（失败回喂 `str(result)`，error/error_code 进证据链）；AGENT-001 回归（except 显式元组）。
+> ✅ 已完成（2026-08-27）：解析 / JSON 失败降级（解析失败不执行工具，构造失败 ToolResult 回喂 + JSON_PARSE 证据链）。
 
 ---
 

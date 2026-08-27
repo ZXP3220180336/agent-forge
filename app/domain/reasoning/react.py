@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
-from app.domain.ports.tool_gateway import ToolGateway
+from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
 from app.shared.events import (
     build_done_event,
     build_info_event,
@@ -287,9 +287,21 @@ class ReActStrategy:
             """并行执行单个工具（并发 task 内只做执行，不 yield 事件）。"""
             tool_name = tc["function"]["name"]
             try:
-                tool_args = json.loads(tc["function"]["arguments"])
-            except (json.JSONDecodeError, KeyError):
-                tool_args = {}
+                raw_args = tc["function"]["arguments"]
+                tool_args = json.loads(raw_args)
+            except (json.JSONDecodeError, KeyError) as e:
+                # 参数 JSON 解析失败：不静默用空参执行（会掩盖错误、可能触发副作用），
+                # 构造失败 ToolResult 走失败回喂分支——模型可见原因自纠，JSON_PARSE 进证据链。
+                raw_args = tc.get("function", {}).get("arguments", "")
+                start = time.monotonic()
+                exec_result = ToolResult(
+                    success=False,
+                    content="",
+                    error=f"参数 JSON 解析失败: {e!s}（原始参数: {raw_args[:200]}）",
+                    error_code=ErrorCode.JSON_PARSE,
+                )
+                elapsed = time.monotonic() - start
+                return exec_result, tool_name, {}, tc, elapsed
             start = time.monotonic()
             exec_result = await self._tools.execute(tool_name, tool_args)
             elapsed = time.monotonic() - start
