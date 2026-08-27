@@ -1,0 +1,286 @@
+"""
+ReActStrategy 单元测试
+
+覆盖：
+    execute 工具循环 stop 结束（outcome 正确组装）
+    execute LLM 失败短路（LLM-001 语义，iterations=1）
+    execute 空输出重试后正常结束
+    execute 最大迭代次数兜底
+    execute_tool_calls 并行执行：顺序保持 + 实际并发
+
+范式：手写假对象（不用 AsyncMock），LLM 替身回填 StreamResult + yield 事件。
+"""
+
+import asyncio
+import json
+import time
+
+import pytest
+
+from app.config import settings
+from app.domain.reasoning import ReActStrategy
+from app.integration.tools.base import BaseTool, ToolResult
+from app.integration.tools.tool_service import ToolService
+from app.shared.events import build_error_event, build_message_event
+
+
+class _EchoTool(BaseTool):
+    """即时返回的工具（验证工具调用循环）。"""
+
+    @property
+    def name(self) -> str:
+        return "echo"
+
+    @property
+    def description(self) -> str:
+        return "回声工具"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        }
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(success=True, content=f"echo:{kwargs.get('text', '')}")
+
+
+class _DelayTool(BaseTool):
+    """带不同延迟的工具，用于验证 gather 并行 + 顺序保持。"""
+
+    def __init__(self, name: str, delay: float):
+        self._name = name
+        self.delay = delay
+        self.exec_started = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return "测试工具"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+
+    async def execute(self, **kwargs) -> ToolResult:
+        self.exec_started.append(time.monotonic())
+        await asyncio.sleep(self.delay)
+        return ToolResult(success=True, content=f"{self._name}:{kwargs.get('query', '')}")
+
+
+class _ScriptedLLM:
+    """按脚本返回 StreamResult 字段的 LLM 替身（脚本耗尽则复用最后一条）。"""
+
+    def __init__(self, scripts: list[dict]):
+        self.scripts = scripts
+        self.calls = 0
+
+    async def async_generate(self, *args, result=None, **kwargs):
+        self.calls += 1
+        spec = self.scripts[min(self.calls - 1, len(self.scripts) - 1)]
+        if result is not None:
+            for key, value in spec.items():
+                setattr(result, key, value)
+        yield build_message_event(spec.get("content", ""))
+        return
+
+
+class _ErrorLLM:
+    """模拟 LLM 失败：产出一个 SSE error 事件，并在 result 上标记 error（LLM-001）。"""
+
+    async def async_generate(self, *args, result=None, **kwargs):
+        if result is not None:
+            result.error = "401 认证失败"
+        yield build_error_event("LLM 调用失败: 401 认证失败")
+        return
+
+
+class _EmptyLLM:
+    """每轮返回空输出（finish_reason 为空），用于触发重试 / 迭代兜底。"""
+
+    async def async_generate(self, *args, result=None, **kwargs):
+        if result is not None:
+            result.finish_reason = ""
+            result.content = ""
+        yield ""
+        return
+
+
+def _make_registry(max_concurrent: int = 10, tools: list | None = None) -> ToolService:
+    reg = ToolService(max_concurrent_tools=max_concurrent)
+    for tool in tools or []:
+        reg.register(tool)
+    return reg
+
+
+@pytest.mark.asyncio
+async def test_react_execute_tool_loop_ends_on_stop():
+    """工具循环：第 1 轮调工具，第 2 轮 stop → outcome 正确组装。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "hi"}),
+                        },
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "答案是 86"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    messages = [{"role": "user", "content": "30C 转华氏"}]
+    events = []
+    async for ev in strategy.execute(
+        "30C 转华氏", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "答案是 86"
+    assert strategy.outcome.iterations == 2
+    # 工具调用记录：1 条，参数与结果正确
+    assert len(strategy.outcome.tool_calls) == 1
+    assert strategy.outcome.tool_calls[0]["tool"] == "echo"
+    assert strategy.outcome.tool_calls[0]["result"] == "echo:hi"
+    # tool 消息已回喂（含 assistant.tool_calls 配对）
+    assert any(m.get("role") == "tool" for m in messages)
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_execute_short_circuits_on_llm_error():
+    """LLM 失败（StreamResult.error）→ 第 1 轮短路返回失败结果，不空转重试（LLM-001）。"""
+    strategy = ReActStrategy(llm=_ErrorLLM(), tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.error == "401 认证失败"
+    assert strategy.outcome.iterations == 1
+
+
+@pytest.mark.asyncio
+async def test_react_execute_empty_output_retries_then_stops():
+    """空输出（finish_reason 空）→ 重试；下一轮 stop → 正常结束。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "", "content": ""},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert strategy.outcome.iterations == 2
+
+
+@pytest.mark.asyncio
+async def test_react_execute_max_iterations_fallback():
+    """持续空输出 → 达到 max_iterations 强制结束（用 last_result 兜底）。"""
+    strategy = ReActStrategy(llm=_EmptyLLM(), tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=2, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.iterations == 2
+    assert strategy.outcome.success is False
+
+
+@pytest.mark.asyncio
+async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
+    """execute_tool_calls：tool_messages 顺序保持 = tool_calls 输入顺序。"""
+    monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)
+    reg = _make_registry(
+        max_concurrent=10,
+        tools=[
+            _DelayTool("tool_a", delay=0.03),
+            _DelayTool("tool_b", delay=0.01),
+            _DelayTool("tool_c", delay=0.02),
+        ],
+    )
+
+    strategy = ReActStrategy(llm=_NoopLLM(), tools=reg)
+    tool_calls = [
+        {"id": "call_1", "type": "function", "function": {"name": "tool_a", "arguments": json.dumps({"query": "x1"})}},
+        {"id": "call_2", "type": "function", "function": {"name": "tool_b", "arguments": json.dumps({"query": "x2"})}},
+        {"id": "call_3", "type": "function", "function": {"name": "tool_c", "arguments": json.dumps({"query": "x3"})}},
+    ]
+    messages = []
+
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1):
+        pass
+
+    # tool_messages 顺序 = 输入顺序（gather 保序）
+    assert [m["tool_call_id"] for m in messages] == ["call_1", "call_2", "call_3"]
+    assert messages[0]["content"] == "tool_a:x1"
+    assert messages[1]["content"] == "tool_b:x2"
+    assert messages[2]["content"] == "tool_c:x3"
+
+
+@pytest.mark.asyncio
+async def test_react_execute_tool_calls_actually_concurrent(monkeypatch):
+    """execute_tool_calls：并行执行总耗时 < 串行和。"""
+    monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)
+    reg = _make_registry(
+        max_concurrent=10,
+        tools=[_DelayTool("tool_a", delay=0.05), _DelayTool("tool_b", delay=0.05)],
+    )
+
+    strategy = ReActStrategy(llm=_NoopLLM(), tools=reg)
+    tool_calls = [
+        {"id": "call_1", "type": "function", "function": {"name": "tool_a", "arguments": "{}"}},
+        {"id": "call_2", "type": "function", "function": {"name": "tool_b", "arguments": "{}"}},
+    ]
+    messages = []
+
+    start = time.monotonic()
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1):
+        pass
+    elapsed = time.monotonic() - start
+
+    # 并行执行两个 0.05s 工具，总耗时应 < 串行 0.1s（留余量，断言 < 0.09）
+    assert elapsed < 0.09, f"应并行执行（<0.09s），实际 {elapsed:.3f}s"
+
+
+class _NoopLLM:
+    """最小 LLM 替身（execute_tool_calls 不真正调用 LLM）。"""
+
+    async def async_generate(self, *args, **kwargs):
+        yield ""
+        return

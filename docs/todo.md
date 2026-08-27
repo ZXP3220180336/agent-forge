@@ -1,3 +1,18 @@
+# 2026-08-27 领域层推理决策架构建设 · Slice 0：ReAct 策略抽离
+
+> Phase C 前置：领域层四模块完整建设（策略 / prompt / 记忆 / 编排），单步执行。
+> Slice 0：ReAct 循环逻辑从 `agent/executor.py` 抽离到 `reasoning/react.py`（ReActStrategy），executor.py 变薄桥接。
+
+- [x] `reasoning/react.py`：ReActStrategy + ReActOutcome + execute()（完整循环）+ execute_tool_calls()（工具并行原语）
+- [x] `agent/executor.py`：ReActAgent 桥接（_strategy_cycle 委托 + _map_outcome + _execute_tool_calls 转发）
+- [x] `reasoning/__init__.py`：导出 ReActStrategy / ReActOutcome
+- [x] 新增 test_react_strategy.py（6 用例）：工具循环 stop / error 短路 / 空输出重试 / 迭代兜底 / 并行保序 / 并发
+- [x] 文档：reasoning.md（react.py ✅）/ ALIGNMENT / agent.md（executor 桥接定位）
+- [x] ADR：`adr/domain/agent/2026-08-27-react-strategy-extraction.md`
+- [x] 验证：全量 589 passed（既有 test_agent 3 用例零改动 + test_chat_flow 集成链路通过）
+
+---
+
 # 2026-08-24 Embedding 端口化落地（Phase B 剩余任务 #4，最后一项）
 
 > 架构文档端口层目标：EmbeddingPort。孤儿服务 EmbeddingService 端口化（结构实现），补测试；RAG 接线留 Phase D。
