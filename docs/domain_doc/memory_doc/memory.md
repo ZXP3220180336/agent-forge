@@ -86,6 +86,7 @@ MemoryService
 ## 与产品方向的关系
 
 在良率 RCA 场景中，记忆系统用于**沉淀历史排查经验**：
+
 - 每次良率异常排查后，把根因结论存入长期记忆
 - 后续类似 excursion 发生时，Agent 可检索历史案例加速定位
 - 对应 `search_historical_rca` 工具的历史案例检索能力

@@ -26,7 +26,7 @@
 | app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 三合一待拆分 |
 | app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | 并发闸门 |
 | app/domain/agent/base.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | Agent 基类与数据定义 |
-| app/domain/agent/executor.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | ReAct 执行引擎 |
+| app/domain/agent/executor.py | ✅ | docs/domain_doc/agent_doc/executor.md | tests/unit/test_agent.py | ReActAgent 桥接（ReActStrategy 到 BaseAgent 生命周期） |
 | app/domain/agent/planner.py | ⬜ | docs/domain_doc/agent_doc/agent.md | (无) | 空文件，PlannerAgent 待实现 |
 | app/domain/agent/reasoning.py | ⬜ | docs/domain_doc/agent_doc/agent.md | (无) | 空文件待实现 |
 | app/domain/memory/base.py | ⬜ | docs/domain_doc/memory_doc/memory.md | tests/unit/test_memory.py | 空壳；test_memory.py 空文件 |
@@ -44,7 +44,7 @@
 | app/domain/prompts/templates/system.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
 | app/domain/prompts/templates/tools.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
 | app/domain/reasoning/chain_of_thought.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
-| app/domain/reasoning/react.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
+| app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现（ReActStrategy + ReActOutcome） |
 | app/domain/reasoning/reflection.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
 | app/infrastructure/database.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，DB 由 container 直管 |
 | app/infrastructure/redis_client.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，Redis 由 container 直管 |

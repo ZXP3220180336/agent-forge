@@ -1,76 +1,95 @@
-# 推理策略说明文档
+# 推理策略模块对外接口文档
 
-> **更新日期**：2026-08-26
-> **模块**：`app/domain/reasoning/`
-> **实现状态**：❌ 预留（全部文件为空）
-> **架构定位**：核心层的推理策略实现，作为 `BaseAgent._strategy_cycle()` 的候选策略
+> **对应代码**：`app/domain/reasoning/`
+> **更新日期**：2026-08-27
+> **文档定位**：推理策略模块对外接口文档——策略类契约 + 内部组件导航；服务对象为 agent/ 层编排（ReActAgent / PlannerAgent / ReflectionAgent）
+> **实现状态**：🔶 部分实现（react.py ✅；reflection / chain_of_thought 预留）
 
 ---
 
 ## 📋 目录
 
-- [模块概述](#模块概述)
-- [实现状态总览](#实现状态总览)
-- [规划结构](#规划结构)
-- [与 Agent 层的关系](#与-agent-层的关系)
-- [相关文档](#相关文档)
+- [推理策略模块对外接口文档](#推理策略模块对外接口文档)
+  - [📋 目录](#-目录)
+  - [模块概述](#模块概述)
+    - [核心功能](#核心功能)
+    - [模块结构](#模块结构)
+    - [设计原则](#设计原则)
+    - [依赖关系](#依赖关系)
+  - [对外接口](#对外接口)
+  - [内部实现组织](#内部实现组织)
+  - [预留策略设计启示](#预留策略设计启示)
+  - [相关文档](#相关文档)
 
 ---
 
 ## 模块概述
 
-推理策略模块是核心层的**策略库**，为 Agent 提供多种推理方式的实现。当前 Agent 的 ReAct 策略直接实现在 `app/domain/agent/executor.py` 中；本模块规划将这些推理方式**抽离为独立策略**，未来可作为 `_strategy_cycle()` 的替代实现。
+### 核心功能
+
+推理策略模块是领域层的**原子推理策略库**，为 Agent 提供推理方式实现，被 agent/ 层编排调用（agent/ 管策略编排与生命周期，reasoning/ 管策略实现）：
+
+- **ReAct**：推理 ↔ 工具循环（已实现）
+- **Reflection**：生成 → 自查 → 修正（预留）
+- **CoT**：纯推理引导（预留）
+
+### 模块结构
 
 ```text
-BaseAgent._strategy_cycle()  ← 策略接口
-    ├── ReAct（当前，实现在 agent/executor.py）
-    ├── Chain-of-Thought（规划，本模块）
-    ├── Reflection（规划，本模块）
+app/domain/reasoning/
+├── __init__.py          # 子包导出（ReActStrategy / ReActOutcome）
+├── react.py             # ReAct 推理（ReActStrategy + ReActOutcome，✅）
+├── reflection.py        # Reflection 推理（预留）
+└── chain_of_thought.py  # CoT 推理（预留）
+```
+
+### 设计原则
+
+1. **原子策略**：每个文件是一个可独立跑通的推理算法，不持有 Agent 状态
+2. **可复用原语**：策略内提供工具执行等原语，供不同编排复用
+3. **契约随策略发布**：策略级 Schema / 结果载体随策略模块发布，编排方引用
+
+### 依赖关系
+
+```text
+BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
+    ├── ReActStrategy（✅ 本模块 react.py；executor.py 桥接）
+    ├── Reflection（预留，本模块）
+    ├── Chain-of-Thought（预留，本模块）
     └── ...
 ```
 
----
-
-## 实现状态总览
-
-| 文件 | 状态 | 定位 |
-| --- | --- | --- |
-| `__init__.py` | ❌ 空 | 子包入口 |
-| `chain_of_thought.py` | ❌ 空 | 思维链（Chain-of-Thought）推理 |
-| `react.py` | ❌ 空 | ReAct 推理（当前逻辑在 agent/executor.py 中） |
-| `reflection.py` | ❌ 空 | 反思（Reflection）推理 |
-
-**当前状态**：全部为预留空文件，无任何实现。
+**依赖方向**：`reasoning/` 只依赖 ports + shared（不 import `agent/`，策略收标量参数而非 AgentContext），被 agent/ 层编排调用。
 
 ---
 
-## 规划结构
+## 对外接口
 
-### `chain_of_thought.py` — 思维链（Chain-of-Thought）
+> 对外接口 = 被 agent/ 层编排依赖的策略类。策略收标量参数，经 `outcome` / 返回暴露结果。
 
-- **思路**：引导模型分步推理（"让我们一步步思考"），提升复杂推理的准确性
-- **适用**：数学推理、多步逻辑分析
-- **与 ReAct 区别**：CoT 不调用工具，是纯推理路径；ReAct 是推理 ↔ 工具交替
+| 策略类 | 契约（方法） | 状态 | 说明 |
+| --- | --- | --- | --- |
+| `ReActStrategy` | `execute(...)` / `execute_tool_calls(...)` + `outcome` | ✅ | 完整契约见 [react.md](react.md) |
+| `ReflectionStrategy` | 预留 | ⬜ | 设计启示见下节 |
+| CoT | 预留 | ⬜ | — |
 
-### `react.py` — ReAct 推理
+被编排方式：`ReActAgent._strategy_cycle()` 委托 `ReActStrategy.execute()`；`execute_tool_calls()` 供 PlannerAgent 执行阶段 / ReflectionAgent 收集阶段复用。
 
-- **思路**：推理（Reason）→ 行动（Act）→ 观察（Observe）循环
-- **现状**：ReAct 逻辑已实现在 `agent/executor.py` 的 `ReActAgent` 中
-- **规划**：抽离为独立策略类，作为 `_strategy_cycle()` 的复用实现
+---
 
-### `reflection.py` — 反思（Reflection）
+## 内部实现组织
 
-- **思路**：生成 → 反思 → 修正，模型自我评估输出质量并改进
-- **适用**：代码生成（自动检查 bug）、长文写作（质量改进）
-- **工作流**：
-  1. 生成阶段：LLM 首轮输出
-  2. 反思阶段：LLM 评估输出质量，指出问题
-  3. 修正阶段：根据反思结果修正
-  4. 验证阶段：再次评估，确认达到标准
+| 组件 | 文件 | 职责 | 状态 |
+| --- | --- | --- | --- |
+| [react.md](react.md) | `react.py` | ReAct 推理（ReActStrategy + ReActOutcome） | ✅ |
+| reflection.py | `reflection.py` | Reflection 推理（生成 → 自查 → 修正） | ⬜ 预留 |
+| chain_of_thought.py | `chain_of_thought.py` | CoT 推理（纯推理引导） | ⬜ 预留 |
 
-#### 设计启示（来自 Agent 行为实验）
+---
 
-> 依据：learning-agent 项目的 Reflection 实验（批量转换任务 × 注入语义错误 × 对照），验证"程序校验查形状 vs 模型自查查语义"的分工与边界。此处只留工业级结论，实验细节见该学习项目。
+## 预留策略设计启示
+
+> 依据：learning-agent 项目的 Reflection 实验（批量转换任务 × 注入语义错误 × 对照），验证"程序校验查形状 vs 模型自查查语义"的分工与边界。此处只留工业级结论，实验细节见该学习项目。供 Reflection 策略实现（Slice 4）参考。
 
 1. **程序校验与模型自查分工互补**：程序校验（jsonschema）查**形状**（字段 / 类型 / 值域），确定性、便宜；模型自查查**语义**（配对正确、数值精确），概率性、多一次 LLM 调用。程序校验查不了"配对是否正确"——4 项都在、类型全对、结果填错位置照样放行，自查能补。
 2. **自查范围 = 提示词清单（Scope 盲区）**：审查指令只查列出的维度，清单外的必漏——实验实证 `answer` 与 `results` 自相矛盾（清单外），自查直接放行。设计自查提示词要**穷举要查的维度**（字段间一致性、单位方向、证据支撑…），漏一个就是漏报温床。这也是独立 Critic Agent（不同上下文 / 视角）存在的理由——同模型自查被指令范围锁死。
@@ -80,19 +99,9 @@ BaseAgent._strategy_cycle()  ← 策略接口
 
 ---
 
-## 与 Agent 层的关系
-
-| 层 | 职责 |
-| --- | --- |
-| Agent 层（`agent/`） | 策略**编排**：`BaseAgent.run()` 统一入口 + `_strategy_cycle()` 策略接口 |
-| 推理层（本模块，`reasoning/`） | 策略**实现**：具体的推理算法（CoT / ReAct / Reflection） |
-
-当前 `ReActAgent` 把编排与 ReAct 策略耦合在 `executor.py` 中。规划方向是：`reasoning/` 提供策略实现，Agent 层通过 `_strategy_cycle()` 选择策略——实现"策略模式"的解耦目标（`agent.md` 中设计的 PlannerAgent / ReflectionAgent 预留）。
-
----
-
 ## 相关文档
 
+- [ReActStrategy 策略组件](react.md)
 - [领域层说明](../README.md)
-- [Agent 模块详解](../agent_doc/agent.md)
+- [Agent 模块对外接口文档](../agent_doc/agent.md)（含 [ReActAgent 桥接组件](../agent_doc/executor.md)）
 - [架构设计](../../architecture.md)
