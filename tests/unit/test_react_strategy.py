@@ -555,6 +555,63 @@ async def test_react_short_tool_result_no_marker():
 
 
 @pytest.mark.asyncio
+async def test_react_reasoning_feedback_when_has_reasoning():
+    """has_reasoning=True 且 reasoning_content 空 → assistant 消息仍带 reasoning_content 字段（空串，DeepSeek V4 必须回喂）。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "has_reasoning": True,
+                "reasoning_content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "hi"}),
+                        },
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+    ):
+        pass
+
+    # 第 1 轮 assistant 消息（含 tool_calls）应带 reasoning_content 键（空串）
+    first_assistant = next(
+        m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert "reasoning_content" in first_assistant
+    assert first_assistant["reasoning_content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_react_reasoning_no_feedback_without_signal():
+    """无 has_reasoning（chat 模型）→ assistant 消息不带 reasoning_content 键。"""
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "完成"}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+    ):
+        pass
+
+    assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert "reasoning_content" not in assistant_msgs[0]
+
+
+@pytest.mark.asyncio
 async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
     """execute_tool_calls：tool_messages 顺序保持 = tool_calls 输入顺序。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)

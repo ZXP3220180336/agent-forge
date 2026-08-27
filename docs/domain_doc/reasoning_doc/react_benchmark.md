@@ -116,7 +116,6 @@
 
 | 优先级 | 问题 | 位置 | 说明 |
 | --- | --- | --- | --- |
-| P2 | reasoning_content 回喂 | [react.py:170](../../../app/domain/reasoning/react.py#L170) | 把 reasoning 塞回 assistant 消息。当前 main 模型（chat）不返回 reasoning_content 故不触发；但 main 换推理模型后 OpenAI 兼容 API 不接受该字段，且 DeepSeek reasoner 不支持 tools |
 | P2 | 无上下文预算 | [react.py:119](../../../app/domain/reasoning/react.py#L119) | 见核心 #10，工具结果总量无护栏，长任务可击穿上下文窗口 |
 
 ---
@@ -136,12 +135,12 @@
 | 优先级 | 动作 | 工作量 |
 | --- | --- | --- |
 | P2 | 上下文预算：工具结果总量预算或消息数预算，超限截断并提示 | 中 |
-| P2 | reasoning_content 回喂策略：明确按模型配置是否回喂 | 小 |
 
 > ✅ 已完成（2026-08-27）：时间上限（`asyncio.timeout` 包裹循环 + 超时降级，生产值 `agent_timeout=300`）。
 > ✅ 已完成（2026-08-27）：工具失败回喂 + 无效工具名处理（失败回喂 `str(result)`，error/error_code 进证据链）；AGENT-001 回归（except 显式元组）。
 > ✅ 已完成（2026-08-27）：解析 / JSON 失败降级（解析失败不执行工具，构造失败 ToolResult 回喂 + JSON_PARSE 证据链）。
 > ✅ 已完成（2026-08-27）：截断标记（工具结果截断带 `[结果已截断]`，模型可知结果不完整）。
+> ✅ 已完成（2026-08-27）：reasoning_content 回喂策略（此前 P2 标注为错误外推——DeepSeek V4 thinking + tools 必须回喂；已加 `has_reasoning` 信号覆盖空 reasoning，防 400）。
 
 ---
 

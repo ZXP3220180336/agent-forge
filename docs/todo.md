@@ -1,3 +1,15 @@
+# 2026-08-27 reasoning_content 回喂策略（文档更正 + has_reasoning 防御）
+
+> 对标 P2 标注为错误外推（误用 OpenAI o1 规则）——DeepSeek V4 thinking + tools 必须回喂 reasoning_content（否则 400）。补 has_reasoning 信号防御空 reasoning 边界。
+
+- [x] `StreamResult` / `ParsedChunk` 加 has_reasoning；parse_chunk 字段被填充（含空串）即置位
+- [x] rectifier `_apply_chunk` 传递；react.py 回喂条件改 `full_reasoning or has_reasoning`
+- [x] 测试：parse_chunk has_reasoning 三态 + react 回喂两用例
+- [x] 文档：react_benchmark P2 更正移除 / react.md / [ADR](../adr/domain/reasoning/2026-08-27-reasoning-feedback.md)
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-27 截断标记（P3）
 
 > 对标确认工具结果回喂截断无标记，模型误以为结果完整。修复：截断时追加 `[结果已截断]`（预留标记长度）。

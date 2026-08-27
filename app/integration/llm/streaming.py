@@ -39,6 +39,7 @@ class ParsedChunk:
     usage: dict | None = None
     refusal: str | None = None
     tool_call_deltas: list[ToolCallDelta] | None = None
+    has_reasoning: bool = False  # reasoning_content 字段被填充（含空串），thinking 模式信号
 
 
 @dataclass
@@ -88,9 +89,11 @@ class StreamParser:
 
         delta = chunk.choices[0].delta
 
-        # reasoning_content
-        if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-            result.reasoning_token = delta.reasoning_content
+        # reasoning_content（V4 thinking：字段被填充即标记，含空串——空块也需回喂空串防 400）
+        if hasattr(delta, "reasoning_content") and delta.reasoning_content is not None:
+            result.has_reasoning = True
+            if delta.reasoning_content:
+                result.reasoning_token = delta.reasoning_content
 
         # content
         if hasattr(delta, "content") and delta.content:

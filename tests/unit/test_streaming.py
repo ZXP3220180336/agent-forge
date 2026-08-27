@@ -134,6 +134,26 @@ def test_parse_reasoning_chunk():
     assert p.message_token is None
 
 
+def test_parse_reasoning_present_flags():
+    """reasoning_content 字段被填充（含空串）→ has_reasoning 置位；None（未发送）不置位。"""
+    assert StreamParser.parse_chunk(_reasoning_chunk("思考中")).has_reasoning is True
+    # 空 reasoning 块（thinking 模式空思考）→ 仍标记（需回喂空串防 400）
+    empty_reasoning = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    reasoning_content="", content=None, tool_calls=None
+                ),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+    )
+    assert StreamParser.parse_chunk(empty_reasoning).has_reasoning is True
+    # 普通 content chunk（未发送 reasoning 字段）→ 不置位
+    assert StreamParser.parse_chunk(_content_chunk("hi")).has_reasoning is False
+
+
 def test_parse_finish_reason_chunk():
     """finish_reason chunk → finish_reason，无内容。"""
     p = StreamParser.parse_chunk(_finish_chunk("tool_calls"))

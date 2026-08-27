@@ -18,6 +18,10 @@ class StreamResult:
     def __init__(self) -> None:
         self.content: str = ""
         self.reasoning_content: str = ""
+        # 标记模型响应是否出现了 reasoning_content 字段（含空串）——DeepSeek V4
+        # thinking 模式带 tools 时必须回喂 reasoning_content（否则 400），空 reasoning
+        # 也需回喂空串；本标记区分「未返回」与「返回空」，供编排层决策回喂。
+        self.has_reasoning: bool = False
         self.finish_reason: str | None = None
         self.tool_calls: list[dict] = []
         self.usage: dict | None = None

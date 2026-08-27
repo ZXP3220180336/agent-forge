@@ -176,7 +176,9 @@ class ReActStrategy:
                         "role": "assistant",
                         "content": full_content,
                     }
-                    if full_reasoning:
+                    # DeepSeek V4 thinking 模式带 tools 时必须回喂 reasoning_content（否则 400）；
+                    # has_reasoning 覆盖空 reasoning 场景（空串也回喂，字段始终存在）
+                    if full_reasoning or stream_result.has_reasoning:
                         assistant_msg["reasoning_content"] = full_reasoning
                     # OpenAI 兼容 API 要求：tool 消息必须与前置 assistant 消息的 tool_calls 配对，
                     # 否则下一轮请求 400（"Messages with role 'tool' must be a response to ..."）

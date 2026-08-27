@@ -325,6 +325,9 @@ class StreamingRectifier:
             result.reasoning_content += parsed.reasoning_token
             events.append(build_reasoning_event(parsed.reasoning_token))
 
+        if parsed.has_reasoning:
+            result.has_reasoning = True
+
         if parsed.message_token:
             emitted_any = True
             result.content += parsed.message_token

@@ -88,6 +88,7 @@
 | 达到 `max_execution_time`（None=不设限） | 用 last_result 兜底，`error` 记录超时原因；有 content 算部分成功 |
 | 工具参数 JSON 解析失败 | 不执行工具：构造失败 ToolResult（JSON_PARSE）回喂模型自纠，`error`/`error_code` 进证据链 |
 | 工具执行失败 / 无效工具名 | 回喂 `str(result)`（"错误: <error>"，无效工具含「未注册」），模型可感知失败原因自愈；`error` / `error_code` 进证据链记录 |
+| reasoning_content 回喂 | DeepSeek V4 thinking + tools 必须回喂（否则 400）；`has_reasoning` 覆盖空 reasoning 场景（空串也回喂） |
 
 ---
 
