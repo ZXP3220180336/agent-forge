@@ -16,6 +16,7 @@
 4. **无效工具名不写额外分支**：NOT_REGISTERED 失败自然走失败回喂，模型可见「工具未注册」。
 5. **顺带修复 AGENT-001**：`except json.JSONDecodeError, KeyError:` → `except (json.JSONDecodeError, KeyError):` 显式元组（同函数内）。
 6. **参数 JSON 解析失败降级**：解析失败不执行工具（避免空参执行的错误掩盖 / 副作用），构造失败 `ToolResult`（`error="参数 JSON 解析失败: ..."`, `error_code=JSON_PARSE`）走失败回喂分支——模型可见原因自纠，错误码进证据链。
+7. **截断标记**：工具结果回喂截断（tool 消息 2000 / SSE 200）时追加 `[结果已截断]` 标记（预留标记长度保证不超限）——模型可知结果不完整，而非误以为完整。
 
 ## Consequences
 

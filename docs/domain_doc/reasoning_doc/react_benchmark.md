@@ -89,7 +89,7 @@
 | 6 | 无效工具名处理 | ✅ | NOT_REGISTERED 失败走同一失败回喂分支，模型可见「工具未注册」；证据链记录 `error_code`（同 #5） |
 | 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（[react.py:290-303](../../../app/domain/reasoning/react.py#L290-L303)） |
 | 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（[react.py:145-161](../../../app/domain/reasoning/react.py#L145-L161)） |
-| 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符（[react.py:323-329](../../../app/domain/reasoning/react.py#L323-L329)）。小瑕疵：截断无 `[truncated]` 标记 |
+| 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（[react.py:348-358](../../../app/domain/reasoning/react.py#L348-L358)），模型可知结果不完整 |
 | 10 | 上下文预算管理 | ❌ | 无 trim / compaction / 消息预算。`max_iterations=10` × 工具结果 2000 字符无总量护栏，长任务可击穿上下文窗口 |
 | 11 | 事件 / 回调体系 | ✅ | SSE 事件（reasoning/message/tool_call/tool_result/info/done）+ BaseAgent 钩子（on_thought/on_tool_call/on_tool_result/on_complete），与工业级 `on_tool_start/end` 同构 |
 | 12 | 步数 / token 统计 | ✅ | outcome 含 iterations/total_tokens/usage/tool_calls（duration/success）+ ToolStats + Auditor |
@@ -118,7 +118,6 @@
 | --- | --- | --- | --- |
 | P2 | reasoning_content 回喂 | [react.py:170](../../../app/domain/reasoning/react.py#L170) | 把 reasoning 塞回 assistant 消息。当前 main 模型（chat）不返回 reasoning_content 故不触发；但 main 换推理模型后 OpenAI 兼容 API 不接受该字段，且 DeepSeek reasoner 不支持 tools |
 | P2 | 无上下文预算 | [react.py:119](../../../app/domain/reasoning/react.py#L119) | 见核心 #10，工具结果总量无护栏，长任务可击穿上下文窗口 |
-| P3 | 截断无标记 | [react.py:335](../../../app/domain/reasoning/react.py#L335) | 工具结果截断 2000 字符无 `[truncated]` 指示，模型会误以为结果完整 |
 
 ---
 
@@ -138,11 +137,11 @@
 | --- | --- | --- |
 | P2 | 上下文预算：工具结果总量预算或消息数预算，超限截断并提示 | 中 |
 | P2 | reasoning_content 回喂策略：明确按模型配置是否回喂 | 小 |
-| P3 | 截断标记：工具结果截断处标注 `[truncated]` | 小 |
 
 > ✅ 已完成（2026-08-27）：时间上限（`asyncio.timeout` 包裹循环 + 超时降级，生产值 `agent_timeout=300`）。
 > ✅ 已完成（2026-08-27）：工具失败回喂 + 无效工具名处理（失败回喂 `str(result)`，error/error_code 进证据链）；AGENT-001 回归（except 显式元组）。
 > ✅ 已完成（2026-08-27）：解析 / JSON 失败降级（解析失败不执行工具，构造失败 ToolResult 回喂 + JSON_PARSE 证据链）。
+> ✅ 已完成（2026-08-27）：截断标记（工具结果截断带 `[结果已截断]`，模型可知结果不完整）。
 
 ---
 

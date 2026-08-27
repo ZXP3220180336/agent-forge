@@ -128,7 +128,7 @@ async for event in strategy.execute_tool_calls(tool_calls, messages, iteration=1
 
 ## 测试
 
-`tests/unit/test_react_strategy.py`（10 用例）：
+`tests/unit/test_react_strategy.py`（16 用例）：
 
 - 工具循环 stop 结束（outcome 正确组装：content / iterations / tool_calls 记录 / tool 消息回喂）
 - LLM 失败短路（LLM-001，iterations=1）
@@ -140,6 +140,12 @@ async for event in strategy.execute_tool_calls(tool_calls, messages, iteration=1
 - 时间上限：中途超时保留部分进度（已完成工具调用记录保留）
 - 时间上限：宽松上限不影响正常完成
 - 时间上限：`max_execution_time=None` 显式不设限
+- 工具失败：错误文本回喂模型（tool 消息含失败原因）
+- 工具失败：证据链记录 error / error_code
+- 无效工具名：回喂「未注册」+ 证据链 NOT_REGISTERED
+- 解析失败：不执行工具 + 回喂解析失败 + 证据链 JSON_PARSE
+- 截断标记：长结果带 `[结果已截断]`（含标记不超限）
+- 截断标记：短结果无标记
 
 ---
 

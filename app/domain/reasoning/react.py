@@ -41,6 +41,16 @@ from app.shared.events import (
     build_tool_result_event,
 )
 
+# 工具结果回喂截断标记：截断时追加，模型可知结果不完整（而非误以为完整）
+_TRUNCATED_MARKER = "\n[结果已截断]"
+
+
+def _truncate_with_marker(text: str, limit: int) -> str:
+    """截断到 limit 字符；截断时追加截断标记（预留标记长度，总长不超 limit）。"""
+    if len(text) <= limit:
+        return text
+    return text[: limit - len(_TRUNCATED_MARKER)] + _TRUNCATED_MARKER
+
 
 @dataclass
 class ReActOutcome:
@@ -335,7 +345,7 @@ class ReActStrategy:
 
             yield build_tool_result_event(
                 tool_name,
-                feedback[:200],
+                _truncate_with_marker(feedback, 200),
                 elapsed,
                 iteration,
             )
@@ -344,7 +354,7 @@ class ReActStrategy:
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": feedback[:2000],
+                    "content": _truncate_with_marker(feedback, 2000),
                 }
             )
 

@@ -482,6 +482,79 @@ async def test_react_parse_failure_no_execute_and_feedback():
 
 
 @pytest.mark.asyncio
+async def test_react_long_tool_result_truncated_marker():
+    """长工具结果回喂截断时带 [结果已截断] 标记，模型可知结果不完整。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "x" * 3000}),
+                        },
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+    ):
+        pass
+
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    content = tool_msgs[0]["content"]
+    assert "[结果已截断]" in content
+    assert len(content) <= 2000  # 含标记不超限（预留标记长度）
+
+
+@pytest.mark.asyncio
+async def test_react_short_tool_result_no_marker():
+    """短工具结果（不截断）回喂无截断标记。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "hi"}),
+                        },
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+    ):
+        pass
+
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert "[结果已截断]" not in tool_msgs[0]["content"]
+    assert tool_msgs[0]["content"] == "echo:hi"
+
+
+@pytest.mark.asyncio
 async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
     """execute_tool_calls：tool_messages 顺序保持 = tool_calls 输入顺序。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)
