@@ -27,9 +27,9 @@
 
 ## 结论先行
 
-- **核心循环结构完成度约 75%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限全部到位。
-- **核心必备 13 项对照：9 完备 / 2 部分 / 2 缺失**（缺失：工具异常回喂、上下文预算）。
-- **最实质差距**：工具失败信息不回喂模型——工业级四大框架一致的核心模式，本项目缺失且直接伤及产品证据链。
+- **核心循环结构完成度约 85%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限 / 工具失败回喂全部到位。
+- **核心必备 13 项对照：11 完备 / 1 部分 / 1 缺失**（⚠️：解析/JSON 降级仍静默空参；缺失：上下文预算）。
+- **剩余最实质差距**：上下文预算管理——工具结果总量无护栏，长任务可击穿上下文窗口。
 - **架构加分**：策略模式解耦（`reasoning → ports + shared`）、端口抽象、独立测试，模块划分优于多数工业级框架。
 
 ---
@@ -85,8 +85,8 @@
 | 2 | 时间上限 | ✅ | `asyncio.timeout` 包整个循环实现总时长上限（[react.py:118](../../../app/domain/reasoning/react.py#L118)），超时对齐 `max_iterations` 兜底降级（[react.py:236](../../../app/domain/reasoning/react.py#L236)）；生产值由 `agent_timeout=300` 注入 |
 | 3 | 正常终止判定 | ✅ | `finish_reason` 分支（tool_calls / stop / length），OpenAI 协议直接判定，比 LangChain 正则解析 `Finish[...]` 更稳（[react.py:181](../../../app/domain/reasoning/react.py#L181)） |
 | 4 | 超限降级 | ✅ | 迭代超限用 `last_result` 兜底，无结果则 `error="LLM 未返回任何结果"`——等价 LangChain `force` 语义，不抛裸异常（[react.py:214-234](../../../app/domain/reasoning/react.py#L214-L234)） |
-| 5 | 工具异常回喂 | ❌ | **最大缺口**。工具失败时 `ToolResult.content=""`，[react.py:326](../../../app/domain/reasoning/react.py#L326) 只回喂 `content[:2000]` 空串——模型看不到失败原因，只能盲目重试 |
-| 6 | 无效工具名处理 | ⚠️ | 依赖 ToolGateway 返回 NOT_REGISTERED，但失败 `error` 不进 messages（同 #5），模型无感知 |
+| 5 | 工具异常回喂 | ✅ | 失败回喂 `str(result)`（"错误: <error>"），模型可感知失败自愈（[react.py:308](../../../app/domain/reasoning/react.py#L308)）；`error`/`error_code` 进证据链记录（[react.py:310](../../../app/domain/reasoning/react.py#L310)） |
+| 6 | 无效工具名处理 | ✅ | NOT_REGISTERED 失败走同一失败回喂分支，模型可见「工具未注册」；证据链记录 `error_code`（同 #5） |
 | 7 | 解析 / JSON 失败降级 | ⚠️ | `except json.JSONDecodeError, KeyError:` 静默降级空参——LangChain 用 `handle_parsing_errors` 回喂错误文本自纠，本项目是「静默吞掉」非「自愈」（[react.py:291](../../../app/domain/reasoning/react.py#L291)） |
 | 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（[react.py:145-161](../../../app/domain/reasoning/react.py#L145-L161)） |
 | 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符（[react.py:323-329](../../../app/domain/reasoning/react.py#L323-L329)）。小瑕疵：截断无 `[truncated]` 标记 |
@@ -116,11 +116,9 @@
 
 | 优先级 | 问题 | 位置 | 说明 |
 | --- | --- | --- | --- |
-| P0 | 工具失败信息双重丢失 | [react.py:305](../../../app/domain/reasoning/react.py#L305)、[react.py:326](../../../app/domain/reasoning/react.py#L326) | ①回喂模型的 tool 消息取 `content[:2000]`，失败时为空串，模型无自愈依据；②`_tool_call_records` 只记 `result: content`，`error` 未进证据链记录——产品根因报告看不到「哪个工具调用失败、为什么失败」 |
-| P1 | AGENT-001 回归 | [react.py:291](../../../app/domain/reasoning/react.py#L291) | `except json.JSONDecodeError, KeyError:` 逗号语法（PEP 758，仅 3.14 可跑）。该问题已于 8-17 在 executor.py 修复为显式元组，抽离时旧代码回归。详见 [AGENT-001](../../../issues/domain/agent/2026-08-17-except-comma-tuple-semantics.md) |
 | P2 | reasoning_content 回喂 | [react.py:170](../../../app/domain/reasoning/react.py#L170) | 把 reasoning 塞回 assistant 消息。当前 main 模型（chat）不返回 reasoning_content 故不触发；但 main 换推理模型后 OpenAI 兼容 API 不接受该字段，且 DeepSeek reasoner 不支持 tools |
 | P2 | 无上下文预算 | [react.py:119](../../../app/domain/reasoning/react.py#L119) | 见核心 #10，工具结果总量无护栏，长任务可击穿上下文窗口 |
-| P3 | 截断无标记 | [react.py:326](../../../app/domain/reasoning/react.py#L326) | 工具结果截断 2000 字符无 `[truncated]` 指示，模型会误以为结果完整 |
+| P3 | 截断无标记 | [react.py:335](../../../app/domain/reasoning/react.py#L335) | 工具结果截断 2000 字符无 `[truncated]` 指示，模型会误以为结果完整 |
 
 ---
 
@@ -138,13 +136,12 @@
 
 | 优先级 | 动作 | 工作量 |
 | --- | --- | --- |
-| P0 | 工具失败回喂：失败时回喂 `str(result)`（含 error / error_code），`_tool_call_records` 补 `error` 字段（证据链） | 小（附测试） |
-| P1 | AGENT-001 回归：`except (json.JSONDecodeError, KeyError):` 显式元组 | 一行 |
 | P2 | 上下文预算：工具结果总量预算或消息数预算，超限截断并提示 | 中 |
 | P2 | reasoning_content 回喂策略：明确按模型配置是否回喂 | 小 |
 | P3 | 截断标记：工具结果截断处标注 `[truncated]` | 小 |
 
 > ✅ 已完成（2026-08-27）：时间上限（`asyncio.timeout` 包裹循环 + 超时降级，生产值 `agent_timeout=300`）。
+> ✅ 已完成（2026-08-27）：工具失败回喂 + 无效工具名处理（失败回喂 `str(result)`，error/error_code 进证据链）；AGENT-001 回归（except 显式元组）。
 
 ---
 

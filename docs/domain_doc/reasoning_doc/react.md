@@ -55,7 +55,7 @@
 | --- | --- | --- |
 | `content` | `str` | 最终回答 |
 | `reasoning` | `str` | 完整推理过程（累计） |
-| `tool_calls` | `list[dict]` | 工具调用记录（tool/params/result/success/duration） |
+| `tool_calls` | `list[dict]` | 工具调用记录（tool/params/result/success/error/error_code/duration） |
 | `iterations` | `int` | 实际轮数 |
 | `total_tokens` / `usage` | `int` / `dict \| None` | Token 统计 |
 | `error` | `str \| None` | 失败原因（LLM 调用失败 / 无结果） |
@@ -87,7 +87,7 @@
 | 达到 `max_iterations` | 用最后结果兜底，强制结束；无结果则 `error="LLM 未返回任何结果"` |
 | 达到 `max_execution_time`（None=不设限） | 用 last_result 兜底，`error` 记录超时原因；有 content 算部分成功 |
 | 工具参数 JSON 解析失败 | 按空参数 `{}` 执行（`json.loads` 异常保护） |
-| 未知工具 | 由 ToolGateway 返回失败 ToolResult，不抛出 |
+| 工具执行失败 / 无效工具名 | 回喂 `str(result)`（"错误: <error>"，无效工具含「未注册」），模型可感知失败原因自愈；`error` / `error_code` 进证据链记录 |
 
 ---
 

@@ -47,6 +47,25 @@ class _EchoTool(BaseTool):
         return ToolResult(success=True, content=f"echo:{kwargs.get('text', '')}")
 
 
+class _FailingTool(BaseTool):
+    """始终返回失败的工具（验证失败回喂与证据链记录）。"""
+
+    @property
+    def name(self) -> str:
+        return "fail"
+
+    @property
+    def description(self) -> str:
+        return "失败工具"
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(success=False, content="", error="模拟执行失败")
+
+
 class _DelayTool(BaseTool):
     """带不同延迟的工具，用于验证 gather 并行 + 顺序保持。"""
 
@@ -342,6 +361,96 @@ async def test_react_execute_none_timeout_no_limit():
     assert strategy.outcome.success is True
     assert strategy.outcome.content == "完成"
     assert strategy.outcome.error is None
+
+
+@pytest.mark.asyncio
+async def test_react_tool_failure_feedback_to_model():
+    """工具失败 → tool 消息回喂错误文本，模型可感知失败原因并自愈。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "fail", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "已重试"},
+        ]
+    )
+    tools = _make_registry(tools=[_FailingTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+    ):
+        pass
+
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert "模拟执行失败" in tool_msgs[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_react_tool_failure_records_error_in_evidence():
+    """工具失败 → outcome.tool_calls 记录 error / error_code（证据链）。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "fail", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "已重试"},
+        ]
+    )
+    tools = _make_registry(tools=[_FailingTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    rec = strategy.outcome.tool_calls[0]
+    assert rec["success"] is False
+    assert rec["error"] == "模拟执行失败"
+    assert rec["error_code"] is None  # 业务失败无系统错误码
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_tool_feedback():
+    """无效工具名 → 回喂「未注册」错误 + 证据链记录 NOT_REGISTERED。"""
+    tools = _make_registry(tools=[_EchoTool()])  # 未注册 no_such_tool
+    strategy = ReActStrategy(llm=_NoopLLM(), tools=tools)
+    tool_calls = [
+        {
+            "id": "call_x",
+            "type": "function",
+            "function": {"name": "no_such_tool", "arguments": "{}"},
+        }
+    ]
+    messages = []
+
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1):
+        pass
+
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert "未注册" in tool_msgs[0]["content"]
+    # 证据链记录：系统错误码 NOT_REGISTERED
+    assert strategy._tool_call_records[0]["error_code"] == "NOT_REGISTERED"
 
 
 @pytest.mark.asyncio

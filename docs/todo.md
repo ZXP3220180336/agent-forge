@@ -1,3 +1,16 @@
+# 2026-08-27 工具异常回喂 + 无效工具名处理（核心必备 #5/#6，P0）
+
+> 对标 [react_benchmark.md](domain_doc/reasoning_doc/react_benchmark.md) 确认工具失败信息不回喂模型：失败 `content=""` 回喂空串，模型无法自愈；`error` 未进证据链。修复根因 = 失败信息在两个出口同时丢失。
+
+- [x] `react.py` execute_tool_calls：失败回喂 `str(result)`（"错误: <error>"），成功回喂 content；证据链记录加 `error` / `error_code`
+- [x] 无效工具名：NOT_REGISTERED 走同一失败回喂分支，无需额外逻辑
+- [x] 顺带修复 AGENT-001：except 逗号语法 → 显式元组
+- [x] 测试：`_FailingTool` + 3 用例（失败回喂模型 / 证据链记录 / 无效工具名）
+- [x] 文档：react.md / react_benchmark.md（#5/#6 ✅，11 完备 / 1 部分 / 1 缺失）+ [ADR](../adr/domain/reasoning/2026-08-27-tool-error-feedback.md)
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-27 ReAct 策略总时间上限（max_execution_time）
 
 > 对标 [react_benchmark.md](domain_doc/reasoning_doc/react_benchmark.md)（核心必备 #2）确认时间上限缺失；`settings.agent_timeout=300` 存在未使用，接入为 ReAct 循环总时长护栏。
@@ -5,7 +18,7 @@
 - [x] `react.py`：execute 加 `max_execution_time`（None=不限）+ `asyncio.timeout` 包循环 + 超时降级（对齐 max_iterations 兜底，判别 finalizer 关闭）
 - [x] 注入链：base.py AgentContext 字段 / executor.py 透传 / container.py agent_params / chat.py / deps.py docstring
 - [x] 测试：新增 4 用例（首轮超时 / 中途超时保留进度 / 宽松上限 / None 不触发）+ 3 处 agent_params 覆盖同步
-- [x] 文档：react.md / react_benchmark.md / config.md + [ADR](../../../adr/domain/reasoning/2026-08-27-reactor-max-execution-time.md)
+- [x] 文档：react.md / react_benchmark.md / config.md + [ADR](../adr/domain/reasoning/2026-08-27-reactor-max-execution-time.md)
 - [x] 验证：全量 593 passed + verify_alignment 通过
 
 ---

@@ -288,7 +288,7 @@ class ReActStrategy:
             tool_name = tc["function"]["name"]
             try:
                 tool_args = json.loads(tc["function"]["arguments"])
-            except json.JSONDecodeError, KeyError:
+            except (json.JSONDecodeError, KeyError):
                 tool_args = {}
             start = time.monotonic()
             exec_result = await self._tools.execute(tool_name, tool_args)
@@ -302,19 +302,28 @@ class ReActStrategy:
         for exec_result, tool_name, tool_args, tc, elapsed in results:
             yield build_tool_call_event(tool_name, tool_args, iteration)
 
+            # 回喂模型：成功回喂 content，失败回喂 str(result)（"错误: <error>"）——
+            # 模型需看到失败原因才能自愈（工具失败空串回喂是核心缺口）。
+            # error / error_code 同时进证据链记录（根因报告要能看到失败原因与分类）。
+            feedback = exec_result.content if exec_result.success else str(exec_result)
+
             self._tool_call_records.append(
                 {
                     "tool": tool_name,
                     "params": tool_args,
                     "result": exec_result.content,
                     "success": exec_result.success,
+                    "error": exec_result.error,
+                    "error_code": (
+                        exec_result.error_code.value if exec_result.error_code else None
+                    ),
                     "duration": round(elapsed, 3),
                 }
             )
 
             yield build_tool_result_event(
                 tool_name,
-                exec_result.content[:200],
+                feedback[:200],
                 elapsed,
                 iteration,
             )
@@ -323,7 +332,7 @@ class ReActStrategy:
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id", ""),
-                    "content": exec_result.content[:2000],
+                    "content": feedback[:2000],
                 }
             )
 
