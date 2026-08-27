@@ -58,6 +58,9 @@ class AgentContext:
     max_iterations: int = 10
     temperature: float = 0.2
     max_tokens: int = 4096
+    max_execution_time: float | None = None  # 整个 ReAct 循环总时长上限（秒）；None=不设限
+    # 说明：字段默认 None（策略层向后兼容）与配置默认 agent_timeout=300 不一致是刻意的——
+    # 生产值由装配根注入，仅测试 / 脚本直连时不设限。
 
     # 扩展字段
     metadata: dict[str, Any] = field(default_factory=dict)

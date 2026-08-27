@@ -78,6 +78,7 @@ async def send_message(
             max_iterations=request.max_iterations or agent_params["max_iterations"],
             temperature=agent_params["temperature"],
             max_tokens=agent_params["max_tokens"],
+            max_execution_time=agent_params["max_execution_time"],
         )
         agent = ReActAgent(llm=llm_service, tools=tool_service)
 

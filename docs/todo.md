@@ -1,3 +1,15 @@
+# 2026-08-27 ReAct 策略总时间上限（max_execution_time）
+
+> 对标 [react_benchmark.md](domain_doc/reasoning_doc/react_benchmark.md)（核心必备 #2）确认时间上限缺失；`settings.agent_timeout=300` 存在未使用，接入为 ReAct 循环总时长护栏。
+
+- [x] `react.py`：execute 加 `max_execution_time`（None=不限）+ `asyncio.timeout` 包循环 + 超时降级（对齐 max_iterations 兜底，判别 finalizer 关闭）
+- [x] 注入链：base.py AgentContext 字段 / executor.py 透传 / container.py agent_params / chat.py / deps.py docstring
+- [x] 测试：新增 4 用例（首轮超时 / 中途超时保留进度 / 宽松上限 / None 不触发）+ 3 处 agent_params 覆盖同步
+- [x] 文档：react.md / react_benchmark.md / config.md + [ADR](../../../adr/domain/reasoning/2026-08-27-reactor-max-execution-time.md)
+- [x] 验证：全量 593 passed + verify_alignment 通过
+
+---
+
 # 2026-08-27 领域层推理决策架构建设 · Slice 0：ReAct 策略抽离
 
 > Phase C 前置：领域层四模块完整建设（策略 / prompt / 记忆 / 编排），单步执行。

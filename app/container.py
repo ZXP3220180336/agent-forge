@@ -271,6 +271,8 @@ class Container:
             "max_iterations": settings.agent_max_iterations,
             "temperature": settings.llm_temperature,
             "max_tokens": settings.llm_max_tokens,
+            # 启用总时间上限：agent_timeout 原为「从未使用的默认任务超时」，接为 ReAct 循环总时长护栏
+            "max_execution_time": settings.agent_timeout,
         }
 
         self.initialized = True

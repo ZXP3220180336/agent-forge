@@ -44,7 +44,7 @@
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `__init__` | `(llm: LLMGateway, tools: ToolGateway)` | 注入端口依赖 |
-| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens) -> AsyncGenerator[str]` | ReAct 主循环；yield SSE 事件，结果写入 `outcome` |
+| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None) -> AsyncGenerator[str]` | ReAct 主循环；yield SSE 事件，结果写入 `outcome` |
 | `execute_tool_calls` | `(tool_calls, messages, iteration) -> AsyncGenerator[str]` | 工具并行执行原语（gather 保序 + 事件产出 + 记录） |
 
 **实例属性**：`outcome: ReActOutcome | None`（`execute()` 结束后读取）。
@@ -72,7 +72,8 @@
   │     ├─ "tool_calls" → execute_tool_calls() 并行执行 → 追加 tool 消息 → continue
   │     ├─ "stop" / "length" / 有内容 → 正常结束（outcome.success = content 非空）
   │     └─ 空输出 → yield 重试信息 → 下一轮
-  └─ 5. 达到 max_iterations → 用 last_result 兜底，强制结束
+  ├─ 5. 达到 max_iterations → 用 last_result 兜底，强制结束
+  └─ 6. 达到 max_execution_time → 超时降级（用 last_result 兜底，error 记录超时）
 ```
 
 ---
@@ -84,6 +85,7 @@
 | LLM 调用失败（`StreamResult.error`） | 短路返回 `success=False` + `error`，不重试 |
 | 空输出（finish_reason 空 + content 空） | 重试下一轮 |
 | 达到 `max_iterations` | 用最后结果兜底，强制结束；无结果则 `error="LLM 未返回任何结果"` |
+| 达到 `max_execution_time`（None=不设限） | 用 last_result 兜底，`error` 记录超时原因；有 content 算部分成功 |
 | 工具参数 JSON 解析失败 | 按空参数 `{}` 执行（`json.loads` 异常保护） |
 | 未知工具 | 由 ToolGateway 返回失败 ToolResult，不抛出 |
 
@@ -98,7 +100,7 @@ strategy = ReActStrategy(llm=llm_service, tools=tool_service)
 messages = [{"role": "user", "content": "30C 转华氏"}]
 async for event in strategy.execute(
     "30C 转华氏", messages,
-    max_iterations=3, temperature=0.2, max_tokens=1024,
+    max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=30.0,
 ):
     print(event, end="")
 # strategy.outcome → ReActOutcome
@@ -119,13 +121,14 @@ async for event in strategy.execute_tool_calls(tool_calls, messages, iteration=1
 - **为什么收标量参数（非 AgentContext）**：遵守依赖方向 `reasoning → ports + shared`（不 import `agent/`），策略可独立测试、被任意编排复用
 - **为什么 `execute_tool_calls` 独立成原语**：PlannerAgent 执行阶段（程序执行工具）与 ReflectionAgent 收集阶段需复用工具循环，与「完整 ReAct 循环」解耦
 - **为什么默认 `model_key` 走 "main"**：ReAct 主循环是 Agent 的主推理路径，保持与 `async_generate` 默认一致（structured 阶段走 "fast" 是后续策略的事）
+- **为什么用 `asyncio.timeout` 包整个循环**：语义是「循环总时长上限」（对齐 LangChain `max_execution_time`），而非单轮预算；`asyncio.timeout(None)` 即不设限，无需 nullcontext 分支。超时对齐 `max_iterations` 兜底模式降级（用 last_result，`error` 记录超时），并判别「真超时 vs 生成器被 finalizer 关闭」（慢消费者场景）避免 `RuntimeError: async generator ignored GeneratorExit`
 - **决策记录**：[ADR react-strategy-extraction](../../../adr/domain/agent/2026-08-27-react-strategy-extraction.md)
 
 ---
 
 ## 测试
 
-`tests/unit/test_react_strategy.py`（6 用例）：
+`tests/unit/test_react_strategy.py`（10 用例）：
 
 - 工具循环 stop 结束（outcome 正确组装：content / iterations / tool_calls 记录 / tool 消息回喂）
 - LLM 失败短路（LLM-001，iterations=1）
@@ -133,6 +136,10 @@ async for event in strategy.execute_tool_calls(tool_calls, messages, iteration=1
 - 持续空输出 → 迭代兜底（success=False）
 - `execute_tool_calls` 并行保序（工具延迟交错，结果顺序 = 输入顺序）
 - `execute_tool_calls` 实际并发（总耗时 < 串行和）
+- 时间上限：首轮 LLM 超时降级（success=False + error 含超时）
+- 时间上限：中途超时保留部分进度（已完成工具调用记录保留）
+- 时间上限：宽松上限不影响正常完成
+- 时间上限：`max_execution_time=None` 显式不设限
 
 ---
 

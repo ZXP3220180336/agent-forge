@@ -57,6 +57,7 @@ class ReActAgent(BaseAgent):
             max_iterations=ctx.max_iterations,
             temperature=ctx.temperature,
             max_tokens=ctx.max_tokens,
+            max_execution_time=ctx.max_execution_time,
         ):
             yield event
 

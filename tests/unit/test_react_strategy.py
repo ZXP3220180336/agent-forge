@@ -115,6 +115,27 @@ class _EmptyLLM:
         return
 
 
+class _SleepyLLM:
+    """第 N 次调用前 sleep，用于触发 max_execution_time 超时（脚本耗尽复用最后一条）。"""
+
+    def __init__(self, scripts=None, sleep_before_call=None, delay=0.3):
+        self.scripts = scripts or [{"finish_reason": "stop", "content": "完成"}]
+        self.sleep_before_call = sleep_before_call  # None=不 sleep
+        self.delay = delay
+        self.calls = 0
+
+    async def async_generate(self, *args, result=None, **kwargs):
+        self.calls += 1
+        spec = self.scripts[min(self.calls - 1, len(self.scripts) - 1)]
+        if self.sleep_before_call is not None and self.calls >= self.sleep_before_call:
+            await asyncio.sleep(self.delay)  # 超时点在 LLM await 内（干净超时场景）
+        if result is not None:
+            for key, value in spec.items():
+                setattr(result, key, value)
+        yield build_message_event(spec.get("content", ""))
+        return
+
+
 def _make_registry(max_concurrent: int = 10, tools: list | None = None) -> ToolService:
     reg = ToolService(max_concurrent_tools=max_concurrent)
     for tool in tools or []:
@@ -220,6 +241,107 @@ async def test_react_execute_max_iterations_fallback():
     assert strategy.outcome is not None
     assert strategy.outcome.iterations == 2
     assert strategy.outcome.success is False
+
+
+@pytest.mark.asyncio
+async def test_react_execute_timeout_first_iteration():
+    """首轮 LLM 调用即超时 → 降级 outcome：success=False + error 记录超时 + iterations=1。"""
+    strategy = ReActStrategy(llm=_SleepyLLM(sleep_before_call=1, delay=0.3), tools=None)
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        max_execution_time=0.05,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.content == ""
+    assert "超时" in (strategy.outcome.error or "")
+    assert strategy.outcome.iterations == 1
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_execute_timeout_keeps_partial_progress():
+    """中途超时（第 2 轮 LLM sleep）→ 保留已完成轮次的工具调用记录。"""
+    llm = _SleepyLLM(
+        scripts=[
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "hi"}),
+                        },
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "答案"},
+        ],
+        sleep_before_call=2,
+        delay=0.3,
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        max_execution_time=0.05,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 2
+    # 第 1 轮工具已执行完成，调用记录保留（部分进度证据）
+    assert len(strategy.outcome.tool_calls) == 1
+    assert strategy.outcome.tool_calls[0]["tool"] == "echo"
+    assert "超时" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_execute_loose_timeout_does_not_trigger():
+    """宽松时间上限不影响正常完成。"""
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "完成"}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        max_execution_time=5.0,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert strategy.outcome.error is None
+
+
+@pytest.mark.asyncio
+async def test_react_execute_none_timeout_no_limit():
+    """max_execution_time=None 显式不设限 → 正常完成。"""
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "完成"}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        max_execution_time=None,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert strategy.outcome.error is None
 
 
 @pytest.mark.asyncio

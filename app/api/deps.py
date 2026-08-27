@@ -98,7 +98,7 @@ async def get_task_service() -> TaskService:
 
 
 async def get_agent_params() -> dict:
-    """获取 Agent 运行参数（max_iterations / temperature / max_tokens，来自装配根）。"""
+    """获取 Agent 运行参数（max_iterations / temperature / max_tokens / max_execution_time，来自装配根）。"""
     if not container.agent_params:
         raise RuntimeError(
             "Agent 参数尚未初始化。请确保在应用启动时调用了 container.initialize()。"
