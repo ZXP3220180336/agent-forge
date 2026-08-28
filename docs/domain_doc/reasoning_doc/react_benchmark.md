@@ -29,6 +29,7 @@
 
 - **核心循环结构完成度 100%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限 / 工具失败回喂 / 解析降级 / 上下文预算全部到位。
 - **核心必备 13 项全部完备**（工业级核心模式 13/13 落地）。
+- **增强项进展**：结构化输出约束（#15）已落地（Final Answer 工具）；其余增强项按「不做或预留」原则（见产品导向视角）。
 - **架构加分**：策略模式解耦（`reasoning → ports + shared`）、端口抽象、独立测试，模块划分优于多数工业级框架。
 
 ---
@@ -99,7 +100,7 @@
 | # | 特性 | 状态 | 备注 |
 | --- | --- | --- | --- |
 | 14 | 并行工具执行 | ✅ | `asyncio.gather` 保序 + 信号量 + per-tool 锁（[react.py:299](../../../app/domain/reasoning/react.py#L299)），比 LangChain 默认串行更先进 |
-| 15 | 结构化输出约束 | ⚠️ | ReAct 循环内无 schema 约束；项目已有 `generate_structured`（JSON Schema → JSON Mode → 正则三级降级），产物链阶段可衔接 |
+| 15 | 结构化输出约束 | ✅ | Final Answer 工具模式：`output_schema` 注入 final_answer 工具，模型最后调用提交结构化结果并终止循环（模型原生、无额外调用）；参数校验失败回喂（VALIDATION）自纠 |
 | 16 | guardrail | ❌ | 无输入 / 输出 guardrail（增强项，当前单用户本地场景不强制） |
 | 17 | 权限 / 审批 | ✅ | ApprovalGate / RiskLevel L0-L3 / 审计——工具层工程护栏完整（`app/integration/tools/security.py`） |
 | 18 | 自动摘要 / compaction | ❌ | 无（当前 max_iterations 不高、上下文不大，可延后） |

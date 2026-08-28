@@ -32,6 +32,8 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
+from jsonschema import validate
+
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
@@ -53,12 +55,50 @@ def _truncate_with_marker(text: str, limit: int) -> str:
     return text[: limit - len(_TRUNCATED_MARKER)] + _TRUNCATED_MARKER
 
 
+# 结构化最终答案工具（Final Answer 模式，SMOL / OpenAI 官方）：模型最后调用提交
+# schema 约束的结构化结果并终止循环。注入工具（非注册工具，识别在 execute 主循环）。
+_FINAL_ANSWER_TOOL = "final_answer"
+
+
+def _build_final_answer_tool(schema: dict) -> dict:
+    """构造 final_answer 工具定义（OpenAI tool schema，参数 = output_schema）。"""
+    return {
+        "type": "function",
+        "function": {
+            "name": _FINAL_ANSWER_TOOL,
+            "description": (
+                "完成任务后调用一次，以符合给定 JSON Schema 的结构化格式提交最终答案。"
+                "不得与其他工具混用。"
+            ),
+            "parameters": schema,
+        },
+    }
+
+
+def _extract_final_answer(
+    tool_call: dict, schema: dict
+) -> tuple[dict | None, str | None]:
+    """解析并校验 final_answer 参数；返回 (结构化结果, 错误)。成功时 error 为 None。"""
+    try:
+        args = json.loads(tool_call["function"]["arguments"])
+    except (json.JSONDecodeError, KeyError) as e:
+        return None, f"参数 JSON 解析失败: {e}"
+    if not isinstance(args, dict):
+        return None, "参数应为 JSON 对象"
+    try:
+        validate(instance=args, schema=schema)
+    except Exception as e:  # noqa: BLE001 — jsonschema 校验失败，回喂模型自纠
+        return None, f"不符合 schema: {e}"
+    return args, None
+
+
 @dataclass
 class ReActOutcome:
     """ReAct 策略执行的最终结果载体（供桥接方组装 AgentResult）。"""
 
     content: str = ""
     reasoning: str = ""
+    structured: dict | None = None  # final_answer 结构化最终答案（output_schema 启用时）
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     iterations: int = 0
     total_tokens: int = 0
@@ -98,6 +138,7 @@ class ReActStrategy:
         max_execution_time: float | None = None,
         max_context_rounds: int | None = None,
         max_context_tokens: int | None = None,
+        output_schema: dict | None = None,
     ) -> AsyncGenerator[str]:
         """
         ReAct 主循环。
@@ -121,11 +162,16 @@ class ReActStrategy:
                 超时对齐 max_iterations 兜底模式降级，error 记录超时原因
             max_context_rounds: 上下文预算——保留最近 N 轮 assistant/tool 配对（None=不裁剪）
             max_context_tokens: 上下文预算——消息总 token 上限（None=不裁剪）
+            output_schema: 最终答案结构化 JSON Schema（None=不启用）。启用时注入
+                final_answer 工具，模型最后调用提交结构化结果并终止循环
 
         Yields:
             SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）
         """
         tool_defs = self._tools.get_openai_tools() if self._tools else None
+        # 结构化最终答案：注入 final_answer 工具（模型最后调用提交结构化结果并终止）
+        if output_schema is not None:
+            tool_defs = [*(tool_defs or []), _build_final_answer_tool(output_schema)]
         has_tools = bool(tool_defs)
 
         self._tool_call_records = []
@@ -205,6 +251,62 @@ class ReActStrategy:
                         yield build_info_event(
                             f"检测到 {len(stream_result.tool_calls)} 个工具调用"
                         )
+                        # Final Answer 工具：模型提交结构化最终答案 → 提取并终止循环。
+                        # 注入工具非注册工具，识别在 execute 主循环（不进 execute_tool_calls）。
+                        if output_schema is not None:
+                            final_tcs = [
+                                tc
+                                for tc in stream_result.tool_calls
+                                if tc["function"]["name"] == _FINAL_ANSWER_TOOL
+                            ]
+                            if final_tcs:
+                                structured, err = _extract_final_answer(
+                                    final_tcs[0], output_schema
+                                )
+                                if structured is not None:
+                                    self.outcome = ReActOutcome(
+                                        success=True,
+                                        content="",
+                                        reasoning=full_reasoning.strip(),
+                                        tool_calls=self._tool_call_records,
+                                        structured=structured,
+                                        iterations=iteration,
+                                        total_tokens=total_usage.get(
+                                            "total_tokens", 0
+                                        ),
+                                        usage=total_usage or None,
+                                    )
+                                    yield build_info_event("已收到结构化最终答案")
+                                    yield build_done_event(
+                                        iterations=iteration,
+                                        total_tokens=total_usage.get(
+                                            "total_tokens", 0
+                                        ),
+                                    )
+                                    return
+                                # 校验失败：回喂错误文本，模型下轮自纠
+                                messages.append(
+                                    {
+                                        "role": "tool",
+                                        "tool_call_id": final_tcs[0].get("id", ""),
+                                        "content": f"错误: final_answer 参数{err}",
+                                    }
+                                )
+                                self._tool_call_records.append(
+                                    {
+                                        "tool": _FINAL_ANSWER_TOOL,
+                                        "params": {},
+                                        "result": "",
+                                        "success": False,
+                                        "error": f"final_answer 参数{err}",
+                                        "error_code": ErrorCode.VALIDATION.value,
+                                        "duration": 0.0,
+                                    }
+                                )
+                                yield build_info_event(
+                                    f"final_answer 校验失败，已回喂: {err}"
+                                )
+                                continue
                         async for event in self.execute_tool_calls(
                             stream_result.tool_calls,
                             messages,

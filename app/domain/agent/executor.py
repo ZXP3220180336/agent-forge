@@ -99,6 +99,7 @@ class ReActAgent(BaseAgent):
             success=outcome.success,
             content=outcome.content,
             reasoning=outcome.reasoning,
+            structured=outcome.structured,
             tool_calls=outcome.tool_calls,
             iterations=outcome.iterations,
             total_tokens=outcome.total_tokens,

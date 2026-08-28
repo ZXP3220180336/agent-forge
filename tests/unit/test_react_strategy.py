@@ -653,6 +653,117 @@ async def test_react_context_budget_trims_rounds():
     assert messages[0]["role"] == "user"  # 前缀保留
 
 
+# final_answer 结构化输出测试用的 JSON Schema
+_FA_REPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "conclusion": {"type": "string"},
+        "confidence": {"type": "number"},
+    },
+    "required": ["conclusion", "confidence"],
+}
+
+
+@pytest.mark.asyncio
+async def test_react_final_answer_success():
+    """模型调用 final_answer（合法参数）→ outcome.structured 提取 + 循环终止。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "fa1",
+                        "type": "function",
+                        "function": {
+                            "name": "final_answer",
+                            "arguments": json.dumps(
+                                {"conclusion": "根因A", "confidence": 0.9}
+                            ),
+                        },
+                    }
+                ],
+            },
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    messages = [{"role": "user", "content": "hi"}]
+    events = []
+    async for ev in strategy.execute(
+        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.structured == {"conclusion": "根因A", "confidence": 0.9}
+    assert strategy.outcome.iterations == 1
+    # 循环终止：final_answer 未走工具执行（注入工具非注册），无工具调用记录
+    assert strategy.outcome.tool_calls == []
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_final_answer_validation_failure_feedback():
+    """final_answer 参数缺必填 → 回喂错误 + 证据链 VALIDATION + 循环继续（下轮 stop）。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "fa1",
+                        "type": "function",
+                        "function": {"name": "final_answer", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "自由文本"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.structured is None  # 模型未产出合法结构化
+    assert strategy.outcome.content == "自由文本"
+    # 证据链记录 VALIDATION + 失败原因
+    assert strategy._tool_call_records[0]["error_code"] == "VALIDATION"
+    assert "不符合 schema" in strategy._tool_call_records[0]["error"]
+    # tool 消息回喂错误文本（模型可自纠）
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert "不符合 schema" in tool_msgs[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_react_no_output_schema_structured_none():
+    """未配置 output_schema → 不注入 final_answer，自由文本结束 structured=None。"""
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "完成"}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured is None
+    assert strategy.outcome.content == "完成"
+
+
 @pytest.mark.asyncio
 async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
     """execute_tool_calls：tool_messages 顺序保持 = tool_calls 输入顺序。"""

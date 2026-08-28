@@ -84,6 +84,7 @@ class AgentResult:
     success: bool
     content: str  # 最终回答内容
     reasoning: str = ""  # 完整推理过程（累计）
+    structured: dict | None = None  # 结构化最终答案（final_answer 工具产出，output_schema 启用时）
     tool_calls: list[dict[str, Any]] = field(default_factory=list)  # 工具调用记录
     iterations: int = 0  # 实际执行轮数
     total_tokens: int = 0  # Token 总数（累计）

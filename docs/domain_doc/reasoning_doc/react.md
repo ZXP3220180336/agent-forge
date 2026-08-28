@@ -44,7 +44,7 @@
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `__init__` | `(llm: LLMGateway, tools: ToolGateway)` | 注入端口依赖 |
-| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None) -> AsyncGenerator[str]` | ReAct 主循环；yield SSE 事件，结果写入 `outcome` |
+| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, output_schema=None) -> AsyncGenerator[str]` | ReAct 主循环；yield SSE 事件，结果写入 `outcome` |
 | `execute_tool_calls` | `(tool_calls, messages, iteration) -> AsyncGenerator[str]` | 工具并行执行原语（gather 保序 + 事件产出 + 记录） |
 
 **实例属性**：`outcome: ReActOutcome | None`（`execute()` 结束后读取）。
@@ -55,6 +55,7 @@
 | --- | --- | --- |
 | `content` | `str` | 最终回答 |
 | `reasoning` | `str` | 完整推理过程（累计） |
+| `structured` | `dict \| None` | 结构化最终答案（final_answer 工具产出，output_schema 启用时） |
 | `tool_calls` | `list[dict]` | 工具调用记录（tool/params/result/success/error/error_code/duration） |
 | `iterations` | `int` | 实际轮数 |
 | `total_tokens` / `usage` | `int` / `dict \| None` | Token 统计 |
@@ -90,6 +91,7 @@
 | 工具执行失败 / 无效工具名 | 回喂 `str(result)`（"错误: <error>"，无效工具含「未注册」），模型可感知失败原因自愈；`error` / `error_code` 进证据链记录 |
 | reasoning_content 回喂 | DeepSeek V4 thinking + tools 必须回喂（否则 400）；`has_reasoning` 覆盖空 reasoning 场景（空串也回喂） |
 | 上下文预算（`max_context_rounds` / `max_context_tokens`，None=不裁剪） | 模型下次调用前经注入的 ContextBudgetPort（context_manager 实现）裁剪：保留最近 N 轮 assistant/tool 配对 + token 硬上限 |
+| 结构化最终答案（`output_schema`，None=不启用） | 注入 final_answer 工具；模型调用即终止并产出 `outcome.structured`；参数校验失败回喂（VALIDATION）自纠 |
 
 ---
 
@@ -125,6 +127,7 @@ async for event in strategy.execute_tool_calls(tool_calls, messages, iteration=1
 - **为什么默认 `model_key` 走 "main"**：ReAct 主循环是 Agent 的主推理路径，保持与 `async_generate` 默认一致（structured 阶段走 "fast" 是后续策略的事）
 - **为什么用 `asyncio.timeout` 包整个循环**：语义是「循环总时长上限」（对齐 LangChain `max_execution_time`），而非单轮预算；`asyncio.timeout(None)` 即不设限，无需 nullcontext 分支。超时对齐 `max_iterations` 兜底模式降级（用 last_result，`error` 记录超时），并判别「真超时 vs 生成器被 finalizer 关闭」（慢消费者场景）避免 `RuntimeError: async generator ignored GeneratorExit`
 - **为什么上下文预算归 context_manager（端口注入）**：预算是横切能力（所有 Agent 模式共享），由 context_manager 统一实现（复用 TokenCounter + 上下文职责），经 `ContextBudgetPort` 注入——ReAct 不实现算法；选 trimming（轮次 + token 双层）而非摘要——摘要压缩工具原始记录会破坏证据链（产品核心）
+- **为什么结构化用 Final Answer 工具而非事后提取**：模型原生结构化（从开始按 schema 组织证据链、无信息损失、无额外 LLM 调用），兼作循环终止机制；严格 `output_type` 会抑制中间工具调用；`generate_structured` 留作非 Agent 提取场景（分工见 ADR structured-output）
 - **决策记录**：[ADR react-strategy-extraction](../../../adr/domain/agent/2026-08-27-react-strategy-extraction.md)
 
 ---

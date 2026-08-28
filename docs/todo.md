@@ -1,3 +1,15 @@
+# 2026-08-28 结构化输出约束（增强项 #15，Final Answer 工具模式）
+
+> 工业界调研定稿：严格 output_type 会抑制工具调用；选 Final Answer 工具（模型原生结构化 + 循环终止 + 无额外调用）。决策过程（时机/方式/取舍）完整沉淀于 ADR。
+
+- [x] `react.py`：execute 加 `output_schema`，注入 final_answer 工具；识别 → 成功终止（outcome.structured）/ 校验失败回喂（VALIDATION）
+- [x] 数据契约：ReActOutcome / AgentResult 加 `structured` + `_map_outcome` 透传
+- [x] 测试：3 用例（成功提取终止 / 校验失败回喂 / 未配置不注入）
+- [x] 文档：react.md / react_benchmark（#15 ✅）+ [ADR](../adr/domain/reasoning/2026-08-28-structured-output.md)（含讨论概念）
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-28 上下文预算管理（核心必备 #10，对标收尾）
 
 > 分层调研定稿：预算管理是横切能力（所有 Agent 模式共享），归 context_manager 统一（复用 TokenCounter），经领域端口 ContextBudgetPort 注入 Agent。双层护栏：轮次（保配对原子）+ token 硬上限。
