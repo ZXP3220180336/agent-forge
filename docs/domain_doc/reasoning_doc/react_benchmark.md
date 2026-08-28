@@ -27,9 +27,8 @@
 
 ## 结论先行
 
-- **核心循环结构完成度约 90%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限 / 工具失败回喂 / 解析降级全部到位。
-- **核心必备 13 项对照：12 完备 / 0 部分 / 1 缺失**（唯一缺失：上下文预算）。
-- **剩余最实质差距**：上下文预算管理——工具结果总量无护栏，长任务可击穿上下文窗口。
+- **核心循环结构完成度 100%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限 / 工具失败回喂 / 解析降级 / 上下文预算全部到位。
+- **核心必备 13 项全部完备**（工业级核心模式 13/13 落地）。
 - **架构加分**：策略模式解耦（`reasoning → ports + shared`）、端口抽象、独立测试，模块划分优于多数工业级框架。
 
 ---
@@ -90,7 +89,7 @@
 | 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（[react.py:290-303](../../../app/domain/reasoning/react.py#L290-L303)） |
 | 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（[react.py:145-161](../../../app/domain/reasoning/react.py#L145-L161)） |
 | 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（[react.py:348-358](../../../app/domain/reasoning/react.py#L348-L358)），模型可知结果不完整 |
-| 10 | 上下文预算管理 | ❌ | 无 trim / compaction / 消息预算。`max_iterations=10` × 工具结果 2000 字符无总量护栏，长任务可击穿上下文窗口 |
+| 10 | 上下文预算管理 | ✅ | context_manager 统一提供（经 ContextBudgetPort 注入 Agent）：轮次滑动窗口（保 assistant/tool 配对）+ token 预算硬上限（复用 TokenCounter），模型调用前作为 gatekeeper |
 | 11 | 事件 / 回调体系 | ✅ | SSE 事件（reasoning/message/tool_call/tool_result/info/done）+ BaseAgent 钩子（on_thought/on_tool_call/on_tool_result/on_complete），与工业级 `on_tool_start/end` 同构 |
 | 12 | 步数 / token 统计 | ✅ | outcome 含 iterations/total_tokens/usage/tool_calls（duration/success）+ ToolStats + Auditor |
 | 13 | 流式输出 | ✅ | reasoning_content 与 content 分事件流式输出（[react.py:125-132](../../../app/domain/reasoning/react.py#L125-L132)） |
@@ -114,9 +113,7 @@
 
 ## 发现的问题（按优先级）
 
-| 优先级 | 问题 | 位置 | 说明 |
-| --- | --- | --- | --- |
-| P2 | 无上下文预算 | [react.py:119](../../../app/domain/reasoning/react.py#L119) | 见核心 #10，工具结果总量无护栏，长任务可击穿上下文窗口 |
+> ✅ 无遗留问题——核心必备 13 项全部完成，增强项按「不做或预留」原则降级（见产品导向视角）。
 
 ---
 
@@ -132,15 +129,14 @@
 
 ## 修复优先级建议
 
-| 优先级 | 动作 | 工作量 |
-| --- | --- | --- |
-| P2 | 上下文预算：工具结果总量预算或消息数预算，超限截断并提示 | 中 |
-
+> ✅ 核心必备 13 项全部完成，无待办项。
+>
 > ✅ 已完成（2026-08-27）：时间上限（`asyncio.timeout` 包裹循环 + 超时降级，生产值 `agent_timeout=300`）。
 > ✅ 已完成（2026-08-27）：工具失败回喂 + 无效工具名处理（失败回喂 `str(result)`，error/error_code 进证据链）；AGENT-001 回归（except 显式元组）。
 > ✅ 已完成（2026-08-27）：解析 / JSON 失败降级（解析失败不执行工具，构造失败 ToolResult 回喂 + JSON_PARSE 证据链）。
 > ✅ 已完成（2026-08-27）：截断标记（工具结果截断带 `[结果已截断]`，模型可知结果不完整）。
 > ✅ 已完成（2026-08-27）：reasoning_content 回喂策略（此前 P2 标注为错误外推——DeepSeek V4 thinking + tools 必须回喂；已加 `has_reasoning` 信号覆盖空 reasoning，防 400）。
+> ✅ 已完成（2026-08-28）：上下文预算管理（context_manager 统一 + ContextBudgetPort 注入，轮次 + token 双层护栏）。
 
 ---
 

@@ -1,3 +1,16 @@
+# 2026-08-28 上下文预算管理（核心必备 #10，对标收尾）
+
+> 分层调研定稿：预算管理是横切能力（所有 Agent 模式共享），归 context_manager 统一（复用 TokenCounter），经领域端口 ContextBudgetPort 注入 Agent。双层护栏：轮次（保配对原子）+ token 硬上限。
+
+- [x] `domain/ports/context_budget.py`：ContextBudgetPort 端口 + 登记
+- [x] `context_manager.trim_messages`：轮次滑动窗口 + token 预算（复用 TokenCounter，补 tool_calls/reasoning 低估修正）
+- [x] 注入链：settings `agent_max_context_rounds=8` / AgentContext 两字段 / ReActAgent 注入 / container / chat
+- [x] 测试：context_manager 3 用例（轮次/ token / noop）+ react 集成 + agent_params 同步
+- [x] 文档：react.md / react_benchmark（**13/13 完备**）/ config + [ADR](../adr/domain/reasoning/2026-08-28-context-budget.md)
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-27 reasoning_content 回喂策略（文档更正 + has_reasoning 防御）
 
 > 对标 P2 标注为错误外推（误用 OpenAI o1 规则）——DeepSeek V4 thinking + tools 必须回喂 reasoning_content（否则 400）。补 has_reasoning 信号防御空 reasoning 边界。

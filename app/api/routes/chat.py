@@ -79,8 +79,14 @@ async def send_message(
             temperature=agent_params["temperature"],
             max_tokens=agent_params["max_tokens"],
             max_execution_time=agent_params["max_execution_time"],
+            max_context_rounds=agent_params["max_context_rounds"],
+            max_context_tokens=agent_params["max_context_tokens"],
         )
-        agent = ReActAgent(llm=llm_service, tools=tool_service)
+        agent = ReActAgent(
+            llm=llm_service,
+            tools=tool_service,
+            context_budget=context_manager,
+        )
 
         try:
             # 4. ReAct 闭环：LLM 思考 → 工具调用 → LLM 总结

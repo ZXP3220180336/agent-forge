@@ -32,6 +32,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
 from app.shared.events import (
@@ -73,9 +74,15 @@ class ReActStrategy:
     构造注入端口依赖，execute() 完成后通过 outcome 读取结果。
     """
 
-    def __init__(self, llm: LLMGateway, tools: ToolGateway) -> None:
+    def __init__(
+        self,
+        llm: LLMGateway,
+        tools: ToolGateway,
+        context_budget: ContextBudgetPort | None = None,
+    ) -> None:
         self._llm = llm
         self._tools = tools
+        self._context_budget = context_budget
         self._tool_call_records: list[dict[str, Any]] = []
         # 结果载体，execute() 结束后读取
         self.outcome: ReActOutcome | None = None
@@ -89,6 +96,8 @@ class ReActStrategy:
         temperature: float,
         max_tokens: int,
         max_execution_time: float | None = None,
+        max_context_rounds: int | None = None,
+        max_context_tokens: int | None = None,
     ) -> AsyncGenerator[str]:
         """
         ReAct 主循环。
@@ -110,6 +119,8 @@ class ReActStrategy:
             max_tokens: 单轮最大输出 token
             max_execution_time: 整个循环总时长上限（秒），None=不设限（向后兼容）；
                 超时对齐 max_iterations 兜底模式降级，error 记录超时原因
+            max_context_rounds: 上下文预算——保留最近 N 轮 assistant/tool 配对（None=不裁剪）
+            max_context_tokens: 上下文预算——消息总 token 上限（None=不裁剪）
 
         Yields:
             SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）
@@ -200,6 +211,14 @@ class ReActStrategy:
                             iteration,
                         ):
                             yield event
+                        # 上下文预算：模型下次调用前作为 gatekeeper 裁剪（轮次 + token 双层护栏，
+                        # 由注入的 ContextBudgetPort 实现——context_manager 统一提供）
+                        if self._context_budget is not None:
+                            self._context_budget.trim_messages(
+                                messages,
+                                max_rounds=max_context_rounds,
+                                max_tokens=max_context_tokens,
+                            )
                         continue
 
                     # ----- （2）stop / length / 有内容 → 正常结束

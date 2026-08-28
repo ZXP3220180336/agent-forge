@@ -61,6 +61,8 @@ class AgentContext:
     max_execution_time: float | None = None  # 整个 ReAct 循环总时长上限（秒）；None=不设限
     # 说明：字段默认 None（策略层向后兼容）与配置默认 agent_timeout=300 不一致是刻意的——
     # 生产值由装配根注入，仅测试 / 脚本直连时不设限。
+    max_context_rounds: int | None = None  # 上下文预算：保留最近 N 轮 assistant/tool 配对；None=不裁剪
+    max_context_tokens: int | None = None  # 上下文预算：消息总 token 上限；None=不裁剪
 
     # 扩展字段
     metadata: dict[str, Any] = field(default_factory=dict)

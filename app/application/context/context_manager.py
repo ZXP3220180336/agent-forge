@@ -3,6 +3,7 @@
 - 负责从会话历史中组装 messages
 - 经 TokenCounter 端口自动进行 Token 计数和截断
 - 支持历史摘要压缩
+- 结构实现 ContextBudgetPort：Agent 运行中上下文预算管理（横切能力，注入 Agent 共享）
 """
 
 from app.application.session.session_manager import SessionManager
@@ -120,3 +121,75 @@ class ContextManager:
         truncated.append(messages[-1])
 
         return truncated
+
+    # ==================================================================
+    # Agent 运行中上下文预算管理（结构实现 ContextBudgetPort，横切能力）
+    # ==================================================================
+    # 输入侧（build_messages）负责初始组装截断；此处负责 Agent 循环中
+    # （模型每次调用前）的增量护栏——所有 Agent 模式经端口注入共享。
+
+    def trim_messages(
+        self,
+        messages: list[dict],
+        *,
+        max_rounds: int | None,
+        max_tokens: int | None,
+    ) -> None:
+        """Agent 运行中上下文预算管理：轮次 + token 双层护栏（就地裁剪 messages）。
+
+        轮次预算保证消息数有界（配对原子保留），token 预算保证总量不超上下文窗口
+        （token 超限时逐轮丢最旧 assistant/tool 对）。保留 system/user 前缀。
+
+        Args:
+            messages: Agent 循环中可变消息列表（就地修改）
+            max_rounds: 保留最大轮数（None=不限）
+            max_tokens: 消息总 token 上限（None=不限）
+        """
+        if max_rounds is not None:
+            self._trim_to_recent_rounds(messages, max_rounds)
+        if max_tokens is not None:
+            self._trim_to_token_budget(messages, max_tokens)
+
+    def _trim_to_recent_rounds(self, messages: list[dict], max_rounds: int) -> None:
+        """轮次滑动窗口：保留 system/user 前缀 + 最近 max_rounds 轮 assistant/tool 配对。"""
+        keep: list[dict] = []
+        idx = 0
+        while idx < len(messages) and messages[idx].get("role") != "assistant":
+            keep.append(messages[idx])
+            idx += 1
+        tail = messages[idx:]
+        if sum(1 for m in tail if m.get("role") == "assistant") <= max_rounds:
+            return
+        seen = 0
+        start = 0
+        for i in range(len(tail) - 1, -1, -1):
+            if tail[i].get("role") == "assistant":
+                seen += 1
+                if seen == max_rounds:
+                    start = i
+                    break
+        messages[:] = keep + tail[start:]
+
+    def _estimate_messages_tokens(self, messages: list[dict]) -> int:
+        """估算总 token：count_messages_tokens 补 tool_calls/reasoning_content 低估。"""
+        total = self.count_messages_tokens(messages)
+        extra = 0
+        for m in messages:
+            for tc in m.get("tool_calls") or []:
+                extra += len(tc.get("function", {}).get("arguments", "")) // 4
+            extra += len(m.get("reasoning_content") or "") // 4
+        return total + extra
+
+    def _trim_to_token_budget(self, messages: list[dict], max_tokens: int) -> None:
+        """token 超预算时逐轮丢最旧 assistant/tool 对，直到预算内（保留前缀）。"""
+        while self._estimate_messages_tokens(messages) > max_tokens:
+            first = next(
+                (i for i, m in enumerate(messages) if m.get("role") == "assistant"),
+                None,
+            )
+            if first is None:
+                break
+            end = first + 1
+            while end < len(messages) and messages[end].get("role") == "tool":
+                end += 1
+            del messages[first:end]

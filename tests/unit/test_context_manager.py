@@ -135,3 +135,59 @@ def test_truncate_messages_keeps_newest_history_first():
     assert result[1] == newest
     assert oldest not in result
     assert cm.count_messages_tokens(result) <= budget
+
+
+def test_trim_messages_recent_rounds():
+    """trim_messages 轮次预算：保留前缀 + 最近 N 轮，assistant/tool 配对不切断。"""
+    cm = ContextManager(_FakeSessionManager(), TiktokenTokenCounter("gpt-4"))
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "a1", "tool_calls": [{"function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "r1"},
+        {"role": "assistant", "content": "a2", "tool_calls": [{"function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t2", "content": "r2"},
+        {"role": "assistant", "content": "a3"},
+    ]
+    cm.trim_messages(messages, max_rounds=2, max_tokens=None)
+
+    assert [m["role"] for m in messages] == [
+        "system", "user", "assistant", "tool", "assistant",
+    ]
+    # 保留的是最近 2 轮：a2/t2 + a3（配对不切断）
+    assert messages[2]["content"] == "a2"
+    assert messages[3]["tool_call_id"] == "t2"
+    assert messages[4]["content"] == "a3"
+
+
+def test_trim_messages_token_budget():
+    """trim_messages token 预算：超限逐轮丢最旧，保留 system/user 前缀。"""
+    cm = ContextManager(_FakeSessionManager(), TiktokenTokenCounter("gpt-4"))
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "x" * 500},
+        {"role": "tool", "tool_call_id": "t1", "content": "y" * 500},
+        {"role": "assistant", "content": "z" * 500},
+        {"role": "tool", "tool_call_id": "t2", "content": "w" * 500},
+    ]
+    cm.trim_messages(messages, max_rounds=None, max_tokens=100)
+
+    # 前缀保留
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    # 大消息一轮都放不下 → 至少丢到只剩前缀
+    assert len(messages) <= 4
+    assert cm._estimate_messages_tokens(messages) <= 100
+
+
+def test_trim_messages_none_noop():
+    """trim_messages 预算参数均 None → 不裁剪。"""
+    cm = ContextManager(_FakeSessionManager(), TiktokenTokenCounter("gpt-4"))
+    messages = [
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "tool", "tool_call_id": "t1", "content": "r1"},
+    ]
+    cm.trim_messages(messages, max_rounds=None, max_tokens=None)
+    assert len(messages) == 3

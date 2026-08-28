@@ -250,11 +250,12 @@ Pydantic 类型验证
 
 #### 5.1 基础配置
 
-| 配置项                 | 类型 | 默认值 | 说明                       |
-| ---------------------- | ---- | ------ | -------------------------- |
-| `AGENT_MAX_ITERATIONS` | int  | 10     | 最大迭代次数（防止死循环） |
-| `AGENT_TIMEOUT`        | int  | 300    | ReAct 循环总时间上限（秒） |
-| `AGENT_STREAMING`      | bool | true   | 是否启用流式输出           |
+| 配置项                     | 类型 | 默认值 | 说明                       |
+| -------------------------- | ---- | ------ | -------------------------- |
+| `AGENT_MAX_ITERATIONS`     | int  | 10     | 最大迭代次数（防止死循环） |
+| `AGENT_TIMEOUT`            | int  | 300    | ReAct 循环总时间上限（秒） |
+| `AGENT_STREAMING`          | bool | true   | 是否启用流式输出           |
+| `AGENT_MAX_CONTEXT_ROUNDS` | int  | 8      | Agent 循环保留最近轮数     |
 
 #### 5.2 任务优先级配置
 

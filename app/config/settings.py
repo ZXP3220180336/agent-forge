@@ -138,6 +138,7 @@ class Settings(BaseSettings):
     agent_max_iterations: int = 10
     agent_timeout: int = 300  # 5分钟
     agent_streaming: bool = True
+    agent_max_context_rounds: int = 8  # 上下文预算：Agent 循环保留最近轮数（0/None 走 AgentContext 默认）
 
     # 任务优先级配置
     agent_priority_levels: list[Literal["low", "normal", "high", "urgent"]] = [

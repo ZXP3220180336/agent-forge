@@ -151,7 +151,7 @@ async def test_chat_send_message_react_loop(tmp_path):
         llm_service=fake_llm,
         tool_service=registry,
         task_service=TaskService(),
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300},
+        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000},
     )
 
     # 3. 消费 SSE 流
@@ -219,7 +219,7 @@ async def test_chat_send_message_no_tools_plain_answer():
         llm_service=fake_llm,
         tool_service=registry,
         task_service=TaskService(),
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300},
+        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000},
     )
 
     chunks: list[str] = []

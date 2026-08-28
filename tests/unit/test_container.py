@@ -131,6 +131,8 @@ async def test_initialize_happy_path(monkeypatch):
         "temperature": settings.llm_temperature,
         "max_tokens": settings.llm_max_tokens,
         "max_execution_time": settings.agent_timeout,
+        "max_context_rounds": settings.agent_max_context_rounds,
+        "max_context_tokens": settings.max_context_tokens,
     }
     assert c._errors == []
 

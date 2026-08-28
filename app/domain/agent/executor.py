@@ -22,6 +22,7 @@ ReAct 循环逻辑已抽离到 `app/domain/reasoning/react.py` 的 ReActStrategy
 
 from collections.abc import AsyncGenerator
 
+from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 from app.domain.reasoning.react import ReActOutcome, ReActStrategy
@@ -37,9 +38,16 @@ class ReActAgent(BaseAgent):
     _execute_tool_calls 转发到策略原语，供既有测试与编排复用。
     """
 
-    def __init__(self, llm: LLMGateway, tools: ToolGateway) -> None:
+    def __init__(
+        self,
+        llm: LLMGateway,
+        tools: ToolGateway,
+        context_budget: ContextBudgetPort | None = None,
+    ) -> None:
         super().__init__(llm, tools)
-        self._strategy = ReActStrategy(llm=llm, tools=tools)
+        self._strategy = ReActStrategy(
+            llm=llm, tools=tools, context_budget=context_budget
+        )
 
     async def _strategy_cycle(
         self,
@@ -58,6 +66,8 @@ class ReActAgent(BaseAgent):
             temperature=ctx.temperature,
             max_tokens=ctx.max_tokens,
             max_execution_time=ctx.max_execution_time,
+            max_context_rounds=ctx.max_context_rounds,
+            max_context_tokens=ctx.max_context_tokens,
         ):
             yield event
 

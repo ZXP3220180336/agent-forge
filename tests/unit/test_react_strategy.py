@@ -612,6 +612,48 @@ async def test_react_reasoning_no_feedback_without_signal():
 
 
 @pytest.mark.asyncio
+async def test_react_context_budget_trims_rounds():
+    """注入 ContextBudgetPort（ContextManager）后：每轮 trim，assistant 轮数保持 <= max_context_rounds。"""
+    from app.application.context.context_manager import ContextManager
+    from app.integration.llm.token_counter import TiktokenTokenCounter
+
+    budget = ContextManager(
+        session_manager=object(),  # trim_messages 不使用 session_manager
+        token_counter=TiktokenTokenCounter("gpt-4"),
+    )
+    echo_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "echo", "arguments": json.dumps({"text": "hi"})},
+    }
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [echo_call]},
+            {"finish_reason": "tool_calls", "tool_calls": [echo_call]},
+            {"finish_reason": "tool_calls", "tool_calls": [echo_call]},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools, context_budget=budget)
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=4, temperature=0.2, max_tokens=1024,
+        max_context_rounds=2,
+    ):
+        pass
+
+    # 3 轮 tool_calls：第 1 轮被 trim，保留最近 2 轮；最后 stop 轮不触发 trim
+    # → assistant = 最近 2 轮 + 最终回答 = 3；tool = 最近 2 轮的工具结果 = 2
+    assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
+    tool_count = sum(1 for m in messages if m.get("role") == "tool")
+    assert assistant_count == 3
+    assert tool_count == 2
+    assert messages[0]["role"] == "user"  # 前缀保留
+
+
+@pytest.mark.asyncio
 async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
     """execute_tool_calls：tool_messages 顺序保持 = tool_calls 输入顺序。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)

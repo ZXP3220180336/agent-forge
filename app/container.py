@@ -273,6 +273,9 @@ class Container:
             "max_tokens": settings.llm_max_tokens,
             # 启用总时间上限：agent_timeout 原为「从未使用的默认任务超时」，接为 ReAct 循环总时长护栏
             "max_execution_time": settings.agent_timeout,
+            # 上下文预算：轮次（agent_max_context_rounds）+ token（复用全局 max_context_tokens）
+            "max_context_rounds": settings.agent_max_context_rounds,
+            "max_context_tokens": settings.max_context_tokens,
         }
 
         self.initialized = True
