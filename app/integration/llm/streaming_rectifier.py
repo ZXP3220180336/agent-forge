@@ -45,12 +45,12 @@ from app.integration.llm.retry import (
     classify_error,
 )
 from app.integration.llm.streaming import StreamParser
+from app.platform.observability.logger import fill_llm_event_fields
 from app.shared.events import (
     build_error_event,
     build_message_event,
     build_reasoning_event,
 )
-from app.platform.observability.logger import fill_llm_event_fields
 
 if TYPE_CHECKING:
     from app.domain.ports.llm_gateway import StreamResult
