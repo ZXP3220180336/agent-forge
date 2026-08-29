@@ -34,11 +34,11 @@
 | app/domain/memory/memory_service.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/short_term.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/working.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
-| app/domain/ports/context_budget.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 ContextManager/Agent 测试覆盖 |
-| app/domain/ports/embedding_port.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 EmbeddingService 测试覆盖 |
-| app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 Agent/LLM 测试覆盖 |
-| app/domain/ports/token_counter.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 TiktokenTokenCounter 测试覆盖 |
-| app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/README.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
+| app/domain/ports/context_budget.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 ContextManager/Agent 测试覆盖 |
+| app/domain/ports/embedding_port.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 EmbeddingService 测试覆盖 |
+| app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/LLM 测试覆盖 |
+| app/domain/ports/token_counter.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 TiktokenTokenCounter 测试覆盖 |
+| app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
 | app/domain/prompts/base.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
 | app/domain/prompts/manager.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 已实现零引用；待接线/测试 |
 | app/domain/prompts/templates/planning.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |

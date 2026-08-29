@@ -1,7 +1,7 @@
 # ReActAgent 桥接组件说明
 
 > **模块**：`app/domain/agent/executor.py`
-> **更新日期**：2026-08-27
+> **更新日期**：2026-08-29
 > **职责**：`ReActAgent`——把 ReAct 推理策略编排进 `BaseAgent` 生命周期的具体 Agent 类型
 > **状态**：✅ 已实现
 > **配套**：算法实现见 [react.md](../reasoning_doc/react.md)（`ReActStrategy`）
@@ -10,13 +10,16 @@
 
 ## 📋 目录
 
-- [定位与职责](#定位与职责)
-- [接口契约](#接口契约)
-- [行为边界](#行为边界)
-- [使用示例](#使用示例)
-- [设计决策](#设计决策)
-- [测试](#测试)
-- [相关文档](#相关文档)
+- [ReActAgent 桥接组件说明](#reactagent-桥接组件说明)
+  - [📋 目录](#-目录)
+  - [定位与职责](#定位与职责)
+  - [接口契约](#接口契约)
+    - [`ReActAgent(BaseAgent)`](#reactagentbaseagent)
+  - [行为边界](#行为边界)
+  - [使用示例](#使用示例)
+  - [设计决策](#设计决策)
+  - [测试](#测试)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -27,7 +30,7 @@
 1. **可实例化的编排类型**：`BaseAgent` 是抽象类（`_strategy_cycle` 为抽象方法），`ReActAgent` 实现之，是应用层可构造、可运行的 ReAct Agent 类型
 2. **生命周期接入**：继承 `BaseAgent.run()` 的状态机 / 异常处理 / SSE 事件路由 / 结果存储
 3. **策略适配**：从 `AgentContext` 解出运行参数传给策略（策略不依赖 AgentContext）；把策略产出 `ReActOutcome` 组装为 `AgentResult`
-4. **兼容 API 面**：`_execute_tool_calls` 转发到策略原语，保持既有测试与调用方零断裂
+4. **原语转发**：`_execute_tool_calls` 转发到策略原语，供既有测试与编排复用调用
 
 > 本组件只做桥接，不承载 ReAct 算法；算法在 `reasoning/react.py`。
 
@@ -39,12 +42,12 @@
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `__init__` | `(llm: LLMGateway, tools: ToolGateway)` | 构造 `ReActStrategy(llm, tools)` |
+| `__init__` | `(llm: LLMGateway, tools: ToolGateway, context_budget: ContextBudgetPort \| None = None, error_handlers: ErrorHandlerRegistry \| None = None)` | 构造 `ReActStrategy(llm, tools, context_budget, error_handlers)`；`context_budget` 为上下文预算端口（ContextManager 注入），`error_handlers` 为错误处理横切入口 |
 | `_strategy_cycle` | `(user_input, messages) -> AsyncGenerator[str]` | 委托 `strategy.execute(...)`，结束后 `_map_outcome` 组装 `AgentResult` |
 | `_execute_tool_calls` | `(tool_calls, messages, iteration) -> AsyncGenerator[str]` | 转发到 `strategy.execute_tool_calls`（工具并行执行原语） |
 | `_map_outcome` | `(outcome: ReActOutcome \| None) -> AgentResult` | 策略产出 → AgentResult 契约转换 |
 
-**对外 API（继承自 `BaseAgent`）**：`run(user_input, messages, context)`（流式 SSE）、`state`、`result`——与抽离前完全一致。
+**对外 API（继承自 `BaseAgent`）**：`run(user_input, messages, context)`（流式 SSE）、`state`、`result`——契约见 [agent.md](agent.md)。
 
 **依赖方向**：`agent → reasoning`（编排调用策略）；策略层不反向依赖 agent/。
 
@@ -85,13 +88,15 @@ result = agent.result  # AgentResult
 
 ## 测试
 
-`tests/unit/test_agent.py`（3 用例）：
+`tests/unit/test_agent.py`（5 用例）：
 
 - `test_execute_tool_calls_parallel_preserves_order` — 工具消息顺序 = 输入顺序（gather 保序）
 - `test_execute_tool_calls_parallel_actually_concurrent` — 并行执行耗时 < 串行和
 - `test_strategy_cycle_short_circuits_on_llm_error` — LLM 失败短路返回失败结果（LLM-001）
+- `test_unknown_handler_raise_propagates` — 未注册 kind 的 handler 决策 RAISE 时上抛
+- `test_agent_error_reraisd_not_swallowed` — AgentRunError 不被 run() 吞掉，上抛给调用方
 
-策略算法本身由 `tests/unit/test_react_strategy.py`（6 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
+策略算法本身由 `tests/unit/test_react_strategy.py`（30 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
 
 ---
 

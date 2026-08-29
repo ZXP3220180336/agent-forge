@@ -1,11 +1,11 @@
 # Agent 模块对外接口文档
 
 > **对应代码**：`app/domain/agent/`
-> **更新日期**：2026-08-27
+> **更新日期**：2026-08-29
 > **文档定位**：Agent 模块对外接口文档——`BaseAgent` 统一入口的接口契约 + 内部组件导航；
 > 服务对象为 Agent 模块的**外部调用方**（应用层 / API 层）
 > **实现状态**：✅ 已实现（BaseAgent + ReActAgent；PlannerAgent / ReflectionAgent 预留）
-> **配套**：实现依赖领域端口 `LLMGateway` / `ToolGateway`；推理策略实现见
+> **配套**：实现依赖领域端口 `LLMGateway` / `ToolGateway`（可选 `ContextBudgetPort`）；推理策略实现见
 > [reasoning 模块](../reasoning_doc/reasoning.md)（ReAct 策略在 `reasoning/react.py`）
 
 ---
@@ -96,9 +96,12 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | `max_iterations` | `int = 10` | 最大推理轮数 |
 | `temperature` | `float = 0.2` | 采样温度 |
 | `max_tokens` | `int = 4096` | 单轮最大输出 token |
+| `max_execution_time` | `float \| None = None` | 整个 ReAct 循环总时长上限（秒）；None=不设限（生产值由装配根注入 `agent_timeout`） |
+| `max_context_rounds` | `int \| None = None` | 上下文预算：保留最近 N 轮 assistant/tool 配对；None=不裁剪（生产值 `agent_max_context_rounds`） |
+| `max_context_tokens` | `int \| None = None` | 上下文预算：消息总 token 上限；None=不裁剪 |
 | `metadata` | `dict = {}` | 扩展字段（如 `model_key`） |
 
-传递原则：值对象，每次 `run()` 传入，运行期间不变。
+传递原则：值对象，每次 `run()` 传入，运行期间不变。`iteration_limit` 属性为 `max_iterations` 的语义别名。
 
 #### `AgentResult`（执行结果，经 `agent.result` 读取）
 
@@ -106,7 +109,8 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | --- | --- |
 | `success` | 是否成功 |
 | `content` / `reasoning` | 最终回答 / 完整推理过程（累计） |
-| `tool_calls` | 工具调用记录（`{tool, params, result, success, duration}` 列表） |
+| `structured` | 结构化最终答案（final_answer 工具产出，`output_schema` 启用时） |
+| `tool_calls` | 工具调用记录（`{tool, params, result, success, error, error_code, duration}` 列表） |
 | `iterations` | 实际执行轮数 |
 | `total_tokens` / `usage` | Token 总数 / 明细（prompt/completion/total，累计） |
 | `error` | 失败原因 |
@@ -121,7 +125,7 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | `result` | 属性 | 最终结果（`run()` 完成后调用；失败为 `success=False` + `error`） |
 | `on_thought` / `on_tool_call` / `on_tool_result` / `on_complete` | 异步钩子 | 子类可覆盖的扩展点 |
 
-`run()` 职责：上下文保存 → 状态重置 → `_strategy_cycle()` 事件转发 → 按 `_result.success` 置 COMPLETED/FAILED；捕获 `CancelledError` 转 CANCELLED、其他异常转 FAILED（产 error 事件）。
+`run()` 职责：上下文保存 → 状态重置 → `_strategy_cycle()` 事件转发 → 按 `_result.success` 置 COMPLETED/FAILED；取消（`CancelledError`）与未捕获异常经 `ErrorHandlerRegistry` 分发（默认转 CANCELLED / FAILED 并产对应事件，见「对外异常契约」）。
 
 ### ReActAgent
 
@@ -129,7 +133,10 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 
 ```python
 agent = ReActAgent(llm=llm_service, tools=tool_service)
+# 可选横切能力注入：context_budget=context_manager, error_handlers=error_handler_registry
 ```
+
+构造：`ReActAgent(llm, tools, context_budget=None, error_handlers=None)`——`context_budget` 为上下文预算端口（应用层 ContextManager 注入，见 [ports.md](../ports_doc/ports.md)），`error_handlers` 为错误处理注册表（共享内核横切入口，见「对外异常契约」）。`BaseAgent(llm, tools, error_handlers=None)` 同构。
 
 - `_strategy_cycle` 委托 `ReActStrategy.execute()`（ReAct 主循环），产出事件 + 组装 `AgentResult`
 - 行为契约（ReAct 循环）：推理 → finish_reason 分支 → 工具调用 / 正常结束 / 空输出重试 → 迭代兜底
@@ -137,11 +144,21 @@ agent = ReActAgent(llm=llm_service, tools=tool_service)
 
 ### 对外异常契约
 
-| 场景 | 处理 |
-| --- | --- |
-| 用户取消（`CancelledError`） | `state=CANCELLED`，产出取消信息事件 |
-| Agent 运行异常 | `state=FAILED`，产出 `type=error` 事件，`result.error` 记录原因 |
-| LLM 调用失败 | ReAct 循环短路返回失败结果（不空转重试，见 react.md 行为边界） |
+Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。9 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
+
+| `AgentErrorKind` | 默认 action | 场景 → 默认处理 |
+| --- | --- | --- |
+| `LLM_FAILED` | STOP | LLM 调用失败 → 循环短路，返回失败结果（不空转重试） |
+| `EMPTY_OUTPUT` | CONTINUE | LLM 未生成有效输出 → 重试下一轮 |
+| `MAX_TURNS` | STOP | 迭代耗尽 → 用最后结果兜底结束 |
+| `TIMEOUT` | STOP | 总时长超限 → 降级（error 记录超时） |
+| `CANCELLED` | STOP | 外部取消 → `state=CANCELLED` |
+| `UNKNOWN` | STOP | 未捕获异常 → `state=FAILED`，产 error 事件 |
+| `TOOL_FAILED` | CONTINUE | 工具执行失败 → 回喂模型自纠 |
+| `PARSE_FAILED` | CONTINUE | 工具参数 JSON 解析失败 → 回喂自纠 |
+| `STRUCTURED_INVALID` | CONTINUE | final_answer 参数校验失败 → 回喂自纠 |
+
+调用方视角：默认行为下 `run()` 不抛异常（取消 / 失败均收敛为对应状态 + 结果）；仅当调用方注册 handler 决策 `RAISE` 时，上抛 `AgentRunError`（定义于 `app.shared.error_handling`）——这是 Agent 模块被外部捕获的唯一领域异常类型。
 
 ### 最小调用示例
 
@@ -192,7 +209,7 @@ Agent 模块对外产出的事件类型（与 LLM 层共用 `app.shared.events`�
 | `tool_call` | Agent | LLM 决定调用工具 | `content`（工具名）、`params`、`iteration` |
 | `tool_result` | Agent | 工具执行完成 | `content`（结果摘要）、`tool`、`duration`、`iteration` |
 | `done` | Agent | Agent 结束（正常 / 强制） | `iterations`、`total_tokens` |
-| `agent_info` | Agent | 状态信息（开始 / 重试 / 超限） | `content`（描述） |
+| `info` | Agent | 状态信息（开始 / 重试 / 超限） | `content`（描述） |
 
 ---
 
@@ -205,6 +222,8 @@ Agent 模块与 `settings.py` 配置项关联（完整表见 [config 文档](../
 | `agent_max_iterations` | 10 | `AgentContext.max_iterations` 默认值 |
 | `llm_temperature` | 0.2 | `AgentContext.temperature` 默认值 |
 | `llm_max_tokens` | 4096 | `AgentContext.max_tokens` 默认值 |
+| `agent_timeout` | 300 | `AgentContext.max_execution_time` 生产值（循环总时长上限，秒） |
+| `agent_max_context_rounds` | 8 | `AgentContext.max_context_rounds` 生产值（上下文预算保留轮数） |
 | `agent_max_concurrent_tools` | 3 | 单任务工具级并发（ToolGateway） |
 
 ---
@@ -214,6 +233,8 @@ Agent 模块与 `settings.py` 配置项关联（完整表见 [config 文档](../
 - [领域层说明](../README.md)
 - [ReActAgent 桥接组件](executor.md)
 - [推理策略模块](../reasoning_doc/reasoning.md)（含 [react.md](../reasoning_doc/react.md)）
+- [领域端口契约](../ports_doc/ports.md)
 - [架构设计](../../architecture.md)
 - [配置管理模块](../../config_doc/config.md)
 - [工具模块说明](../../integration_doc/tools_doc/tools.md)
+- [ADR agent-error-handling](../../../adr/domain/agent/2026-08-28-agent-error-handling.md)（错误处理横切入口）

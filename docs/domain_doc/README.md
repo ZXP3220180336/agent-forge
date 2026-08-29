@@ -1,9 +1,9 @@
 # 领域层说明文档
 
 > **对应代码**：`app/domain/`
-> **更新日期**：2026-08-27
+> **更新日期**：2026-08-29
 > **文档定位**：领域层（`app/domain/`）—— Agent 内核、提示词、记忆与推理策略；是系统的**决策与行动核心**，只依赖领域端口与共享内核，零外部框架依赖。
-> **实现状态**：Agent（✅）· Prompts（🔶 待补测试）· Reasoning（🔶 react ✅）· Memory（⬜ 预留）
+> **实现状态**：Agent（✅）· Prompts（🔶 待补测试）· Reasoning（🔶 react ✅）· Memory（⬜ 预留）· Ports（✅）
 > **配套**：事件系统位于共享层 `app/shared/events.py`（见 [events.md](../shared_doc/events.md)）
 
 ---
@@ -55,6 +55,7 @@ app/domain/
 ├── ports/                     ← 领域端口契约（依赖倒置抽象）
 │   ├── llm_gateway.py         ← LLMGateway / StreamResult
 │   ├── tool_gateway.py        ← ToolGateway / ToolResult
+│   ├── context_budget.py      ← ContextBudgetPort（上下文预算管理）
 │   ├── token_counter.py       ← TokenCounter
 │   └── embedding_port.py      ← EmbeddingPort
 ├── prompts/                   ← 提示词管理（指令层）
@@ -103,7 +104,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | Memory | base / working / short_term / long_term / memory_service | ⬜ | 三层记忆（预留） |
 | Reasoning | react.py | ✅ | ReActStrategy（见 [react.md](reasoning_doc/react.md)） |
 | Reasoning | reflection / chain_of_thought | ⬜ | Reflection / CoT 策略（预留） |
-| Ports | llm_gateway / tool_gateway / token_counter / embedding_port | ✅ | 领域端口契约（依赖倒置） |
+| Ports | llm_gateway / tool_gateway / context_budget / token_counter / embedding_port | ✅ | 领域端口契约（依赖倒置，见 [ports.md](ports_doc/ports.md)） |
 
 ---
 
@@ -162,12 +163,15 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 ## 领域端口契约
 
-领域层定义能力抽象（依赖倒置），集成层结构实现、装配根注入。契约详情见各端口源码与实现文档：
+**代码**：`app/domain/ports/` · **文档**：[领域端口契约对外接口文档](ports_doc/ports.md)
+
+领域层定义能力抽象（依赖倒置），集成层结构实现、装配根注入。契约详情（方法签名 / 结果载体 / 错误码）见 [ports.md](ports_doc/ports.md)：
 
 | 端口 | 文件 | 契约 | 实现 |
 | --- | --- | --- | --- |
 | `LLMGateway` / `StreamResult` | [llm_gateway.py](../../app/domain/ports/llm_gateway.py) | 流式 / 非流式 / 结构化 LLM 调用 | [LLMService](../integration_doc/llm_doc/llm.md) |
 | `ToolGateway` / `ToolResult` | [tool_gateway.py](../../app/domain/ports/tool_gateway.py) | 工具 Schema 导出 + 执行 | [ToolService](../integration_doc/tools_doc/tools.md) |
+| `ContextBudgetPort` | [context_budget.py](../../app/domain/ports/context_budget.py) | 上下文预算（轮次 + token 双层护栏） | [ContextManager](../application_doc/context_doc/context.md) |
 | `TokenCounter` | [token_counter.py](../../app/domain/ports/token_counter.py) | token 计量（单文本 / 消息） | [TiktokenTokenCounter](../integration_doc/llm_doc/token_counter.md) |
 | `EmbeddingPort` | [embedding_port.py](../../app/domain/ports/embedding_port.py) | 文本向量化（单条 / 批量） | [EmbeddingService](../integration_doc/embedding_doc/embedding.md) |
 
@@ -204,6 +208,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 - [提示词模块](prompts_doc/prompts.md)
 - [记忆系统（预留）](memory_doc/memory.md)
 - [推理策略](reasoning_doc/reasoning.md) · [ReActStrategy 策略组件](reasoning_doc/react.md)
+- [领域端口契约](ports_doc/ports.md)
 - [事件系统（共享层）](../shared_doc/events.md)
 - [应用层说明](../application_doc/README.md)
 - [集成层说明](../integration_doc/README.md)（端口实现方）

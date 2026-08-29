@@ -1,7 +1,7 @@
 # ReAct 策略工业级对标（完成度基准）
 
 > **对象**：`app/domain/reasoning/react.py`（ReActStrategy）
-> **更新日期**：2026-08-27
+> **更新日期**：2026-08-29
 > **定位**：ReAct 推理策略的工业级能力基准与差距清单——供策略增强、Reflection / CoT 实现参考
 > **依据**：LangChain / LangGraph / OpenAI Agents SDK / SMOLagents / Claude Agent SDK 源码级调研（2026-08-27）
 
@@ -20,7 +20,6 @@
     - [增强项对照](#增强项对照)
   - [发现的问题（按优先级）](#发现的问题按优先级)
   - [产品导向视角](#产品导向视角)
-  - [修复优先级建议](#修复优先级建议)
   - [相关文档](#相关文档)
 
 ---
@@ -125,19 +124,6 @@
 - **P0（工具失败回喂）直接踩证据链**：良率工程师需要在根因报告里看到「哪个工具调用失败、为什么失败」；工具失败空串回喂使主 Agent 在分支排查中无法自愈——P0 优先级成立。
 - **架构层（策略抽离、原语复用）间接推进主链路**：`execute_tool_calls` 供 PlannerAgent / ReflectionAgent 复用，为多 Agent 编排铺路。
 - **增强项（guardrail / compaction / 断点续跑）不服务当前单用户本地场景，当前不做是对的**——符合项目「不做或预留」的降级原则。
-
----
-
-## 修复优先级建议
-
-> ✅ 核心必备 13 项全部完成，无待办项。
->
-> ✅ 已完成（2026-08-27）：时间上限（`asyncio.timeout` 包裹循环 + 超时降级，生产值 `agent_timeout=300`）。
-> ✅ 已完成（2026-08-27）：工具失败回喂 + 无效工具名处理（失败回喂 `str(result)`，error/error_code 进证据链）；AGENT-001 回归（except 显式元组）。
-> ✅ 已完成（2026-08-27）：解析 / JSON 失败降级（解析失败不执行工具，构造失败 ToolResult 回喂 + JSON_PARSE 证据链）。
-> ✅ 已完成（2026-08-27）：截断标记（工具结果截断带 `[结果已截断]`，模型可知结果不完整）。
-> ✅ 已完成（2026-08-27）：reasoning_content 回喂策略（此前 P2 标注为错误外推——DeepSeek V4 thinking + tools 必须回喂；已加 `has_reasoning` 信号覆盖空 reasoning，防 400）。
-> ✅ 已完成（2026-08-28）：上下文预算管理（context_manager 统一 + ContextBudgetPort 注入，轮次 + token 双层护栏）。
 
 ---
 
