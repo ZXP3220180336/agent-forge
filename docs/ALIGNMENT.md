@@ -22,7 +22,7 @@
 | app/api/schemas/request.py | 🔶 | docs/api_doc/api.md | (无) | 请求 DTO；随路由测试覆盖 |
 | app/api/schemas/response.py | 🔶 | docs/api_doc/api.md | (无) | 响应 DTO；随路由测试覆盖 |
 | app/api/schemas/agent.py | ⬜ | docs/api_doc/api.md | (无) | 空文件待实现（Agent DTO） |
-| app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断（计数经 TokenCounter 端口） |
+| app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断 + Agent 运行中上下文预算管理（ContextBudgetPort） |
 | app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 三合一待拆分 |
 | app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | 并发闸门 |
 | app/domain/agent/base.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | Agent 基类与数据定义 |
