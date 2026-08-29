@@ -20,6 +20,7 @@ wheels/
 # IDE / 编辑器
 .idea/
 .vscode/
+.claude/
 *.swp
 
 # 系统文件
