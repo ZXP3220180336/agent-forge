@@ -683,6 +683,33 @@ async def test_react_context_budget_trims_rounds():
     assert messages[0]["role"] == "user"  # 前缀保留
 
 
+@pytest.mark.asyncio
+async def test_react_context_budget_trims_on_no_tool_retry():
+    """上下文预算：非工具路径（空输出重试）每次 LLM 调用前也裁剪——预算不能只在工具路径生效。"""
+    from app.application.context.context_manager import ContextManager
+    from app.integration.llm.token_counter import TiktokenTokenCounter
+
+    budget = ContextManager(
+        session_manager=object(),  # trim_messages 不使用 session_manager
+        token_counter=TiktokenTokenCounter("gpt-4"),
+    )
+    # 无工具：每轮空输出重试（_handle_empty_output CONTINUE），不走 _handle_tool_calls
+    strategy = ReActStrategy(llm=_EmptyLLM(), tools=None, context_budget=budget)
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=6, temperature=0.2, max_tokens=1024,
+        max_context_rounds=2,
+    ):
+        pass
+
+    # 每轮顶部 trim：assistant 保持 <= max_context_rounds（末轮 append 未再 trim，+1）
+    # 修复前预算仅工具路径生效 → 6 轮空输出重试无裁剪 → assistant=6
+    assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
+    assert assistant_count <= 3
+    assert messages[0]["role"] == "user"  # 前缀保留
+
+
 # final_answer 结构化输出测试用的 JSON Schema
 _FA_REPORT_SCHEMA = {
     "type": "object",

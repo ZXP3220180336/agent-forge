@@ -1,3 +1,14 @@
+# 2026-08-30 上下文预算放置位置修复（REASON-001）
+
+> 审查发现：预算原放 `_handle_tool_calls` 尾部，仅覆盖「工具调用 → 回喂」路径；LLM 失败重试 / final_answer 回喂重试 / 空输出重试三条非工具继续路径漏裁，上下文无限增长、护栏失效。根因：护栏放置点锚定「工具调用后」而非「LLM 调用前」（横切护栏应锚定其约束的调用点）。
+
+- [x] 测试驱动：新增 `test_react_context_budget_trims_on_no_tool_retry`（空输出重试路径，修复前 assistant=6 失败 → 修复后 ≤3）
+- [x] 修复：预算移至主循环顶部（第 0 步，每次 LLM 调用前裁剪，所有继续路径共用）；`_handle_tool_calls` 移除预算与 `max_context_rounds`/`max_context_tokens` 参数
+- [x] 文档：react.md（上下文预算节 / 行为边界 / `_handle_tool_calls` 行 / 测试节 30→31）+ [REASON-001 问题记录](../issues/domain/reasoning/2026-08-30-context-budget-placement.md)
+- [x] 验证：react 31 passed + 全量 pytest + verify_alignment
+
+---
+
 # 2026-08-29 config 文档重构：移出优化建议为 backlog
 
 > 依 module_doc 规范重构 `docs/config_doc/config.md`，原「后续优化建议」为规划内容（Rule 2 写当前状态），移出登记为 backlog，出现真实需求再落地。

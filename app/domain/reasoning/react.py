@@ -155,6 +155,7 @@ class ReActStrategy:
         ReAct 主循环。
 
         循环流程（各分支经错误处理分发，默认行为 = 现有逻辑）：
+            0. 上下文预算裁剪（所有继续路径共用，保证每次 LLM 调用前消息有界）
             1. LLM 推理（流式输出 reasoning / message）
             2. 检查 finish_reason
                - "stop"       → 生成最终结果，结束循环
@@ -199,6 +200,17 @@ class ReActStrategy:
             async with asyncio.timeout(max_execution_time):
                 for iteration in range(1, max_iterations + 1):
                     yield build_info_event(f"第 {iteration} 轮推理")
+
+                    # ----- 0. 上下文预算：模型本次调用前作为 gatekeeper 裁剪 -----
+                    # 置于循环顶部（而非工具路径后）：所有继续路径共用——工具回喂、
+                    # LLM 失败重试 / final_answer 回喂重试 / 空输出重试，下一次 LLM
+                    # 调用前均裁剪，否则非工具路径上下文无限增长、预算失效。
+                    if self._context_budget is not None:
+                        self._context_budget.trim_messages(
+                            messages,
+                            max_rounds=max_context_rounds,
+                            max_tokens=max_context_tokens,
+                        )
 
                     # ----- 1. LLM 推理 -----
                     stream_result = StreamResult()
@@ -283,8 +295,6 @@ class ReActStrategy:
                             stream_result.tool_calls,
                             messages,
                             iteration,
-                            max_context_rounds,
-                            max_context_tokens,
                             total_usage,
                             full_reasoning,
                         ):
@@ -488,12 +498,14 @@ class ReActStrategy:
         tool_calls: list[dict],
         messages: list[dict],
         iteration: int,
-        max_context_rounds: int | None,
-        max_context_tokens: int | None,
         total_usage: dict,
         full_reasoning: str,
     ) -> AsyncGenerator[str]:
-        """工具执行 + 可恢复错误分发 + 上下文预算（默认 CONTINUE 继续）。"""
+        """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。
+
+        上下文预算不在本方法内：统一在主循环顶部（每次 LLM 调用前）裁剪，
+        所有继续路径（含非工具重试）共用，见 execute() 第 0 步。
+        """
         before = len(self._tool_call_records)
         async for event in self.execute_tool_calls(tool_calls, messages, iteration):
             yield event
@@ -542,15 +554,6 @@ class ReActStrategy:
                     )
                     return
             # 全 CONTINUE：工具结果已回喂，继续循环
-
-        # CONTINUE（默认）：工具结果已回喂，继续循环
-        # 上下文预算：模型下次调用前作为 gatekeeper 裁剪
-        if self._context_budget is not None:
-            self._context_budget.trim_messages(
-                messages,
-                max_rounds=max_context_rounds,
-                max_tokens=max_context_tokens,
-            )
 
     async def _finalize_stop(
         self,
