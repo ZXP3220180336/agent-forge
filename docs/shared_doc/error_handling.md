@@ -221,12 +221,16 @@ AppError（根，code 默认 INTERNAL）
 ├── NonRetryableError    不可恢复：向上抛，调用方决策
 │   ├── CircuitBreakerOpenError     code=CIRCUIT_OPEN
 │   └── ParameterValidationError    code=VALIDATION（多重继承 ValueError）
-└── BusinessError        业务边界：具名短路，调用方差异化处理
-    ├── StructuredExtractionError   中间基类
-    │   ├── StructuredTruncationError   code=LLM_TRUNCATED
-    │   ├── StructuredRefusalError      code=LLM_REFUSAL
-    │   └── StructuredToolCallError     code=LLM_TOOL_CALL
-    └── SSRFError                  code=SSRF_BLOCKED
+├── BusinessError        业务边界：具名短路，调用方差异化处理
+│   ├── StructuredExtractionError   中间基类
+│   │   ├── StructuredTruncationError   code=LLM_TRUNCATED
+│   │   ├── StructuredRefusalError      code=LLM_REFUSAL
+│   │   └── StructuredToolCallError     code=LLM_TOOL_CALL
+│   ├── SSRFError                  code=SSRF_BLOCKED
+│   ├── UnauthorizedError          code=UNAUTHORIZED（API 401）
+│   ├── ForbiddenError             code=FORBIDDEN（API 403）
+│   └── NotFoundError              code=NOT_FOUND（API 404）
+└── AgentRunError（定义于 error_handling.py，携带 kind）  领域编排错误，由错误处理分发决策
 ```
 
 ### 异常清单
@@ -240,9 +244,13 @@ AppError（根，code 默认 INTERNAL）
 | `StructuredRefusalError` | `StructuredExtractionError` | `LLM_REFUSAL` | 模型拒答（安全策略） | 捕获转安全兜底/文案，**不强行 repair** |
 | `StructuredToolCallError` | `StructuredExtractionError` | `LLM_TOOL_CALL` | 模型选择调用工具而非输出 JSON | 捕获按工具调用走 Agent 循环 |
 | `SSRFError` | `BusinessError` | `SSRF_BLOCKED` | 目标 URL 命中 SSRF 防护 | 捕获转 `ToolResult(success=False)` |
+| `UnauthorizedError` | `BusinessError` | `UNAUTHORIZED` | API 未认证（缺凭证） | error_handler 转 401 |
+| `ForbiddenError` | `BusinessError` | `FORBIDDEN` | API 已认证但无权访问 | error_handler 转 403 |
+| `NotFoundError` | `BusinessError` | `NOT_FOUND` | API 目标资源不存在 | error_handler 转 404 |
 
-> **定义位置**：所有异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export（如 `from app.shared.exceptions import CircuitBreakerOpenError`）——raise 点与测试 `import` 路径不变。
-> **三类码的边界**：`AppErrorCode`（对外业务码）与 `ErrorCategory`（LLM 传输分类）、工具层 `ErrorCode`（工具执行系统码）正交，互不替代。
+> **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。
+> **对外边界**：`app/api/middleware/error_handler.py` 把 `AppError` 翻译为 HTTP 状态 + 统一 `{code, message, details}` 信封（业务码与 HTTP 状态解耦，映射表见该模块）——API 层不抛 `HTTPException`，全走统一树。
+> **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，ErrorHandlerRegistry 消费）。
 
 ---
 

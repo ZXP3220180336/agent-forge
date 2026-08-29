@@ -1,3 +1,28 @@
+# 2026-08-28 异常体系完整优化（error_handler 边界 + 命名 + API 收敛）
+
+> 工业级调研（OpenAI/LangChain/Spring AI/SMOL/FastAPI）：分层分类 + 宽松统一基类是正确形态，四套分类（传输可重试/工具系统码/Agent 编排/对外业务码）不应合并。真实缺口是边界未接线 + 命名冲突。
+
+- [x] 调研工业级异常体系设计（统一 vs 分层结论 + 诊断）
+- [x] `error_handler.py` 实现（AppError → HTTP 状态 + 统一信封）+ main.py 注册
+- [x] `exceptions.py`：加 UNAUTHORIZED/FORBIDDEN/NOT_FOUND 码 + 3 异常
+- [x] API 层收敛：deps/session/chat 8 处 HTTPException → AppError 子类
+- [x] 命名修正：`AgentError` → `AgentRunError`（解耦语义）
+- [x] 测试：error_handler 7 用例 + test_api 信封断言
+- [x] 文档：error_handling.md / ALIGNMENT（error_handler ✅）+ [ADR](../adr/shared/exceptions/2026-08-28-exception-system-optimization.md)
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
+# 2026-08-28 Agent 错误处理策略可扩展（领域层横切，调研 + 决策定稿）
+
+> 对标增强项 #23（⚠️）：先调研工业级详细内容并记录决策文档。四要素「错误分类→注册机制→分发时机→决策动作」；回喂/拦截双层；本项目选 OpenAI 式 ErrorHandlerRegistry + BaseAgent 横切注入。
+
+- [x] 调研工业级错误处理扩展机制（OpenAI Agents SDK / LangGraph / Claude SDK / SMOLagents / LangChain / AutoGen，源码级）
+- [x] [ADR](../adr/domain/agent/2026-08-28-agent-error-handling.md)：工业级对照 + 设计方向（AgentErrorKind + Handler 协议 + Registry + BaseAgent 注入）
+- [x] 实现：`app/shared/error_handling.py`（共享内核）9 kind 全接入——BaseAgent 注入 + run 分发；ReAct 循环 6 处错误分支改为分发（默认行为零变化）；测试 13 新增（registry 单元 + 分发集成 + run 上抛）
+
+---
+
 # 2026-08-28 结构化输出约束（增强项 #15，Final Answer 工具模式）
 
 > 工业界调研定稿：严格 output_type 会抑制工具调用；选 Final Answer 工具（模型原生结构化 + 循环终止 + 无额外调用）。决策过程（时机/方式/取舍）完整沉淀于 ADR。

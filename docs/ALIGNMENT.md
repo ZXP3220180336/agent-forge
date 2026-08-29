@@ -12,7 +12,7 @@
 | app/config/settings.py | ✅ | docs/config_doc/config.md | tests/unit/test_settings.py | 约 90 配置项 |
 | app/api/deps.py | 🔶 | docs/api_doc/api.md | (无) | DI 薄解析；经 chat_flow 间接覆盖 |
 | app/api/middleware/auth.py | ⬜ | docs/api_doc/middleware_doc/middleware.md | (无) | 空文件，鉴权 mock 待实现 |
-| app/api/middleware/error_handler.py | ⬜ | docs/api_doc/middleware_doc/middleware.md | (无) | 空文件待实现 |
+| app/api/middleware/error_handler.py | ✅ | docs/api_doc/middleware_doc/middleware.md | tests/unit/test_error_handler.py | AppError → HTTP 状态 + 统一信封（Phase D error_handler） |
 | app/api/middleware/rate_limit.py | ⬜ | docs/api_doc/middleware_doc/middleware.md | (无) | 空文件待实现 |
 | app/api/routes/chat.py | ✅ | docs/api_doc/routes_doc/routes.md | tests/integration/test_chat_flow.py | SSE 聊天闭环 |
 | app/api/routes/session.py | 🔶 | docs/api_doc/routes_doc/routes.md | (无) | 会话 CRUD；待补路由测试 |
@@ -90,6 +90,7 @@
 | app/integration/tools/builtin/rca/defect_tool.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/rca.md | tests/unit/test_rca_tools.py | 缺陷模式（query_defect_map，L0） |
 | app/integration/tools/builtin/rca/history_tool.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/rca.md | tests/unit/test_rca_tools.py | 历史案例检索（search_historical_rca，L0） |
 | app/shared/events.py | ✅ | docs/shared_doc/events.md | tests/unit/test_events.py | 7 种 SSE 事件 |
+| app/shared/error_handling.py | 🔶 | docs/shared_doc/error_handling.md | tests/unit/test_error_handling.py | Agent 错误处理策略（AgentErrorKind / Handler / Registry，共享内核横切） |
 | app/shared/exceptions.py | ✅ | docs/shared_doc/error_handling.md | tests/unit/test_exceptions.py | 统一异常树 + AppErrorCode（7 异常收敛，集成层 re-export） |
 | app/shared/types.py | ✅ | docs/shared_doc/types.md | tests/unit/test_types.py | 通用类型/标识（SessionId/UserId/Messages） |
 | app/shared/encoding.py | ✅ | docs/shared_doc/encoding.md | tests/integration/test_tool_execution.py | 双编码解码（UTF-8 优先 + locale 回退），code_exec/readFile 复用 |

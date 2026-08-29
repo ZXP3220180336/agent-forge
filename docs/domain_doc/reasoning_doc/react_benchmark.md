@@ -108,7 +108,7 @@
 | 20 | 成本上限 | ⚠️ | CostTracker 记账，无 cost ceiling 自动停机 |
 | 21 | 沙箱 / 安全执行 | ⚠️ | 本项目工具为注册式（非任意代码执行），风险形态不同，无需 AST 沙箱；以风险分级 + 审批替代 |
 | 22 | 最终答案校验 | ❌ | 无 `final_answer_checks`（证据链报告的答案校验是后续产物层的事） |
-| 23 | 错误处理策略可扩展 | ⚠️ | ReAct 层错误处理硬编码，无 error_handlers 注册机制；工具层有 hooks 可扩展 |
+| 23 | 错误处理策略可扩展 | ✅ | `ErrorHandlerRegistry`（共享内核）：AgentErrorKind 9 类 + Handler 协议（CONTINUE/STOP/RAISE）+ BaseAgent 横切注入；可恢复默认回喂、终结性默认终止，按 kind 注册覆盖 |
 
 ---
 
