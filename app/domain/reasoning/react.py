@@ -259,6 +259,7 @@ class ReActStrategy:
                         yield build_info_event(
                             f"检测到 {len(stream_result.tool_calls)} 个工具调用"
                         )
+
                         # Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续
                         # （注入工具非注册工具，识别在主循环，不进 execute_tool_calls）
                         if output_schema is not None and any(
@@ -277,6 +278,7 @@ class ReActStrategy:
                             if self.outcome is not None:
                                 return
                             continue  # final_answer CONTINUE：回喂后继续
+
                         async for event in self._handle_tool_calls(
                             stream_result.tool_calls,
                             messages,
@@ -313,17 +315,20 @@ class ReActStrategy:
                     last_result, max_iterations, total_usage
                 ):
                     yield event
+
         except TimeoutError:
             # 关闭判别：生成器正被 finalizer/aclose 关闭（不同 task 驱动）或外部取消
             # → 干净停止，不 yield 降级事件（避免 RuntimeError: async generator ignored GeneratorExit）
             cur = asyncio.current_task()
             if cur is None or cur is not entered_task or cur.cancelling() > 0:
                 return
+
             # 真超时 → 错误分发 + 降级
             async for event in self._finalize_timeout(
                 last_result, iteration, total_usage, max_execution_time
             ):
                 yield event
+
             return
 
     # ==================================================================
@@ -434,11 +439,13 @@ class ReActStrategy:
                 total_tokens=total_usage.get("total_tokens", 0),
             )
             return
+
         # 校验失败 → 错误分发（默认 CONTINUE 回喂；handler 可终止/上抛）
         fa_msg = f"final_answer 参数{err}"
         action = await self._dispatch(
             AgentErrorKind.STRUCTURED_INVALID, fa_msg, iteration
         )
+
         if action == AgentErrorAction.STOP:
             self.outcome = self._build_outcome(
                 success=False,
@@ -454,6 +461,7 @@ class ReActStrategy:
                 total_tokens=total_usage.get("total_tokens", 0),
             )
             return
+
         # CONTINUE（默认）：回喂错误文本，模型下轮自纠
         messages.append(
             {
@@ -489,34 +497,52 @@ class ReActStrategy:
         before = len(self._tool_call_records)
         async for event in self.execute_tool_calls(tool_calls, messages, iteration):
             yield event
-        # 可恢复错误分发：本轮是否有工具/解析失败
+
+        # 可恢复错误分发：本轮失败工具按 kind 分组聚合后逐 kind 分发，
+        # 再按「最严重优先」仲裁（RAISE > STOP > CONTINUE）——对齐 OpenAI 多失败优先级仲裁。
+        # 终止/上报时其他失败不回喂模型（循环结束，回喂无意义），但全部失败已进证据链。
         new_failures = [
             r for r in self._tool_call_records[before:] if not r.get("success")
         ]
         if new_failures:
-            first_fail = new_failures[0]
-            kind = (
-                AgentErrorKind.PARSE_FAILED
-                if first_fail.get("error_code") == ErrorCode.JSON_PARSE.value
-                else AgentErrorKind.TOOL_FAILED
-            )
-            fail_msg = first_fail.get("error") or ""
-            action = await self._dispatch(kind, fail_msg, iteration)
-            if action == AgentErrorAction.STOP:
-                self.outcome = self._build_outcome(
-                    success=False,
-                    content="",
-                    reasoning=full_reasoning.strip(),
-                    iteration=iteration,
-                    total_tokens=total_usage.get("total_tokens", 0),
-                    usage=total_usage or None,
-                    error=f"{kind.value}（按错误处理策略终止）",
+            grouped: dict[AgentErrorKind, list[dict]] = {}
+            for r in new_failures:
+                kind = (
+                    AgentErrorKind.PARSE_FAILED
+                    if r.get("error_code") == ErrorCode.JSON_PARSE.value
+                    else AgentErrorKind.TOOL_FAILED
                 )
-                yield build_done_event(
-                    iterations=iteration,
-                    total_tokens=total_usage.get("total_tokens", 0),
+                grouped.setdefault(kind, []).append(r)
+            # 逐 kind 分发：同 kind 的多个失败聚合为一条 message（handler 可见全部原因）
+            decisions: list[tuple[AgentErrorKind, str, AgentErrorAction]] = []
+            for kind, fails in grouped.items():
+                fail_msg = "；".join(
+                    f"{f.get('tool', '?')}: {f.get('error', '')}" for f in fails
                 )
-                return
+                action = await self._dispatch(kind, fail_msg, iteration)
+                decisions.append((kind, fail_msg, action))
+            # 仲裁：任何 RAISE → 上报；任何 STOP → 终止；全 CONTINUE → 回喂继续
+            for kind, fail_msg, action in decisions:
+                if action == AgentErrorAction.RAISE:
+                    raise AgentRunError(kind, fail_msg, iteration)
+            for kind, fail_msg, action in decisions:
+                if action == AgentErrorAction.STOP:
+                    self.outcome = self._build_outcome(
+                        success=False,
+                        content="",
+                        reasoning=full_reasoning.strip(),
+                        iteration=iteration,
+                        total_tokens=total_usage.get("total_tokens", 0),
+                        usage=total_usage or None,
+                        error=f"{kind.value}（按错误处理策略终止）: {fail_msg}",
+                    )
+                    yield build_done_event(
+                        iterations=iteration,
+                        total_tokens=total_usage.get("total_tokens", 0),
+                    )
+                    return
+            # 全 CONTINUE：工具结果已回喂，继续循环
+
         # CONTINUE（默认）：工具结果已回喂，继续循环
         # 上下文预算：模型下次调用前作为 gatekeeper 裁剪
         if self._context_budget is not None:
@@ -669,6 +695,7 @@ class ReActStrategy:
         async def _execute_one(tc: dict) -> tuple:
             """并行执行单个工具（并发 task 内只做执行，不 yield 事件）。"""
             tool_name = tc["function"]["name"]
+
             try:
                 raw_args = tc["function"]["arguments"]
                 tool_args = json.loads(raw_args)
@@ -685,6 +712,7 @@ class ReActStrategy:
                 )
                 elapsed = time.monotonic() - start
                 return exec_result, tool_name, {}, tc, elapsed
+
             start = time.monotonic()
             exec_result = await self._tools.execute(tool_name, tool_args)
             elapsed = time.monotonic() - start

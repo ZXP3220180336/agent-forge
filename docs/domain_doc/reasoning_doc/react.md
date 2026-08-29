@@ -93,7 +93,7 @@
 | reasoning_content 回喂 | DeepSeek V4 thinking + tools 必须回喂（否则 400）；`has_reasoning` 覆盖空 reasoning 场景（空串也回喂） |
 | 上下文预算（`max_context_rounds` / `max_context_tokens`，None=不裁剪） | 模型下次调用前经注入的 ContextBudgetPort（context_manager 实现）裁剪：保留最近 N 轮 assistant/tool 配对 + token 硬上限 |
 | 结构化最终答案（`output_schema`，None=不启用） | 注入 final_answer 工具；模型调用即终止并产出 `outcome.structured`；参数校验失败回喂（VALIDATION）自纠 |
-| 错误处理分发（注入 `ErrorHandlerRegistry`，None=默认行为） | 各终结/可恢复错误按 kind 分发（CONTINUE/STOP/RAISE）；默认 = 现有行为，调用方按 kind 注册覆盖 |
+| 错误处理分发（注入 `ErrorHandlerRegistry`，None=默认行为） | 各终结/可恢复错误按 kind 分发（CONTINUE/STOP/RAISE）；多工具失败按 kind 聚合 + 最严重优先仲裁（RAISE > STOP > CONTINUE）；默认 = 现有行为，调用方按 kind 注册覆盖 |
 
 ---
 
@@ -132,13 +132,14 @@ async for event in strategy.execute_tool_calls(tool_calls, messages, iteration=1
 - **为什么结构化用 Final Answer 工具而非事后提取**：模型原生结构化（从开始按 schema 组织证据链、无信息损失、无额外 LLM 调用），兼作循环终止机制；严格 `output_type` 会抑制中间工具调用；`generate_structured` 留作非 Agent 提取场景（分工见 ADR structured-output）
 - **为什么错误处理走 ErrorHandlerRegistry（共享内核）**：错误处理是领域层横切能力（所有 Agent 模式共享），按 kind 注册 handler（CONTINUE/STOP/RAISE）——可恢复默认回喂、终结性默认终止；默认行为 = 现有逻辑，调用方可按 kind 覆盖（见 ADR agent-error-handling）
 - **为什么 execute 拆分为职责单一的分支方法**：主循环仅保留骨架（LLM 推理 → 分发点），各终止/错误分支提取为私有方法（`_finalize_*` / `_handle_*`），以 `outcome is not None` 作终止信号——降低方法体耦合、提升可维护性，行为不变（回归护栏）
+- **为什么多工具失败按 kind 聚合 + 最严重优先仲裁**：同轮多个工具失败的处理意图可能不同（上报 / 终止 / 回喂）——按 kind 分组聚合（同 kind 失败原因合并给 handler）后逐 kind 分发，再按 RAISE > STOP > CONTINUE 仲裁（对齐 OpenAI 多失败优先级仲裁）；终止 / 上报时其他失败不回喂（循环结束，回喂无意义），但全部失败已进证据链
 - **决策记录**：[ADR react-strategy-extraction](../../../adr/domain/agent/2026-08-27-react-strategy-extraction.md)
 
 ---
 
 ## 测试
 
-`tests/unit/test_react_strategy.py`（27 用例）：
+`tests/unit/test_react_strategy.py`（30 用例）：
 
 - 工具循环 stop 结束（outcome 正确组装：content / iterations / tool_calls 记录 / tool 消息回喂）
 - LLM 失败短路（LLM-001，iterations=1）
@@ -167,6 +168,9 @@ async for event in strategy.execute_tool_calls(tool_calls, messages, iteration=1
 - 错误处理：EMPTY_OUTPUT handler → STOP 终止
 - 错误处理：TOOL_FAILED handler → STOP 终止（部分进度保留）
 - 错误处理：STRUCTURED_INVALID handler → STOP 终止
+- 多工具失败：同 kind 聚合 message 分发（handler 可见全部原因）
+- 多工具失败：跨 kind 仲裁 STOP 优先（TOOL_FAILED CONTINUE + PARSE_FAILED STOP → 终止）
+- 多工具失败：跨 kind 仲裁 RAISE 优先（PARSE_FAILED RAISE → 上报）
 
 ---
 

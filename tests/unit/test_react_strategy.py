@@ -73,6 +73,29 @@ class _FailingTool(BaseTool):
         return ToolResult(success=False, content="", error="模拟执行失败")
 
 
+class _FailingToolNamed(BaseTool):
+    """可配置名字与错误的失败工具（验证多失败分发聚合与仲裁）。"""
+
+    def __init__(self, name: str, error: str = "模拟失败"):
+        self._name = name
+        self._error = error
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return "失败工具"
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    async def execute(self, **kwargs) -> ToolResult:
+        return ToolResult(success=False, content="", error=self._error)
+
+
 class _DelayTool(BaseTool):
     """带不同延迟的工具，用于验证 gather 并行 + 顺序保持。"""
 
@@ -925,6 +948,139 @@ async def test_react_structured_invalid_handler_stop():
     assert strategy.outcome is not None
     assert strategy.outcome.success is False
     assert "终止" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_tool_failures_grouped_by_kind():
+    """同 kind 多个失败聚合为一条 message 分发（handler 可见全部原因），CONTINUE 继续。"""
+    seen: list[str] = []
+
+    async def on_tool_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        seen.append(ctx.message)
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.TOOL_FAILED, on_tool_failed)
+
+    tools = _make_registry(
+        tools=[
+            _FailingToolNamed("fail_a", error="原因A"),
+            _FailingToolNamed("fail_b", error="原因B"),
+        ]
+    )
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {"id": "a", "type": "function", "function": {"name": "fail_a", "arguments": "{}"}},
+                    {"id": "b", "type": "function", "function": {"name": "fail_b", "arguments": "{}"}},
+                ],
+            },
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # 同 kind 聚合为一条 message，含两个工具名与原因
+    assert len(seen) == 1
+    assert "fail_a" in seen[0] and "原因A" in seen[0]
+    assert "fail_b" in seen[0] and "原因B" in seen[0]
+    # CONTINUE：回喂后继续，下轮 stop 正常完成
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+
+
+@pytest.mark.asyncio
+async def test_react_tool_failures_stop_arbitration():
+    """跨 kind：TOOL_FAILED→CONTINUE + PARSE_FAILED→STOP → 终止（STOP 优先于 CONTINUE）。"""
+    async def on_tool_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    async def on_parse_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.STOP
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.TOOL_FAILED, on_tool_failed)
+    registry.register(AgentErrorKind.PARSE_FAILED, on_parse_failed)
+
+    tools = _make_registry(
+        tools=[
+            _FailingToolNamed("fail_a"),
+            _DelayTool("probe", delay=0),
+        ]
+    )
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {"id": "a", "type": "function", "function": {"name": "fail_a", "arguments": "{}"}},
+                    {"id": "b", "type": "function", "function": {"name": "probe", "arguments": "{bad"}},
+                ],
+            },
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "终止" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_tool_failures_raise_arbitration():
+    """跨 kind：PARSE_FAILED→RAISE + TOOL_FAILED→CONTINUE → 上报（RAISE 优先）。"""
+    async def on_tool_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    async def on_parse_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.TOOL_FAILED, on_tool_failed)
+    registry.register(AgentErrorKind.PARSE_FAILED, on_parse_failed)
+
+    tools = _make_registry(
+        tools=[
+            _FailingToolNamed("fail_a"),
+            _DelayTool("probe", delay=0),
+        ]
+    )
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {"id": "a", "type": "function", "function": {"name": "fail_a", "arguments": "{}"}},
+                    {"id": "b", "type": "function", "function": {"name": "probe", "arguments": "{bad"}},
+                ],
+            },
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=3, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.PARSE_FAILED
 
 
 @pytest.mark.asyncio
