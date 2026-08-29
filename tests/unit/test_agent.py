@@ -17,6 +17,13 @@ from app.config import settings
 from app.domain.agent import AgentContext, ReActAgent
 from app.integration.tools.tool_service import ToolService
 from app.integration.tools.base import BaseTool, ToolResult
+from app.shared.error_handling import (
+    AgentRunError,
+    AgentErrorAction,
+    AgentErrorContext,
+    AgentErrorKind,
+    ErrorHandlerRegistry,
+)
 from app.shared.events import build_error_event
 
 
@@ -155,3 +162,55 @@ async def test_strategy_cycle_short_circuits_on_llm_error():
     )
     assert agent.result.iterations == 1, "应在第 1 轮短路，不空转重试"
     assert any('"type": "done"' in e for e in events), "应产出 done 事件"
+
+
+class _ThrowingLLM:
+    """LLM 抛未捕获异常（触发 run 的 UNKNOWN 错误分发）。"""
+
+    async def async_generate(self, *args, **kwargs):
+        yield ""  # 使成为 async generator（否则被视为 async 函数返回 coroutine）
+        raise RuntimeError("boom")
+
+
+@pytest.mark.asyncio
+async def test_unknown_handler_raise_propagates():
+    """自定义 UNKNOWN handler → RAISE：未捕获异常上抛给调用方。"""
+    async def on_unknown(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.UNKNOWN, on_unknown)
+
+    agent = ReActAgent(
+        llm=_ThrowingLLM(), tools=None, error_handlers=registry
+    )
+    ctx = AgentContext(session_id="s", user_id="u", max_iterations=3)
+
+    with pytest.raises(RuntimeError):
+        async for _ in agent.run(
+            "hi", [{"role": "user", "content": "hi"}], ctx
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_agent_error_reraisd_not_swallowed():
+    """策略内 RAISE 抛出的 AgentRunError → run 不吞，上抛给调用方。"""
+    async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
+
+    agent = ReActAgent(
+        llm=_ErrorLLM(), tools=None, error_handlers=registry
+    )
+    ctx = AgentContext(session_id="s", user_id="u", max_iterations=3)
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in agent.run(
+            "hi", [{"role": "user", "content": "hi"}], ctx
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.LLM_FAILED

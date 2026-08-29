@@ -21,6 +21,13 @@ from app.config import settings
 from app.domain.reasoning import ReActStrategy
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.tool_service import ToolService
+from app.shared.error_handling import (
+    AgentRunError,
+    AgentErrorAction,
+    AgentErrorContext,
+    AgentErrorKind,
+    ErrorHandlerRegistry,
+)
 from app.shared.events import build_error_event, build_message_event
 
 
@@ -762,6 +769,162 @@ async def test_react_no_output_schema_structured_none():
     assert strategy.outcome is not None
     assert strategy.outcome.structured is None
     assert strategy.outcome.content == "完成"
+
+
+@pytest.mark.asyncio
+async def test_react_llm_failed_handler_continue_retries():
+    """自定义 LLM_FAILED handler → CONTINUE：失败后重试，下轮成功。"""
+    async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
+
+    llm = _ScriptedLLM(
+        [
+            {"error": "401 认证失败"},
+            {"finish_reason": "stop", "content": "成功"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "成功"
+    assert strategy.outcome.iterations == 2
+
+
+@pytest.mark.asyncio
+async def test_react_llm_failed_handler_raise():
+    """自定义 LLM_FAILED handler → RAISE：抛 AgentError（携带 kind）。"""
+    async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
+
+    strategy = ReActStrategy(
+        llm=_ErrorLLM(), tools=None, error_handlers=registry
+    )
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=3, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.LLM_FAILED
+
+
+@pytest.mark.asyncio
+async def test_react_empty_output_handler_stop():
+    """自定义 EMPTY_OUTPUT handler → STOP：空输出直接终止（默认是重试）。"""
+    async def on_empty(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.STOP
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.EMPTY_OUTPUT, on_empty)
+
+    strategy = ReActStrategy(
+        llm=_EmptyLLM(), tools=None, error_handlers=registry
+    )
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "终止" in (strategy.outcome.error or "")
+    assert strategy.outcome.iterations == 1
+
+
+@pytest.mark.asyncio
+async def test_react_tool_failed_handler_stop():
+    """自定义 TOOL_FAILED handler → STOP：工具失败即终止（部分进度保留）。"""
+    async def on_tool_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.STOP
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.TOOL_FAILED, on_tool_failed)
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "fail", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "已重试"},
+        ]
+    )
+    tools = _make_registry(tools=[_FailingTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "终止" in (strategy.outcome.error or "")
+    # 部分进度保留：本轮工具失败记录仍在证据链
+    assert len(strategy.outcome.tool_calls) == 1
+    assert strategy.outcome.tool_calls[0]["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_react_structured_invalid_handler_stop():
+    """自定义 STRUCTURED_INVALID handler → STOP：final_answer 校验失败即终止。"""
+    async def on_struct(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.STOP
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.STRUCTURED_INVALID, on_struct)
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "fa1",
+                        "type": "function",
+                        "function": {"name": "final_answer", "arguments": "{}"},
+                    }
+                ],
+            },
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "终止" in (strategy.outcome.error or "")
 
 
 @pytest.mark.asyncio

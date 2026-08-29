@@ -26,6 +26,7 @@ from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 from app.domain.reasoning.react import ReActOutcome, ReActStrategy
+from app.shared.error_handling import ErrorHandlerRegistry
 
 from .base import AgentResult, BaseAgent
 
@@ -43,10 +44,14 @@ class ReActAgent(BaseAgent):
         llm: LLMGateway,
         tools: ToolGateway,
         context_budget: ContextBudgetPort | None = None,
+        error_handlers: ErrorHandlerRegistry | None = None,
     ) -> None:
-        super().__init__(llm, tools)
+        super().__init__(llm, tools, error_handlers=error_handlers)
         self._strategy = ReActStrategy(
-            llm=llm, tools=tools, context_budget=context_budget
+            llm=llm,
+            tools=tools,
+            context_budget=context_budget,
+            error_handlers=error_handlers,
         )
 
     async def _strategy_cycle(

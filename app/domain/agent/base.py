@@ -26,6 +26,13 @@ from typing import Any
 
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
+from app.shared.error_handling import (
+    AgentErrorAction,
+    AgentErrorContext,
+    AgentErrorKind,
+    AgentRunError,
+    ErrorHandlerRegistry,
+)
 from app.shared.events import build_error_event, build_info_event
 from app.shared.types import SessionId, UserId
 
@@ -58,10 +65,14 @@ class AgentContext:
     max_iterations: int = 10
     temperature: float = 0.2
     max_tokens: int = 4096
-    max_execution_time: float | None = None  # 整个 ReAct 循环总时长上限（秒）；None=不设限
+    max_execution_time: float | None = (
+        None  # 整个 ReAct 循环总时长上限（秒）；None=不设限
+    )
     # 说明：字段默认 None（策略层向后兼容）与配置默认 agent_timeout=300 不一致是刻意的——
     # 生产值由装配根注入，仅测试 / 脚本直连时不设限。
-    max_context_rounds: int | None = None  # 上下文预算：保留最近 N 轮 assistant/tool 配对；None=不裁剪
+    max_context_rounds: int | None = (
+        None  # 上下文预算：保留最近 N 轮 assistant/tool 配对；None=不裁剪
+    )
     max_context_tokens: int | None = None  # 上下文预算：消息总 token 上限；None=不裁剪
 
     # 扩展字段
@@ -84,7 +95,9 @@ class AgentResult:
     success: bool
     content: str  # 最终回答内容
     reasoning: str = ""  # 完整推理过程（累计）
-    structured: dict | None = None  # 结构化最终答案（final_answer 工具产出，output_schema 启用时）
+    structured: dict | None = (
+        None  # 结构化最终答案（final_answer 工具产出，output_schema 启用时）
+    )
     tool_calls: list[dict[str, Any]] = field(default_factory=list)  # 工具调用记录
     iterations: int = 0  # 实际执行轮数
     total_tokens: int = 0  # Token 总数（累计）
@@ -108,9 +121,16 @@ class BaseAgent(ABC):
             yield event  # 转发 SSE 事件
     """
 
-    def __init__(self, llm: LLMGateway, tools: ToolGateway) -> None:
+    def __init__(
+        self,
+        llm: LLMGateway,
+        tools: ToolGateway,
+        error_handlers: ErrorHandlerRegistry | None = None,
+    ) -> None:
         self._llm = llm
         self._tools = tools
+        # 错误处理横切入口：领域层所有 Agent 模式共享（默认空 registry，用默认 action）
+        self._error_handlers = error_handlers or ErrorHandlerRegistry()
         self._context: AgentContext | None = None
         self._state = AgentState.IDLE
         self._tool_call_history: list[dict[str, Any]] = []
@@ -162,10 +182,34 @@ class BaseAgent(ABC):
             )
 
         except asyncio.CancelledError:
+            # 外部取消 → 错误处理分发（默认 STOP = 现有取消态；handler 可 RAISE 上抛）
+            action = await self._error_handlers.dispatch(
+                AgentErrorKind.CANCELLED,
+                AgentErrorContext(
+                    kind=AgentErrorKind.CANCELLED,
+                    message="Agent 已被取消",
+                ),
+            )
+            if action == AgentErrorAction.RAISE:
+                raise
             self._state = AgentState.CANCELLED
             yield build_info_event("Agent 已被取消")
 
-        except Exception as e:  # noqa: BLE001
+        except AgentRunError:
+            # handler 已决策 RAISE 的领域错误：不吞，上抛给调用方
+            raise
+
+        except Exception as e:
+            # 未捕获异常 → 错误处理分发（默认 STOP = 现有 FAILED 态；handler 可 RAISE 上抛）
+            action = await self._error_handlers.dispatch(
+                AgentErrorKind.UNKNOWN,
+                AgentErrorContext(
+                    kind=AgentErrorKind.UNKNOWN,
+                    message=f"{e!s}",
+                ),
+            )
+            if action == AgentErrorAction.RAISE:
+                raise
             self._state = AgentState.FAILED
             yield build_error_event(f"Agent 运行异常: {e!s}")
 

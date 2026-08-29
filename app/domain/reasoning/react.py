@@ -37,6 +37,13 @@ from jsonschema import validate
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
+from app.shared.error_handling import (
+    AgentErrorAction,
+    AgentErrorContext,
+    AgentErrorKind,
+    AgentRunError,
+    ErrorHandlerRegistry,
+)
 from app.shared.events import (
     build_done_event,
     build_info_event,
@@ -98,7 +105,9 @@ class ReActOutcome:
 
     content: str = ""
     reasoning: str = ""
-    structured: dict | None = None  # final_answer 结构化最终答案（output_schema 启用时）
+    structured: dict | None = (
+        None  # final_answer 结构化最终答案（output_schema 启用时）
+    )
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     iterations: int = 0
     total_tokens: int = 0
@@ -119,10 +128,12 @@ class ReActStrategy:
         llm: LLMGateway,
         tools: ToolGateway,
         context_budget: ContextBudgetPort | None = None,
+        error_handlers: ErrorHandlerRegistry | None = None,
     ) -> None:
         self._llm = llm
         self._tools = tools
         self._context_budget = context_budget
+        self._error_handlers = error_handlers or ErrorHandlerRegistry()
         self._tool_call_records: list[dict[str, Any]] = []
         # 结果载体，execute() 结束后读取
         self.outcome: ReActOutcome | None = None
@@ -143,14 +154,17 @@ class ReActStrategy:
         """
         ReAct 主循环。
 
-        循环流程：
+        循环流程（各分支经错误处理分发，默认行为 = 现有逻辑）：
             1. LLM 推理（流式输出 reasoning / message）
             2. 检查 finish_reason
                - "stop"       → 生成最终结果，结束循环
                - "length"     → 生成部分结果，结束循环
-               - "tool_calls" → 执行工具，追加结果到 messages，继续循环
-            3. 达到最大迭代次数 → 强制结束
-            4. 达到 max_execution_time（总时长上限）→ 超时降级结束
+               - "tool_calls" → final_answer 检测 → 执行工具，追加结果，继续循环
+            3. 达到最大迭代次数 → 错误分发（默认兜底）
+            4. 达到 max_execution_time（总时长上限）→ 错误分发（默认超时降级）
+
+        实现：主循环仅保留骨架，各终止/错误分支拆分为职责单一的方法
+        （_finalize_* / _handle_*），以 `outcome is not None` 作为终止信号。
 
         Args:
             user_input: 用户原始输入（保留兼容，循环内部以 messages 为准）
@@ -202,28 +216,22 @@ class ReActStrategy:
                     # 累计 token 用量
                     if stream_result.usage:
                         for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                            total_usage[k] = total_usage.get(k, 0) + stream_result.usage.get(
+                            total_usage[k] = total_usage.get(
                                 k, 0
-                            )
+                            ) + stream_result.usage.get(k, 0)
 
                     # LLM 调用失败（create 失败 / 流中断放弃 / 用户取消）→ 短路返回失败结果，
                     # 不把「失败」当「空输出」继续空转重试（浪费 LLM 调用 + 错误信息不准确）。
                     # 正常空回（stop + 空 content）error 为 None，仍走下方「空输出重试」逻辑。
                     if stream_result.error:
-                        self.outcome = ReActOutcome(
-                            success=False,
-                            content=stream_result.content,
-                            reasoning=stream_result.reasoning_content,
-                            iterations=iteration,
-                            total_tokens=total_usage.get("total_tokens", 0),
-                            usage=total_usage or None,
-                            error=stream_result.error,
-                        )
-                        yield build_done_event(
-                            iterations=iteration,
-                            total_tokens=total_usage.get("total_tokens", 0),
-                        )
-                        return
+                        # LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）
+                        async for event in self._finalize_llm_failed(
+                            stream_result, iteration, total_usage
+                        ):
+                            yield event
+                        if self.outcome is not None:
+                            return
+                        continue  # CONTINUE：重试
 
                     full_reasoning = stream_result.reasoning_content
                     full_content = stream_result.content
@@ -251,145 +259,387 @@ class ReActStrategy:
                         yield build_info_event(
                             f"检测到 {len(stream_result.tool_calls)} 个工具调用"
                         )
-                        # Final Answer 工具：模型提交结构化最终答案 → 提取并终止循环。
-                        # 注入工具非注册工具，识别在 execute 主循环（不进 execute_tool_calls）。
-                        if output_schema is not None:
-                            final_tcs = [
-                                tc
-                                for tc in stream_result.tool_calls
-                                if tc["function"]["name"] == _FINAL_ANSWER_TOOL
-                            ]
-                            if final_tcs:
-                                structured, err = _extract_final_answer(
-                                    final_tcs[0], output_schema
-                                )
-                                if structured is not None:
-                                    self.outcome = ReActOutcome(
-                                        success=True,
-                                        content="",
-                                        reasoning=full_reasoning.strip(),
-                                        tool_calls=self._tool_call_records,
-                                        structured=structured,
-                                        iterations=iteration,
-                                        total_tokens=total_usage.get(
-                                            "total_tokens", 0
-                                        ),
-                                        usage=total_usage or None,
-                                    )
-                                    yield build_info_event("已收到结构化最终答案")
-                                    yield build_done_event(
-                                        iterations=iteration,
-                                        total_tokens=total_usage.get(
-                                            "total_tokens", 0
-                                        ),
-                                    )
-                                    return
-                                # 校验失败：回喂错误文本，模型下轮自纠
-                                messages.append(
-                                    {
-                                        "role": "tool",
-                                        "tool_call_id": final_tcs[0].get("id", ""),
-                                        "content": f"错误: final_answer 参数{err}",
-                                    }
-                                )
-                                self._tool_call_records.append(
-                                    {
-                                        "tool": _FINAL_ANSWER_TOOL,
-                                        "params": {},
-                                        "result": "",
-                                        "success": False,
-                                        "error": f"final_answer 参数{err}",
-                                        "error_code": ErrorCode.VALIDATION.value,
-                                        "duration": 0.0,
-                                    }
-                                )
-                                yield build_info_event(
-                                    f"final_answer 校验失败，已回喂: {err}"
-                                )
-                                continue
-                        async for event in self.execute_tool_calls(
+                        # Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续
+                        # （注入工具非注册工具，识别在主循环，不进 execute_tool_calls）
+                        if output_schema is not None and any(
+                            tc["function"]["name"] == _FINAL_ANSWER_TOOL
+                            for tc in stream_result.tool_calls
+                        ):
+                            async for event in self._handle_final_answer(
+                                stream_result.tool_calls,
+                                messages,
+                                iteration,
+                                output_schema,
+                                total_usage,
+                                full_reasoning,
+                            ):
+                                yield event
+                            if self.outcome is not None:
+                                return
+                            continue  # final_answer CONTINUE：回喂后继续
+                        async for event in self._handle_tool_calls(
                             stream_result.tool_calls,
                             messages,
                             iteration,
+                            max_context_rounds,
+                            max_context_tokens,
+                            total_usage,
+                            full_reasoning,
                         ):
                             yield event
-                        # 上下文预算：模型下次调用前作为 gatekeeper 裁剪（轮次 + token 双层护栏，
-                        # 由注入的 ContextBudgetPort 实现——context_manager 统一提供）
-                        if self._context_budget is not None:
-                            self._context_budget.trim_messages(
-                                messages,
-                                max_rounds=max_context_rounds,
-                                max_tokens=max_context_tokens,
-                            )
+                        if self.outcome is not None:
+                            return
                         continue
 
                     # ----- （2）stop / length / 有内容 → 正常结束
                     if finish_reason in ("stop", "length") or full_content.strip():
-                        self.outcome = ReActOutcome(
-                            success=bool(full_content.strip()),
-                            content=full_content.strip(),
-                            reasoning=full_reasoning.strip(),
-                            tool_calls=self._tool_call_records,
-                            iterations=iteration,
-                            total_tokens=total_usage.get("total_tokens", 0),
-                            usage=total_usage or None,
-                        )
-                        yield build_done_event(
-                            iterations=iteration,
-                            total_tokens=total_usage.get("total_tokens", 0),
-                        )
+                        async for event in self._finalize_stop(
+                            full_reasoning, full_content, iteration, total_usage
+                        ):
+                            yield event
                         return
 
-                    # ----- （3）空输出 → 重试
-                    yield build_info_event("LLM 未生成有效输出，重试")
+                    # ----- （3）空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）
+                    async for event in self._handle_empty_output(
+                        full_reasoning, iteration, total_usage
+                    ):
+                        yield event
+                    if self.outcome is not None:
+                        return
+                    # CONTINUE（默认）：重试（_handle_empty_output 已 yield 重试信息）
 
-                # ----- 达到最大迭代次数 -----
-                yield build_info_event(f"已达到最大迭代次数({max_iterations})")
-                if last_result:
-                    self.outcome = ReActOutcome(
-                        success=bool(last_result.content.strip()),
-                        content=last_result.content.strip(),
-                        reasoning=last_result.reasoning_content.strip(),
-                        tool_calls=self._tool_call_records,
-                        iterations=max_iterations,
-                        total_tokens=total_usage.get("total_tokens", 0),
-                        usage=total_usage or None,
-                    )
-                else:
-                    self.outcome = ReActOutcome(
-                        success=False,
-                        content="",
-                        iterations=max_iterations,
-                        error="LLM 未返回任何结果",
-                    )
-                yield build_done_event(
-                    iterations=max_iterations,
-                    total_tokens=total_usage.get("total_tokens", 0),
-                )
+                # ----- 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
+                async for event in self._finalize_max_turns(
+                    last_result, max_iterations, total_usage
+                ):
+                    yield event
         except TimeoutError:
             # 关闭判别：生成器正被 finalizer/aclose 关闭（不同 task 驱动）或外部取消
             # → 干净停止，不 yield 降级事件（避免 RuntimeError: async generator ignored GeneratorExit）
             cur = asyncio.current_task()
             if cur is None or cur is not entered_task or cur.cancelling() > 0:
                 return
-            # 真超时：对齐 max_iterations 兜底模式，用 last_result 组装降级 outcome
-            error = f"ReAct 执行超时（超过 {max_execution_time} 秒）"
-            self.outcome = ReActOutcome(
-                success=bool(last_result.content.strip()) if last_result else False,
-                content=last_result.content.strip() if last_result else "",
-                reasoning=last_result.reasoning_content.strip() if last_result else "",
-                tool_calls=self._tool_call_records,
-                iterations=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-                usage=total_usage or None,
-                error=error,
-            )
-            yield build_info_event(error)
-            yield build_done_event(
-                iterations=self.outcome.iterations,
-                total_tokens=self.outcome.total_tokens,
+            # 真超时 → 错误分发 + 降级
+            async for event in self._finalize_timeout(
+                last_result, iteration, total_usage, max_execution_time
+            ):
+                yield event
+            return
+
+    # ==================================================================
+    # execute 的拆分方法（职责单一，行为与原内联分支一致）
+    # 终止信号：设置 self.outcome = 终止；不设置 = 继续循环（主循环据此 return/continue）
+    # ==================================================================
+
+    def _build_outcome(
+        self,
+        *,
+        success: bool,
+        content: str,
+        reasoning: str,
+        iteration: int,
+        total_tokens: int,
+        usage: dict | None,
+        error: str | None = None,
+        structured: dict | None = None,
+        tool_calls: list[dict] | None = None,
+    ) -> ReActOutcome:
+        """统一组装 ReActOutcome（各终止分支共用）。"""
+        return ReActOutcome(
+            success=success,
+            content=content,
+            reasoning=reasoning,
+            structured=structured,
+            tool_calls=(
+                tool_calls if tool_calls is not None else self._tool_call_records
+            ),
+            iterations=iteration,
+            total_tokens=total_tokens,
+            usage=usage,
+            error=error,
+        )
+
+    async def _dispatch(
+        self, kind: AgentErrorKind, message: str, iteration: int
+    ) -> AgentErrorAction:
+        """错误分发：RAISE 抛 AgentRunError，否则返回 action（统一 7 处分发）。"""
+        action = await self._error_handlers.dispatch(
+            kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
+        )
+        if action == AgentErrorAction.RAISE:
+            raise AgentRunError(kind, message, iteration)
+        return action
+
+    async def _finalize_llm_failed(
+        self,
+        stream_result: StreamResult,
+        iteration: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）。"""
+        action = await self._dispatch(
+            AgentErrorKind.LLM_FAILED, stream_result.error or "", iteration
+        )
+        if action == AgentErrorAction.CONTINUE:
+            yield build_info_event(
+                f"LLM 失败，按错误处理策略重试: {stream_result.error}"
             )
             return
+        # STOP（默认）：短路失败
+        self.outcome = self._build_outcome(
+            success=False,
+            content=stream_result.content,
+            reasoning=stream_result.reasoning_content,
+            iteration=iteration,
+            total_tokens=total_usage.get("total_tokens", 0),
+            usage=total_usage or None,
+            error=stream_result.error,
+        )
+        yield build_done_event(
+            iterations=iteration,
+            total_tokens=total_usage.get("total_tokens", 0),
+        )
+
+    async def _handle_final_answer(
+        self,
+        tool_calls: list[dict],
+        messages: list[dict],
+        iteration: int,
+        output_schema: dict,
+        total_usage: dict,
+        full_reasoning: str,
+    ) -> AsyncGenerator[str]:
+        """final_answer 工具：成功提取终止 / 校验失败分发（CONTINUE 回喂）。
+
+        主循环仅在检测到 final_answer 调用时才调用本方法。
+        """
+        final_tcs = [
+            tc for tc in tool_calls if tc["function"]["name"] == _FINAL_ANSWER_TOOL
+        ]
+        structured, err = _extract_final_answer(final_tcs[0], output_schema)
+        if structured is not None:
+            # 成功：终止循环，结构化进 outcome
+            self.outcome = self._build_outcome(
+                success=True,
+                content="",
+                reasoning=full_reasoning.strip(),
+                iteration=iteration,
+                total_tokens=total_usage.get("total_tokens", 0),
+                usage=total_usage or None,
+                structured=structured,
+            )
+            yield build_info_event("已收到结构化最终答案")
+            yield build_done_event(
+                iterations=iteration,
+                total_tokens=total_usage.get("total_tokens", 0),
+            )
+            return
+        # 校验失败 → 错误分发（默认 CONTINUE 回喂；handler 可终止/上抛）
+        fa_msg = f"final_answer 参数{err}"
+        action = await self._dispatch(
+            AgentErrorKind.STRUCTURED_INVALID, fa_msg, iteration
+        )
+        if action == AgentErrorAction.STOP:
+            self.outcome = self._build_outcome(
+                success=False,
+                content="",
+                reasoning=full_reasoning.strip(),
+                iteration=iteration,
+                total_tokens=total_usage.get("total_tokens", 0),
+                usage=total_usage or None,
+                error="final_answer 参数校验失败（按错误处理策略终止）",
+            )
+            yield build_done_event(
+                iterations=iteration,
+                total_tokens=total_usage.get("total_tokens", 0),
+            )
+            return
+        # CONTINUE（默认）：回喂错误文本，模型下轮自纠
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": final_tcs[0].get("id", ""),
+                "content": f"错误: {fa_msg}",
+            }
+        )
+        self._tool_call_records.append(
+            {
+                "tool": _FINAL_ANSWER_TOOL,
+                "params": {},
+                "result": "",
+                "success": False,
+                "error": fa_msg,
+                "error_code": ErrorCode.VALIDATION.value,
+                "duration": 0.0,
+            }
+        )
+        yield build_info_event(f"final_answer 校验失败，已回喂: {err}")
+
+    async def _handle_tool_calls(
+        self,
+        tool_calls: list[dict],
+        messages: list[dict],
+        iteration: int,
+        max_context_rounds: int | None,
+        max_context_tokens: int | None,
+        total_usage: dict,
+        full_reasoning: str,
+    ) -> AsyncGenerator[str]:
+        """工具执行 + 可恢复错误分发 + 上下文预算（默认 CONTINUE 继续）。"""
+        before = len(self._tool_call_records)
+        async for event in self.execute_tool_calls(tool_calls, messages, iteration):
+            yield event
+        # 可恢复错误分发：本轮是否有工具/解析失败
+        new_failures = [
+            r for r in self._tool_call_records[before:] if not r.get("success")
+        ]
+        if new_failures:
+            first_fail = new_failures[0]
+            kind = (
+                AgentErrorKind.PARSE_FAILED
+                if first_fail.get("error_code") == ErrorCode.JSON_PARSE.value
+                else AgentErrorKind.TOOL_FAILED
+            )
+            fail_msg = first_fail.get("error") or ""
+            action = await self._dispatch(kind, fail_msg, iteration)
+            if action == AgentErrorAction.STOP:
+                self.outcome = self._build_outcome(
+                    success=False,
+                    content="",
+                    reasoning=full_reasoning.strip(),
+                    iteration=iteration,
+                    total_tokens=total_usage.get("total_tokens", 0),
+                    usage=total_usage or None,
+                    error=f"{kind.value}（按错误处理策略终止）",
+                )
+                yield build_done_event(
+                    iterations=iteration,
+                    total_tokens=total_usage.get("total_tokens", 0),
+                )
+                return
+        # CONTINUE（默认）：工具结果已回喂，继续循环
+        # 上下文预算：模型下次调用前作为 gatekeeper 裁剪
+        if self._context_budget is not None:
+            self._context_budget.trim_messages(
+                messages,
+                max_rounds=max_context_rounds,
+                max_tokens=max_context_tokens,
+            )
+
+    async def _finalize_stop(
+        self,
+        full_reasoning: str,
+        full_content: str,
+        iteration: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """正常结束（stop/length/有内容）。"""
+        self.outcome = self._build_outcome(
+            success=bool(full_content.strip()),
+            content=full_content.strip(),
+            reasoning=full_reasoning.strip(),
+            iteration=iteration,
+            total_tokens=total_usage.get("total_tokens", 0),
+            usage=total_usage or None,
+        )
+        yield build_done_event(
+            iterations=iteration,
+            total_tokens=total_usage.get("total_tokens", 0),
+        )
+
+    async def _handle_empty_output(
+        self,
+        full_reasoning: str,
+        iteration: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）。"""
+        action = await self._dispatch(
+            AgentErrorKind.EMPTY_OUTPUT, "LLM 未生成有效输出", iteration
+        )
+        if action == AgentErrorAction.STOP:
+            self.outcome = self._build_outcome(
+                success=False,
+                content="",
+                reasoning=full_reasoning.strip(),
+                iteration=iteration,
+                total_tokens=total_usage.get("total_tokens", 0),
+                usage=total_usage or None,
+                error="LLM 未生成有效输出（按错误处理策略终止）",
+            )
+            yield build_done_event(
+                iterations=iteration,
+                total_tokens=total_usage.get("total_tokens", 0),
+            )
+            return
+        # CONTINUE（默认）：重试
+        yield build_info_event("LLM 未生成有效输出，重试")
+
+    async def _finalize_max_turns(
+        self,
+        last_result: StreamResult | None,
+        max_iterations: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛）。"""
+        await self._dispatch(
+            AgentErrorKind.MAX_TURNS,
+            f"已达到最大迭代次数({max_iterations})",
+            max_iterations,
+        )
+        # STOP（默认）：现有兜底（CONTINUE 循环已耗尽，按 STOP 处理）
+        yield build_info_event(f"已达到最大迭代次数({max_iterations})")
+        if last_result:
+            self.outcome = self._build_outcome(
+                success=bool(last_result.content.strip()),
+                content=last_result.content.strip(),
+                reasoning=last_result.reasoning_content.strip(),
+                iteration=max_iterations,
+                total_tokens=total_usage.get("total_tokens", 0),
+                usage=total_usage or None,
+            )
+        else:
+            # 防御分支（last_result 恒非 None），与既有行为一致（空默认）
+            self.outcome = ReActOutcome(
+                success=False,
+                content="",
+                iterations=max_iterations,
+                error="LLM 未返回任何结果",
+            )
+        yield build_done_event(
+            iterations=max_iterations,
+            total_tokens=total_usage.get("total_tokens", 0),
+        )
+
+    async def _finalize_timeout(
+        self,
+        last_result: StreamResult | None,
+        iteration: int,
+        total_usage: dict,
+        max_execution_time: float | None,
+    ) -> AsyncGenerator[str]:
+        """总时长超时 → 错误分发（默认 STOP 降级；handler 可上抛）。"""
+        await self._dispatch(
+            AgentErrorKind.TIMEOUT,
+            f"ReAct 执行超时（超过 {max_execution_time} 秒）",
+            iteration,
+        )
+        # STOP（默认）：对齐 max_iterations 兜底，用 last_result 组装降级 outcome
+        error = f"ReAct 执行超时（超过 {max_execution_time} 秒）"
+        self.outcome = self._build_outcome(
+            success=bool(last_result.content.strip()) if last_result else False,
+            content=last_result.content.strip() if last_result else "",
+            reasoning=last_result.reasoning_content.strip() if last_result else "",
+            iteration=iteration,
+            total_tokens=total_usage.get("total_tokens", 0),
+            usage=total_usage or None,
+            error=error,
+        )
+        yield build_info_event(error)
+        yield build_done_event(
+            iterations=self.outcome.iterations,
+            total_tokens=self.outcome.total_tokens,
+        )
 
     async def execute_tool_calls(
         self,
