@@ -2,7 +2,7 @@
 # routes/chat.py - 聊天相关 API 路由
 # ============================================
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import (
@@ -22,6 +22,8 @@ from app.domain.agent import AgentContext, ReActAgent
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 from app.shared.events import build_error_event
+from app.shared.exceptions import ForbiddenError, NotFoundError
+from app.shared.types import SessionId, UserId
 
 router = APIRouter(prefix="/api", tags=["聊天"])
 
@@ -49,15 +51,17 @@ async def send_message(
     6. 流结束后保存 assistant 回复
     """
     # 1. 会话验证与授权
-    session = await session_manager.get_session(request.session_id)
+    sid: SessionId = SessionId(request.session_id)
+    uid: UserId = UserId(user_id)
+    session = await session_manager.get_session(sid)
     if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+        raise NotFoundError("会话不存在")
     if session["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该会话")
+        raise ForbiddenError("无权访问该会话")
 
     # 2. 保存用户消息
     await session_manager.add_message(
-        session_id=request.session_id,
+        session_id=sid,
         role="user",
         content=request.message,
         token_count=context_manager.count_tokens(request.message),
@@ -65,7 +69,7 @@ async def send_message(
 
     # 3. 构建上下文
     messages, _ = await context_manager.build_messages(
-        session_id=request.session_id,
+        session_id=sid,
         user_message=request.message,
     )
 
@@ -73,8 +77,8 @@ async def send_message(
     async def generate():
         # Agent 无状态：每次请求新建实例，上下文通过 AgentContext 传入
         ctx = AgentContext(
-            session_id=request.session_id,
-            user_id=user_id,
+            session_id=sid,
+            user_id=uid,
             max_iterations=request.max_iterations or agent_params["max_iterations"],
             temperature=agent_params["temperature"],
             max_tokens=agent_params["max_tokens"],
@@ -99,7 +103,7 @@ async def send_message(
             ):
                 yield event
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             yield build_error_event(f"Agent 运行异常: {e!s}")
         finally:
             yield "data: [DONE]\n\n"
@@ -108,7 +112,7 @@ async def send_message(
             result = agent.result
             if result and result.content.strip():
                 await session_manager.add_message(
-                    session_id=request.session_id,
+                    session_id=sid,
                     role="assistant",
                     content=result.content.strip(),
                     reasoning_content=result.reasoning or None,
@@ -133,11 +137,12 @@ async def stop_chat(
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
 ):
     """停止正在进行的聊天生成"""
-    session = await session_manager.get_session(session_id)
+    sid: SessionId = SessionId(session_id)
+    session = await session_manager.get_session(sid)
     if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+        raise NotFoundError("会话不存在")
     if session["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="无权访问")
+        raise ForbiddenError("无权访问")
 
     # 实际项目中，这里会调用 LLMService 的 cancel 方法
     return {"message": "已发送停止信号"}

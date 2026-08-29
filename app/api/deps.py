@@ -3,7 +3,7 @@
 # 与路由定义在同一包中，供路由函数使用
 # ============================================
 
-from fastapi import Header, HTTPException
+from fastapi import Header
 
 from app.application.context.context_manager import ContextManager
 from app.application.session.session_manager import SessionManager
@@ -11,6 +11,7 @@ from app.application.task.task_service import TaskService
 from app.container import container
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
+from app.shared.exceptions import UnauthorizedError
 
 
 async def get_current_user(
@@ -18,7 +19,7 @@ async def get_current_user(
 ) -> str:
     """从 Token 中解析用户 ID（实际项目使用 JWT/OAuth）"""
     if not authorization:
-        raise HTTPException(status_code=401, detail="未授权")
+        raise UnauthorizedError("未授权")
     # 模拟解析 token，返回 user_id
     # 实际项目中替换为 JWT 验证
     return "user_" + authorization[:8]

@@ -5,7 +5,9 @@
 
     AppError（根，带 code 错误码）
     ├── NonRetryableError   不可恢复：向上抛，调用方决策
-    └── BusinessError       业务边界：具名短路，调用方差异化处理
+    ├── BusinessError       业务边界：具名短路，调用方差异化处理
+    └── AgentRunError       领域编排错误（定义于 error_handling.py，携带 kind，
+                            由错误处理分发决策 CONTINUE/STOP/RAISE）
 """
 
 from __future__ import annotations
@@ -22,6 +24,9 @@ class AppErrorCode(StrEnum):
 
     INTERNAL = "INTERNAL"  # 未知内部错误（AppError 默认）
     VALIDATION = "VALIDATION"  # 参数/配置校验失败（ParameterValidationError）
+    UNAUTHORIZED = "UNAUTHORIZED"  # 未认证（UnauthorizedError，401）
+    FORBIDDEN = "FORBIDDEN"  # 权限不足（ForbiddenError，403）
+    NOT_FOUND = "NOT_FOUND"  # 资源不存在（NotFoundError，404）
     CIRCUIT_OPEN = "CIRCUIT_OPEN"  # 熔断开启（CircuitBreakerOpenError）
     LLM_TRUNCATED = "LLM_TRUNCATED"  # 结构化输出截断（StructuredTruncationError）
     LLM_REFUSAL = "LLM_REFUSAL"  # 模型拒答（StructuredRefusalError）
@@ -103,3 +108,21 @@ class SSRFError(BusinessError):
     """SSRF 拦截：检测到禁止访问的目标，拒绝请求（http_api/web_browse 捕获转 ToolResult）。"""
 
     code = AppErrorCode.SSRF_BLOCKED
+
+
+class UnauthorizedError(BusinessError):
+    """未认证（401）：请求缺少或无效的认证凭证。"""
+
+    code = AppErrorCode.UNAUTHORIZED
+
+
+class ForbiddenError(BusinessError):
+    """权限不足（403）：已认证但无权访问资源。"""
+
+    code = AppErrorCode.FORBIDDEN
+
+
+class NotFoundError(BusinessError):
+    """资源不存在（404）：请求的目标会话/资源不存在。"""
+
+    code = AppErrorCode.NOT_FOUND

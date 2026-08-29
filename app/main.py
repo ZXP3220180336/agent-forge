@@ -32,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.middleware.error_handler import register_error_handlers
 from app.api.routes import chat_router, session_router
 from app.container import container
 from app.platform.observability.logger import get_logger
@@ -81,6 +82,9 @@ app.add_middleware(
 # ===== 注册 API 路由 =====
 app.include_router(chat_router)
 app.include_router(session_router)
+
+# ===== 注册统一异常处理（AppError → HTTP 状态 + 信封）=====
+register_error_handlers(app)
 
 
 # ===== 后端 API 健康检查 =====

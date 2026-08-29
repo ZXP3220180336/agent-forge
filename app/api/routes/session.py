@@ -3,7 +3,7 @@
 # ============================================
 
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import (
     get_current_user,
@@ -12,6 +12,8 @@ from app.api.deps import (
 from app.api.schemas.request import CreateSessionRequest
 from app.api.schemas.response import CreateSessionResponse
 from app.application.session.session_manager import SessionManager
+from app.shared.exceptions import ForbiddenError, NotFoundError
+from app.shared.types import SessionId, UserId
 
 router = APIRouter(prefix="/api", tags=["会话管理"])
 
@@ -23,8 +25,9 @@ async def create_session(
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
 ):
     """创建新会话"""
+    uid: UserId = UserId(user_id)
     session = await session_manager.create_session(
-        user_id=user_id,
+        user_id=uid,
         system_prompt=request.system_prompt,
         title=request.title,
     )
@@ -42,11 +45,12 @@ async def get_session(
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
 ):
     """获取会话详情"""
-    session = await session_manager.get_session(session_id)
+    sid: SessionId = SessionId(session_id)
+    session = await session_manager.get_session(sid)
     if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+        raise NotFoundError("会话不存在")
     if session["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="无权访问")
+        raise ForbiddenError("无权访问")
     return session
 
 
@@ -59,14 +63,15 @@ async def get_history(
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
 ):
     """获取会话历史"""
-    session = await session_manager.get_session(session_id)
+    sid: SessionId = SessionId(session_id)
+    session = await session_manager.get_session(sid)
     if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+        raise NotFoundError("会话不存在")
     if session["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="无权访问")
+        raise ForbiddenError("无权访问")
 
     messages = await session_manager.get_messages(
-        session_id,
+        sid,
         limit=limit,
         offset=offset,
     )
@@ -80,7 +85,8 @@ async def list_sessions(
 ):
     """获取用户的所有会话列表"""
     # 实际实现中，从数据库查询该用户的所有活跃会话
-    sessions = await session_manager.list_sessions(user_id=user_id)
+    uid: UserId = UserId(user_id)
+    sessions = await session_manager.list_sessions(user_id=uid)
     return {"sessions": sessions}
 
 
@@ -91,11 +97,12 @@ async def delete_session(
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
 ):
     """删除会话"""
-    session = await session_manager.get_session(session_id)
+    sid: SessionId = SessionId(session_id)
+    session = await session_manager.get_session(sid)
     if not session:
-        raise HTTPException(status_code=404, detail="会话不存在")
+        raise NotFoundError("会话不存在")
     if session["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="无权访问")
+        raise ForbiddenError("无权访问")
 
-    await session_manager.delete_session(session_id)
+    await session_manager.delete_session(sid)
     return {"message": "会话已删除"}

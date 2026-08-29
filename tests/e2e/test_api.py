@@ -111,7 +111,8 @@ def test_chat_send_session_not_found(monkeypatch):
         headers=AUTH,
     )
     assert resp.status_code == 404
-    assert resp.json()["detail"] == "会话不存在"
+    assert resp.json()["code"] == "NOT_FOUND"
+    assert resp.json()["message"] == "会话不存在"
 
 
 def test_chat_send_streams_sse_and_saves_messages(monkeypatch):
