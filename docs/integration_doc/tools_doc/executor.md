@@ -1,6 +1,6 @@
 # 执行调度器（ToolExecutor）说明文档
 
-> **更新日期**：2026-08-17
+> **更新日期**：2026-08-30
 > **模块**：`app/integration/tools/executor.py`
 > **职责**：工具执行编排 —— 信号量 / 参数校验接入 / 超时 / 重试 / 结果截断 / 审计 / 统计 / 钩子 / per-tool 串行化
 > **状态**：✅ 已实现
@@ -136,7 +136,7 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 
 ## 测试状态
 
-`tests/unit/test_tool_executor_components.py`（26 用例）：校验失败归因 / 成功截断 / `concurrency_safe` 串行化与并行 / 审计各路径（成功 / 未注册 / 校验失败 / 工具失败）/ 超时优先级三档（调用方显式 > 工具自声明 > 全局）/ 未捕获异常→UNKNOWN / prune_tool_lock 跳过持锁 / 参数 JSON 非 dict、非 str 键 dict、数组拒绝 / retry_count 成功与失败口径 / max_retries=0 两次执行 / **全败归因最近失败**（业务失败后超时 → TIMEOUT；业务失败后异常 → UNKNOWN）。既有 `test_tools.py`（信号量 / 基本执行 / 异常释放）+ `test_agent.py`（并行顺序）为回归护栏。
+`tests/unit/test_tool_executor_components.py`（26 用例）：校验失败归因 / 成功截断 / `concurrency_safe` 串行化与并行 / 审计各路径（成功 / 未注册 / 校验失败 / 工具失败）/ 超时优先级三档（调用方显式 > 工具自声明 > 全局）/ 未捕获异常→UNKNOWN / prune_tool_lock 跳过持锁 / 参数 JSON 非 dict、非 str 键 dict、数组拒绝 / retry_count 成功与失败口径 / max_retries=0 执行一次（clamp 后不重试） / **全败归因最近失败**（业务失败后超时 → TIMEOUT；业务失败后异常 → UNKNOWN）。既有 `test_tools.py`（信号量 / 基本执行 / 异常释放）+ `test_agent.py`（并行顺序）为回归护栏。
 
 ## 设计决策
 

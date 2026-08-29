@@ -1,6 +1,6 @@
 # 良率 RCA 工具子模块说明
 
-> **更新日期**：2026-08-17
+> **更新日期**：2026-08-30
 > **模块**：`app/integration/tools/builtin/rca/`
 > **文档定位**：良率根因分析（Yield RCA）**场景工具**——支撑产品主链路「批次异常 → 并行排查 → 带证据链的根因报告」（见 [product.md](../../../product.md) P0）。
 > **实现状态**：5 工具全部 ✅（模拟数据源）
@@ -32,7 +32,7 @@
 ```text
 query_batch_yield("LOT-A123")      → ETCH step 良率骤降 82%（涉及 ETCH-01）
 query_equipment_alerts("ETCH-01")  → chamber pressure ALARM + 一次 PM
-query_fdc_params("ETCH-01", "2026-08-12 08:00~14:30") → 偏离随时间发展（08:00 正常 → 14:00 +12%）
+query_fdc_params("ETCH-01", time_range="2026-08-12 08:00~14:30") → 偏离随时间发展（08:00 正常 → 14:00 +12%）
 query_defect_map("LOT-A123")       → center_cluster 模式，主导类型 particle
 search_historical_rca("etch 偏离 良率 骤降") → RCA-001 佐证
 结论 → 根因：chamber 内部污染致粒子聚集，需 chamber 清洁 / PM

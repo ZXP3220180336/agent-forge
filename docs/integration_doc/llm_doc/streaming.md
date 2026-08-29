@@ -1,7 +1,7 @@
 # StreamParser 设计文档
 
 > **模块**：`app/integration/llm/streaming.py`
-> **更新日期**：2026-08-16
+> **更新日期**：2026-08-30
 > **职责**：流式 / 非流式 LLM 响应解析（逐 chunk 提取 reasoning / message / tool_calls / usage / refusal）
 > **状态**：✅ 已实现
 > **工业级对照**：增量累积 + 完成后解析（决策见 [设计决策](#设计决策)）
@@ -125,6 +125,7 @@ class ParsedChunk:
     usage: dict | None = None            # Token 用量（最后一个 chunk）
     refusal: str | None = None           # 拒答形态（delta.refusal）
     tool_call_deltas: list[ToolCallDelta] | None = None  # 工具调用增量
+    has_reasoning: bool = False        # reasoning_content 被填充（thinking 模式信号）
 
 @dataclass
 class ToolCallDelta:
@@ -231,7 +232,7 @@ parse_non_stream(response)
 
 ## 测试状态
 
-`tests/unit/test_streaming.py`（21 用例）：覆盖
+`tests/unit/test_streaming.py`（22 用例）：覆盖
 
 - **parse_chunk**：content / reasoning / finish_reason / usage / tool_call 提取 / 字段缺失兜底 / 空 chunk / 混合 chunk（content + tool_calls）/ 漏洞回归（delta=None 丢 finish_reason、usage 与空 delta 共存）
 - **merge_tool_calls**：单工具增量拼接 / 多工具交错 / 输出按 index 排序 / 缺 id 按 index 兜底 / id 覆盖策略 / 空列表

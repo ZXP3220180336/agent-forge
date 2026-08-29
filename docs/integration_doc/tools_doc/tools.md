@@ -1,6 +1,6 @@
 # 工具模块接口文档
 
-> **更新日期**：2026-08-17
+> **更新日期**：2026-08-30
 > **模块**：`app/integration/tools/`
 > **文档定位**：工具系统对外接口契约 + 六大子组件导航。执行细节（并发 / 重试 / 截断 / 审计）见对应子文档，本文不重复。
 > **状态**：✅ 已实现
@@ -27,6 +27,7 @@
 
 ```text
 app/integration/tools/
+├── __init__.py            ← 包标记
 ├── tool_service.py        ← ToolService（Facade，唯一对外入口，实现 ToolGateway）
 ├── registry.py            ← ToolRegistry 注册中心（容器 + Schema 导出 + 元数据查询）
 ├── selector.py            ← ToolSelector 选择器（协议 + DefaultToolSelector 全量注入）

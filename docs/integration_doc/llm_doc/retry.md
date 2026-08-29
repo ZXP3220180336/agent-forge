@@ -1,7 +1,7 @@
 # RetryHandler 设计文档
 
 > **模块**：`app/integration/llm/retry.py`
-> **更新日期**：2026-08-16
+> **更新日期**：2026-08-30
 > **职责**：LLM API 调用的重试、熔断与降级
 > **状态**：✅ 已实现
 
@@ -543,7 +543,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
    - HALF_OPEN 下多个探针可并发放行：每个探针独立占用槽位，结果分别推进状态机；成功累加 `_consecutive_successes`，失败回 OPEN，4xx/未知归还槽位，不存在死锁。
    - **不需要加锁的边界**：只有方法内部出现 `await`、多线程同时访问、或需要把 `allow_request() + record_success()` 组合成原子事务时，才需要 `asyncio.Lock` / `threading.Lock`。当前实现均不满足，因此保持无锁。
 8. **`max_retries=0`**：不重试，但熔断器仍然生效。首次失败后 `record_failure()` 被调用（请求级 1 次），窗口累积
-9. **流式迭代「放弃时」计入熔断窗口**：流式迭代异常不受 `retry.execute` 保护（响应对象创建后重试循环已退出）。`LLMService.async_generate` 在**最终放弃**（不整流）且异常为 RETRYABLE 时，直接调 `retry.circuit_breaker.record_failure()`——让熔断器感知「create 正常但流频繁中断」的下游故障。整流重试（未放弃）、NON_RETRYABLE / RATE_LIMITED / 用户取消不计入
+9. **流式迭代「放弃时」计入熔断窗口**：流式迭代异常不受 `retry.execute` 保护（响应对象创建后重试循环已退出）。`StreamingRectifier.rectified_stream` 在**最终放弃**（不整流）且异常为 RETRYABLE 时，直接调 `retry.circuit_breaker.record_failure()`——让熔断器感知「create 正常但流频繁中断」的下游故障。整流重试（未放弃）、NON_RETRYABLE / RATE_LIMITED / 用户取消不计入
 10. **熔断状态按 model_key 隔离**：`RetryHandlerManager` 为每个 model_key（main/reasoning/fast）维护独立实例。`reasoning` 的故障只累计 `reasoning` 熔断器窗口，不会熔断 `fast` / `main`
 11. **半开探针 `accounted` 守卫与 finally 兜底的可达性**：`_probe_attempt` 用 `accounted` 标志区分「已作出终态记账」与「未记账退出路径」。三条路径中**两条置 `accounted=True`**，finally 的 `if not accounted` 跳过：正常返回（`record_success`）、`except CancelledError`（`record_failure`）、`except Exception`（`record_failure` / `release_probe`）。**唯一保持 `False` 的路径**是抛出的异常非 `Exception` 且非 `CancelledError`——即 `SystemExit` / `KeyboardInterrupt` / 自定义 `BaseException`，此时所有 except 都不匹配，程序从 `await call_fn()` 直接落到 finally，`if not accounted` 成立 → `release_probe()` 归还槽位。此路径在真实运行中**几乎不可达**（openai/httpx 异常均为 `Exception` 子类；事件循环关闭给任务注入的是 `CancelledError` 已被单独捕获），是**为进程级异常（SystemExit/KeyboardInterrupt）恰好落在探针 await 点**这一理论场景写的防御，成本极低（一个 `if` + 一行），守住「槽位永不泄漏」不变量（槽位归还语义见 [LLM-022](../../../issues/integration/llm/2026-08-05-half-open-probe-semantics.md)）。删除它会让 `SystemExit` 落在探针点时重新泄漏槽位、卡死 HALF_OPEN 自动恢复。测试 `test_half_open_probe_other_baseexception_releases_slot` 固化此路径
 

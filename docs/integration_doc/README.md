@@ -1,8 +1,8 @@
 # 集成层说明文档
 
 > **对应代码**：`app/integration/`
-> **更新日期**：2026-08-24
-> **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort` / `TokenCounter` 的适配器实现方。
+> **更新日期**：2026-08-30
+> **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量，待规划）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` / `TokenCounter` 的适配器实现方。
 > **实现状态**：LLM（✅ 已实现）· Tools（✅ 已实现）· Embedding（🔶 已实现，未接线）
 
 ---
@@ -74,15 +74,15 @@ app/integration/
     │   └── rca/                  ← 良率 RCA 场景工具（5 工具，见 builtin_doc/rca.md）
     └── external/                 ← 外部工具（热加载，见 tools_doc/external.md）
 
-└── vector_store/                 ← 向量检索（待规划：Milvus，服务 RAG）
-    ├── base.py                   ← 向量库抽象基类
-    └── milvus.py                 ← Milvus 实现
+└── vector_store/                 ← 向量检索（待规划：Milvus，服务 RAG，Phase D）
+    ├── base.py                   ← 空占位（待规划）
+    └── milvus.py                 ← 空占位（待规划）
 ```
 
 ### 设计原则
 
 1. **Facade 模式**：`LLMService` / `ToolService` 是各自子系统唯一外部入口，内部组件不对外暴露
-2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` / `VectorStorePort` / `TokenCounter`），领域层只依赖抽象；装配根 `container.py` 在启动时注入
+2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` / `TokenCounter`；VectorStorePort 待规划），领域层只依赖抽象；装配根 `container.py` 在启动时注入
 3. **三权分立（LLM）**：传输层（连接）/ 可靠性层（重试/熔断/限流/降级）/ 数据层（解析）/ 策略层（整流）/ 治理层（日志/成本）各司其职
 4. **God Object 拆分（Tools）**：ToolService 拆为六大子组件（Registry / Selector / Validator / Executor / ResultProcessor / Auditor）+ 辅助组件（Stats / Hooks / Assembler），Facade 聚合
 5. **纯函数优先**：`StreamParser` 等解析组件为无状态静态方法，便于测试与整流重试幂等

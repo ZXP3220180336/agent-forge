@@ -1,6 +1,6 @@
 # 代码模块 ↔ 文档 ↔ 测试 对齐表
 
-> 更新日期：2026-08-24
+> 更新日期：2026-08-30
 > 原则：**代码树是唯一事实来源**。每个代码模块在此登记状态、对应文档与测试；新增/移动/删除模块时三处同步。
 > 状态徽标：✅ 代码 + 文档 + 测试齐全 ｜ 🔶 已实现但文档或测试不全 ｜ ⬜ 空壳待实现。
 > 本表由 `scripts/verify_alignment.py` 校验，所有路径相对仓库根。
@@ -56,7 +56,7 @@
 | app/infrastructure/models/database/tool_log.py | ⬜ | docs/infrastructure_doc/model_doc/model.md | (无) | 空文件待实现 |
 | app/integration/vector_store/base.py | ⬜ | docs/integration_doc/README.md | (无) | 空文件待实现 |
 | app/integration/vector_store/milvus.py | ⬜ | docs/integration_doc/README.md | (无) | 空文件待实现 |
-| app/integration/embedding/embedding_service.py | ✅ | docs/integration_doc/embedding_doc/embedding.md | tests/unit/test_embedding.py | 文本向量化（结构实现 EmbeddingPort；RAG 接线待 Phase D） |
+| app/integration/embedding/embedding_service.py | 🔶 | docs/integration_doc/embedding_doc/embedding.md | tests/unit/test_embedding.py | 文本向量化（结构实现 EmbeddingPort；已实现未接线，RAG 接线待 Phase D） |
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
 | app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪 |
 | app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；专属测试覆盖 fallback 传递/结算 |

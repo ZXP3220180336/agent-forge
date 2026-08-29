@@ -1,6 +1,6 @@
 # builtin 内置工具子模块说明
 
-> **更新日期**：2026-08-17
+> **更新日期**：2026-08-30
 > **文档定位**：工具层 `app/integration/tools/builtin/` 子模块 —— 内置工具的定义、自动发现机制与各工具实现详解。
 > **实现状态**：SearchTool（✅）/ ReadFileTool（✅）/ WriteFileTool（✅）/ CodeExecTool（✅）/ WebBrowseTool（✅）/ RCA 5 工具（✅，见 [rca.md](rca.md)）
 > **前置阅读**：[工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试机制在此说明，本文不重复）
@@ -442,7 +442,7 @@ _http_client = httpx.AsyncClient(
 
 **开发规范（详见 [工具模块接口文档](../tools.md)）：**
 
-1. `name` 使用小写+下划线且全局唯一（现有 10 个已占用：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse` + `query_batch_yield` / `query_equipment_alerts` / `query_fdc_params` / `query_defect_map` / `search_historical_rca`）
+1. `name` 全局唯一（现有 10 个已占用：`search` / `readFile` / `writeFile` / `code_exec` / `web_browse` + `query_batch_yield` / `query_equipment_alerts` / `query_fdc_params` / `query_defect_map` / `search_historical_rca`；`readFile` / `writeFile` 为 camelCase，其余小写+下划线）
 2. `description` 清晰描述功能与适用场景，LLM 据此决定调用
 3. `parameters` 使用 OpenAI Function Calling 的 JSON Schema 格式
 4. `execute` 必须为 `async def` 并返回 `ToolResult`

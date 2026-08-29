@@ -1,10 +1,10 @@
 # Limiter 客户端限流设计文档
 
 > **模块**：`app/integration/llm/reservation_limiter.py`（reserve/settle 形态，生产唯一）
-> **更新日期**：2026-08-24
+> **更新日期**：2026-08-30
 > **职责**：LLM API 调用的客户端限流（RPM + TPM 双 Token Bucket）
 > **状态**：✅ 已实现
-> **学习参考**：acquire 形态限流（`RateLimiter`/`RateLimiterManager`）与 5 类参考算法（LeakyBucket/FixedWindow/SlidingWindowLog/SlidingWindowCounter/GCRA）已从生产移除，代码作为学习资料完整保留在本文档「组件详解」一栏
+> **参考实现**：生产形态为 reserve/settle；acquire 形态限流（`RateLimiter`/`RateLimiterManager`）与 5 类参考算法（LeakyBucket/FixedWindow/SlidingWindowLog/SlidingWindowCounter/GCRA）未接入生产，代码作为参考实现完整保留在本文档「组件详解」一栏
 > **配套**：集成于 `LLMService.async_generate()` / `generate()`，见 `llm_service.py`
 
 ---
@@ -25,8 +25,8 @@
   - [组件详解](#组件详解)
     - [两种 API 形态：acquire vs reserve/settle](#两种-api-形态acquire-vs-reservesettle)
     - [TokenBucket — 单桶算法](#tokenbucket--单桶算法)
-    - [RateLimiter — 双桶组合（acquire 形态，学习参考）](#ratelimiter--双桶组合acquire-形态学习参考)
-    - [RateLimiterManager — 实例管理（学习参考）](#ratelimitermanager--实例管理学习参考)
+    - [RateLimiter — 双桶组合（acquire 形态，参考实现）](#ratelimiter--双桶组合acquire-形态参考实现)
+    - [RateLimiterManager — 实例管理（参考实现）](#ratelimitermanager--实例管理参考实现)
     - [Reservation — 预留对象（终态幂等）](#reservation--预留对象终态幂等)
     - [ReservationLimiter — 双桶组合（reserve/settle 形态）](#reservationlimiter--双桶组合reservesettle-形态)
     - [OutputTokenEstimator — 自适应输出估算器](#outputtokenestimator--自适应输出估算器)
@@ -228,14 +228,14 @@ ReservationLimiterManager.get(model_key) ──→ 共享 ReservationLimiter 实
 
 ### 两种 API 形态：acquire vs reserve/settle
 
-生产唯一形态为 **reserve/settle**（按实际 usage 结算退差）；acquire 形态已移除，代码保留作学习参考：
+生产唯一形态为 **reserve/settle**（按实际 usage 结算退差）；acquire 形态未接入生产，代码作为参考实现保留：
 
-| 维度 | acquire 形态（已移除，学习参考） | reserve/settle 形态（生产唯一） |
+| 维度 | acquire 形态（参考实现，未接入生产） | reserve/settle 形态（生产唯一） |
 | --- | --- | --- |
 | 核心 API | `await limiter.acquire(est)` → 返回等待时间 | `await limiter.reserve(est)` → `res.settle(actual)` |
 | 结算能力 | 无（一次性扣减，不退款） | ✅ 结算退差（settle）/ 全额退（cancel） |
 | 适用场景 | 不关心退差的简单调用 | 需按实际 usage 退还未用 TPM 配额 |
-| 生产使用者 | 无（学习参考） | ✅ `llm_service.py` |
+| 生产使用者 | 无（参考实现） | ✅ `llm_service.py` |
 
 ### TokenBucket — 单桶算法
 
@@ -278,9 +278,9 @@ class TokenBucket:
 
 **返回语义**：`acquire` 返回**桶内累计等待时间**（秒），桶充足时立即返回 `0.0`。
 
-### RateLimiter — 双桶组合（acquire 形态，学习参考）
+### RateLimiter — 双桶组合（acquire 形态，参考实现）
 
-> 已从生产移除：生产唯一限流形态为 reserve/settle。以下代码作为学习资料保留——理解「一次性扣减不退款」的 acquire 语义与双桶组合。
+> 参考实现（未接入生产）：生产唯一限流形态为 reserve/settle。以下代码作为参考实现保留——理解「一次性扣减不退款」的 acquire 语义与双桶组合。
 
 ```python
 class RateLimiter:
@@ -303,9 +303,9 @@ class RateLimiter:
 - **固定顺序**：先 RPM 后 TPM，无锁竞争死锁
 - **`retry_after` 在最前**：不持桶锁，让所有请求统一遵守服务端退避
 
-### RateLimiterManager — 实例管理（学习参考）
+### RateLimiterManager — 实例管理（参考实现）
 
-> 已从生产移除：随 `RateLimiter` 一并移入文档，作为学习参考。
+> 参考实现（未接入生产）：随 `RateLimiter` 一并保留在文档。
 
 ```python
 class RateLimiterManager:
@@ -455,7 +455,7 @@ res = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
 
 ### 其他限流算法组件（参考实现）
 
-> 以下为 Token Bucket 之外的主流限流算法组件（源于已移除的 `rate_limiter.py`），接口与 `TokenBucket` 对齐（`acquire(tokens) -> float` 等待型 + `refund(tokens)` 退还），**未接入调用链**，供对比与按需选用。
+> 以下为 Token Bucket 之外的主流限流算法组件（参考实现，源于未接入生产的 `rate_limiter.py`），接口与 `TokenBucket` 对齐（`acquire(tokens) -> float` 等待型 + `refund(tokens)` 退还），**未接入调用链**，供对比与按需选用。
 
 #### LeakyBucket — 漏桶
 
@@ -945,7 +945,7 @@ TAT = 上次请求的理论到达时间
 
 **优点**：**内存常数**（只存一个 TAT）+ **精确节流**（无边界双倍）；单桶即可同时表达速率与突发上限。**缺点**：概念较抽象。**适用**：Ruby `rack/rate-limit`、部分 API Gateway；`x/time/rate` 的 `advance` 本质等价。
 
-**接口统一说明**：以上 5 类组件接口与 `TokenBucket` 对齐（`acquire(tokens)` 返回等待秒数 + `refund(tokens)` 退还），可互换使用。**未接入 `llm_service` 调用链**——当前生产链路走 `reservation_limiter.py`（reserve/settle 形态）；acquire 形态代码已移入本文档作学习参考。
+**接口统一说明**：以上 5 类组件接口与 `TokenBucket` 对齐（`acquire(tokens)` 返回等待秒数 + `refund(tokens)` 退还），可互换使用。**未接入 `llm_service` 调用链**——生产链路走 `reservation_limiter.py`（reserve/settle 形态）；acquire 形态代码作为参考实现保留在本文档。
 
 ---
 
@@ -980,7 +980,7 @@ async_generate() / generate()
 
 **关键点**：reserve 位于 call_fn 内部，**每次真实请求**（原始调用、retry 内部重试、整流重试）都重新 reserve。整流重试每轮重新进入 `retry.execute`，再次 reserve；测试已断言 `calls["reserve"] == 2`（整流 2 轮）。fallback 不参与 reserve（备用模型防突发无意义，独立于主模型配额）。
 
-**acquire 形态流程**（学习参考，已从生产移除）：
+**acquire 形态流程**（参考实现，未接入生产）：
 
 ```text
 async_generate() / generate()
@@ -1094,7 +1094,7 @@ async_generate() / generate()
 | --- | --- | --- |
 | 限流算法选择 | Token Bucket（允许突发 + 长期平滑，vs 漏桶/固定窗口/滑动窗口） | [LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md) |
 | 限流语义 | 等待（排队）而非拒绝——LLM 请求不可丢弃，拒绝 = Agent 循环中断 | [LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md) |
-| 预留结算形态 | reserve/settle（按实际 usage 退差）为生产唯一，acquire 已移除 | [LLM-ADR-009](../../../adr/integration/llm/2026-08-02-reserve-settle-semantics.md) |
+| 预留结算形态 | reserve/settle（按实际 usage 退差）为生产唯一，acquire 形态未接入生产（参考实现保留） | [LLM-ADR-009](../../../adr/integration/llm/2026-08-02-reserve-settle-semantics.md) |
 | 自适应预留 | 高分位输出估算替代固定 max_tokens（Fenic 式，开关默认关） | [LLM-ADR-010](../../../adr/integration/llm/2026-08-06-adaptive-reserve-output-estimator.md) |
 
 **为何要结算退差**（reserve/settle 决策补充）：TPM 桶按 `prompt + max_tokens` 预留，实际输出往往远小于 `max_tokens`，长期偏保守低估可用量——reserve/settle 在请求完成后把未用完的配额退还给桶。工业级参照：Go `x/time/rate` Reservation、LiteLLM/Fenic 预留-结算协议。

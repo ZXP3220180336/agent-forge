@@ -1,8 +1,9 @@
 # TiktokenTokenCounter Token 计数实现说明
 
-> **更新日期**：2026-08-24
+> **更新日期**：2026-08-30
 > **模块**：`app/integration/llm/token_counter.py`
 > **文档定位**：TokenCounter 端口的集成层实现 —— tiktoken 编码器解析、content 归一化、消息计数。
+> **状态**：✅ 已实现
 
 ---
 
