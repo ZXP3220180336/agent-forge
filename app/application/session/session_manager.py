@@ -47,6 +47,31 @@ class SessionManager:
         if self.redis is None:
             logger.warning("Redis 不可用，缓存降级")
 
+    # ===== Redis 缓存辅助（redis 不可用时降级，不崩溃）=====
+    # 统一判空入口：消除 `self.redis: Redis | None` 的 Optional 访问，且
+    # 服务降级语义正确（redis 为 None 时跳过缓存，直查 DB）。
+
+    async def _cache_get(self, key: str) -> bytes | str | None:
+        """Redis 缓存读取（redis 不可用时返回 None）。"""
+        r = self.redis
+        if r is None:
+            return None
+        return await r.get(key)
+
+    async def _cache_set(self, key: str, value: str, ex: int | None = None) -> None:
+        """Redis 缓存写入（redis 不可用时降级跳过）。"""
+        r = self.redis
+        if r is None:
+            return
+        await r.set(key, value, ex)
+
+    async def _cache_delete(self, key: str) -> None:
+        """Redis 缓存删除（redis 不可用时降级跳过）。"""
+        r = self.redis
+        if r is None:
+            return
+        await r.delete(key)
+
     async def create_session(
         self,
         user_id: UserId,
@@ -76,7 +101,7 @@ class SessionManager:
             "message_count": 0,
             "total_tokens": 0,
         }
-        await self.redis.set(
+        await self._cache_set(
             f"session:{session_id}",
             json.dumps(session_data),
             self.session_ttl,
@@ -87,7 +112,7 @@ class SessionManager:
     async def get_session(self, session_id: SessionId) -> dict | None:
         """获取会话信息（Redis → DB 缓存穿透保护）"""
         # 1. 查 Redis
-        cached = await self.redis.get(f"session:{session_id}")
+        cached = await self._cache_get(f"session:{session_id}")
         if cached:
             return json.loads(cached)
 
@@ -109,7 +134,7 @@ class SessionManager:
                 "message_count": 0,  # 懒加载
                 "total_tokens": 0,
             }
-            await self.redis.set(
+            await self._cache_set(
                 f"session:{session_id}",
                 json.dumps(session_data),
                 self.session_ttl,
@@ -124,7 +149,7 @@ class SessionManager:
             return None
 
         # 查 Redis
-        cached = await self.redis.get(f"session:{session_id}")
+        cached = await self._cache_get(f"session:{session_id}")
         if cached:
             if cached == "NULL":  # 空值标记
                 return None
@@ -213,7 +238,7 @@ class SessionManager:
     """
     async def delete_session(self, session_id: str):
         # 删除会话（软删除）
-        await self.redis.delete(f"session:{session_id}")
+        await self._cache_delete(f"session:{session_id}")
         async with self.db_session() as db:
             stmt = delete(SessionModel).where(SessionModel.id == session_id)
             await db.execute(stmt)
@@ -222,7 +247,7 @@ class SessionManager:
 
     async def delete_session(self, session_id: SessionId):
         """软删除会话（推荐）"""
-        await self.redis.delete(f"session:{session_id}")
+        await self._cache_delete(f"session:{session_id}")
         async with self.db_session() as db:
             stmt = (
                 update(SessionModel)
@@ -234,7 +259,7 @@ class SessionManager:
 
     async def hard_delete_session(self, session_id: SessionId):
         """物理删除（仅管理员/定时任务使用）"""
-        await self.redis.delete(f"session:{session_id}")
+        await self._cache_delete(f"session:{session_id}")
         async with self.db_session() as db:
             # 先删除消息（外键约束）
             await db.execute(
@@ -276,7 +301,7 @@ class SessionManager:
         # 1. 尝试从缓存读取（仅限第一页热门数据）
         cache_key = f"user_sessions:{user_id}:page:{offset // limit}"
         if offset == 0:  # 仅缓存第一页
-            cached = await self.redis.get(cache_key)
+            cached = await self._cache_get(cache_key)
             if cached:
                 return json.loads(cached)
 
@@ -321,7 +346,7 @@ class SessionManager:
 
         # 4. 缓存第一页数据（TTL 短一些，因为列表频繁变化）
         if offset == 0:
-            await self.redis.set(cache_key, json.dumps(session_list), 30)  # 30秒缓存
+            await self._cache_set(cache_key, json.dumps(session_list), 30)  # 30秒缓存
 
         return session_list
 
@@ -338,7 +363,7 @@ class SessionManager:
         cache_key = f"session_stats:{session_id}"
 
         # 1. 查缓存
-        cached = await self.redis.get(cache_key)
+        cached = await self._cache_get(cache_key)
         if cached:
             return json.loads(cached)
 
@@ -364,7 +389,7 @@ class SessionManager:
         }
 
         # 3. 缓存统计信息（60秒过期）
-        await self.redis.set(cache_key, json.dumps(stats), 60)
+        await self._cache_set(cache_key, json.dumps(stats), 60)
 
         return stats
 
