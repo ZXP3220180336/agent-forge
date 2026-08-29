@@ -1,6 +1,6 @@
 # 路由层说明文档
 
-> **更新日期**：2026-08-24
+> **更新日期**：2026-08-29
 > **文档定位**：路由层（`app/api/routes/`）的定位、已实现路由的端点/请求模型/处理流程、预留路由规划与依赖注入方式。
 > **当前已实现**：`chat.py`（聊天，SSE 流式）、`session.py`（会话 CRUD）。`admin.py` / `agent.py` / `tool.py` 均为**预留空文件**，尚未落地任何逻辑。
 
@@ -8,19 +8,28 @@
 
 ## 📋 目录
 
-- [模块概述](#模块概述)
-- [模块结构](#模块结构)
-- [实现状态表](#实现状态表)
-- [已实现路由详解](#已实现路由详解)
-  - [chat — 聊天路由](#chat--聊天路由)
-  - [session — 会话管理路由](#session--会话管理路由)
-- [预留路由说明](#预留路由说明)
-  - [admin — 管理接口](#admin--管理接口)
-  - [agent — 异步任务受理](#agent--异步任务受理)
-  - [tool — 工具管理](#tool--工具管理)
-- [依赖注入](#依赖注入)
-- [相关文档](#相关文档)
-- [当前进度与遗留](#当前进度与遗留)
+- [路由层说明文档](#路由层说明文档)
+  - [📋 目录](#-目录)
+  - [模块概述](#模块概述)
+    - [核心定位](#核心定位)
+    - [模块结构](#模块结构)
+    - [设计原则](#设计原则)
+  - [实现状态表](#实现状态表)
+  - [已实现路由详解](#已实现路由详解)
+    - [chat — 聊天路由](#chat--聊天路由)
+    - [session — 会话管理路由](#session--会话管理路由)
+  - [预留路由说明](#预留路由说明)
+    - [admin — 管理接口](#admin--管理接口)
+    - [agent — 异步任务受理](#agent--异步任务受理)
+    - [tool — 工具管理](#tool--工具管理)
+  - [依赖注入](#依赖注入)
+    - [依赖函数一览](#依赖函数一览)
+    - [认证实现（当前形态）](#认证实现当前形态)
+  - [相关文档](#相关文档)
+  - [当前进度与遗留](#当前进度与遗留)
+    - [已实现](#已实现)
+    - [遗留未定事项](#遗留未定事项)
+    - [下一步计划](#下一步计划)
 
 ---
 
@@ -44,7 +53,7 @@
 
 ### 模块结构
 
-```
+```text
 app/api/routes/
 ├── __init__.py   ← 聚合导出：chat_router / session_router，供 main.py 注册
 ├── chat.py       ← ✅ 已实现：聊天（SSE 流式发送 + 停止）
@@ -81,7 +90,7 @@ app/api/routes/
 
 ### chat — 聊天路由
 
-**文件**：`app/api/routes/chat.py`（136 行）
+**文件**：`app/api/routes/chat.py`（148 行）
 **路由定义**：`router = APIRouter(prefix="/api", tags=["聊天"])`
 
 #### `POST /api/chat/send` — 发送消息（流式 SSE）
@@ -100,17 +109,17 @@ app/api/routes/
 **处理流程**：
 
 1. **会话验证与授权**：`session_manager.get_session(session_id)` 获取会话，不存在 → `404 会话不存在`；`session["user_id"] != user_id` → `403 无权访问`
-2. **保存用户消息**：`session_manager.add_message(role="user", content=message, token_count=context_manager.count_tokens(message))`，token 数由 ContextManager 的 tiktoken 编码器统计
+2. **保存用户消息**：`session_manager.add_message(role="user", content=message, token_count=context_manager.count_tokens(message))`，token 数由 ContextManager 经 TokenCounter 端口统计（见 [token_counter.md](../../integration_doc/llm_doc/token_counter.md)）
 3. **构建上下文**：`context_manager.build_messages(session_id, user_message)` 组装发送给 LLM 的消息序列
 4. **定义流式生成器 `generate()`**：
-   - 新建 `AgentContext(session_id, user_id, max_iterations)` 与 `ReActAgent(llm=llm_service, tools=tool_service)` —— **Agent 无状态**，每次请求新建实例
+   - 新建 `AgentContext`（8 字段：`session_id` / `user_id` / `max_iterations` / `temperature` / `max_tokens` / `max_execution_time` / `max_context_rounds` / `max_context_tokens`，运行参数来自 `get_agent_params` 注入，`max_iterations` 可被请求体覆盖）与 `ReActAgent(llm=llm_service, tools=tool_service, context_budget=context_manager)` —— **Agent 无状态**，每次请求新建实例
    - `async for event in task_service.run_agent(user_input, messages, context, agent)` 驱动 ReAct 闭环（LLM 思考 → 工具调用 → LLM 总结），并**在任务级并发信号量 `agent_max_concurrent_tasks` 保护下运行**
    - 每个事件 `yield` 给 `StreamingResponse` 逐帧推送
    - 异常兜底：捕获异常后 `yield build_error_event(...)`，错误以 SSE 事件透出而非中断连接
    - `finally`：先 `yield "data: [DONE]\n\n"` 收尾，再从 `agent.result` 取最终答复，非空时 `session_manager.add_message(role="assistant", content=..., reasoning_content=..., token_count=...)` 持久化
 5. **返回 `StreamingResponse`**：`media_type="text/event-stream"`
 
-**依赖注入**（5 个服务 + 用户）：
+**依赖注入**（5 个服务 + 1 个参数 + 用户）：
 
 | 依赖 | 用途 |
 | --- | --- |
@@ -120,6 +129,7 @@ app/api/routes/
 | `get_llm_service` | 作为 `ReActAgent` 的 LLM 后端 |
 | `get_tool_service` | 提供工具定义与执行（`ReActAgent` 工具侧） |
 | `get_task_service` | 在任务级并发约束下运行 Agent |
+| `get_agent_params` | 提供 Agent 运行参数（max_iterations / temperature / max_tokens / max_execution_time / max_context_rounds / max_context_tokens） |
 
 #### `POST /api/chat/stop` — 停止生成
 
@@ -133,7 +143,7 @@ app/api/routes/
 
 ### session — 会话管理路由
 
-**文件**：`app/api/routes/session.py`（101 行）
+**文件**：`app/api/routes/session.py`（108 行）
 **路由定义**：`router = APIRouter(prefix="/api", tags=["会话管理"])`
 
 所有端点均注入 `get_current_user` + `get_session_manager`；除 `POST /session/create` 外的读取 / 删除端点都先做会话存在性（404）与归属（403）校验。
@@ -220,6 +230,7 @@ app/api/routes/
 | `get_llm_service` | `LLMService` | `POST /api/chat/send` |
 | `get_tool_service` | `ToolService` | `POST /api/chat/send` |
 | `get_task_service` | `TaskService` | `POST /api/chat/send` |
+| `get_agent_params` | `dict`（Agent 运行参数） | `POST /api/chat/send` |
 
 ### 认证实现（当前形态）
 
@@ -251,7 +262,7 @@ app/api/routes/
 - `chat.py`：`POST /api/chat/send`（SSE 流式，含 ReAct 闭环、异常兜底、回复持久化）+ `POST /api/chat/stop`（会话校验占位）
 - `session.py`：会话创建 / 详情 / 历史（分页）/ 列表 / 删除（软删除）五个端点
 - 路由注册链路打通：`__init__.py` 聚合导出 → `main.py` `include_router`
-- 依赖注入通路就绪：chat 路由已串联 SessionManager / ContextManager / LLMService / ToolService / TaskService 五服务
+- 依赖注入通路就绪：chat 路由已串联 SessionManager / ContextManager / LLMService / ToolService / TaskService 五服务 + agent_params 运行参数
 
 ### 遗留未定事项
 

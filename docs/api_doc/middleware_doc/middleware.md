@@ -1,22 +1,34 @@
 # 中间件层说明文档
 
-> **更新日期**：2026-08-24
+> **更新日期**：2026-08-29
 > **文档定位**：中间件层（`app/api/middleware/`）的定位、实现状态与预留规划。
-> **当前已实现**：无。`auth.py` / `rate_limit.py` / `error_handler.py` 均为**预留空文件**，尚未落地任何逻辑。
+> **当前已实现**：`error_handler.py` ✅（AppError → HTTP 状态 + 统一信封，已在 `main.py` 注册）。`auth.py` / `rate_limit.py` 为**预留空文件**，尚未落地任何逻辑。
 
 ---
 
 ## 📋 目录
 
-- [模块概述](#模块概述)
-- [实现状态表](#实现状态表)
-- [现状说明](#现状说明)
-- [预留中间件详解](#预留中间件详解)
-  - [auth — 认证与鉴权](#auth--认证与鉴权)
-  - [rate_limit — API 限流](#rate_limit--api-限流)
-  - [error_handler — 统一异常处理](#error_handler--统一异常处理)
-- [相关文档](#相关文档)
-- [当前进度与遗留](#当前进度与遗留)
+- [中间件层说明文档](#中间件层说明文档)
+  - [📋 目录](#-目录)
+  - [模块概述](#模块概述)
+    - [核心定位](#核心定位)
+    - [模块结构](#模块结构)
+    - [设计原则](#设计原则)
+  - [实现状态表](#实现状态表)
+  - [现状说明](#现状说明)
+    - [1. error\_handler 已实现并注册](#1-error_handler-已实现并注册)
+    - [2. 认证当前由依赖注入模拟](#2-认证当前由依赖注入模拟)
+    - [3. main.py 的中间件组装](#3-mainpy-的中间件组装)
+  - [已实现组件详解](#已实现组件详解)
+    - [error\_handler — 统一异常处理](#error_handler--统一异常处理)
+  - [预留中间件详解](#预留中间件详解)
+    - [auth — 认证与鉴权](#auth--认证与鉴权)
+    - [rate\_limit — API 限流](#rate_limit--api-限流)
+  - [相关文档](#相关文档)
+  - [当前进度与遗留](#当前进度与遗留)
+    - [已实现](#已实现)
+    - [遗留未定事项](#遗留未定事项)
+    - [下一步计划](#下一步计划)
 
 ---
 
@@ -34,11 +46,11 @@
 
 ### 模块结构
 
-```
+```text
 app/api/middleware/
 ├── auth.py           ← 预留：JWT 认证与请求鉴权
 ├── rate_limit.py     ← 预留：API 限流
-└── error_handler.py  ← 预留：统一异常处理
+└── error_handler.py  ← ✅ 已实现：统一异常处理（AppError → HTTP 状态 + 信封）
 ```
 
 ### 设计原则
@@ -56,16 +68,16 @@ app/api/middleware/
 | ---- | ---- | -------- |
 | `app/api/middleware/auth.py` | 预留空文件 | JWT 认证、请求鉴权 |
 | `app/api/middleware/rate_limit.py` | 预留空文件 | API 限流（按用户 / IP / 全局维度） |
-| `app/api/middleware/error_handler.py` | 预留空文件 | 统一异常处理（归一化错误响应 + 日志） |
-| `app/main.py` | 已实现 | 仅 `CORSMiddleware` + SPA 回退中间件 |
+| `app/api/middleware/error_handler.py` | ✅ 已实现 | 统一异常处理（AppError → HTTP 状态 + `{code, message, details}` 信封） |
+| `app/main.py` | 已实现 | `CORSMiddleware` + SPA 回退 + 注册 error_handler |
 
 ---
 
 ## 现状说明
 
-### 1. 中间件模块为空
+### 1. error_handler 已实现并注册
 
-`app/api/middleware/` 下的 `auth.py`、`rate_limit.py`、`error_handler.py` 三个文件均为**预留空文件**（0 行代码），用于锁定模块边界，尚未实现任何逻辑。
+`error_handler.py` 已实现（统一异常处理，见下文「已实现组件详解」），并在 `main.py` 通过 `register_error_handlers(app)` 注册（`app.add_exception_handler(AppError, app_error_handler)`）。`auth.py` / `rate_limit.py` 仍为**预留空文件**（0 行代码），用于锁定模块边界，尚未实现任何逻辑。
 
 ### 2. 认证当前由依赖注入模拟
 
@@ -73,14 +85,42 @@ app/api/middleware/
 
 认证从依赖注入形态迁移到中间件形态是既定规划（`auth.py` 预留空文件即为此准备）。
 
-### 3. main.py 仅配置 CORS + SPA 回退
+### 3. main.py 的中间件组装
 
-`app/main.py` 当前只挂载了两个中间件，未注册任何自定义业务中间件：
+`app/main.py` 当前组装了 CORS 中间件、SPA 回退中间件与统一异常处理：
 
 - **CORSMiddleware**：`allow_origins=["*"]`、`allow_credentials=True`、`allow_methods=["*"]`、`allow_headers=["*"]`，用于前端跨域访问
 - **SPA 回退**：`@app.middleware("http")` 定义的 `spa_fallback`，对非 `/api/` 前缀的 404 请求回退返回 `static/index.html`，解决前端路由刷新 404 问题
+- **统一异常处理**：`register_error_handlers(app)` 注册 AppError 处理器（见下文「已实现组件详解」）
 
-新增 `auth` / `rate_limit` / `error_handler` 时，需要在 `main.py` 中通过 `app.add_middleware()` 或 `@app.middleware("http")` 注册，并注意中间件**注册顺序**（先注册的执行在外层）。
+新增 `auth` / `rate_limit` 时，需要在 `main.py` 中通过 `app.add_middleware()` 或 `@app.middleware("http")` 注册，并注意中间件**注册顺序**（先注册的执行在外层）。
+
+---
+
+## 已实现组件详解
+
+### error_handler — 统一异常处理
+
+**文件**：`app/api/middleware/error_handler.py`（✅ 已实现，54 行）
+
+#### 职责
+
+把统一异常树（`AppError`）在对外边界翻译为 HTTP 状态 + 统一信封：业务码（`code`）是响应体契约，HTTP 状态反映通信语义（二者解耦）。API 层不直接抛 `HTTPException`，全走统一异常树（异常体系见 [error_handling.md](../../shared_doc/error_handling.md)，信封格式与状态映射见 [api.md「错误处理」](../api.md)）。
+
+#### 实现组成
+
+| 组件 | 说明 |
+| --- | --- |
+| `_CODE_TO_STATUS` | `AppErrorCode` → HTTP 状态映射表（边界翻译表，完整映射见 [api.md](../api.md)） |
+| `_status_for(code)` | 查映射表，未映射兜底 500 |
+| `app_error_handler` | `AppError` → JSON 信封 `{code, message, details}` |
+| `register_error_handlers(app)` | 在 `main.py` 调用，注册 `AppError` 处理器 |
+
+#### 设计要点（error_handler）
+
+- **注册方式**：`main.py` 启动阶段调用 `register_error_handlers(app)`（`app.add_exception_handler(AppError, app_error_handler)`）
+- **断言收紧**：handler 第二参按 `Exception` 标注（Starlette 签名要求），注册时已限定 `AppError`，运行时断言验证
+- **不吞异常**：非 `AppError` 异常不在本处理器覆盖范围，交由 FastAPI 默认兜底
 
 ---
 
@@ -90,13 +130,13 @@ app/api/middleware/
 
 **文件**：`app/api/middleware/auth.py`（预留）
 
-#### 预期功能
+#### 预期功能（auth）
 
 1. **JWT 认证**：解析 `Authorization: Bearer <token>`，校验 JWT 签名、`exp` 有效期、`iss` / `aud` 等声明
 2. **请求鉴权**：按路由路径或角色对请求做权限放行 / 拒绝
 3. **用户上下文注入**：认证通过后将解析出的用户信息（`user_id` 等）注入请求上下文，供后续路由与依赖使用
 
-#### 设计要点
+#### 设计要点（auth）
 
 - **与 `get_current_user` 的关系**：中间件做**全局预检**（未认证请求在进入路由前即被 401 拒绝），`get_current_user` 保留做**端点级精细化控制**（如部分路由允许匿名访问时）。迁移 JWT 解析逻辑到中间件后，`get_current_user` 可退化为读取中间件注入的请求上下文，避免重复解析
 - **错误响应**：认证失败统一返回 `401`（无 Token / 签名错误 / 过期），并遵循 api_doc「错误处理」约定的响应格式
@@ -109,17 +149,17 @@ app/api/middleware/
 
 **文件**：`app/api/middleware/rate_limit.py`（预留）
 
-#### 预期功能
+#### 预期功能（rate_limit）
 
 1. **多维度限流**：按 `user_id` / IP / 全局三个维度分别限流，防止单用户滥用与全局限速
 2. **灵活配额**：不同端点可配置不同速率（如聊天接口更严格、健康检查不限）
 3. **限流响应**：超限返回 `429 Too Many Requests`，附 `Retry-After` 响应头
 
-#### 设计要点
+#### 设计要点（rate_limit）
 
-- **复用 LLM 层限流思路**：LLM 层已实现并验证了 Token Bucket 限流（见 [llm.md](../../integration_doc/llm_doc/llm.md) 与 [limiter.md](../../integration_doc/llm_doc/limiter.md)），API 中间件限流可直接借鉴：
+- **复用 LLM 层限流思路**：LLM 层限流经 `ReservationLimiter`（reserve/settle 形态，先预留配额再结算）实现，RPM / TPM 双 Token Bucket 算法本体保留在 `reservation_limiter.py`（见 [limiter.md](../../integration_doc/llm_doc/limiter.md)），API 中间件限流可直接借鉴：
   - **Token Bucket 算法**：允许突发 + 长期平滑，适合 Agent 场景的短时并发尖峰
-  - **reserve / settle 形态**：LLM 层实际使用 `ReservationLimiter`（reserve/settle），先预留配额再结算，与「请求进入 → 处理 → 放行」的中间件生命周期天然契合，可参考 [limiter.md](../../integration_doc/llm_doc/limiter.md)
+  - **reserve / settle 形态**：与「请求进入 → 处理 → 放行」的中间件生命周期天然契合
   - **`Retry-After` 支持**：与 LLM 层处理上游 429 的逻辑对称，中间件在超限时对客户端返回 `Retry-After`
 - **与 LLM 层限流的区别**：LLM 层限流保护**上游模型 API**（防打爆服务商），中间件限流保护**自身服务**（防滥用 / 防 DDoS）。两层各自独立、互不替代
 - **实现形态**：可选择复用 LLM 层的限流组件，或针对中间件场景做轻量封装（按维度建 Token Bucket 实例）
@@ -127,33 +167,14 @@ app/api/middleware/
 
 ---
 
-### error_handler — 统一异常处理
-
-**文件**：`app/api/middleware/error_handler.py`（预留）
-
-#### 预期功能
-
-1. **全局捕获**：捕获路由层与中间件层未处理的异常，避免异常信息直接暴露给客户端
-2. **归一化响应**：所有错误统一为结构化 JSON（`error` 码、`message`、`trace_id` 等），与 api_doc「错误处理」约定对齐
-3. **分类映射**：`HTTPException` 按状态码原样透传；`RequestValidationError`（422）格式化为参数错误；未知异常兜底为 `500`
-
-#### 设计要点
-
-- **实现方式**：Starlette / FastAPI 提供 `ExceptionMiddleware` 与 `@app.exception_handler()` 机制，可注册自定义异常处理器统一格式，也可用 `BaseHTTPMiddleware` 包一层 `try/except` 兜底
-- **不吞异常**：未知异常捕获后仍应记录完整堆栈（含 `traceback`）到日志，便于排查，而不是静默吞掉
-- **追踪 ID**：为每个错误生成 `trace_id`，与请求日志关联，方便问题追踪（可与 LLM 层的请求日志风格对齐）
-- **安全**：`500` 响应不向客户端暴露内部堆栈与敏感信息，只返回通用错误描述
-- **与 FastAPI 默认行为的兼容**：需明确覆盖哪些异常（`HTTPException`、`RequestValidationError`、未知 `Exception`），避免与 FastAPI 内置处理器行为冲突
-
----
-
 ## 相关文档
 
 | 文档 | 链接 | 关联内容 |
 | ---- | ---- | -------- |
-| API 说明文档 | [api.md](../api.md) | 认证方式（当前 `get_current_user` 模拟实现）、错误处理约定、预留路由 |
+| API 说明文档 | [api.md](../api.md) | 认证方式（当前 `get_current_user` 模拟实现）、错误处理约定（信封格式 / 状态映射）、预留路由 |
+| 异常体系 | [error_handling.md](../../shared_doc/error_handling.md) | 项目级统一异常树（`AppError` / `AppErrorCode`），error_handler 的上游 |
 | LLM 层说明文档 | [llm.md](../../integration_doc/llm_doc/llm.md) | 模块分层设计、限流算法选型、请求日志风格（中间件层可借鉴） |
-| LLM 限流 | [limiter.md](../../integration_doc/llm_doc/limiter.md) | 两种形态：acquire（Token Bucket 双桶）与 reserve/settle（先预留再结算），API 限流实现参考 |
+| LLM 限流 | [limiter.md](../../integration_doc/llm_doc/limiter.md) | 生产形态 reserve/settle（先预留再结算）+ TokenBucket 算法本体；acquire 形态（`RateLimiter`）已移除作学习参考 |
 | 项目架构 | [architecture.md](../../architecture.md) | 系统架构与模块边界 |
 
 ---
@@ -164,8 +185,9 @@ app/api/middleware/
 
 ### 已实现
 
-- 预留空文件落地：`auth.py` / `rate_limit.py` / `error_handler.py` 已创建并锁定模块边界
-- `main.py` 已具备中间件注册机制：`CORSMiddleware` + SPA 回退，`app.add_middleware()` / `@app.middleware("http")` 通路已打通
+- `error_handler.py`：AppError → HTTP 状态 + `{code, message, details}` 信封，已在 `main.py` 注册
+- 预留空文件落地：`auth.py` / `rate_limit.py` 已创建并锁定模块边界
+- `main.py` 已具备中间件注册机制：`CORSMiddleware` + SPA 回退 + `register_error_handlers(app)`
 
 ### 遗留未定事项
 
@@ -173,13 +195,11 @@ app/api/middleware/
 | ---- | -------- | ---- |
 | JWT 认证实现 | 未开始 | 当前由 `deps.get_current_user()` 模拟；需引入 JWT 库、密钥管理、白名单配置 |
 | 认证迁移路径 | 未决策 | 中间件做全局预检 + 依赖注入做端点级控制的职责边界需明确 |
-| API 限流实现 | 未开始 | 复用 LLM 层 Token Bucket / reserve-settle 形态，还是独立轻量封装，需决策 |
+| API 限流实现 | 未开始 | 复用 LLM 层 reserve/settle + TokenBucket 算法，还是独立轻量封装，需决策 |
 | 限流存储选型 | 未决策 | 单机内存 vs Redis（多实例部署时） |
-| 统一异常处理 | 未开始 | 明确覆盖的异常集合与错误响应格式（对齐 api_doc） |
 
 ### 下一步计划
 
 1. 实现 `auth.py`：JWT 解析 + 全局预检 + 白名单，`get_current_user` 迁移为轻量校验
-2. 实现 `error_handler.py`：统一异常格式 + `trace_id` + 日志记录（对齐 api_doc 错误处理约定）
-3. 实现 `rate_limit.py`：评估复用 LLM 层限流组件，落地多维度限流 + `Retry-After`
-4. 在 `main.py` 注册上述中间件，并明确注册顺序
+2. 实现 `rate_limit.py`：评估复用 LLM 层 reserve/settle + TokenBucket 算法，落地多维度限流 + `Retry-After`
+3. 在 `main.py` 注册 auth / rate_limit，并明确注册顺序
