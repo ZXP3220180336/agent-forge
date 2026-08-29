@@ -93,7 +93,7 @@ POST /api/chat/send
   → SessionManager（会话验证 + 存用户消息）
   → ContextManager.build_messages（构建 messages，token 计数/截断）
   → TaskService.run_agent()（任务级并发信号量）
-      → ReActAgent._strategy_cycle()（ReAct 循环，模型每次调用前经 ContextManager.trim_messages 做上下文护栏）
+      → ReActAgent._strategy_cycle()（ReAct 循环）
           → LLMService.async_generate()（集成层）
           → ToolService.execute()（集成层）
   → SSE 事件流 → SessionManager.add_message（存 assistant 消息）
@@ -107,38 +107,36 @@ POST /api/chat/send
 
 **代码**：`app/application/session/session_manager.py` · **文档**：[会话管理详解](session_doc/session.md)
 
-会话生命周期管理 + 消息持久化 + Redis 热缓存 + 统计聚合 + 增强查询。
+负责会话与消息两条数据链路的完整生命周期，Redis 热缓存 + DB 持久化双存储：
 
-| 设计要点 | 说明 |
+| 能力 | 说明 |
 | --- | --- |
 | 生命周期 | 创建 / 查询 / 软删除 / 硬删除 |
-| 双存储 | Redis 热缓存（session / user_sessions / session_stats 三类键）+ DB 持久化 |
-| 读路径 | cache-through：Redis → DB → 回写 Redis |
-| 降级 | Redis 不可用时缓存路径退化为直查 DB（`_cache_*` 判空辅助） |
-| 增强查询 | `list_sessions_v2`：搜索 / 筛选 / 排序 / 总数统计 |
+| 持久化 | Redis 热缓存 + DB 双存储，cache-through 读路径 |
+| 查询 | 分页 / 搜索 / 筛选 / 排序 / 统计聚合 |
 
 ## ContextManager 上下文管理
 
 **代码**：`app/application/context/context_manager.py` · **文档**：[上下文管理详解](context_doc/context.md)
 
-从会话历史组装 messages + token 计数/超限截断 + Agent 运行中上下文预算管理。
+从会话历史组装 LLM messages，token 精确计数 + 超限截断，并承担 Agent 运行中的上下文预算管理：
 
-| 设计要点 | 说明 |
+| 能力 | 说明 |
 | --- | --- |
-| 输入侧组装 | `build_messages`：system + 历史 + user，超限截断（`available = max_context - max_output`） |
-| 运行中护栏 | `trim_messages`：轮次 + token 双层护栏（`ContextBudgetPort`，Agent 循环中模型调用前） |
-| 依赖 | `SessionManager`（会话数据）+ `TokenCounter` 端口（token 计数） |
+| 输入侧组装 | `build_messages`：system + 历史 + user，超限截断 |
+| 运行中护栏 | `trim_messages`：轮次 + token 双层护栏（`ContextBudgetPort` 横切能力） |
+| 依赖 | `SessionManager`（会话数据）+ `TokenCounter` 端口（计数） |
 
 ## TaskService 任务调度
 
 **代码**：`app/application/task/task_service.py` · **文档**：[任务调度说明](task_doc/task.md)
 
-任务级并发信号量 + `run_agent()` 流式包装。
+任务级并发调度，限制同时运行的 Agent 任务数，流式包装 Agent 执行：
 
-| 设计要点 | 说明 |
+| 能力 | 说明 |
 | --- | --- |
-| 并发闸门 | `asyncio.Semaphore` 限制同时运行的 Agent 任务数（`agent_max_concurrent_tasks`） |
-| 信号量位置 | generator 外 acquire/release（yield 会挂起 generator frame，放内则信号量失去约束） |
+| 并发闸门 | 信号量限制 Agent 任务并发数（`agent_max_concurrent_tasks`） |
+| 流式包装 | `run_agent()` 在信号量保护下逐事件 yield |
 | 规划 | 队列 / 状态机 / 多 Agent 编排（见 [task.md](task_doc/task.md)） |
 
 ---

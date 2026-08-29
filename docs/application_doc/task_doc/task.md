@@ -70,6 +70,19 @@ Agent 层（BaseAgent / ReActAgent / 子Agent）
 - `async with` 天然保证异常 / 取消时释放信号量，不会挂死占坑
 - 信号量是 **Agent 维度**（限制同时运行的 Agent 任务），而非 LLM API 维度（RPM / TPM 由集成层 `reservation_limiter` 覆盖，见 [LLM 层文档](../../integration_doc/llm_doc/llm.md)）
 
+**最小调用示例**：
+
+```python
+# chat 路由经 TaskService 在任务级并发信号量保护下运行 Agent（见 app/api/routes/chat.py）
+async for event in task_service.run_agent(
+    user_input=request.message,
+    messages=messages,
+    context=ctx,
+    agent=agent,
+):
+    yield event  # SSE 事件字符串
+```
+
 ---
 
 ## 规划蓝图
