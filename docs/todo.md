@@ -1,3 +1,13 @@
+# 2026-08-29 config 文档重构：移出优化建议为 backlog
+
+> 依 module_doc 规范重构 `docs/config_doc/config.md`，原「后续优化建议」为规划内容（Rule 2 写当前状态），移出登记为 backlog，出现真实需求再落地。
+
+- [ ] 缺失配置项：`AGENT_ENABLE_REFLECTION` / `AGENT_MAX_TOOL_CALLS` / `DATABASE_SSL_MODE` / `DATABASE_CONNECT_TIMEOUT` / `REDIS_MAX_CONNECTIONS` / `LOG_MAX_FILE_SIZE` / `LOG_BACKUP_COUNT` / `RATE_LIMIT_REQUESTS` / `RATE_LIMIT_PERIOD`
+- [ ] 默认值优化：`AGENT_TIMEOUT`→600s / `DATABASE_POOL_SIZE`→50-100 / `AGENT_MAX_CONCURRENT_TASKS`→20-50 / `JWT_EXPIRE_MINUTES`→60-480
+- [ ] 架构优化：`LLM_` 前缀统一（`MAX_CONTEXT_TOKENS`）/ 配置热更新 / 启动 `model_validator` 依赖检查 / 多环境 `env_file` 模式 / `export_yaml` / `export_json`
+
+---
+
 # 2026-08-28 异常体系完整优化（error_handler 边界 + 命名 + API 收敛）
 
 > 工业级调研（OpenAI/LangChain/Spring AI/SMOL/FastAPI）：分层分类 + 宽松统一基类是正确形态，四套分类（传输可重试/工具系统码/Agent 编排/对外业务码）不应合并。真实缺口是边界未接线 + 命名冲突。
@@ -126,7 +136,7 @@
 
 > 架构文档端口层目标：EmbeddingPort。孤儿服务 EmbeddingService 端口化（结构实现），补测试；RAG 接线留 Phase D。
 
-- [x] `app/domain/ports/embedding_port.py`：EmbeddingPort 协议（embed / embed_batch），ports/__init__ 登记
+- [x] `app/domain/ports/embedding_port.py`：EmbeddingPort 协议（embed / embed_batch），ports/**init** 登记
 - [x] `embedding_service.py`：docstring 标注结构实现 EmbeddingPort（签名已匹配，构造依赖保持）
 - [x] 新增 test_embedding.py（9 用例）：单文本/批量保序/分批切批/缓存命中/缓存穿透/disable_cache/空输入/clear_cache
 - [x] 文档：ALIGNMENT（embedding_service ✅ + 端口登记）/ architecture（EmbeddingPort ✅、Phase B 全完成）/ embedding.md / domain README
