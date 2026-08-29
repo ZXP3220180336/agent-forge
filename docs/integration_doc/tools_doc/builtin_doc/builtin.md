@@ -461,7 +461,7 @@ _http_client = httpx.AsyncClient(
 - [架构设计](../../../architecture.md)（工具层在整体架构中的定位）
 - [配置管理](../../../config_doc/config.md)（`TAVILY_API_KEY`、`TOOL_MAX_OUTPUT_LENGTH` 等配置项）
 - [核心层](../../../domain_doc/README.md)（Agent 推理循环如何消费工具）
-- [API 文档](../../../api_doc/api.md)
+- [API 层说明](../../../api_doc/README.md)
 - [TOOLS-001 问题记录](../../../../issues/integration/tools/2026-08-18-subprocess-orphan-on-cancel.md)（子进程超时 / 取消清理）
 - [TOOLS-002 问题记录](../../../../issues/integration/tools/2026-08-19-file-tools-allowed-dirs.md)（文件工具允许目录白名单）
 - [TOOLS-003 问题记录](../../../../issues/integration/tools/2026-08-19-web-browse-ssrf.md)（web_browse SSRF 防护）

@@ -160,6 +160,6 @@ POST /api/chat/send
 - [Task 模块](task_doc/task.md)（任务调度说明与规划）
 - [集成层说明](../integration_doc/README.md)（下游能力：LLM / Tools / Embedding）
 - [领域层说明](../domain_doc/README.md)（ReActAgent 与端口，本层下游调用方）
-- [API 模块](../api_doc/api.md)（本层上游调用方）
+- [API 层说明](../api_doc/README.md)（本层上游调用方）
 - [配置说明](../config_doc/config.md)
 - [部署](../deployment.md)

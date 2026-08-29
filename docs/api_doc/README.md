@@ -4,7 +4,7 @@
 > **更新日期**：2026-08-29
 > **文档定位**：API 层（`app/api/`）—— 系统对外暴露边界，HTTP 协议适配 + 鉴权 + 统一错误信封；是客户端（前端 / 外部系统）与服务层的桥梁。
 > **实现状态**：路由（✅ chat / session）· 中间件（🔶 error_handler ✅ + auth / rate_limit 预留）· Schema（🔶 request / response）
-> **配套**：对外契约详见 [api.md](api.md)（端点 / 请求响应模型 / SSE 事件 / 认证 / 错误信封）
+> **配套**：端点契约见 [routes.md](routes_doc/routes.md) · 错误信封见 [middleware.md](middleware_doc/middleware.md)
 
 ---
 
@@ -104,7 +104,7 @@ API 层不感知领域实现，只依赖服务层接口与共享内核（`app/sh
 
 ## 路由层（routes）
 
-**代码**：`app/api/routes/` · **文档**：[路由层说明](routes_doc/routes.md)
+**代码**：`app/api/routes/` · **文档**：[路由模块对外接口文档](routes_doc/routes.md)
 
 API 的**对外暴露层**，承担协议适配与服务编排：
 
@@ -114,13 +114,13 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 | 会话 | session.py | `POST /api/session/create`、`GET /api/session/{id}`、`GET /api/session/{id}/history`、`GET /api/sessions`、`DELETE /api/session/{id}` | ✅ |
 | 管理 / 任务 / 工具 | admin.py / agent.py / tool.py | —（规划） | ⬜ |
 
-端点契约（请求 / 响应模型、SSE 事件格式）见 [api.md](api.md)。
+端点契约（请求 / 响应模型、认证方式、SSE 帧格式）见 [routes.md](routes_doc/routes.md) 与 [events.md](../shared_doc/events.md)。
 
 ---
 
 ## 中间件层（middleware）
 
-**代码**：`app/api/middleware/` · **文档**：[中间件层说明](middleware_doc/middleware.md)
+**代码**：`app/api/middleware/` · **文档**：[中间件模块对外接口文档](middleware_doc/middleware.md)
 
 请求前置的横切关注点：
 
@@ -134,7 +134,7 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 
 ## Schema 与依赖注入
 
-**代码**：`app/api/schemas/` + `app/api/deps.py` · **文档**：[api.md](api.md)（请求 / 响应模型与认证方式）
+**代码**：`app/api/schemas/` + `app/api/deps.py` · **文档**：[routes.md](routes_doc/routes.md)（请求 / 响应模型与认证方式）
 
 - **Schema**：`request.py` 定义 `SendMessageRequest` / `CreateSessionRequest`；`response.py` 定义 `CreateSessionResponse`。路由层只 import 使用，不在路由内定义
 - **依赖注入**：`deps.py` 提供 `get_current_user`（模拟 Token 解析）与 `get_session_manager` / `get_context_manager` / `get_llm_service` / `get_tool_service` / `get_task_service` / `get_agent_params`（从 `container` 取单例，未初始化抛 `RuntimeError`）
@@ -165,8 +165,8 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 
 ## 相关文档
 
-- [API 对外契约](api.md)（端点 / 请求响应模型 / SSE 事件 / 认证 / 错误信封）
-- [路由层说明](routes_doc/routes.md) · [中间件层说明](middleware_doc/middleware.md)
+- [路由模块对外接口文档](routes_doc/routes.md)（端点契约 / 认证方式 / 异常契约）
+- [中间件模块对外接口文档](middleware_doc/middleware.md)（统一错误信封 / auth / rate_limit）
 - [架构设计](../architecture.md)（分层与演进路径）
 - [应用层说明](../application_doc/README.md)（服务层，API 的下游）
 - [集成层说明](../integration_doc/README.md)（LLM / 工具实现）

@@ -538,7 +538,7 @@ Phase A ──→ Phase B ──→ Phase C ──→ Phase D
 - [product](product.md)（产品方向）
 - [服务层说明](application_doc/README.md)（服务层模块 + 实现目标 — 对标工业级）
 - [agent 模块](domain_doc/agent_doc/agent.md)
-- [api 模块](api_doc/api.md)
+- [api 层说明](api_doc/README.md)
 - [config 模块](config_doc/config.md)
 - [logging 模块](platform_doc/observability/logging.md)（全局日志框架）
 - [error_handling 模块](shared_doc/error_handling.md)（异常处理与传播约定）

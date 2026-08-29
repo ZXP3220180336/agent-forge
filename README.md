@@ -104,7 +104,7 @@ uv run python -c "from app.domain.agent.executor import ReActAgent; print('OK')"
 | GET | `/api/session/{session_id}/history` | 会话历史消息 |
 | DELETE | `/api/session/{session_id}` | 删除会话 |
 
-> admin / agent / tool 路由与中间件为预留实现，详见 [docs/api_doc/api.md](docs/api_doc/api.md)。
+> admin / agent / tool 路由与中间件为预留实现，详见 [api 层说明](docs/api_doc/README.md)。
 
 ## 测试
 

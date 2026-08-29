@@ -131,4 +131,4 @@ REDIS_URL="redis://localhost:6379/0"
 
 - [架构设计](architecture.md)
 - [config 模块](config_doc/config.md)
-- [api 模块](api_doc/api.md)
+- [api 层说明](api_doc/README.md)

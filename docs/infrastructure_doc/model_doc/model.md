@@ -39,7 +39,7 @@
 `app/infrastructure/models/` 是系统的**ORM 数据模型层**，承载所有结构化数据的持久化定义：
 
 - **ORM 模型（`database/` 子包）**：SQLAlchemy 声明式模型，与数据库表一一对应，负责持久化会话与消息
-- **Pydantic Schema（`app/api/schemas/`）**：请求 / 响应数据校验模型，负责 API 层的出入参校验（不属于本层，见 [api.md](../../api_doc/api.md)）
+- **Pydantic Schema（`app/api/schemas/`）**：请求 / 响应数据校验模型，负责 API 层的出入参校验（不属于本层，见 [routes.md](../../api_doc/routes_doc/routes.md)）
 
 其中 ORM 模型已完成，是会话管理与消息持久化的基石。
 
@@ -56,7 +56,7 @@ app/infrastructure/models/
     ├── task.py              ← ⏳ 预留：任务表
     └── tool_log.py          ← ⏳ 预留：工具调用日志表
 
-app/api/schemas/             ← Pydantic 模型（API 层，见 api.md）
+app/api/schemas/             ← Pydantic 模型（API 层，见 routes.md）
     ├── request.py           ← 请求体模型（已实现）
     ├── response.py          ← 响应体模型（已实现）
     └── agent.py             ← 预留：Agent 相关数据结构
@@ -84,7 +84,7 @@ app.infrastructure.models（__init__.py）
 
 API 层（schemas）
         ▼
-app.api.schemas/（Pydantic，见 api.md）
+app.api.schemas/（Pydantic，见 routes.md）
 ```
 
 ---
@@ -218,7 +218,7 @@ Base = declarative_base()
 
 ### Pydantic Schema（API 层）
 
-Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 层出入参的校验与文档化，详见 [api.md](../../api_doc/api.md)：
+Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 层出入参的校验与文档化，详见 [routes.md](../../api_doc/routes_doc/routes.md)：
 
 | 文件           | 状态                                   | 用途                                   |
 | -------------- | -------------------------------------- | -------------------------------------- |
@@ -250,7 +250,7 @@ Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 
 | `messages.py`        | ✅   | `MessageModel` 已实现并被 `SessionManager` 使用                       |
 | `task.py`            | ❌   | 预留任务表，待任务落库需求出现后实现                                   |
 | `tool_log.py`        | ❌   | 预留工具调用日志表                                                     |
-| `app/api/schemas/`   | 🔶   | Pydantic 模型在 API 层（request/response 已实现，agent 预留），见 [api.md](../../api_doc/api.md) |
+| `app/api/schemas/`   | 🔶   | Pydantic 模型在 API 层（request/response 已实现，agent 预留），见 [routes.md](../../api_doc/routes_doc/routes.md) |
 | **DB 运行环境**      | 🔶   | `asyncpg` 驱动未安装，数据库恒降级（项目级遗留）；模型已就绪但未连真库验证 |
 
 **下一步计划**：
@@ -258,7 +258,7 @@ Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 
 1. 补 `asyncpg` 依赖并连通 PostgreSQL，验证 `SessionModel` / `MessageModel` 建表与增删查改
 2. 依据 `task_doc/task.md` 落地 `task.py` 任务表
 3. 依据 `integration_doc/tools_doc/tools.md` 落地 `tool_log.py` 工具调用日志表
-4. API 层补充 `agent.py` 等剩余 Pydantic Schema（见 [api.md](../../api_doc/api.md)）
+4. API 层补充 `agent.py` 等剩余 Pydantic Schema（见 [routes.md](../../api_doc/routes_doc/routes.md)）
 
 ---
 
@@ -305,6 +305,6 @@ Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 
 | [研发教训](../../lessons.md)                         | 项目级研发教训（metadata / declarative_base 出处） |
 | [任务模块](../../application_doc/task_doc/task.md)   | `task.py` 预留对应的任务数据结构                   |
 | [工具系统](../../integration_doc/tools_doc/tools.md) | `tool_log.py` 预留对应的工具抽象与内置工具         |
-| [API 层](../../api_doc/api.md)                       | `schemas/` 预留对应的请求 / 响应模型               |
+| [路由模块](../../api_doc/routes_doc/routes.md)                       | `schemas/` 预留对应的请求 / 响应模型               |
 | [配置参考](../../config_doc/config.md)               | `DATABASE_URL` 等数据库连接配置                    |
 | [部署文档](../../deployment.md)                      | 数据库部署与 `asyncpg` 依赖说明                    |

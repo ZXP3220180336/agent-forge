@@ -10,7 +10,7 @@
 | app/main.py | ✅ | docs/deployment.md | tests/e2e/test_api.py | 入口；e2e 覆盖 HTTP 层 |
 | app/container.py | ✅ | docs/architecture.md | tests/unit/test_container.py | 装配根 |
 | app/config/settings.py | ✅ | docs/config_doc/config.md | tests/unit/test_settings.py | 约 90 配置项 |
-| app/api/deps.py | 🔶 | docs/api_doc/api.md | (无) | DI 薄解析；经 chat_flow 间接覆盖 |
+| app/api/deps.py | 🔶 | docs/api_doc/routes_doc/routes.md | (无) | DI 薄解析；经 chat_flow 间接覆盖 |
 | app/api/middleware/auth.py | ⬜ | docs/api_doc/middleware_doc/middleware.md | (无) | 空文件，鉴权 mock 待实现 |
 | app/api/middleware/error_handler.py | ✅ | docs/api_doc/middleware_doc/middleware.md | tests/unit/test_error_handler.py | AppError → HTTP 状态 + 统一信封（Phase D error_handler） |
 | app/api/middleware/rate_limit.py | ⬜ | docs/api_doc/middleware_doc/middleware.md | (无) | 空文件待实现 |
@@ -19,9 +19,9 @@
 | app/api/routes/admin.py | ⬜ | docs/api_doc/routes_doc/routes.md | (无) | 空文件待实现 |
 | app/api/routes/agent.py | ⬜ | docs/api_doc/routes_doc/routes.md | (无) | 空文件待实现 |
 | app/api/routes/tool.py | ⬜ | docs/api_doc/routes_doc/routes.md | (无) | 空文件待实现 |
-| app/api/schemas/request.py | 🔶 | docs/api_doc/api.md | (无) | 请求 DTO；随路由测试覆盖 |
-| app/api/schemas/response.py | 🔶 | docs/api_doc/api.md | (无) | 响应 DTO；随路由测试覆盖 |
-| app/api/schemas/agent.py | ⬜ | docs/api_doc/api.md | (无) | 空文件待实现（Agent DTO） |
+| app/api/schemas/request.py | 🔶 | docs/api_doc/routes_doc/routes.md | (无) | 请求 DTO；随路由测试覆盖 |
+| app/api/schemas/response.py | 🔶 | docs/api_doc/routes_doc/routes.md | (无) | 响应 DTO；随路由测试覆盖 |
+| app/api/schemas/agent.py | ⬜ | docs/api_doc/routes_doc/routes.md | (无) | 空文件待实现（Agent DTO） |
 | app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断 + Agent 运行中上下文预算管理（ContextBudgetPort） |
 | app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 三合一待拆分 |
 | app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | 并发闸门 |

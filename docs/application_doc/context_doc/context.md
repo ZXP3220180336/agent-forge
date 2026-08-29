@@ -100,6 +100,6 @@ context_manager.trim_messages(messages, max_rounds=10, max_tokens=80000)
 - [SessionManager 会话管理](../session_doc/session.md)（数据来源：`get_session` / `get_messages`）
 - [领域层说明](../../domain_doc/README.md)（`ContextBudgetPort` 端口，Agent 消费方）
 - [集成层说明](../../integration_doc/README.md)（`TokenCounter` 端口实现）
-- [API 模块](../../api_doc/api.md)（`chat.py` 路由，本模块上游调用方）
+- [路由模块](../../api_doc/routes_doc/routes.md)（`chat.py` 路由，本模块上游调用方）
 - [配置说明](../../config_doc/config.md)
 - [架构设计](../../architecture.md)
