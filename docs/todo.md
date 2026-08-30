@@ -1,3 +1,16 @@
+# 2026-08-30 Agent 运行异常处理全面性评审（5 问题逐项修复）
+
+> 评审 Agent 运行异常处理全面性，发现 5 个问题（部分进度 / 取消语义 / 协议异常 / handler 防御 / error 脱敏），按问题修复工作流逐项完成（测试驱动 → issue → 文档 → 停等审核），全部修复并推送。
+
+- [x] 问题 1（REASON-002）：UNKNOWN 未保留部分进度 → `_finalize_unknown` 用 last_result 组装 outcome（对齐 TIMEOUT/COST_EXCEEDED/STALLED 部分进度保留模式）
+- [x] 问题 2（REASON-003）：取消信号语义错位 + /chat/stop 未接线 → cancel_event 链路贯通（ReAct 识别 → CANCELLED，不重试）+ TaskService 会话级取消注册表 + chat 真实优雅取消
+- [x] 问题 3（REASON-004）：finish_reason=tool_calls 但 tool_calls 空 → 短路 PARSE_FAILED 协议异常分发（不入空输出计数 / 不进空转执行，默认重试）
+- [x] 问题 4（SHARED-001）：错误处理 handler 自身异常无防御 → ErrorHandlerRegistry.dispatch 捕获降级默认 action（except Exception，CancelledError 穿透不吞）
+- [x] 问题 5（REASON-005）：UNKNOWN error 拼接完整异常文本泄漏内部细节 → 只留异常类型名（产品侧脱敏）+ 完整异常含 traceback 进日志（运维诊断）
+- [x] 验证：全量 692 passed + verify_alignment 通过；提交推送至远端（05a3f5d / 问题2 / 9a4ed74 / 91e5ecc / f7b5861 / b8277b7）
+
+---
+
 # 2026-08-30 Token 计量并入 LLMGateway：移除 TokenCounter 端口
 
 > 延续 Facade 收窄原则：Token 计量（模型特定编码）同成本估算一样是 LLM 能力，从独立 `TokenCounter` 端口并入 `LLMGateway`（端口 6→5），`ContextManager` 经 `LLMGateway.count_*` 接入，不再接触独立端口。
