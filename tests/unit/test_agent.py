@@ -86,6 +86,23 @@ class _EmptyLLM:
         return
 
 
+class _ScriptedLLM:
+    """按脚本返回 StreamResult 字段的 LLM 替身（脚本耗尽复用最后一条）。"""
+
+    def __init__(self, scripts):
+        self.scripts = scripts
+        self.calls = 0
+
+    async def async_generate(self, *args, result=None, **kwargs):
+        self.calls += 1
+        spec = self.scripts[min(self.calls - 1, len(self.scripts) - 1)]
+        if result is not None:
+            for key, value in spec.items():
+                setattr(result, key, value)
+        yield ""
+        return
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_calls_parallel_preserves_order(monkeypatch):
     """并行执行工具：tool_messages 顺序保持 = tool_calls 输入顺序。"""
@@ -153,6 +170,30 @@ async def test_react_agent_passes_max_empty_retries_to_strategy():
     assert agent.result.success is False
     assert agent.result.iterations == 2
     assert "连续空输出" in (agent.result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_agent_passes_max_same_action_turns_to_strategy():
+    """ReActAgent 经 AgentContext.max_same_action_turns 透传给 execute（停滞超限终止）。"""
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "tool_a", "arguments": json.dumps({"query": "x"})},
+    }
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [call]}] * 2)
+    reg = ToolService(max_concurrent_tools=10)
+    reg.register(_DelayTool("tool_a", delay=0.001))
+    agent = ReActAgent(llm=llm, tools=reg)
+    ctx = AgentContext(session_id="s", user_id="u", max_iterations=5, max_same_action_turns=1)
+
+    async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
+        pass
+
+    # max_same_action_turns=1：第 2 轮相同工具调用终止（iterations=2）
+    assert agent.result is not None
+    assert agent.result.success is False
+    assert agent.result.iterations == 2
+    assert "相同工具调用" in (agent.result.error or "")
 
 
 @pytest.mark.asyncio

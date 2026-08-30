@@ -273,9 +273,9 @@ class Container:
 
         # Agent 运行参数（装配根读 settings 后下发，供 chat 路由构造 AgentContext）
         self.agent_params = {
-            "max_iterations": settings.agent_max_iterations,
             "temperature": settings.llm_temperature,
             "max_tokens": settings.llm_max_tokens,
+            "max_iterations": settings.agent_max_iterations,
             # 启用总时间上限：agent_timeout 原为「从未使用的默认任务超时」，接为 ReAct 循环总时长护栏
             "max_execution_time": settings.agent_timeout,
             # 上下文预算：轮次（agent_max_context_rounds）+ token（复用全局 max_context_tokens）
@@ -283,6 +283,8 @@ class Container:
             "max_context_tokens": settings.max_context_tokens,
             # 空输出重试上限（连续空输出防空转烧钱）
             "max_empty_retries": settings.agent_max_empty_retries,
+            # 循环停滞检测（连续相同工具调用防死循环）
+            "max_same_action_turns": settings.agent_max_same_action_turns,
         }
 
         # 成本上限：agent_max_cost 未配置（None）或 LLM 服务降级 → 不注入，ReAct 循环零开销。

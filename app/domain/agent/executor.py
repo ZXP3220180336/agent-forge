@@ -77,6 +77,7 @@ class ReActAgent(BaseAgent):
             max_context_rounds=ctx.max_context_rounds,
             max_context_tokens=ctx.max_context_tokens,
             max_empty_retries=ctx.max_empty_retries,
+            max_same_action_turns=ctx.max_same_action_turns,
         ):
             yield event
 

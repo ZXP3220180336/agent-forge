@@ -32,6 +32,7 @@ VALIDATOR_CASES = [
     ("llm_reserve_window", [0]),
     ("agent_max_cost", [-0.1, -5]),
     ("agent_max_empty_retries", [-1, -5]),
+    ("agent_max_same_action_turns", [0, -1]),
 ]
 
 
@@ -57,6 +58,7 @@ VALID_BOUNDARY_CASES = [
     ("llm_reserve_window", [1]),
     ("agent_max_cost", [0.0, 1.5]),
     ("agent_max_empty_retries", [0, 1, 5]),
+    ("agent_max_same_action_turns", [1, 3, 100]),
 ]
 
 
@@ -125,6 +127,11 @@ def test_agent_max_cost_default_none():
 def test_agent_max_empty_retries_default_two():
     """agent_max_empty_retries 默认 2（连续空输出最多重试 2 次，第 3 次终止）。"""
     assert _make().agent_max_empty_retries == 2
+
+
+def test_agent_max_same_action_turns_default_three():
+    """agent_max_same_action_turns 默认 3（连续相同工具调用超过 3 轮终止）。"""
+    assert _make().agent_max_same_action_turns == 3
 
 
 def test_llm_embedding_config():

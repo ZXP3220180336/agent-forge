@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     agent_streaming: bool = True
     agent_max_context_rounds: int = 8  # 上下文预算：Agent 循环保留最近轮数（0/None 走 AgentContext 默认）
     agent_max_empty_retries: int = 2  # 连续空输出重试上限：空输出最多重试 N 次，第 N+1 次仍空输出则终止（0=首次空输出即终止）
+    agent_max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）超过 N 轮，下一轮仍相同则终止
     agent_max_cost: float | None = None  # 成本上限（美元 USD）；None=不启用（0 则任何正成本即停）
 
     # 任务优先级配置
@@ -234,6 +235,14 @@ class Settings(BaseSettings):
         """验证空输出重试上限（非负；0=首次空输出即终止）。"""
         if v < 0:
             raise ValueError(f"空输出重试上限不能为负，当前值: {v}")
+        return v
+
+    @field_validator("agent_max_same_action_turns")
+    @classmethod
+    def validate_max_same_action_turns(cls, v: int) -> int:
+        """验证循环停滞检测上限（≥ 1；0 会让首次工具调用即触发，无意义）。"""
+        if v < 1:
+            raise ValueError(f"相同工具调用上限必须 ≥ 1，当前值: {v}")
         return v
 
     @field_validator("agent_max_concurrent_tasks")

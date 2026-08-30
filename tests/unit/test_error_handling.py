@@ -47,6 +47,13 @@ async def test_default_actions():
     )
     assert (
         await reg.dispatch(
+            AgentErrorKind.STALLED,
+            AgentErrorContext(AgentErrorKind.STALLED, "x"),
+        )
+        == AgentErrorAction.STOP
+    )
+    assert (
+        await reg.dispatch(
             AgentErrorKind.CANCELLED,
             AgentErrorContext(AgentErrorKind.CANCELLED, "x"),
         )

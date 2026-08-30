@@ -62,9 +62,9 @@ class AgentContext:
     user_id: UserId
 
     # 参数控制（默认值与配置默认一致；生产值由装配根注入，可被调用方覆盖）
-    max_iterations: int = 10
     temperature: float = 0.2
     max_tokens: int = 4096
+    max_iterations: int = 10
     max_execution_time: float | None = (
         None  # 整个 ReAct 循环总时长上限（秒）；None=不设限
     )
@@ -75,6 +75,7 @@ class AgentContext:
     )
     max_context_tokens: int | None = None  # 上下文预算：消息总 token 上限；None=不裁剪
     max_empty_retries: int = 2  # 连续空输出重试上限（0=首次空输出即终止）
+    max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）上限
 
     # 扩展字段
     metadata: dict[str, Any] = field(default_factory=dict)

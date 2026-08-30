@@ -132,6 +132,7 @@ async def test_initialize_happy_path(monkeypatch):
         "max_context_rounds": settings.agent_max_context_rounds,
         "max_context_tokens": settings.max_context_tokens,
         "max_empty_retries": settings.agent_max_empty_retries,
+        "max_same_action_turns": settings.agent_max_same_action_turns,
     }
     # 成本上限：未配置（默认 None）→ cost_limiter 为 None（不启用）
     assert c.cost_limiter is None

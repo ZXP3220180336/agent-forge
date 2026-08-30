@@ -100,6 +100,26 @@ def _extract_final_answer(
     return args, None
 
 
+def _action_fingerprint(tool_calls: list[dict]) -> str:
+    """工具调用动作指纹：本轮所有工具（名 + 规范化参数）序列化，供停滞检测。
+
+    参数 json.loads 后 sort_keys 重 dump——语义相同的不同 key 顺序 / 空白指纹一致
+    （对齐 ml-intern doom-loop args 规范化）；参数 JSON 非法时回退原始字符串。
+    排除 final_answer（终止工具，非循环动作）；整轮仅 final_answer 时返回空串（不检测）。
+    """
+    sig = []
+    for tc in tool_calls:
+        name = tc["function"]["name"]
+        if name == _FINAL_ANSWER_TOOL:
+            continue
+        try:
+            args = json.loads(tc["function"]["arguments"])
+        except json.JSONDecodeError, KeyError:
+            args = tc.get("function", {}).get("arguments", "")
+        sig.append((name, args))
+    return json.dumps(sig, sort_keys=True, ensure_ascii=False, default=str)
+
+
 @dataclass
 class ReActOutcome:
     """ReAct 策略执行的最终结果载体（供桥接方组装 AgentResult）。"""
@@ -134,12 +154,15 @@ class ReActStrategy:
     ) -> None:
         self._llm = llm
         self._tools = tools
-        self._context_budget = context_budget
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
+        self._context_budget = context_budget
         self._cost_limiter = cost_limiter
         self._tool_call_records: list[dict[str, Any]] = []
         # 连续空输出重试计数（execute 每次开头重置；本轮有产出清零、空输出 +1）
         self._empty_retries = 0
+        # 循环停滞检测状态：上一轮动作指纹 + 连续相同计数（execute 开头重置）
+        self._last_action_fp: str | None = None
+        self._stall_count = 0
         # 结果载体，execute() 结束后读取
         self.outcome: ReActOutcome | None = None
 
@@ -155,6 +178,7 @@ class ReActStrategy:
         max_context_rounds: int | None = None,
         max_context_tokens: int | None = None,
         max_empty_retries: int = 2,
+        max_same_action_turns: int = 3,
         output_schema: dict | None = None,
     ) -> AsyncGenerator[str]:
         """
@@ -166,7 +190,7 @@ class ReActStrategy:
             2. 检查 finish_reason
                - "stop"       → 生成最终结果，结束循环
                - "length"     → 生成部分结果，结束循环
-               - "tool_calls" → final_answer 检测 → 执行工具，追加结果，继续循环
+               - "tool_calls" → final_answer 检测 → 停滞检测（连续相同超限硬终止）→ 执行工具，追加结果，继续循环
                - 空输出       → 连续计数 +1；超过 max_empty_retries 硬终止，否则错误分发重试
             3. 达到最大迭代次数 → 错误分发（默认兜底）
             4. 达到 max_execution_time（总时长上限）→ 错误分发（默认超时降级）
@@ -187,6 +211,9 @@ class ReActStrategy:
             max_empty_retries: 连续空输出重试上限——空输出最多重试 N 次，第
                 N+1 次仍空输出则终止（0=首次空输出即终止）；达上限走 EMPTY_OUTPUT
                 分发硬终止（防模型空转烧钱）
+            max_same_action_turns: 循环停滞检测——连续相同工具调用（工具+参数）
+                超过 N 轮后，下一轮仍相同则终止（默认 3）；达上限走 STALLED
+                分发硬终止（防死循环烧钱/重复副作用）
             output_schema: 最终答案结构化 JSON Schema（None=不启用）。启用时注入
                 final_answer 工具，模型最后调用提交结构化结果并终止循环
 
@@ -202,6 +229,9 @@ class ReActStrategy:
         self._tool_call_records = []
         # 连续空输出重试计数：execute 每次独立（有产出清零 / 空输出 +1，见主循环）
         self._empty_retries = 0
+        # 循环停滞检测：execute 每次独立（相同动作指纹 + 连续计数，见主循环）
+        self._last_action_fp = None
+        self._stall_count = 0
         last_result: StreamResult | None = None
         total_usage: dict = {}
         # 记录进入 timeout 的 task：超时降级时判别「真超时」与「生成器被 finalizer
@@ -328,6 +358,27 @@ class ReActStrategy:
                                 return
                             continue  # final_answer CONTINUE：回喂后继续
 
+                        # ----- 循环停滞检测：相同工具 + 参数连续重复 → STALLED 分发硬终止 -----
+                        # 动作指纹 = 本轮 tool_calls 的（名, 规范化参数）序列化；连续相同
+                        # 超过 max_same_action_turns 轮判死循环（对齐 SMOL same_action_llm_turn_limit）。
+                        # 停滞判定后不执行本轮工具：执行无意义 + 防重复副作用 / 烧钱。
+                        fp = _action_fingerprint(stream_result.tool_calls)
+                        if fp and fp == self._last_action_fp:
+                            self._stall_count += 1
+                        else:
+                            self._stall_count = 1
+                            self._last_action_fp = fp
+                        if self._stall_count > max_same_action_turns:
+                            async for event in self._finalize_stalled(
+                                stream_result.tool_calls,
+                                iteration,
+                                total_usage,
+                                full_reasoning,
+                                self._stall_count,
+                            ):
+                                yield event
+                            return
+
                         async for event in self._handle_tool_calls(
                             stream_result.tool_calls,
                             messages,
@@ -377,392 +428,6 @@ class ReActStrategy:
                 yield event
 
             return
-
-    # ==================================================================
-    # execute 的拆分方法（职责单一，行为与原内联分支一致）
-    # 终止信号：设置 self.outcome = 终止；不设置 = 继续循环（主循环据此 return/continue）
-    # ==================================================================
-
-    def _build_outcome(
-        self,
-        *,
-        success: bool,
-        content: str,
-        reasoning: str,
-        iteration: int,
-        total_tokens: int,
-        usage: dict | None,
-        error: str | None = None,
-        structured: dict | None = None,
-        tool_calls: list[dict] | None = None,
-    ) -> ReActOutcome:
-        """统一组装 ReActOutcome（各终止分支共用）。"""
-        return ReActOutcome(
-            success=success,
-            content=content,
-            reasoning=reasoning,
-            structured=structured,
-            tool_calls=(
-                tool_calls if tool_calls is not None else self._tool_call_records
-            ),
-            iterations=iteration,
-            total_tokens=total_tokens,
-            usage=usage,
-            error=error,
-        )
-
-    async def _dispatch(
-        self, kind: AgentErrorKind, message: str, iteration: int
-    ) -> AgentErrorAction:
-        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 8 处分发唯一入口）。"""
-        action = await self._error_handlers.dispatch(
-            kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
-        )
-        if action == AgentErrorAction.RAISE:
-            raise AgentRunError(kind, message, iteration)
-        return action
-
-    async def _finalize_llm_failed(
-        self,
-        stream_result: StreamResult,
-        iteration: int,
-        total_usage: dict,
-    ) -> AsyncGenerator[str]:
-        """LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）。"""
-        action = await self._dispatch(
-            AgentErrorKind.LLM_FAILED, stream_result.error or "", iteration
-        )
-        if action == AgentErrorAction.CONTINUE:
-            yield build_info_event(
-                f"LLM 失败，按错误处理策略重试: {stream_result.error}"
-            )
-            return
-        # STOP（默认）：短路失败
-        self.outcome = self._build_outcome(
-            success=False,
-            content=stream_result.content,
-            reasoning=stream_result.reasoning_content,
-            iteration=iteration,
-            total_tokens=total_usage.get("total_tokens", 0),
-            usage=total_usage or None,
-            error=stream_result.error,
-        )
-        yield build_done_event(
-            iterations=iteration,
-            total_tokens=total_usage.get("total_tokens", 0),
-        )
-
-    async def _handle_final_answer(
-        self,
-        tool_calls: list[dict],
-        messages: list[dict],
-        iteration: int,
-        output_schema: dict,
-        total_usage: dict,
-        full_reasoning: str,
-    ) -> AsyncGenerator[str]:
-        """final_answer 工具：成功提取终止 / 校验失败分发（CONTINUE 回喂）。
-
-        主循环仅在检测到 final_answer 调用时才调用本方法。
-        """
-        final_tcs = [
-            tc for tc in tool_calls if tc["function"]["name"] == _FINAL_ANSWER_TOOL
-        ]
-        structured, err = _extract_final_answer(final_tcs[0], output_schema)
-        if structured is not None:
-            # 成功：终止循环，结构化进 outcome
-            self.outcome = self._build_outcome(
-                success=True,
-                content="",
-                reasoning=full_reasoning.strip(),
-                iteration=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-                usage=total_usage or None,
-                structured=structured,
-            )
-            yield build_info_event("已收到结构化最终答案")
-            yield build_done_event(
-                iterations=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-            )
-            return
-
-        # 校验失败 → 错误分发（默认 CONTINUE 回喂；handler 可终止/上抛）
-        fa_msg = f"final_answer 参数{err}"
-        action = await self._dispatch(
-            AgentErrorKind.STRUCTURED_INVALID, fa_msg, iteration
-        )
-
-        if action == AgentErrorAction.STOP:
-            self.outcome = self._build_outcome(
-                success=False,
-                content="",
-                reasoning=full_reasoning.strip(),
-                iteration=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-                usage=total_usage or None,
-                error="final_answer 参数校验失败（按错误处理策略终止）",
-            )
-            yield build_done_event(
-                iterations=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-            )
-            return
-
-        # CONTINUE（默认）：回喂错误文本，模型下轮自纠
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": final_tcs[0].get("id", ""),
-                "content": f"错误: {fa_msg}",
-            }
-        )
-        self._tool_call_records.append(
-            {
-                "tool": _FINAL_ANSWER_TOOL,
-                "params": {},
-                "result": "",
-                "success": False,
-                "error": fa_msg,
-                "error_code": ErrorCode.VALIDATION.value,
-                "duration": 0.0,
-            }
-        )
-        yield build_info_event(f"final_answer 校验失败，已回喂: {err}")
-
-    async def _handle_tool_calls(
-        self,
-        tool_calls: list[dict],
-        messages: list[dict],
-        iteration: int,
-        total_usage: dict,
-        full_reasoning: str,
-    ) -> AsyncGenerator[str]:
-        """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。
-
-        上下文预算不在本方法内：统一在主循环顶部（每次 LLM 调用前）裁剪，
-        所有继续路径（含非工具重试）共用，见 execute() 第 0 步。
-        """
-        before = len(self._tool_call_records)
-        async for event in self.execute_tool_calls(tool_calls, messages, iteration):
-            yield event
-
-        # 可恢复错误分发：本轮失败工具按 kind 分组聚合后逐 kind 分发，
-        # 再按「最严重优先」仲裁（RAISE > STOP > CONTINUE）——对齐 OpenAI 多失败优先级仲裁。
-        # 终止/上报时其他失败不回喂模型（循环结束，回喂无意义），但全部失败已进证据链。
-        new_failures = [
-            r for r in self._tool_call_records[before:] if not r.get("success")
-        ]
-        if new_failures:
-            grouped: dict[AgentErrorKind, list[dict]] = {}
-            for r in new_failures:
-                kind = (
-                    AgentErrorKind.PARSE_FAILED
-                    if r.get("error_code") == ErrorCode.JSON_PARSE.value
-                    else AgentErrorKind.TOOL_FAILED
-                )
-                grouped.setdefault(kind, []).append(r)
-            # 逐 kind 分发：同 kind 的多个失败聚合为一条 message（handler 可见全部原因）
-            decisions: list[tuple[AgentErrorKind, str, AgentErrorAction]] = []
-            for kind, fails in grouped.items():
-                fail_msg = "；".join(
-                    f"{f.get('tool', '?')}: {f.get('error', '')}" for f in fails
-                )
-                action = await self._dispatch(kind, fail_msg, iteration)
-                decisions.append((kind, fail_msg, action))
-            # 仲裁：任何 RAISE → 上报；任何 STOP → 终止；全 CONTINUE → 回喂继续
-            for kind, fail_msg, action in decisions:
-                if action == AgentErrorAction.RAISE:
-                    raise AgentRunError(kind, fail_msg, iteration)
-            for kind, fail_msg, action in decisions:
-                if action == AgentErrorAction.STOP:
-                    self.outcome = self._build_outcome(
-                        success=False,
-                        content="",
-                        reasoning=full_reasoning.strip(),
-                        iteration=iteration,
-                        total_tokens=total_usage.get("total_tokens", 0),
-                        usage=total_usage or None,
-                        error=f"{kind.value}（按错误处理策略终止）: {fail_msg}",
-                    )
-                    yield build_done_event(
-                        iterations=iteration,
-                        total_tokens=total_usage.get("total_tokens", 0),
-                    )
-                    return
-            # 全 CONTINUE：工具结果已回喂，继续循环
-
-    async def _finalize_stop(
-        self,
-        full_reasoning: str,
-        full_content: str,
-        iteration: int,
-        total_usage: dict,
-    ) -> AsyncGenerator[str]:
-        """正常结束（stop/length/有内容）。"""
-        self.outcome = self._build_outcome(
-            success=bool(full_content.strip()),
-            content=full_content.strip(),
-            reasoning=full_reasoning.strip(),
-            iteration=iteration,
-            total_tokens=total_usage.get("total_tokens", 0),
-            usage=total_usage or None,
-        )
-        yield build_done_event(
-            iterations=iteration,
-            total_tokens=total_usage.get("total_tokens", 0),
-        )
-
-    async def _handle_empty_output(
-        self,
-        full_reasoning: str,
-        iteration: int,
-        total_usage: dict,
-        max_empty_retries: int,
-    ) -> AsyncGenerator[str]:
-        """空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）。
-
-        连续空输出重试上限：计数超过 max_empty_retries 后硬终止——即使 handler 返回
-        CONTINUE 也不继续（终结护栏，对齐 TIMEOUT / COST_EXCEEDED），防模型空转烧钱。
-        """
-        # 硬终止分支：先 dispatch（handler 可 RAISE 上抛），STOP/CONTINUE 均终止
-        if self._empty_retries > max_empty_retries:
-            error = f"连续空输出（{self._empty_retries} 轮），已终止"
-            await self._dispatch(AgentErrorKind.EMPTY_OUTPUT, error, iteration)
-            self.outcome = self._build_outcome(
-                success=False,
-                content="",
-                reasoning=full_reasoning.strip(),
-                iteration=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-                usage=total_usage or None,
-                error=error,
-            )
-            yield build_info_event(error)
-            yield build_done_event(
-                iterations=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-            )
-            return
-
-        action = await self._dispatch(
-            AgentErrorKind.EMPTY_OUTPUT, "LLM 未生成有效输出", iteration
-        )
-        if action == AgentErrorAction.STOP:
-            self.outcome = self._build_outcome(
-                success=False,
-                content="",
-                reasoning=full_reasoning.strip(),
-                iteration=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-                usage=total_usage or None,
-                error="LLM 未生成有效输出（按错误处理策略终止）",
-            )
-            yield build_done_event(
-                iterations=iteration,
-                total_tokens=total_usage.get("total_tokens", 0),
-            )
-            return
-        # CONTINUE（默认）：重试
-        yield build_info_event("LLM 未生成有效输出，重试")
-
-    async def _finalize_max_turns(
-        self,
-        last_result: StreamResult | None,
-        max_iterations: int,
-        total_usage: dict,
-    ) -> AsyncGenerator[str]:
-        """达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛）。"""
-        await self._dispatch(
-            AgentErrorKind.MAX_TURNS,
-            f"已达到最大迭代次数({max_iterations})",
-            max_iterations,
-        )
-        # STOP（默认）：现有兜底（CONTINUE 循环已耗尽，按 STOP 处理）
-        yield build_info_event(f"已达到最大迭代次数({max_iterations})")
-        if last_result:
-            self.outcome = self._build_outcome(
-                success=bool(last_result.content.strip()),
-                content=last_result.content.strip(),
-                reasoning=last_result.reasoning_content.strip(),
-                iteration=max_iterations,
-                total_tokens=total_usage.get("total_tokens", 0),
-                usage=total_usage or None,
-            )
-        else:
-            # 防御分支（last_result 恒非 None），与既有行为一致（空默认）
-            self.outcome = ReActOutcome(
-                success=False,
-                content="",
-                iterations=max_iterations,
-                error="LLM 未返回任何结果",
-            )
-        yield build_done_event(
-            iterations=max_iterations,
-            total_tokens=total_usage.get("total_tokens", 0),
-        )
-
-    async def _finalize_timeout(
-        self,
-        last_result: StreamResult | None,
-        iteration: int,
-        total_usage: dict,
-        max_execution_time: float | None,
-    ) -> AsyncGenerator[str]:
-        """总时长超时 → 错误分发（默认 STOP 降级；handler 可上抛）。"""
-        await self._dispatch(
-            AgentErrorKind.TIMEOUT,
-            f"ReAct 执行超时（超过 {max_execution_time} 秒）",
-            iteration,
-        )
-        # STOP（默认）：对齐 max_iterations 兜底，用 last_result 组装降级 outcome
-        error = f"ReAct 执行超时（超过 {max_execution_time} 秒）"
-        self.outcome = self._build_outcome(
-            success=bool(last_result.content.strip()) if last_result else False,
-            content=last_result.content.strip() if last_result else "",
-            reasoning=last_result.reasoning_content.strip() if last_result else "",
-            iteration=iteration,
-            total_tokens=total_usage.get("total_tokens", 0),
-            usage=total_usage or None,
-            error=error,
-        )
-        yield build_info_event(error)
-        yield build_done_event(
-            iterations=self.outcome.iterations,
-            total_tokens=self.outcome.total_tokens,
-        )
-
-    async def _finalize_cost_exceeded(
-        self,
-        last_result: StreamResult | None,
-        iteration: int,
-        total_usage: dict,
-        cost: float,
-    ) -> AsyncGenerator[str]:
-        """累计成本超限 → 错误分发（默认 STOP 停机；handler 可上抛）。
-
-        对齐 _finalize_timeout 降级模式：dispatch → build_outcome + info + done；
-        CONTINUE 被忽略（终结性护栏，同 TIMEOUT/MAX_TURNS），RAISE 由 _dispatch 抛出。
-        cost_limiter 为 None 时主循环不进入本方法。
-        """
-        error = f"ReAct 执行成本超限（累计 ${cost:.4f}）"
-        await self._dispatch(AgentErrorKind.COST_EXCEEDED, error, iteration)
-        # STOP（默认）：用 last_result 组装降级 outcome（有 content 算部分成功）。
-        # last_result 在主循环该检查点必非 None（累加在赋值后），None 分支防御性对齐。
-        self.outcome = self._build_outcome(
-            success=bool(last_result.content.strip()) if last_result else False,
-            content=last_result.content.strip() if last_result else "",
-            reasoning=last_result.reasoning_content.strip() if last_result else "",
-            iteration=iteration,
-            total_tokens=total_usage.get("total_tokens", 0),
-            usage=total_usage or None,
-            error=error,
-        )
-        yield build_info_event(error)
-        yield build_done_event(
-            iterations=self.outcome.iterations,
-            total_tokens=self.outcome.total_tokens,
-        )
 
     async def execute_tool_calls(
         self,
@@ -857,3 +522,414 @@ class ReActStrategy:
             )
 
         messages.extend(tool_messages)
+
+    # ==================================================================
+    # execute 的拆分方法（职责单一，行为与原内联分支一致）
+    # 终止信号：设置 self.outcome = 终止；不设置 = 继续循环（主循环据此 return/continue）
+    # ==================================================================
+
+    async def _dispatch(
+        self, kind: AgentErrorKind, message: str, iteration: int
+    ) -> AgentErrorAction:
+        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 9 处分发唯一入口）。"""
+        action = await self._error_handlers.dispatch(
+            kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
+        )
+        if action == AgentErrorAction.RAISE:
+            raise AgentRunError(kind, message, iteration)
+        return action
+
+    async def _finalize_outcome(
+        self,
+        *,
+        success: bool,
+        content: str,
+        reasoning: str,
+        iteration: int,
+        total_usage: dict,
+        error: str | None = None,
+        info_message: str | None = None,
+        structured: dict | None = None,
+    ) -> AsyncGenerator[str]:
+        """统一收尾：组装 outcome + 产出事件（可选 info + done 恰一次）。
+
+        覆盖各终结 / STOP 分支的公共尾段（dispatch 由调用方负责——CONTINUE 语义
+        各异：重试 / 回喂 / 忽略）。done 的 iterations / total_tokens 从 outcome 取。
+        原 _build_outcome（统一组装结果载体）已并入本方法——无独立消费方。
+        """
+        self.outcome = ReActOutcome(
+            success=success,
+            content=content,
+            reasoning=reasoning,
+            structured=structured,
+            tool_calls=self._tool_call_records,
+            iterations=iteration,
+            total_tokens=total_usage.get("total_tokens", 0),
+            usage=total_usage or None,
+            error=error,
+        )
+        if info_message:
+            yield build_info_event(info_message)
+        yield build_done_event(
+            iterations=self.outcome.iterations,
+            total_tokens=self.outcome.total_tokens,
+        )
+
+    async def _finalize_llm_failed(
+        self,
+        stream_result: StreamResult,
+        iteration: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）。"""
+        action = await self._dispatch(
+            AgentErrorKind.LLM_FAILED, stream_result.error or "", iteration
+        )
+        if action == AgentErrorAction.CONTINUE:
+            yield build_info_event(
+                f"LLM 失败，按错误处理策略重试: {stream_result.error}"
+            )
+            return
+        # STOP（默认）：短路失败
+        async for event in self._finalize_outcome(
+            success=False,
+            content=stream_result.content,
+            reasoning=stream_result.reasoning_content,
+            iteration=iteration,
+            total_usage=total_usage,
+            error=stream_result.error,
+        ):
+            yield event
+
+    async def _handle_final_answer(
+        self,
+        tool_calls: list[dict],
+        messages: list[dict],
+        iteration: int,
+        output_schema: dict,
+        total_usage: dict,
+        full_reasoning: str,
+    ) -> AsyncGenerator[str]:
+        """final_answer 工具：成功提取终止 / 校验失败分发（CONTINUE 回喂）。
+
+        主循环仅在检测到 final_answer 调用时才调用本方法。
+        """
+        final_tcs = [
+            tc for tc in tool_calls if tc["function"]["name"] == _FINAL_ANSWER_TOOL
+        ]
+        structured, err = _extract_final_answer(final_tcs[0], output_schema)
+        if structured is not None:
+            # 成功：终止循环，结构化进 outcome
+            async for event in self._finalize_outcome(
+                success=True,
+                content="",
+                reasoning=full_reasoning.strip(),
+                iteration=iteration,
+                total_usage=total_usage,
+                structured=structured,
+                info_message="已收到结构化最终答案",
+            ):
+                yield event
+            return
+
+        # 校验失败 → 错误分发（默认 CONTINUE 回喂；handler 可终止/上抛）
+        fa_msg = f"final_answer 参数{err}"
+        action = await self._dispatch(
+            AgentErrorKind.STRUCTURED_INVALID, fa_msg, iteration
+        )
+
+        if action == AgentErrorAction.STOP:
+            async for event in self._finalize_outcome(
+                success=False,
+                content="",
+                reasoning=full_reasoning.strip(),
+                iteration=iteration,
+                total_usage=total_usage,
+                error="final_answer 参数校验失败（按错误处理策略终止）",
+            ):
+                yield event
+            return
+
+        # CONTINUE（默认）：回喂错误文本，模型下轮自纠
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": final_tcs[0].get("id", ""),
+                "content": f"错误: {fa_msg}",
+            }
+        )
+        self._tool_call_records.append(
+            {
+                "tool": _FINAL_ANSWER_TOOL,
+                "params": {},
+                "result": "",
+                "success": False,
+                "error": fa_msg,
+                "error_code": ErrorCode.VALIDATION.value,
+                "duration": 0.0,
+            }
+        )
+        yield build_info_event(f"final_answer 校验失败，已回喂: {err}")
+
+    async def _handle_tool_calls(
+        self,
+        tool_calls: list[dict],
+        messages: list[dict],
+        iteration: int,
+        total_usage: dict,
+        full_reasoning: str,
+    ) -> AsyncGenerator[str]:
+        """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。
+
+        上下文预算不在本方法内：统一在主循环顶部（每次 LLM 调用前）裁剪，
+        所有继续路径（含非工具重试）共用，见 execute() 第 0 步。
+        """
+        before = len(self._tool_call_records)
+        async for event in self.execute_tool_calls(tool_calls, messages, iteration):
+            yield event
+
+        # 可恢复错误分发：本轮失败工具按 kind 分组聚合后逐 kind 分发，
+        # 再按「最严重优先」仲裁（RAISE > STOP > CONTINUE）——对齐 OpenAI 多失败优先级仲裁。
+        # 终止/上报时其他失败不回喂模型（循环结束，回喂无意义），但全部失败已进证据链。
+        new_failures = [
+            r for r in self._tool_call_records[before:] if not r.get("success")
+        ]
+        if new_failures:
+            grouped: dict[AgentErrorKind, list[dict]] = {}
+            for r in new_failures:
+                kind = (
+                    AgentErrorKind.PARSE_FAILED
+                    if r.get("error_code") == ErrorCode.JSON_PARSE.value
+                    else AgentErrorKind.TOOL_FAILED
+                )
+                grouped.setdefault(kind, []).append(r)
+            # 逐 kind 分发：同 kind 的多个失败聚合为一条 message（handler 可见全部原因）
+            decisions: list[tuple[AgentErrorKind, str, AgentErrorAction]] = []
+            for kind, fails in grouped.items():
+                fail_msg = "；".join(
+                    f"{f.get('tool', '?')}: {f.get('error', '')}" for f in fails
+                )
+                action = await self._dispatch(kind, fail_msg, iteration)
+                decisions.append((kind, fail_msg, action))
+            # 仲裁：任何 RAISE → 上报；任何 STOP → 终止；全 CONTINUE → 回喂继续
+            for kind, fail_msg, action in decisions:
+                if action == AgentErrorAction.RAISE:
+                    raise AgentRunError(kind, fail_msg, iteration)
+            for kind, fail_msg, action in decisions:
+                if action == AgentErrorAction.STOP:
+                    async for event in self._finalize_outcome(
+                        success=False,
+                        content="",
+                        reasoning=full_reasoning.strip(),
+                        iteration=iteration,
+                        total_usage=total_usage,
+                        error=f"{kind.value}（按错误处理策略终止）: {fail_msg}",
+                    ):
+                        yield event
+                    return
+            # 全 CONTINUE：工具结果已回喂，继续循环
+
+    async def _finalize_stop(
+        self,
+        full_reasoning: str,
+        full_content: str,
+        iteration: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """正常结束（stop/length/有内容）。"""
+        async for event in self._finalize_outcome(
+            success=bool(full_content.strip()),
+            content=full_content.strip(),
+            reasoning=full_reasoning.strip(),
+            iteration=iteration,
+            total_usage=total_usage,
+        ):
+            yield event
+
+    async def _handle_empty_output(
+        self,
+        full_reasoning: str,
+        iteration: int,
+        total_usage: dict,
+        max_empty_retries: int,
+    ) -> AsyncGenerator[str]:
+        """空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）。
+
+        连续空输出重试上限：计数超过 max_empty_retries 后硬终止——即使 handler 返回
+        CONTINUE 也不继续（终结护栏，对齐 TIMEOUT / COST_EXCEEDED），防模型空转烧钱。
+        """
+        # 硬终止分支：先 dispatch（handler 可 RAISE 上抛），STOP/CONTINUE 均终止
+        if self._empty_retries > max_empty_retries:
+            error = f"连续空输出（{self._empty_retries} 轮），已终止"
+            await self._dispatch(AgentErrorKind.EMPTY_OUTPUT, error, iteration)
+            async for event in self._finalize_outcome(
+                success=False,
+                content="",
+                reasoning=full_reasoning.strip(),
+                iteration=iteration,
+                total_usage=total_usage,
+                error=error,
+                info_message=error,
+            ):
+                yield event
+            return
+
+        action = await self._dispatch(
+            AgentErrorKind.EMPTY_OUTPUT, "LLM 未生成有效输出", iteration
+        )
+        if action == AgentErrorAction.STOP:
+            async for event in self._finalize_outcome(
+                success=False,
+                content="",
+                reasoning=full_reasoning.strip(),
+                iteration=iteration,
+                total_usage=total_usage,
+                error="LLM 未生成有效输出（按错误处理策略终止）",
+                info_message="LLM 未生成有效输出（按错误处理策略终止）",
+            ):
+                yield event
+            return
+
+        # CONTINUE（默认）：重试
+        yield build_info_event("LLM 未生成有效输出，重试")
+
+    async def _finalize_terminal(
+        self,
+        kind: AgentErrorKind,
+        message: str,
+        iteration: int,
+        *,
+        success: bool,
+        content: str,
+        reasoning: str,
+        total_usage: dict,
+        error: str | None = None,
+        info_message: str | None = None,
+        structured: dict | None = None,
+    ) -> AsyncGenerator[str]:
+        """终结性护栏统一收尾：dispatch（RAISE 上抛，CONTINUE 忽略）→ 收尾。
+
+        供「CONTINUE 无重试语义」的终结分支（TIMEOUT / COST_EXCEEDED / STALLED /
+        MAX_TURNS）复用；可恢复分支（CONTINUE 有重试 / 回喂语义，需先拿 action
+        分派）用 _finalize_outcome。
+        """
+        await self._dispatch(kind, message, iteration)
+        async for event in self._finalize_outcome(
+            success=success,
+            content=content,
+            reasoning=reasoning,
+            iteration=iteration,
+            total_usage=total_usage,
+            error=error,
+            info_message=info_message,
+            structured=structured,
+        ):
+            yield event
+
+    async def _finalize_max_turns(
+        self,
+        last_result: StreamResult | None,
+        max_iterations: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛）。"""
+        error = f"已达到最大迭代次数({max_iterations})"
+        # STOP（默认）：现有兜底（CONTINUE 循环已耗尽，按 STOP 处理）
+        async for event in self._finalize_terminal(
+            AgentErrorKind.MAX_TURNS,
+            error,
+            max_iterations,
+            success=bool(last_result.content.strip()) if last_result else False,
+            content=last_result.content.strip() if last_result else "",
+            reasoning=last_result.reasoning_content.strip() if last_result else "",
+            total_usage=total_usage,
+            error=error,
+            info_message=error,
+        ):
+            yield event
+
+    async def _finalize_timeout(
+        self,
+        last_result: StreamResult | None,
+        iteration: int,
+        total_usage: dict,
+        max_execution_time: float | None,
+    ) -> AsyncGenerator[str]:
+        """总时长超时 → 错误分发（默认 STOP 降级；handler 可上抛）。"""
+        error = f"ReAct 执行超时（超过 {max_execution_time} 秒）"
+        # STOP（默认）：对齐 max_iterations 兜底，用 last_result 组装降级 outcome
+        async for event in self._finalize_terminal(
+            AgentErrorKind.TIMEOUT,
+            error,
+            iteration,
+            success=bool(last_result.content.strip()) if last_result else False,
+            content=last_result.content.strip() if last_result else "",
+            reasoning=last_result.reasoning_content.strip() if last_result else "",
+            total_usage=total_usage,
+            error=error,
+            info_message=error,
+        ):
+            yield event
+
+    async def _finalize_cost_exceeded(
+        self,
+        last_result: StreamResult | None,
+        iteration: int,
+        total_usage: dict,
+        cost: float,
+    ) -> AsyncGenerator[str]:
+        """累计成本超限 → 错误分发（默认 STOP 停机；handler 可上抛）。
+
+        终结护栏统一经 _finalize_terminal 收尾（dispatch → outcome + info + done）；
+        CONTINUE 被忽略（同 TIMEOUT / STALLED），RAISE 由 _dispatch 抛出。
+        cost_limiter 为 None 时主循环不进入本方法。
+        """
+        error = f"ReAct 执行成本超限（累计 ${cost:.4f}）"
+        # 用 last_result 组装降级 outcome（有 content 算部分成功）。
+        # last_result 在主循环该检查点必非 None（累加在赋值后），None 分支防御性对齐。
+        async for event in self._finalize_terminal(
+            AgentErrorKind.COST_EXCEEDED,
+            error,
+            iteration,
+            success=bool(last_result.content.strip()) if last_result else False,
+            content=last_result.content.strip() if last_result else "",
+            reasoning=last_result.reasoning_content.strip() if last_result else "",
+            total_usage=total_usage,
+            error=error,
+            info_message=error,
+        ):
+            yield event
+
+    async def _finalize_stalled(
+        self,
+        tool_calls: list[dict],
+        iteration: int,
+        total_usage: dict,
+        full_reasoning: str,
+        count: int,
+    ) -> AsyncGenerator[str]:
+        """连续相同工具调用超限 → 错误分发（默认 STOP 停机；handler 可上抛）。
+
+        终结护栏统一经 _finalize_terminal 收尾（dispatch → outcome + info + done）；
+        CONTINUE 被忽略（同 TIMEOUT / COST_EXCEEDED），RAISE 由 _dispatch 抛出。
+        检测点在工具执行前：本方法返回即终止，本轮工具不执行。
+        """
+        names = "、".join(
+            tc["function"]["name"]
+            for tc in tool_calls
+            if tc["function"]["name"] != _FINAL_ANSWER_TOOL
+        )
+        error = f"连续 {count} 轮相同工具调用（{names}），已终止"
+        # 停机组装 outcome（本轮无工具执行，content 空，保留 reasoning）
+        async for event in self._finalize_terminal(
+            AgentErrorKind.STALLED,
+            error,
+            iteration,
+            success=False,
+            content="",
+            reasoning=full_reasoning.strip(),
+            total_usage=total_usage,
+            error=error,
+            info_message=error,
+        ):
+            yield event

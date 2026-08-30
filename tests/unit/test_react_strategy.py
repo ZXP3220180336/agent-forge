@@ -424,6 +424,242 @@ async def test_react_empty_output_retry_limit_handler_raise():
     assert calls["n"] == 3  # 2 次重试分发 + 1 次硬终止分发
 
 
+# ---------------------------------------------------------------
+# 循环停滞检测（增强项 #24）：相同工具+参数连续重复超过上限 → STALLED 分发硬终止
+# ---------------------------------------------------------------
+
+
+def _echo_call(text: str = "hi") -> dict:
+    """构造 echo 工具调用（便于重复指纹测试）。"""
+    return {
+        "id": "call_echo",
+        "type": "function",
+        "function": {"name": "echo", "arguments": json.dumps({"text": text})},
+    }
+
+
+@pytest.mark.asyncio
+async def test_react_stall_same_action_stops():
+    """同工具同参数连续 4 轮（默认 max=3）→ 第 4 轮 STALLED 终止，该轮工具不执行。"""
+    llm = _ScriptedLLM(
+        [{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 4
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 4
+    assert "相同工具调用" in (strategy.outcome.error or "")
+    assert "echo" in (strategy.outcome.error or "")
+    # 第 4 轮工具未执行（停滞判定在工具执行前）：前 3 轮已执行
+    assert len(strategy.outcome.tool_calls) == 3
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_stall_allows_below_limit():
+    """连续 3 轮相同（= 默认上限）后 stop → 正常结束（count=3 不 > 3）。"""
+    llm = _ScriptedLLM(
+        [{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 3
+        + [{"finish_reason": "stop", "content": "完成"}]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert len(strategy.outcome.tool_calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_react_stall_different_args_resets():
+    """同工具参数变化 → 指纹不同重置，不触发停滞。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call("a")]},
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call("b")]},
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call("a")]},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert len(strategy.outcome.tool_calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_react_stall_change_tool_resets():
+    """换工具 → 指纹不同重置，不触发停滞。"""
+    fail_call = {
+        "id": "call_fail",
+        "type": "function",
+        "function": {"name": "fail", "arguments": "{}"},
+    }
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "tool_calls", "tool_calls": [fail_call]},
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool(), _FailingTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert len(strategy.outcome.tool_calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_react_stall_limit_configurable():
+    """max_same_action_turns=1 → 第 2 轮相同工具调用终止（iterations=2）。"""
+    llm = _ScriptedLLM(
+        [{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 2
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+        max_same_action_turns=1,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 2
+    assert "相同工具调用" in (strategy.outcome.error or "")
+    assert len(strategy.outcome.tool_calls) == 1  # 第 2 轮不执行
+
+
+@pytest.mark.asyncio
+async def test_react_stall_final_answer_not_counted():
+    """final_answer 轮不参与停滞检测（指纹排除），正常终止 structured 提取。"""
+    fa_call = {
+        "id": "fa1",
+        "type": "function",
+        "function": {
+            "name": "final_answer",
+            "arguments": json.dumps({"conclusion": "根因A", "confidence": 0.9}),
+        },
+    }
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [fa_call]}])
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.structured == {"conclusion": "根因A", "confidence": 0.9}
+    # 停滞计数未被 final_answer 污染
+    assert strategy._stall_count == 0
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_stall_handler_raise():
+    """达上限 + STALLED handler → RAISE：抛 AgentRunError(kind=STALLED)。"""
+    async def on_stalled(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.STALLED, on_stalled)
+
+    llm = _ScriptedLLM(
+        [{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 4
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=6, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.STALLED
+    assert "相同工具调用" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_react_stall_args_normalized():
+    """参数 key 顺序 / 空白不同但语义相同 → 指纹一致（规范化），连续 4 轮触发停滞。"""
+    call_a = {
+        "id": "call_n",
+        "type": "function",
+        "function": {"name": "echo", "arguments": '{"a": 1, "b": 2}'},
+    }
+    call_b = {
+        "id": "call_n",
+        "type": "function",
+        "function": {"name": "echo", "arguments": '{"b":2,"a":1}'},
+    }
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [call_a]},
+            {"finish_reason": "tool_calls", "tool_calls": [call_b]},
+            {"finish_reason": "tool_calls", "tool_calls": [call_b]},
+            {"finish_reason": "tool_calls", "tool_calls": [call_a]},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # a、b 规范化后指纹相同 → 4 轮连续相同 → 第 4 轮终止（前 3 轮执行）
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 4
+    assert len(strategy.outcome.tool_calls) == 3
+
+
 @pytest.mark.asyncio
 async def test_react_execute_timeout_first_iteration():
     """首轮 LLM 调用即超时 → 降级 outcome：success=False + error 记录超时 + iterations=1。"""

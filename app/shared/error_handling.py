@@ -26,6 +26,7 @@ class AgentErrorKind(StrEnum):
         MAX_TURNS        迭代耗尽 → 兜底
         TIMEOUT          总时长超时 → 降级
         COST_EXCEEDED    累计成本超限 → 停机降级
+        STALLED          连续相同工具调用（工具+参数）→ 停机
         CANCELLED        外部取消 → 取消态
         UNKNOWN          未捕获异常 → FAILED 态
     可恢复错误（默认 CONTINUE = 回喂模型继续，现有行为）：
@@ -39,6 +40,7 @@ class AgentErrorKind(StrEnum):
     MAX_TURNS = "MAX_TURNS"
     TIMEOUT = "TIMEOUT"
     COST_EXCEEDED = "COST_EXCEEDED"
+    STALLED = "STALLED"
     CANCELLED = "CANCELLED"
     UNKNOWN = "UNKNOWN"
     TOOL_FAILED = "TOOL_FAILED"
@@ -101,6 +103,7 @@ _DEFAULT_ACTIONS: dict[AgentErrorKind, AgentErrorAction] = {
     AgentErrorKind.MAX_TURNS: AgentErrorAction.STOP,
     AgentErrorKind.TIMEOUT: AgentErrorAction.STOP,
     AgentErrorKind.COST_EXCEEDED: AgentErrorAction.STOP,
+    AgentErrorKind.STALLED: AgentErrorAction.STOP,
     AgentErrorKind.CANCELLED: AgentErrorAction.STOP,
     AgentErrorKind.UNKNOWN: AgentErrorAction.STOP,
     AgentErrorKind.TOOL_FAILED: AgentErrorAction.CONTINUE,
