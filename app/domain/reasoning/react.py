@@ -114,7 +114,7 @@ def _action_fingerprint(tool_calls: list[dict]) -> str:
             continue
         try:
             args = json.loads(tc["function"]["arguments"])
-        except json.JSONDecodeError, KeyError:
+        except (json.JSONDecodeError, KeyError):
             args = tc.get("function", {}).get("arguments", "")
         sig.append((name, args))
     return json.dumps(sig, sort_keys=True, ensure_ascii=False, default=str)
