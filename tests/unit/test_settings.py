@@ -30,6 +30,7 @@ VALIDATOR_CASES = [
     ("llm_reserve_reasoning_quantile", [0, 1]),
     ("llm_reserve_min_samples", [0]),
     ("llm_reserve_window", [0]),
+    ("agent_max_cost", [-0.1, -5]),
 ]
 
 
@@ -53,6 +54,7 @@ VALID_BOUNDARY_CASES = [
     ("llm_reserve_reasoning_quantile", [0.5]),
     ("llm_reserve_min_samples", [1]),
     ("llm_reserve_window", [1]),
+    ("agent_max_cost", [0.0, 1.5]),
 ]
 
 
@@ -110,6 +112,12 @@ def test_llm_fast_config_falls_back_to_main():
 def test_llm_fast_config_uses_fast_model():
     s = _make(llm_model_id="main", llm_fast_model_id="quick")
     assert s.llm_fast_config["model"] == "quick"
+
+
+def test_agent_max_cost_default_none():
+    """agent_max_cost 默认 None（不启用）；显式 None 也接受。"""
+    assert _make().agent_max_cost is None
+    assert _make(agent_max_cost=None).agent_max_cost is None
 
 
 def test_llm_embedding_config():

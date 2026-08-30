@@ -10,13 +10,15 @@
 
 ## 📋 目录
 
-- [定位与职责](#定位与职责)
-- [接口契约](#接口契约)
-- [行为边界](#行为边界)
-- [使用示例](#使用示例)
-- [设计决策](#设计决策)
-- [测试](#测试)
-- [相关文档](#相关文档)
+- [CostTracker 成本计算说明文档](#costtracker-成本计算说明文档)
+  - [📋 目录](#-目录)
+  - [定位与职责](#定位与职责)
+  - [接口契约](#接口契约)
+  - [行为边界](#行为边界)
+  - [使用示例](#使用示例)
+  - [设计决策](#设计决策)
+  - [测试](#测试)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -29,6 +31,8 @@ CostTracker 是系统的**成本计算器**：根据 Token 用量与模型定价
 - **定价查找**：`_find_price(model)` 精确 → 最长前缀 → 默认，容忍模型版本号后缀
 
 > **定价表（`MODEL_PRICING`）**：$/1K tokens，含 OpenAI / DeepSeek / Claude / Embedding 共 15 条，**以源码为准**（`app/integration/llm/cost_tracker.py`），随模型价格变动更新。未知模型回退默认均价 `DEFAULT_PRICE`（input 0.002 / output 0.008）。
+>
+> **对外访问**：成本计算经 LLM 模块 **Facade**（`LLMService.calculate_cost`）对外，领域层成本上限经 **`LLMGateway.calculate_cost`** 端口接入（由 `LLMService` 结构实现，见 [ports.md](../../domain_doc/ports_doc/ports.md)）——消费方不直接触及本子组件。
 
 ## 接口契约
 

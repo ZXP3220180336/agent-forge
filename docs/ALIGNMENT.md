@@ -23,6 +23,7 @@
 | app/api/schemas/response.py | 🔶 | docs/api_doc/routes_doc/routes.md | (无) | 响应 DTO；随路由测试覆盖 |
 | app/api/schemas/agent.py | ⬜ | docs/api_doc/routes_doc/routes.md | (无) | 空文件待实现（Agent DTO） |
 | app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断 + Agent 运行中上下文预算管理（ContextBudgetPort） |
+| app/application/context/cost_limiter.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_cost_limiter.py | 成本上限判定（CostLimiterPort 实现，经 LLMGateway.calculate_cost 取成本估算） |
 | app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 三合一待拆分 |
 | app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | 并发闸门 |
 | app/domain/agent/base.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | Agent 基类与数据定义 |
@@ -35,8 +36,9 @@
 | app/domain/memory/short_term.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/working.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/ports/context_budget.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 ContextManager/Agent 测试覆盖 |
+| app/domain/ports/cost_limiter.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 CostLimiter/Agent 测试覆盖 |
 | app/domain/ports/embedding_port.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 EmbeddingService 测试覆盖 |
-| app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/LLM 测试覆盖 |
+| app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议（含 calculate_cost）；随 Agent/LLM/成本测试覆盖 |
 | app/domain/ports/token_counter.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 TiktokenTokenCounter 测试覆盖 |
 | app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
 | app/domain/prompts/base.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
@@ -58,7 +60,7 @@
 | app/integration/vector_store/milvus.py | ⬜ | docs/integration_doc/README.md | (无) | 空文件待实现 |
 | app/integration/embedding/embedding_service.py | 🔶 | docs/integration_doc/embedding_doc/embedding.md | tests/unit/test_embedding.py | 文本向量化（结构实现 EmbeddingPort；已实现未接线，RAG 接线待 Phase D） |
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
-| app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪 |
+| app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪（CostTracker 静态定价，经 LLMService Facade 对外） |
 | app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；专属测试覆盖 fallback 传递/结算 |
 | app/integration/llm/reservation_limiter.py | ✅ | docs/integration_doc/llm_doc/limiter.md | tests/unit/test_reservation_limiter.py | reserve/settle 限流 |
 | app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试/错误分类 |

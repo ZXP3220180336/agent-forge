@@ -286,6 +286,7 @@ llm_service = LLMService(**settings.llm_config)
 | `AGENT_TIMEOUT` | int | 300 | ReAct 循环总时间上限（秒，5 分钟） |
 | `AGENT_STREAMING` | bool | true | 是否启用流式输出 |
 | `AGENT_MAX_CONTEXT_ROUNDS` | int | 8 | Agent 循环保留最近轮数（上下文预算，0/None 走 AgentContext 默认） |
+| `AGENT_MAX_COST` | float \| None | 空 | 成本上限（美元 USD）；空=不启用，0 则任何正成本即停（ReAct 累计成本超限自动停机） |
 
 #### 5.2 任务优先级配置
 

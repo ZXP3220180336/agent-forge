@@ -2,7 +2,7 @@
 
 > **模块**：`app/domain/reasoning/react.py`
 > **更新日期**：2026-08-29
-> **职责**：ReAct 原子推理策略——推理 ↔ 工具调用的完整循环算法（含工具并行原语、错误分发、结构化最终答案、上下文预算护栏）
+> **职责**：ReAct 原子推理策略——推理 ↔ 工具调用的完整循环算法（含工具并行原语、错误分发、结构化最终答案、上下文预算 + 成本上限护栏）
 > **状态**：✅ 已实现
 > **配套**：桥接见 [executor.md](../agent_doc/executor.md)（`ReActAgent`）；工业级对标见 [react_benchmark.md](react_benchmark.md)
 
@@ -17,6 +17,7 @@
     - [ReAct 循环（推理 → 行动 → 观察）](#react-循环推理--行动--观察)
     - [finish\_reason 分支判定](#finish_reason-分支判定)
     - [错误处理分发（ErrorHandlerRegistry）](#错误处理分发errorhandlerregistry)
+    - [成本上限（CostLimiterPort）](#成本上限costlimiterport)
     - [多工具失败聚合与仲裁](#多工具失败聚合与仲裁)
     - [结构化最终答案（final\_answer 工具）](#结构化最终答案final_answer-工具)
     - [上下文预算（ContextBudgetPort）](#上下文预算contextbudgetport)
@@ -47,7 +48,8 @@
 3. **错误处理横切**：各终止 / 可恢复错误经 `ErrorHandlerRegistry` 按 kind 分发（CONTINUE / STOP / RAISE），默认行为 = 现有逻辑，调用方可注册覆盖
 4. **结构化最终答案**：`output_schema` 启用时注入 final_answer 工具，模型最后调用提交 schema 约束结果并终止循环（兼作终止机制，无额外 LLM 调用）
 5. **上下文预算护栏**：模型下次调用前经 `ContextBudgetPort` 裁剪（轮次 + token 双层），防上下文膨胀
-6. **纯算法依赖方向**：只依赖 ports + shared + 标准库，收标量参数（非 `AgentContext`）——可独立测试、可被任意编排复用
+6. **成本上限护栏**：每轮 usage 累加后经 `CostLimiterPort` 折算成本，超限走 `COST_EXCEEDED` 分发停机（默认 STOP 降级），防长任务费用失控
+7. **纯算法依赖方向**：只依赖 ports + shared + 标准库，收标量参数（非 `AgentContext`）——可独立测试、可被任意编排复用
 
 ## 核心概念解释
 
@@ -67,7 +69,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 ### 错误处理分发（ErrorHandlerRegistry）
 
-错误处理是共享内核横切能力（`app.shared.error_handling`）：按 `AgentErrorKind` 注册 handler，决策 `CONTINUE`（回喂继续）/ `STOP`（终止）/ `RAISE`（上抛 `AgentRunError`）。ReAct 循环内触发 7 类 kind，与 BaseAgent 的 `CANCELLED` / `UNKNOWN` 合计 9 类：
+错误处理是共享内核横切能力（`app.shared.error_handling`）：按 `AgentErrorKind` 注册 handler，决策 `CONTINUE`（回喂继续）/ `STOP`（终止）/ `RAISE`（上抛 `AgentRunError`）。ReAct 循环内触发 8 类 kind，与 BaseAgent 的 `CANCELLED` / `UNKNOWN` 合计 10 类：
 
 | `AgentErrorKind` | 触发场景 | 默认 action |
 | --- | --- | --- |
@@ -75,9 +77,14 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 | `EMPTY_OUTPUT` | 空输出 | CONTINUE（重试） |
 | `MAX_TURNS` | 迭代耗尽 | STOP（兜底） |
 | `TIMEOUT` | 总时长超限 | STOP（降级） |
+| `COST_EXCEEDED` | 累计成本超限 | STOP（停机降级） |
 | `TOOL_FAILED` | 工具执行失败 | CONTINUE（回喂） |
 | `PARSE_FAILED` | 工具参数 JSON 解析失败 | CONTINUE（回喂） |
 | `STRUCTURED_INVALID` | final_answer 参数校验失败 | CONTINUE（回喂） |
+
+### 成本上限（CostLimiterPort）
+
+成本上限是横切护栏，由应用层 `CostLimiter` 结构实现（经 `CostLimiterPort` 注入；成本估算经 `LLMGateway.calculate_cost` 取——成本估算是 LLM 能力，应用层不直接依赖集成层），ReAct 不实现算法。每轮 usage 累加后 `check(累计 usage)` 折算成本（USD），超限即 `_finalize_cost_exceeded` 走 `COST_EXCEEDED` 分发（默认 STOP 降级，error 记录「成本超限（累计 $X）」）。置于 error 判断前：预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用。`cost_limiter=None`（未配置 `agent_max_cost`）整段零开销。与上下文预算互补：trim 在 LLM 调用前（减少发送 token），cost check 在调用后（审计花费）。
 
 ### 多工具失败聚合与仲裁
 
@@ -106,8 +113,9 @@ ReActAgent._strategy_cycle()（agent/ 层编排：生命周期 / 状态 / 结果
         ▼ execute()
 ReActStrategy.execute()（ReAct 主循环）
     ├── ContextBudgetPort.trim_messages ──► 上下文预算（模型调用前裁剪）
+    ├── CostLimiterPort.check ────────────► 成本上限（usage 累加后折算成本，超限停机）
     ├── LLMGateway.async_generate ────────► LLM 推理（流式 reasoning/message 事件）
-    ├── ErrorHandlerRegistry（shared）─────► 9 类 AgentErrorKind 分发（CONTINUE/STOP/RAISE）
+    ├── ErrorHandlerRegistry（shared）─────► 10 类 AgentErrorKind 分发（CONTINUE/STOP/RAISE）
     ├── execute_tool_calls() ─────────────► 工具并行执行原语
     │    └── ToolGateway.execute ─────────► 单工具执行（gather 保序）
     └── ReActOutcome ─────────────────────► 结果载体（execute() 后读取）
@@ -119,7 +127,7 @@ ReActStrategy.execute()（ReAct 主循环）
 | --- | --- | --- |
 | 编排层 | `ReActAgent`（agent/executor.py） | 生命周期 / 状态 / 事件路由 / `ReActOutcome → AgentResult` 组装 |
 | 策略层 | `ReActStrategy` | ReAct 主循环算法 + 错误分发 + 工具并行原语 |
-| 端口层 | `LLMGateway` / `ToolGateway` / `ContextBudgetPort` | 外部依赖抽象（依赖倒置，见 [ports.md](../ports_doc/ports.md)） |
+| 端口层 | `LLMGateway` / `ToolGateway` / `ContextBudgetPort` / `CostLimiterPort` | 外部依赖抽象（依赖倒置，见 [ports.md](../ports_doc/ports.md)） |
 | 共享内核 | `ErrorHandlerRegistry` / 事件构造 | 错误分发横切 + SSE 事件（`app.shared.*`） |
 
 **依赖方向**：本模块只依赖 ports + shared + 标准库，**不 import agent/**。
@@ -134,6 +142,7 @@ ReActStrategy.execute()（ReAct 主循环）
 | `_finalize_llm_failed` | `StreamResult.error` 非空 | STOP 短路失败（`success=False` + error）；handler 可 CONTINUE 重试 / RAISE 上抛 |
 | `_finalize_max_turns` | 循环达到 `max_iterations` | STOP 兜底：用 `last_result` 组装 outcome；无结果则 `error="LLM 未返回任何结果"` |
 | `_finalize_timeout` | `asyncio.timeout(max_execution_time)` 触发 | STOP 降级：用 `last_result` 组装（有 content 算部分成功），error 记录超时 |
+| `_finalize_cost_exceeded` | `CostLimiterPort.check(累计 usage)` 超限 | STOP 停机：用 `last_result` 组装（有 content 算部分成功），error 记录「成本超限（累计 $X）」 |
 
 关键语义：`asyncio.timeout` 包整个循环实现「总时长上限」（非单轮预算）；超时降级判别「真超时 vs 生成器被 finalizer 关闭」（慢消费者场景 aclose 由不同 task 驱动），后者干净停止、不 yield 降级事件（避免 `RuntimeError: async generator ignored GeneratorExit`）。
 
@@ -179,18 +188,21 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 第 N 轮推理开始（for iteration in 1..max_iterations）
   ├─ 0. 上下文预算：ContextBudgetPort.trim_messages（每次 LLM 调用前裁剪，所有继续路径共用）
   ├─ 1. LLM 推理：async_generate 流式，yield reasoning/message 事件，累计 usage
-  ├─ 2. stream_result.error 非空？→ _finalize_llm_failed
+  ├─ 2. 成本护栏：CostLimiterPort.check(累计 usage) 超限？→ _finalize_cost_exceeded
+  │       （默认 STOP 降级：error 记录「成本超限（累计 $X）」；置 error 判断前——
+  │         预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用）
+  ├─ 3. stream_result.error 非空？→ _finalize_llm_failed
   │       STOP（默认）→ 短路失败；CONTINUE → 重试下一轮
-  ├─ 3. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
-  ├─ 4. finish_reason 分支：
+  ├─ 4. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
+  ├─ 5. finish_reason 分支：
   │     ├─ "tool_calls" 且有工具 →
   │     │     ├─ 含 final_answer？→ _handle_final_answer（成功终止 / 校验失败回喂）
   │     │     └─ _handle_tool_calls：execute_tool_calls 并行执行 → 失败工具按 kind 聚合分发 + 仲裁
   │     │           → 全 CONTINUE → 下一轮
   │     ├─ "stop"/"length"/有内容 → _finalize_stop（正常结束）
   │     └─ 空输出 → _handle_empty_output（默认 CONTINUE 重试；STOP → 终止）
-  ├─ 5. 循环耗尽 → _finalize_max_turns（默认 STOP：last_result 兜底）
-  └─ 6. asyncio.timeout(max_execution_time) 触发 → _finalize_timeout（默认 STOP 降级）
+  ├─ 6. 循环耗尽 → _finalize_max_turns（默认 STOP：last_result 兜底）
+  └─ 7. asyncio.timeout(max_execution_time) 触发 → _finalize_timeout（默认 STOP 降级）
 ```
 
 ## 对外接口
@@ -199,7 +211,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
-| `__init__(llm, tools, context_budget=None, error_handlers=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry） |
+| `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
 | `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, output_schema=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome` |
 | `execute_tool_calls(tool_calls, messages, iteration) -> AsyncGenerator[str]` | 异步生成器 | 工具并行执行原语（gather 保序 + 事件产出 + 记录）；独立使用场景：PlannerAgent 执行阶段 / ReflectionAgent 收集阶段 |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
@@ -225,14 +237,15 @@ result = strategy.outcome  # ReActOutcome
 2. **空输出**（finish_reason 空 + content 空）→ `_handle_empty_output`，默认 CONTINUE 重试下一轮
 3. **达到 `max_iterations`** → `_finalize_max_turns`，用 `last_result` 兜底强制结束；无结果则 `error="LLM 未返回任何结果"`
 4. **达到 `max_execution_time`**（None=不设限）→ `_finalize_timeout`，用 `last_result` 降级（有 content 算部分成功），error 记录超时；慢消费者关闭生成器时干净停止、不 yield 降级事件
-5. **工具参数 JSON 解析失败** → 不执行工具：构造失败 ToolResult（JSON_PARSE）回喂模型自纠，`error`/`error_code` 进证据链
-6. **工具执行失败 / 无效工具名** → 回喂 `str(result)`（`"错误: <error>"`，无效工具含「未注册」），模型可感知失败自愈；`error` / `error_code` 进证据链
-7. **工具结果超长** → 截断（tool 消息 2000 字符 / 事件 200 字符）并追加 `[结果已截断]` 标记（预留标记长度，总长不超限）
-8. **reasoning_content 回喂** → DeepSeek V4 thinking + tools 必须回喂（否则 400）；`has_reasoning` 覆盖空 reasoning（空串也回喂），无信号不回喂（chat 模型）
-9. **上下文预算**（`max_context_rounds` / `max_context_tokens`，None=不裁剪）→ 循环顶部、每次 LLM 调用前经注入的 ContextBudgetPort 裁剪（所有继续路径共用）：保留最近 N 轮 assistant/tool 配对 + token 硬上限
-10. **结构化最终答案**（`output_schema`，None=不启用）→ 注入 final_answer 工具；模型调用即终止产出 `outcome.structured`；参数校验失败回喂（VALIDATION/STRUCTURED_INVALID）自纠
-11. **错误处理分发**（`error_handlers`，None=默认行为）→ 各终结/可恢复错误按 kind 分发（CONTINUE/STOP/RAISE）；默认 = 现有行为，调用方按 kind 注册覆盖
-12. **多工具失败** → 按 kind 聚合（同 kind 原因合并给 handler）+ 最严重优先仲裁（RAISE > STOP > CONTINUE）；终止/上报时其他失败不回喂，但全部失败已进证据链
+5. **累计成本超限**（`agent_max_cost`，None=不启用）→ usage 累加后经注入的 CostLimiterPort 折算成本，超限走 `COST_EXCEEDED` 分发（默认 STOP 降级：error 记录「成本超限（累计 $X）」）；`cost_limiter=None` 零开销
+6. **工具参数 JSON 解析失败** → 不执行工具：构造失败 ToolResult（JSON_PARSE）回喂模型自纠，`error`/`error_code` 进证据链
+7. **工具执行失败 / 无效工具名** → 回喂 `str(result)`（`"错误: <error>"`，无效工具含「未注册」），模型可感知失败自愈；`error` / `error_code` 进证据链
+8. **工具结果超长** → 截断（tool 消息 2000 字符 / 事件 200 字符）并追加 `[结果已截断]` 标记（预留标记长度，总长不超限）
+9. **reasoning_content 回喂** → DeepSeek V4 thinking + tools 必须回喂（否则 400）；`has_reasoning` 覆盖空 reasoning（空串也回喂），无信号不回喂（chat 模型）
+10. **上下文预算**（`max_context_rounds` / `max_context_tokens`，None=不裁剪）→ 循环顶部、每次 LLM 调用前经注入的 ContextBudgetPort 裁剪（所有继续路径共用）：保留最近 N 轮 assistant/tool 配对 + token 硬上限
+11. **结构化最终答案**（`output_schema`，None=不启用）→ 注入 final_answer 工具；模型调用即终止产出 `outcome.structured`；参数校验失败回喂（VALIDATION/STRUCTURED_INVALID）自纠
+12. **错误处理分发**（`error_handlers`，None=默认行为）→ 各终结/可恢复错误按 kind 分发（CONTINUE/STOP/RAISE）；默认 = 现有行为，调用方按 kind 注册覆盖
+13. **多工具失败** → 按 kind 聚合（同 kind 原因合并给 handler）+ 最严重优先仲裁（RAISE > STOP > CONTINUE）；终止/上报时其他失败不回喂，但全部失败已进证据链
 
 ## 配置项清单
 
@@ -243,16 +256,18 @@ result = strategy.outcome  # ReActOutcome
 | `agent_max_iterations` | int | 10 | `max_iterations` 生产值（迭代上限） |
 | `agent_timeout` | int | 300 | `max_execution_time` 生产值（循环总时长上限，秒） |
 | `agent_max_context_rounds` | int | 8 | `max_context_rounds` 生产值（上下文预算保留轮数） |
+| `agent_max_cost` | float \| None | None | 成本上限（美元 USD）；None=不启用（装配根据此构造 CostLimiter 注入，0 则任何正成本即停） |
 
 `max_context_tokens` 无独立配置，由装配根直接注入。完整配置表见 [config 文档](../../config_doc/config.md)。
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（31 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（37 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）
 - **时间上限**：首轮超时降级 / 中途超时保留部分进度 / 宽松上限不影响完成 / `None` 显式不设限
+- **成本上限**：首轮超限 STOP 降级 / 中途超限保留部分进度 / 宽松上限不触发 / `cost_limiter=None` 不启用 / COST_EXCEEDED→RAISE 上抛 / CONTINUE 忽略
 - **工具失败**：失败回喂 / 证据链记录 error+error_code / 无效工具名 NOT_REGISTERED / 解析失败不执行工具 + JSON_PARSE / 截断标记（带标记不超限 / 短结果无标记）
 - **reasoning 回喂**：`has_reasoning` 回喂空串 / 无信号不回喂
 - **上下文预算**：注入 ContextBudgetPort 后轮次裁剪生效 / 非工具路径（空输出重试）每次 LLM 调用前也裁剪
@@ -260,7 +275,7 @@ result = strategy.outcome  # ReActOutcome
 - **错误处理**：LLM_FAILED→CONTINUE 重试 / LLM_FAILED→RAISE 上抛 / EMPTY_OUTPUT→STOP / TOOL_FAILED→STOP（部分进度保留）/ STRUCTURED_INVALID→STOP
 - **多工具失败**：同 kind 聚合 message / 跨 kind STOP 仲裁 / 跨 kind RAISE 仲裁
 
-另经 `tests/unit/test_agent.py`（5 用例）间接覆盖（`ReActAgent` 编排路径，见 [executor.md](../agent_doc/executor.md)）。
+另经 `tests/unit/test_agent.py`（6 用例）间接覆盖（`ReActAgent` 编排路径 + cost_limiter 透传，见 [executor.md](../agent_doc/executor.md)）。
 
 ## 设计决策
 
@@ -270,6 +285,7 @@ result = strategy.outcome  # ReActOutcome
 | [agent-error-handling](../../../adr/domain/agent/2026-08-28-agent-error-handling.md) | 错误处理横切 ErrorHandlerRegistry，按 kind 分发（可恢复默认回喂、终结性默认终止） |
 | [structured-output](../../../adr/domain/reasoning/2026-08-28-structured-output.md) | 结构化用 Final Answer 工具（模型原生，兼作终止）而非事后提取；`generate_structured` 留非 Agent 场景 |
 | [context-budget](../../../adr/domain/reasoning/2026-08-28-context-budget.md) | 上下文预算归 context_manager（横切），经 ContextBudgetPort 注入；选 trimming 而非摘要（保证据链） |
+| [cost-limit](../../../adr/domain/reasoning/2026-08-30-cost-limit.md) | 成本上限经 CostLimiterPort 注入（应用层经 LLMGateway.calculate_cost 取成本估算），超限走 COST_EXCEEDED 分发（默认 STOP 停机）；成本记录不加领域 outcome（可推导） |
 | [reactor-max-execution-time](../../../adr/domain/reasoning/2026-08-27-reactor-max-execution-time.md) | `asyncio.timeout` 包循环实现总时长上限，超时对齐 max_iterations 兜底降级 |
 | [reasoning-feedback](../../../adr/domain/reasoning/2026-08-27-reasoning-feedback.md) | reasoning_content 回喂策略（has_reasoning 覆盖空串，防 400） |
 | [tool-error-feedback](../../../adr/domain/reasoning/2026-08-27-tool-error-feedback.md) | 工具失败回喂 `str(result)` + error/error_code 进证据链（模型自愈 + 根因可溯） |
@@ -284,6 +300,6 @@ result = strategy.outcome  # ReActOutcome
 - [推理策略模块](reasoning.md)（主文档）
 - [ReActAgent 桥接组件](../agent_doc/executor.md)（同级组件）
 - [Agent 模块对外接口文档](../agent_doc/agent.md)
-- [领域端口契约](../ports_doc/ports.md)（LLMGateway / ToolGateway / ContextBudgetPort 契约）
+- [领域端口契约](../ports_doc/ports.md)（LLMGateway / ToolGateway / ContextBudgetPort / CostLimiterPort 契约）
 - [ReAct 工业级对标基准](react_benchmark.md)（能力基准与差距清单）
 - [领域层说明](../README.md)

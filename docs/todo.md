@@ -1,3 +1,20 @@
+# 2026-08-30 成本上限自动停机（增强项 #20）+ 断点续跑 ADR（#19 升级路径）
+
+> 对标收尾：#20 CostTracker 记账有、无 cost ceiling 自动停机。经 CostLimiterPort 端口注入（镜像 ContextBudgetPort），累计成本超限走 COST_EXCEEDED 分发默认 STOP 停机。约束：react.py 只依赖 ports+shared；成本估算是 LLM 能力，归属 LLMGateway.calculate_cost，应用层 CostLimiter 经该端口取成本（不直接 import 集成层子组件）。
+
+- [x] `domain/ports/cost_limiter.py`：CostLimiterPort（check 无状态纯函数，返回 exceeded+cost）
+- [x] `domain/ports/llm_gateway.py`：LLMGateway 加 `calculate_cost`（成本估算归 LLM 能力，Facade 结构实现）
+- [x] `application/context/cost_limiter.py`：CostLimiter（ceiling + llm 端口注入 + model 配置）
+- [x] `error_handling.py`：AgentErrorKind.COST_EXCEEDED（10 类，默认 STOP）+ 默认表 + 测试
+- [x] react.py：构造注入 + 每轮 usage 累加后检查（error 判断前）+ `_finalize_cost_exceeded` 降级
+- [x] 注入链：settings `agent_max_cost` → container.cost_limiter 单例（llm=llm_service Facade）→ deps.get_cost_limiter → chat → ReActAgent；AgentContext 不改
+- [x] 测试：test_cost_limiter 7 例 + react 6 例 + error_handling/container/settings/agent 同步
+- [x] 文档：react.md / react_benchmark（#20 ✅）/ ports.md / context.md / config / .env.example / ALIGNMENT / cost_tracker.md
+- [x] [ADR #20](../adr/domain/reasoning/2026-08-30-cost-limit.md) + [ADR #19 checkpointer-resume](../adr/domain/reasoning/2026-08-30-checkpointer-resume.md)（升级路径，不实现）
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-30 上下文预算放置位置修复（REASON-001）
 
 > 审查发现：预算原放 `_handle_tool_calls` 尾部，仅覆盖「工具调用 → 回喂」路径；LLM 失败重试 / final_answer 回喂重试 / 空输出重试三条非工具继续路径漏裁，上下文无限增长、护栏失效。根因：护栏放置点锚定「工具调用后」而非「LLM 调用前」（横切护栏应锚定其约束的调用点）。

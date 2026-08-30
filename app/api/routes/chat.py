@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from app.api.deps import (
     get_agent_params,
     get_context_manager,
+    get_cost_limiter,
     get_current_user,
     get_llm_service,
     get_session_manager,
@@ -19,6 +20,7 @@ from app.application.context.context_manager import ContextManager
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
 from app.domain.agent import AgentContext, ReActAgent
+from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 from app.shared.events import build_error_event
@@ -38,6 +40,7 @@ async def send_message(
     tool_service: ToolGateway = Depends(get_tool_service),  # noqa: B008
     task_service: TaskService = Depends(get_task_service),  # noqa: B008
     agent_params: dict = Depends(get_agent_params),  # noqa: B008
+    cost_limiter: CostLimiterPort | None = Depends(get_cost_limiter),  # noqa: B008
 ):
     """
     发送消息，流式返回 AI 回复
@@ -90,6 +93,7 @@ async def send_message(
             llm=llm_service,
             tools=tool_service,
             context_budget=context_manager,
+            cost_limiter=cost_limiter,
         )
 
         try:

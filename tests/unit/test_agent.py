@@ -111,6 +111,24 @@ async def test_execute_tool_calls_parallel_preserves_order(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_react_agent_passes_cost_limiter_to_strategy():
+    """ReActAgent 构造注入的 cost_limiter 透传到内部 ReActStrategy。"""
+    from app.application.context.cost_limiter import CostLimiter
+    from app.integration.llm.cost_tracker import CostTracker
+
+    class _Calc:
+        @staticmethod
+        def calculate_cost(usage, model=""):
+            return CostTracker.calculate(usage, model)
+
+    llm = _NoopLLM()
+    cl = CostLimiter(ceiling=0.5, llm=_Calc(), model="gpt-4o-mini")
+    agent = ReActAgent(llm=llm, tools=None, cost_limiter=cl)
+
+    assert agent._strategy._cost_limiter is cl
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_calls_parallel_actually_concurrent(monkeypatch):
     """并行执行：总耗时小于串行和（工具延迟交错）。"""
     monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)

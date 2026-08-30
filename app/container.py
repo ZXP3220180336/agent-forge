@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.application.context.context_manager import ContextManager
+from app.application.context.cost_limiter import CostLimiter
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
 from app.integration.embedding import EmbeddingService
@@ -65,6 +66,8 @@ class Container:
         self.tool_service: ToolService | None = None
         self.task_service: TaskService | None = None
         self.embedding_service: EmbeddingService | None = None
+        # 成本上限判定器（无状态纯函数，可共享单例；agent_max_cost 未配置时为 None=不启用）
+        self.cost_limiter: CostLimiter | None = None
         # Agent 运行参数（initialize 时从 settings 填充，供 chat 路由构造 AgentContext）
         self.agent_params: dict = {}
         # 记录初始化状态
@@ -277,6 +280,19 @@ class Container:
             "max_context_rounds": settings.agent_max_context_rounds,
             "max_context_tokens": settings.max_context_tokens,
         }
+
+        # 成本上限：agent_max_cost 未配置（None）或 LLM 服务降级 → 不注入，ReAct 循环零开销。
+        # CostLimiter 经 LLMGateway 端口取成本估算（calculate_cost，LLM 模块 Facade 实现），
+        # 应用层不直接依赖集成层子组件
+        self.cost_limiter = (
+            CostLimiter(
+                ceiling=settings.agent_max_cost,
+                llm=self.llm_service,
+                model=settings.llm_model_id,
+            )
+            if settings.agent_max_cost is not None and self.llm_service is not None
+            else None
+        )
 
         self.initialized = True
         logger.info("应用初始化完成")

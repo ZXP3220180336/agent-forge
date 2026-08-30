@@ -4,6 +4,7 @@
 """
 
 from .context_budget import ContextBudgetPort
+from .cost_limiter import CostLimiterPort
 from .embedding_port import EmbeddingPort
 from .llm_gateway import LLMGateway, StreamResult
 from .token_counter import TokenCounter
@@ -11,6 +12,7 @@ from .tool_gateway import ToolGateway, ToolResult
 
 __all__ = [
     "ContextBudgetPort",
+    "CostLimiterPort",
     "EmbeddingPort",
     "LLMGateway",
     "StreamResult",

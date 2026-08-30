@@ -40,6 +40,13 @@ async def test_default_actions():
     )
     assert (
         await reg.dispatch(
+            AgentErrorKind.COST_EXCEEDED,
+            AgentErrorContext(AgentErrorKind.COST_EXCEEDED, "x"),
+        )
+        == AgentErrorAction.STOP
+    )
+    assert (
+        await reg.dispatch(
             AgentErrorKind.CANCELLED,
             AgentErrorContext(AgentErrorKind.CANCELLED, "x"),
         )

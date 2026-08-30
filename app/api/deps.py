@@ -6,9 +6,11 @@
 from fastapi import Header
 
 from app.application.context.context_manager import ContextManager
+from app.application.context.cost_limiter import CostLimiter
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
 from app.container import container
+from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 from app.shared.exceptions import UnauthorizedError
@@ -54,6 +56,15 @@ async def get_context_manager() -> ContextManager:
             "请确保在应用启动时调用了 container.initialize()。"
         )
     return container.context_manager
+
+
+async def get_cost_limiter() -> CostLimiterPort | None:
+    """获取成本上限判定器（依赖注入）。
+
+    返回 None 表示未启用（settings 未配置 agent_max_cost）——合法值，
+    ReAct 循环对 None 不启用成本检查，零开销。
+    """
+    return container.cost_limiter
 
 
 async def get_llm_service() -> LLMGateway:

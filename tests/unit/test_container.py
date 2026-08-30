@@ -134,7 +134,26 @@ async def test_initialize_happy_path(monkeypatch):
         "max_context_rounds": settings.agent_max_context_rounds,
         "max_context_tokens": settings.max_context_tokens,
     }
+    # 成本上限：未配置（默认 None）→ cost_limiter 为 None（不启用）
+    assert c.cost_limiter is None
     assert c._errors == []
+
+
+@pytest.mark.asyncio
+async def test_initialize_cost_limiter_assembly(monkeypatch):
+    """配置 agent_max_cost 后，cost_limiter 装配 ceiling/model 与 settings 一致。"""
+    _stub_infra(monkeypatch)
+    monkeypatch.setattr(settings, "agent_max_cost", 0.5)
+    monkeypatch.setattr(settings, "llm_model_id", "gpt-4o-mini")
+    c = Container()
+
+    await c.initialize()
+
+    assert c.cost_limiter is not None
+    assert c.cost_limiter.ceiling == 0.5
+    assert c.cost_limiter.model == "gpt-4o-mini"
+    # 成本估算经 LLMGateway 端口注入（LLM 模块 Facade 结构实现）
+    assert c.cost_limiter._llm is c.llm_service
 
 
 @pytest.mark.asyncio

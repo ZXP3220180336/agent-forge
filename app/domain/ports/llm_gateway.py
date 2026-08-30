@@ -66,3 +66,25 @@ class LLMGateway(Protocol):
         model_key: str = "fast",
         max_tokens: int | None = None,
     ) -> dict | None: ...
+
+    def calculate_cost(
+        self,
+        usage: dict[str, Any] | None,
+        model: str = "",
+    ) -> dict[str, float]:
+        """按 model 定价折算 usage 成本明细（同步纯函数）。
+
+        成本估算是 LLM 能力（模型定价）——归属 LLMGateway，供成本上限等
+        横切护栏经同一端口接入（应用层 CostLimiter 依赖本端口，不触及
+        集成层子组件 CostTracker）。实现方 LLMService.calculate_cost 为
+        静态方法代理 CostTracker。
+
+        Args:
+            usage: token 用量（跨轮累计）{"prompt_tokens", "completion_tokens",
+                "total_tokens"}；None/空 → 全 0。
+            model: 定价查找键；空串走默认均价兜底。
+
+        Returns:
+            {"cost_usd": float, "input_cost": float, "output_cost": float}（round 6）。
+        """
+        ...

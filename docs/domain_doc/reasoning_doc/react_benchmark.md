@@ -26,9 +26,9 @@
 
 ## 结论先行
 
-- **核心循环结构完成度 100%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限 / 工具失败回喂 / 解析降级 / 上下文预算全部到位。
+- **核心循环结构完成度 100%**：主循环 / 终止判定 / 超限降级 / LLM 错误分工 / 工具并行 / 事件流 / 总时间上限 / 工具失败回喂 / 解析降级 / 上下文预算 / 成本上限全部到位。
 - **核心必备 13 项全部完备**（工业级核心模式 13/13 落地）。
-- **增强项进展**：结构化输出约束（#15）已落地（Final Answer 工具）；其余增强项按「不做或预留」原则（见产品导向视角）。
+- **增强项进展**：结构化输出约束（#15）、错误处理策略可扩展（#23）、成本上限（#20）均已落地；guardrail / compaction / 断点续跑按「不做或预留」原则（见产品导向视角，断点续跑升级路径见 ADR）。
 - **架构加分**：策略模式解耦（`reasoning → ports + shared`）、端口抽象、独立测试，模块划分优于多数工业级框架。
 
 ---
@@ -103,11 +103,11 @@
 | 16 | guardrail | ❌ | 无输入 / 输出 guardrail（增强项，当前单用户本地场景不强制） |
 | 17 | 权限 / 审批 | ✅ | ApprovalGate / RiskLevel L0-L3 / 审计——工具层工程护栏完整（`app/integration/tools/security.py`） |
 | 18 | 自动摘要 / compaction | ❌ | 无（当前 max_iterations 不高、上下文不大，可延后） |
-| 19 | 断点续跑 / 持久化 | ❌ | 无（任务层有会话管理，ReAct 循环无） |
-| 20 | 成本上限 | ⚠️ | CostTracker 记账，无 cost ceiling 自动停机 |
+| 19 | 断点续跑 / 持久化 | ❌ | 无（任务层有会话管理，ReAct 循环无；升级路径见 [ADR checkpointer-resume](../../../adr/domain/reasoning/2026-08-30-checkpointer-resume.md)） |
+| 20 | 成本上限 | ✅ | `CostLimiterPort` 注入（应用层复用 CostTracker 定价），累计成本超限走 `COST_EXCEEDED` 分发默认 STOP 停机（配置 `agent_max_cost`，None=不启用） |
 | 21 | 沙箱 / 安全执行 | ⚠️ | 本项目工具为注册式（非任意代码执行），风险形态不同，无需 AST 沙箱；以风险分级 + 审批替代 |
 | 22 | 最终答案校验 | ❌ | 无 `final_answer_checks`（证据链报告的答案校验是后续产物层的事） |
-| 23 | 错误处理策略可扩展 | ✅ | `ErrorHandlerRegistry`（共享内核）：AgentErrorKind 9 类 + Handler 协议（CONTINUE/STOP/RAISE）+ BaseAgent 横切注入；可恢复默认回喂、终结性默认终止，按 kind 注册覆盖 |
+| 23 | 错误处理策略可扩展 | ✅ | `ErrorHandlerRegistry`（共享内核）：AgentErrorKind 10 类 + Handler 协议（CONTINUE/STOP/RAISE）+ BaseAgent 横切注入；可恢复默认回喂、终结性默认终止，按 kind 注册覆盖 |
 
 ---
 

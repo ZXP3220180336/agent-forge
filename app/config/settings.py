@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     agent_timeout: int = 300  # 5分钟
     agent_streaming: bool = True
     agent_max_context_rounds: int = 8  # 上下文预算：Agent 循环保留最近轮数（0/None 走 AgentContext 默认）
+    agent_max_cost: float | None = None  # 成本上限（美元 USD）；None=不启用（0 则任何正成本即停）
 
     # 任务优先级配置
     agent_priority_levels: list[Literal["low", "normal", "high", "urgent"]] = [
@@ -216,6 +217,14 @@ class Settings(BaseSettings):
         """验证迭代次数（1-100）"""
         if v < 1 or v > 100:
             raise ValueError(f"迭代次数必须在 1-100 之间，当前值: {v}")
+        return v
+
+    @field_validator("agent_max_cost")
+    @classmethod
+    def validate_max_cost(cls, v: float | None) -> float | None:
+        """验证成本上限（美元）：None=不启用，非负。"""
+        if v is not None and v < 0:
+            raise ValueError(f"成本上限不能为负，当前值: {v}")
         return v
 
     @field_validator("agent_max_concurrent_tasks")

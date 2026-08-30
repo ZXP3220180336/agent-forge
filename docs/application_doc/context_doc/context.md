@@ -139,6 +139,18 @@ trim_messages(messages, *, max_rounds, max_tokens)   # 就地修改 messages
 | 运行中轮次超限 | `_trim_to_recent_rounds` | 按「轮」滑动窗口，配对原子保留 |
 | 运行中 token 超限 | `_trim_to_token_budget` | 逐轮丢最旧 assistant/tool 对 |
 
+### 成本上限（CostLimiter，同目录兄弟组件）
+
+`CostLimiter` 与 `ContextManager` 同属「Agent 运行中护栏」横切能力（同 `app/application/context/`），结构实现 `CostLimiterPort`（`app/domain/ports/cost_limiter.py`）。成本估算经 **`LLMGateway.calculate_cost`**（成本估算是 LLM 能力，归属 LLM 网关端口，由 LLM 模块 Facade `LLMService` 实现）——应用层不直接 import 集成层、不触及 LLM 子组件 `CostTracker`，对齐 `ContextManager` 经 `TokenCounter` 端口先例。无状态纯函数——装配根可安全共享单例。
+
+```text
+CostLimiter(ceiling=agent_max_cost, llm=llm_service, model=llm_model_id)
+  check(累计 usage) -> (exceeded, cost_usd)   # 严格 > 超限；ceiling=None 恒不超限
+```
+
+- **装配**：`container.py` 在 `agent_max_cost` 配置非 None 且 LLM 服务就绪时构造 `CostLimiter` 单例（llm 注入 `llm_service` Facade，model=`llm_model_id`），`chat.py` 经 `Depends(get_cost_limiter)` 注入 `ReActAgent(..., cost_limiter=...)`；未配置 → None，ReAct 循环成本检查零开销
+- **消费**：`ReActStrategy` 每轮 usage 累加后 `check(累计 usage)`，超限走 `COST_EXCEEDED` 错误分发（默认 STOP 停机降级），见 [react.md](../../domain_doc/reasoning_doc/react.md) 成本上限节
+
 ### 边缘情况
 
 | 场景 | 行为 |

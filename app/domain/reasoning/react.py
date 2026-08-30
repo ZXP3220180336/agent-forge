@@ -35,6 +35,7 @@ from typing import Any
 from jsonschema import validate
 
 from app.domain.ports.context_budget import ContextBudgetPort
+from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
 from app.shared.error_handling import (
@@ -129,11 +130,13 @@ class ReActStrategy:
         tools: ToolGateway,
         context_budget: ContextBudgetPort | None = None,
         error_handlers: ErrorHandlerRegistry | None = None,
+        cost_limiter: CostLimiterPort | None = None,
     ) -> None:
         self._llm = llm
         self._tools = tools
         self._context_budget = context_budget
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
+        self._cost_limiter = cost_limiter
         self._tool_call_records: list[dict[str, Any]] = []
         # 结果载体，execute() 结束后读取
         self.outcome: ReActOutcome | None = None
@@ -231,6 +234,18 @@ class ReActStrategy:
                             total_usage[k] = total_usage.get(
                                 k, 0
                             ) + stream_result.usage.get(k, 0)
+
+                    # ----- 成本护栏：累计成本超限 → 错误分发（默认 STOP 降级）-----
+                    # 置于 error 判断前：成本是全局资源护栏，预算超限时不允许
+                    # LLM 失败重试 / 工具执行再产生付费调用或副作用；超限即停机。
+                    if self._cost_limiter is not None:
+                        exceeded, cost = self._cost_limiter.check(total_usage)
+                        if exceeded:
+                            async for event in self._finalize_cost_exceeded(
+                                stream_result, iteration, total_usage, cost
+                            ):
+                                yield event
+                            return
 
                     # LLM 调用失败（create 失败 / 流中断放弃 / 用户取消）→ 短路返回失败结果，
                     # 不把「失败」当「空输出」继续空转重试（浪费 LLM 调用 + 错误信息不准确）。
@@ -377,7 +392,7 @@ class ReActStrategy:
     async def _dispatch(
         self, kind: AgentErrorKind, message: str, iteration: int
     ) -> AgentErrorAction:
-        """错误分发：RAISE 抛 AgentRunError，否则返回 action（统一 7 处分发）。"""
+        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 7 处分发唯一入口）。"""
         action = await self._error_handlers.dispatch(
             kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
         )
@@ -655,6 +670,38 @@ class ReActStrategy:
         )
         # STOP（默认）：对齐 max_iterations 兜底，用 last_result 组装降级 outcome
         error = f"ReAct 执行超时（超过 {max_execution_time} 秒）"
+        self.outcome = self._build_outcome(
+            success=bool(last_result.content.strip()) if last_result else False,
+            content=last_result.content.strip() if last_result else "",
+            reasoning=last_result.reasoning_content.strip() if last_result else "",
+            iteration=iteration,
+            total_tokens=total_usage.get("total_tokens", 0),
+            usage=total_usage or None,
+            error=error,
+        )
+        yield build_info_event(error)
+        yield build_done_event(
+            iterations=self.outcome.iterations,
+            total_tokens=self.outcome.total_tokens,
+        )
+
+    async def _finalize_cost_exceeded(
+        self,
+        last_result: StreamResult | None,
+        iteration: int,
+        total_usage: dict,
+        cost: float,
+    ) -> AsyncGenerator[str]:
+        """累计成本超限 → 错误分发（默认 STOP 停机；handler 可上抛）。
+
+        对齐 _finalize_timeout 降级模式：dispatch → build_outcome + info + done；
+        CONTINUE 被忽略（终结性护栏，同 TIMEOUT/MAX_TURNS），RAISE 由 _dispatch 抛出。
+        cost_limiter 为 None 时主循环不进入本方法。
+        """
+        error = f"ReAct 执行成本超限（累计 ${cost:.4f}）"
+        await self._dispatch(AgentErrorKind.COST_EXCEEDED, error, iteration)
+        # STOP（默认）：用 last_result 组装降级 outcome（有 content 算部分成功）。
+        # last_result 在主循环该检查点必非 None（累加在赋值后），None 分支防御性对齐。
         self.outcome = self._build_outcome(
             success=bool(last_result.content.strip()) if last_result else False,
             content=last_result.content.strip() if last_result else "",

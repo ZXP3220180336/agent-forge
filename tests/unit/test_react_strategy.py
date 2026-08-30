@@ -393,6 +393,208 @@ async def test_react_execute_none_timeout_no_limit():
     assert strategy.outcome.error is None
 
 
+# ---------------------------------------------------------------
+# 成本上限（增强项 #20）：累计成本超限 → COST_EXCEEDED 分发（默认 STOP 降级）
+# ---------------------------------------------------------------
+
+
+def _cost_limiter(ceiling: float | None = 0.05, model: str = "gpt-4"):
+    from app.application.context.cost_limiter import CostLimiter
+    from app.integration.llm.cost_tracker import CostTracker
+
+    class _FakeLLM:
+        """结构实现 LLMGateway.calculate_cost（镜像 LLMService 静态代理 CostTracker）。"""
+
+        @staticmethod
+        def calculate_cost(usage, model=""):
+            return CostTracker.calculate(usage, model)
+
+    return CostLimiter(ceiling=ceiling, llm=_FakeLLM(), model=model)
+
+
+@pytest.mark.asyncio
+async def test_react_execute_cost_exceeded_stops():
+    """首轮累计成本即超限 → STOP 降级：error 记录成本超限 + iterations=1 + done。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "stop",
+                "content": "答案",
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+            }
+        ]
+    )
+    # gpt-4：0.03 + 0.03 = 0.06 > ceiling 0.05
+    strategy = ReActStrategy(llm=llm, tools=None, cost_limiter=_cost_limiter())
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.iterations == 1
+    # LLM 已产出内容 → 部分成功；error 记录成本超限
+    assert strategy.outcome.success is True
+    assert "成本超限" in (strategy.outcome.error or "")
+    assert "0.0600" in (strategy.outcome.error or "")  # 累计成本进文案
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_execute_cost_exceeded_keeps_partial_progress():
+    """第 2 轮累计成本超限 → 保留第 1 轮已完成工具调用记录。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "hi"}),
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 100},  # 0.009
+            },
+            {
+                "finish_reason": "stop",
+                "content": "答案",
+                "usage": {"prompt_tokens": 500, "completion_tokens": 500},  # 累计 0.054
+            },
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    # 第 1 轮 0.009 ≤ 0.05 不触发；第 2 轮累计 0.054 > 0.05 → 停机
+    strategy = ReActStrategy(llm=llm, tools=tools, cost_limiter=_cost_limiter())
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.iterations == 2
+    # 第 1 轮工具已执行完成，调用记录保留（部分进度证据）
+    assert len(strategy.outcome.tool_calls) == 1
+    assert strategy.outcome.tool_calls[0]["tool"] == "echo"
+    assert "成本超限" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_execute_loose_cost_does_not_trigger():
+    """宽松成本上限不影响正常完成。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "stop", "content": "完成",
+             "usage": {"prompt_tokens": 1000, "completion_tokens": 500}},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None, cost_limiter=_cost_limiter(ceiling=10.0))
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert strategy.outcome.error is None
+
+
+@pytest.mark.asyncio
+async def test_react_execute_none_cost_no_limit():
+    """cost_limiter=None（不注入）→ 正常完成，成本检查零开销不干扰。"""
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "完成"}])
+    strategy = ReActStrategy(llm=llm, tools=None)  # 不传 cost_limiter
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert strategy.outcome.error is None
+
+
+@pytest.mark.asyncio
+async def test_react_cost_exceeded_handler_raise():
+    """COST_EXCEEDED handler → RAISE：抛 AgentRunError（kind=COST_EXCEEDED）。"""
+    registry = ErrorHandlerRegistry()
+
+    async def raise_handler(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry.register(AgentErrorKind.COST_EXCEEDED, raise_handler)
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "stop",
+                "content": "答案",
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+            }
+        ]
+    )
+    strategy = ReActStrategy(
+        llm=llm, tools=None, error_handlers=registry, cost_limiter=_cost_limiter()
+    )
+
+    with pytest.raises(AgentRunError) as exc:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=3, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc.value.kind == AgentErrorKind.COST_EXCEEDED
+    assert "成本超限" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_react_cost_exceeded_handler_continue_ignored():
+    """COST_EXCEEDED handler → CONTINUE 被忽略：终结性护栏仍按 STOP 组装。"""
+    registry = ErrorHandlerRegistry()
+
+    async def continue_handler(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry.register(AgentErrorKind.COST_EXCEEDED, continue_handler)
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "stop",
+                "content": "答案",
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500},
+            }
+        ]
+    )
+    strategy = ReActStrategy(
+        llm=llm, tools=None, error_handlers=registry, cost_limiter=_cost_limiter()
+    )
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # CONTINUE 不改变终结性护栏：outcome 已设置（STOP 组装），循环终止
+    assert strategy.outcome is not None
+    assert strategy.outcome.iterations == 1
+    assert "成本超限" in (strategy.outcome.error or "")
+
+
 @pytest.mark.asyncio
 async def test_react_tool_failure_feedback_to_model():
     """工具失败 → tool 消息回喂错误文本，模型可感知失败原因并自愈。"""

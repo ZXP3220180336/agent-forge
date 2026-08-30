@@ -23,6 +23,7 @@ ReAct 循环逻辑已抽离到 `app/domain/reasoning/react.py` 的 ReActStrategy
 from collections.abc import AsyncGenerator
 
 from app.domain.ports.context_budget import ContextBudgetPort
+from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
 from app.domain.reasoning.react import ReActOutcome, ReActStrategy
@@ -45,6 +46,7 @@ class ReActAgent(BaseAgent):
         tools: ToolGateway,
         context_budget: ContextBudgetPort | None = None,
         error_handlers: ErrorHandlerRegistry | None = None,
+        cost_limiter: CostLimiterPort | None = None,
     ) -> None:
         super().__init__(llm, tools, error_handlers=error_handlers)
         self._strategy = ReActStrategy(
@@ -52,6 +54,7 @@ class ReActAgent(BaseAgent):
             tools=tools,
             context_budget=context_budget,
             error_handlers=error_handlers,
+            cost_limiter=cost_limiter,
         )
 
     async def _strategy_cycle(
