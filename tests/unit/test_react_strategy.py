@@ -2271,3 +2271,34 @@ async def test_react_unknown_handler_exception_not_breaking():
     assert strategy.outcome is not None
     assert strategy.outcome.success is False
     assert "Agent 运行异常" in (strategy.outcome.error or "")
+
+
+# ======================================================================
+# 问题 5：UNKNOWN error 脱敏——只保留异常类型名，完整异常进日志
+# ======================================================================
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_error_redacts_exception_message(caplog):
+    """UNKNOWN error 脱敏：异常 message（含敏感值/内部路径）不进入产品侧文本，完整异常进日志。"""
+    llm = _RaisingLLM(
+        [{"finish_reason": "stop", "content": "x"}],
+        raise_on_call=1,
+        exc=RuntimeError("连接失败: 内部端点 http://10.0.0.1/api key=sk-secret"),
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    with caplog.at_level("ERROR", logger="app.domain.reasoning.react"):
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=3, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    # error 只保留异常类型名（分类），message（内部端点/敏感 key）不泄漏到产品侧
+    assert strategy.outcome is not None
+    assert strategy.outcome.error == "Agent 运行异常: RuntimeError"
+    assert "sk-secret" not in (strategy.outcome.error or "")
+    assert "10.0.0.1" not in (strategy.outcome.error or "")
+    # 完整异常（含 message）进日志，运维可诊断
+    assert any("sk-secret" in r.message for r in caplog.records)

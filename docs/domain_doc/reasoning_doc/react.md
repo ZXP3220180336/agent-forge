@@ -278,7 +278,7 @@ result = strategy.outcome  # ReActOutcome
 14. **空输出重试上限**（`max_empty_retries`，默认 2）→ 连续空输出计数，超过上限在空输出分支硬终止（`error` 记录「连续空输出（N 轮）」，先 dispatch 供 handler RAISE，CONTINUE 忽略）；有产出轮计数清零（非连续不累计）；LLM 失败重试轮不参与
 15. **循环停滞检测**（`max_same_action_turns`，默认 3）→ 连续相同工具调用（工具+参数）超过上限 → STALLED 分发硬终止（本轮工具不执行，error 记录「连续 N 轮相同工具调用」）；参数规范化（key 顺序 / 空白不同指纹一致）；换工具 / 换参数重置；`final_answer` 不参与；STALLED handler 可 RAISE 上抛
 16. **模型拒答**（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，error 记录「模型拒答: <截断文本>」）；显式信号原则（LLM-004，不靠 content 空推断）——DeepSeek 无 refusal 字段的 stop+空 content 保持空回答语义；拒答文本截断（LLM-008 基线）
-17. **未捕获异常**（UNKNOWN）→ 主循环 `except Exception` 兜底：用 `last_result` 组装 outcome 保留部分进度 + 证据链，error 记录「Agent 运行异常: <截断文本>」；RAISE 决策（`AgentRunError`）前置 re-raise 不被吞；`asyncio.CancelledError` / `GeneratorExit` 是 `BaseException`，保持 CANCELLED / 生成器关闭语义
+17. **未捕获异常**（UNKNOWN）→ 主循环 `except Exception` 兜底：用 `last_result` 组装 outcome 保留部分进度 + 证据链，error 记录「Agent 运行异常: <异常类型名>」（**脱敏**——只留分类，不拼接异常 message，完整异常含 traceback 进日志供运维诊断，产品侧不泄漏内部细节，见 [REASON-005](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)）；RAISE 决策（`AgentRunError`）前置 re-raise 不被吞；`asyncio.CancelledError` / `GeneratorExit` 是 `BaseException`，保持 CANCELLED / 生成器关闭语义
 18. **用户取消**（`cancel_event`，None=不启用）→ 主循环顶部 + LLM error 分支识别 → CANCELLED 分发（优雅停止，不重试，保留部分进度）；传给 LLM 层在整流层 chunk 边界中断；`asyncio.CancelledError`（硬取消）仍走 BaseAgent.run 的 CANCELLED（独立路径）
 19. **协议异常**（`finish_reason=tool_calls` 但 `tool_calls` 为空）→ `_finalize_protocol_error` 短路为 `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表，避免空转浪费轮次）；handler 可 STOP 终止（error 记录「协议异常」）/ RAISE 上抛
 
@@ -299,7 +299,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（68 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（69 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）
@@ -308,7 +308,7 @@ result = strategy.outcome  # ReActOutcome
 - **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛
 - **循环停滞检测**：同工具同参数达上限终止 / 未达上限正常 / 参数变化重置 / 换工具重置 / 上限可配置 / final_answer 不参与 / STALLED handler RAISE / 参数 key 顺序规范化指纹相同
 - **模型拒答**：refusal 非空终止（content 保留）/ content_filter 终止 / REFUSED handler RAISE / CONTINUE 忽略
-- **未捕获异常**：中途异常保留证据链 / UNKNOWN handler RAISE 抛 AgentRunError / CONTINUE 忽略
+- **未捕获异常**：中途异常保留证据链 / UNKNOWN handler RAISE 抛 AgentRunError / CONTINUE 忽略 / error 脱敏（只留异常类型名，敏感 message 不泄漏，完整异常进日志）
 - **优雅取消**：cancel_event 置位终止 / LLM error+置位 → CANCELLED 不重试 / 未置位正常
 - **工具失败**：失败回喂 / 证据链记录 error+error_code / 无效工具名 NOT_REGISTERED / 解析失败不执行工具 + JSON_PARSE / 截断标记（带标记不超限 / 短结果无标记）
 - **reasoning 回喂**：`has_reasoning` 回喂空串 / 无信号不回喂
@@ -342,6 +342,7 @@ result = strategy.outcome  # ReActOutcome
 - [REASON-002 UNKNOWN 部分进度](../../../issues/domain/reasoning/2026-08-30-unknown-partial-progress.md)：未捕获异常路径不保留部分进度，与其余终结护栏不一致；已统一用 last_result 组装（已修复）
 - [REASON-003 取消信号语义错位 + 未接线](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)：优雅取消被误判为 LLM 失败 / 无调用方接线；已贯通 cancel_event 链路 + /chat/stop 真实实现（已修复）
 - [REASON-004 协议异常空 tool_calls](../../../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)：finish_reason=tool_calls 但 tool_calls 空被误入空输出重试 / 空转执行；已短路为 PARSE_FAILED 协议异常分发（已修复）
+- [REASON-005 UNKNOWN error 脱敏](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)：error 拼接完整异常文本泄漏内部细节；已改异常类型名 + 完整异常进日志（已修复）
 
 ## 相关文档
 

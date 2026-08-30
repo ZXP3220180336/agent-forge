@@ -27,6 +27,7 @@ ReAct 推理策略（ReActStrategy）
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -51,6 +52,10 @@ from app.shared.events import (
     build_tool_call_event,
     build_tool_result_event,
 )
+
+# 策略层标准库日志（对齐「只依赖 ports + shared + 标准库」依赖方向，不用 platform 的
+# get_logger）；logger 名对齐 app.* 命名空间，可被 setup_logging 的 handler 捕获。
+_logger = logging.getLogger("app.domain.reasoning.react")
 
 # 工具结果回喂截断标记：截断时追加，模型可知结果不完整（而非误以为完整）
 _TRUNCATED_MARKER = "\n[结果已截断]"
@@ -1085,8 +1090,13 @@ class ReActStrategy:
         模式一致。复用 _finalize_terminal 终结护栏（CONTINUE 忽略，RAISE 由 _dispatch
         抛出）。asyncio.CancelledError / GeneratorExit 是 BaseException，不被主循环
         except Exception 捕获（保持 CANCELLED / 生成器关闭语义）。
+
+        error 脱敏：只保留异常类型名（分类），不拼接异常 message——异常文本可能含
+        内部路径 / 参数 / 敏感值 / 堆栈提示，产品可见文本（outcome.error / SSE /
+        根因报告）与运维诊断分离：完整异常（含 traceback）进日志，不落产品侧。
         """
-        error = f"Agent 运行异常: {exc!s}"[:200]
+        _logger.error("Agent 运行异常: %s", exc, exc_info=exc)
+        error = f"Agent 运行异常: {type(exc).__name__}"
         async for event in self._finalize_terminal(
             AgentErrorKind.UNKNOWN,
             error,
