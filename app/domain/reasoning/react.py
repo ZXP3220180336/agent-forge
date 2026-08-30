@@ -194,6 +194,7 @@ class ReActStrategy:
             6. 模型拒答（refusal 字段 / content_filter）→ REFUSED 分发（默认停机）
             7. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
             8. 检查 finish_reason
+               - "tool_calls" 但无 tool_calls → 协议异常 → PARSE_FAILED 分发（默认重试，不入空输出计数）
                - "tool_calls" → final_answer 检测 → 停滞检测（连续相同超限硬终止）→ 执行工具，追加结果，继续循环
                - "stop"       → 生成最终结果，结束循环
                - "length"     → 生成部分结果，结束循环
@@ -362,6 +363,21 @@ class ReActStrategy:
 
                     # ----- 8. 根据 finish_reason 决定下一步 -----
                     finish_reason = stream_result.finish_reason or ""
+
+                    # ----- 协议异常：finish_reason=tool_calls 但未返回工具调用 -----
+                    # 模型声明「要调用工具」却没给出 tool_calls——协议信号不一致（服务端
+                    # 异常 / 响应被截断），非「空输出」（有调用意图）、非「工具失败」（无
+                    # 工具可执行）。短路为 PARSE_FAILED 分发：不入空输出计数（与
+                    # max_empty_retries 独立）、不进 execute_tool_calls 空转（gather 空
+                    # 列表静默继续、浪费轮次）。默认 CONTINUE 重试，handler 可 STOP/RAISE。
+                    if finish_reason == "tool_calls" and not stream_result.tool_calls:
+                        async for event in self._finalize_protocol_error(
+                            full_reasoning, iteration, total_usage
+                        ):
+                            yield event
+                        if self.outcome is not None:
+                            return
+                        continue  # CONTINUE（默认）：重试下一轮
 
                     # ----- 空输出连续计数 -----
                     # 本轮有产出（工具调用 / stop / length / 有内容）→ 清零；空输出 → +1。
@@ -597,7 +613,7 @@ class ReActStrategy:
     async def _dispatch(
         self, kind: AgentErrorKind, message: str, iteration: int
     ) -> AgentErrorAction:
-        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 12 处分发唯一入口）。"""
+        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 13 处分发唯一入口）。"""
         action = await self._error_handlers.dispatch(
             kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
         )
@@ -809,6 +825,34 @@ class ReActStrategy:
             reasoning=full_reasoning.strip(),
             iteration=iteration,
             total_usage=total_usage,
+        ):
+            yield event
+
+    async def _finalize_protocol_error(
+        self,
+        full_reasoning: str,
+        iteration: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """协议异常（finish_reason=tool_calls 但未返回工具调用）→ PARSE_FAILED 分发。
+
+        模型声明要调工具却没给出 tool_calls——协议信号不一致（服务端异常/被截断），
+        非「空输出」（有调用意图）、非「工具失败」（无工具可执行）。默认 CONTINUE
+        重试下一轮（不参与空输出计数 / 停滞检测）；handler 可 STOP 终止 / RAISE 上抛。
+        """
+        msg = "finish_reason=tool_calls 但未返回工具调用（协议异常）"
+        action = await self._dispatch(AgentErrorKind.PARSE_FAILED, msg, iteration)
+        if action == AgentErrorAction.CONTINUE:
+            yield build_info_event(f"{msg}，按错误处理策略重试")
+            return
+        # STOP（默认）：终止（error 记录协议异常）
+        async for event in self._finalize_outcome(
+            success=False,
+            content="",
+            reasoning=full_reasoning.strip(),
+            iteration=iteration,
+            total_usage=total_usage,
+            error=msg,
         ):
             yield event
 

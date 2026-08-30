@@ -2034,3 +2034,140 @@ class _NoopLLM:
     async def async_generate(self, *args, **kwargs):
         yield ""
         return
+
+
+# ======================================================================
+# 协议异常：finish_reason=tool_calls 但未返回工具调用 → PARSE_FAILED 分发
+# ======================================================================
+
+
+@pytest.mark.asyncio
+async def test_react_protocol_error_retry_then_success():
+    """finish_reason=tool_calls 但 tool_calls 空 → 默认 CONTINUE 重试，下一轮正常结束。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls"},  # 声明调工具但未给出 tool_calls
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])  # 注册工具：修复前会空转执行空列表
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    events = []
+    async for event in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(event)
+
+    # 协议异常轮重试（LLM 被调 2 次）→ 第 2 轮 stop 成功结束
+    assert llm.calls == 2
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    # 不进 execute_tool_calls 空转（无工具记录，不 yield「检测到 0 个工具调用」荒谬信息）
+    assert strategy.outcome.tool_calls == []
+    assert not any("检测到 0 个工具调用" in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_protocol_error_not_counted_as_empty_output():
+    """协议异常不入空输出计数：连续 3 轮协议异常 → max_iterations 兜底（非 EMPTY_OUTPUT 终止）。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls"},
+            {"finish_reason": "tool_calls"},
+            {"finish_reason": "tool_calls"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # max_empty_retries=2：若协议异常误入空输出计数，第 3 轮会 EMPTY_OUTPUT 硬终止
+    assert strategy.outcome is not None
+    assert "最大迭代次数" in (strategy.outcome.error or "")
+    assert "连续空输出" not in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_protocol_error_handler_stop():
+    """PARSE_FAILED handler → STOP：协议异常直接终止（error 记录）。"""
+    async def on_parse(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.STOP
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.PARSE_FAILED, on_parse)
+
+    strategy = ReActStrategy(
+        llm=_ScriptedLLM([{"finish_reason": "tool_calls"}]),
+        tools=None,
+        error_handlers=registry,
+    )
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "协议异常" in (strategy.outcome.error or "")
+    assert strategy.outcome.iterations == 1
+
+
+@pytest.mark.asyncio
+async def test_react_protocol_error_handler_raise():
+    """PARSE_FAILED handler → RAISE：抛 AgentRunError（携带 kind）。"""
+    async def on_parse(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.PARSE_FAILED, on_parse)
+
+    strategy = ReActStrategy(
+        llm=_ScriptedLLM([{"finish_reason": "tool_calls"}]),
+        tools=None,
+        error_handlers=registry,
+    )
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=3, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.PARSE_FAILED
+
+
+@pytest.mark.asyncio
+async def test_react_protocol_error_no_tools():
+    """无工具注册（has_tools=False）时同样识别为协议异常，不落入空输出分支。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls"},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)  # 修复前：无工具 → 空输出分支重试
+
+    events = []
+    async for event in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(event)
+
+    assert llm.calls == 2
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    # 走协议异常重试而非空输出重试（事件可区分）
+    assert any("协议异常" in e for e in events)
+    assert not any("LLM 未生成有效输出" in e for e in events)
