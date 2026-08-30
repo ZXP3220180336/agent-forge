@@ -238,3 +238,49 @@ async def test_chat_send_message_no_tools_plain_answer():
     assistant = next(m for m in fake_sm.saved_messages if m["role"] == "assistant")
     assert assistant["content"] == "直接回答"
     assert fake_llm.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_stop_cancels_running_agent():
+    """/chat/stop 置位 → 运行中的 Agent 优雅取消（CANCELLED），流带取消事件结束。"""
+    fake_sm = FakeSessionManager(
+        {"id": "s3", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
+    )
+    context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
+    ts = TaskService()
+
+    fake_llm = FakeLLM([{"type": "stop", "content": "不会到达"}])
+    registry = ToolService()  # 空服务：无工具
+
+    request = SendMessageRequest(session_id="s3", message="你好", max_iterations=5)
+    response = await send_message(
+        request=request,
+        user_id="user_x",
+        session_manager=fake_sm,
+        context_manager=context_manager,
+        llm_service=fake_llm,
+        tool_service=registry,
+        task_service=ts,
+        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_same_action_turns": 3},
+        cost_limiter=None,
+    )
+
+    # 模拟 /chat/stop 已调用：send_message 返回后取消事件已注册，置位它
+    cancel_ev = ts.get_cancel_event("s3")
+    assert cancel_ev is not None, "send 应注册会话取消事件"
+    cancel_ev.set()
+
+    chunks: list[str] = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk)
+
+    events = _parse_sse(chunks)
+    types = [e["type"] for e in events]
+
+    # Agent 感知取消 → 流以取消信息 + done 正常结束（优雅，非中断）
+    assert "done" in types
+    assert events[-1]["type"] == "DONE_FRAME"
+    # 取消后 LLM 未被调用（主循环顶部即停止）
+    assert fake_llm.calls == 0
+    # 注册表在流结束时清理
+    assert ts.get_cancel_event("s3") is None

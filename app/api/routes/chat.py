@@ -77,6 +77,9 @@ async def send_message(
     )
 
     # 4. 定义流式生成器
+    # 取消事件：请求开始时注册（/chat/stop 可能在任何时刻置位），流结束清理
+    cancel_event = task_service.create_cancel_event(request.session_id)
+
     async def generate():
         # Agent 无状态：每次请求新建实例，上下文通过 AgentContext 传入
         ctx = AgentContext(
@@ -96,6 +99,7 @@ async def send_message(
             tools=tool_service,
             context_budget=context_manager,
             cost_limiter=cost_limiter,
+            cancel_event=cancel_event,
         )
 
         try:
@@ -113,6 +117,9 @@ async def send_message(
             yield build_error_event(f"Agent 运行异常: {e!s}")
         finally:
             yield "data: [DONE]\n\n"
+
+            # 清理取消事件（会话运行结束）
+            task_service.clear_cancel_event(request.session_id)
 
             # 5. 保存 AI 回复（流结束后从 agent.result 取最终答复）
             result = agent.result
@@ -141,6 +148,7 @@ async def stop_chat(
     session_id: str,
     user_id: str = Depends(get_current_user),
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
+    task_service: TaskService = Depends(get_task_service),  # noqa: B008
 ):
     """停止正在进行的聊天生成"""
     sid: SessionId = SessionId(session_id)
@@ -150,5 +158,7 @@ async def stop_chat(
     if session["user_id"] != user_id:
         raise ForbiddenError("无权访问")
 
-    # 实际项目中，这里会调用 LLMService 的 cancel 方法
-    return {"message": "已发送停止信号"}
+    # 置位会话取消事件 → 运行中的 Agent 在轮次边界优雅停止（after_turn 语义，
+    # 不硬中断：LLM 调用在整流层 chunk 边界响应、工具执行完成后取消生效）
+    cancelled = task_service.cancel_session(session_id)
+    return {"message": "已发送停止信号", "cancelled": cancelled}

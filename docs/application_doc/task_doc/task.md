@@ -1,7 +1,7 @@
 # TaskService 任务调度说明文档
 
 > **对应代码**：`app/application/task/task_service.py`
-> **更新日期**：2026-08-29
+> **更新日期**：2026-08-30
 > **职责**：任务级并发调度（当前实现）；队列 / 状态追踪 / 多 Agent 编排（规划蓝图）
 > **实现状态**：🔶 进行中——并发闸门（✅ 已实现），队列 / 状态机 / 编排（⬜ 规划）
 
@@ -63,12 +63,16 @@ Agent 层（BaseAgent / ReActAgent / 子Agent）
 | `__init__(max_concurrent=10)` | 构造 | 任务级并发信号量（装配根注入，对应 `agent_max_concurrent_tasks`） |
 | `run_agent(user_input, messages, context, agent) -> AsyncGenerator[str]` | 异步生成器 | 信号量保护下运行 Agent，逐事件 yield（并发超限在此等待） |
 | `max_concurrent` | property | 当前最大并发任务数 |
+| `create_cancel_event(session_id) -> asyncio.Event` | 同步 | 创建并注册会话取消事件（send 请求开始，返回事件供 Agent 透传） |
+| `get_cancel_event(session_id)` / `clear_cancel_event(session_id)` | 同步 | 获取 / 清理会话取消事件 |
+| `cancel_session(session_id) -> bool` | 同步 | 置位会话取消事件（/chat/stop）；无运行任务返回 False |
 
 **关键语义**（示意，完整实现见源码）：
 
 - 信号量在 `run_agent` 的 generator **外** acquire/release——yield 会挂起 generator frame，若 acquire 放 generator 内，其他任务会在首个 yield 前交错进入，信号量失去约束
 - `async with` 天然保证异常 / 取消时释放信号量，不会挂死占坑
 - 信号量是 **Agent 维度**（限制同时运行的 Agent 任务），而非 LLM API 维度（RPM / TPM 由集成层 `reservation_limiter` 覆盖，见 [LLM 层文档](../../integration_doc/llm_doc/llm.md)）
+- **会话级取消事件注册表**：`/chat/stop` 置位 `cancel_event` → 运行中的 Agent 在轮次边界优雅停止（after_turn 语义）；send 请求结束 `clear_cancel_event` 清理（见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)）
 
 **最小调用示例**：
 
@@ -235,6 +239,7 @@ TaskService 相关配置（`app/config/settings.py`）：
 
 - **并发闸门**：`agent_max_concurrent_tasks` 信号量，限制同时运行的 Agent 任务数
 - **接入 chat 路由**：`task_service.run_agent()` 在任务级并发约束下运行 Agent
+- **会话级取消**：cancel_event 注册表（create / get / clear / cancel_session），`/chat/stop` 优雅停止运行中 Agent（REASON-003）
 
 ### 规划中
 

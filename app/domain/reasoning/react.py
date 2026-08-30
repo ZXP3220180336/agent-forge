@@ -114,7 +114,7 @@ def _action_fingerprint(tool_calls: list[dict]) -> str:
             continue
         try:
             args = json.loads(tc["function"]["arguments"])
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             args = tc.get("function", {}).get("arguments", "")
         sig.append((name, args))
     return json.dumps(sig, sort_keys=True, ensure_ascii=False, default=str)
@@ -180,20 +180,27 @@ class ReActStrategy:
         max_empty_retries: int = 2,
         max_same_action_turns: int = 3,
         output_schema: dict | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[str]:
         """
         ReAct 主循环。
 
         循环流程（各分支经错误处理分发，默认行为 = 现有逻辑）：
-            0. 上下文预算裁剪（所有继续路径共用，保证每次 LLM 调用前消息有界）
-            1. LLM 推理（流式输出 reasoning / message）
-            2. 检查 finish_reason
+            1. 用户取消（cancel_event 置位）→ CANCELLED 分发（优雅停止，不开始新轮）
+            2. 上下文预算裁剪（所有继续路径共用，保证每次 LLM 调用前消息有界）
+            3. LLM 推理（流式输出 reasoning / message，cancel_event 传给 LLM 层中断调用）
+            4. 成本护栏：累计成本超限 → COST_EXCEEDED 分发（默认停机降级）
+            5. LLM 失败（stream_result.error 非空）：取消置位 → CANCELLED；否则 LLM_FAILED 分发
+            6. 模型拒答（refusal 字段 / content_filter）→ REFUSED 分发（默认停机）
+            7. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
+            8. 检查 finish_reason
+               - "tool_calls" → final_answer 检测 → 停滞检测（连续相同超限硬终止）→ 执行工具，追加结果，继续循环
                - "stop"       → 生成最终结果，结束循环
                - "length"     → 生成部分结果，结束循环
-               - "tool_calls" → final_answer 检测 → 停滞检测（连续相同超限硬终止）→ 执行工具，追加结果，继续循环
                - 空输出       → 连续计数 +1；超过 max_empty_retries 硬终止，否则错误分发重试
-            3. 达到最大迭代次数 → 错误分发（默认兜底）
-            4. 达到 max_execution_time（总时长上限）→ 错误分发（默认超时降级）
+            9. 循环耗尽 → MAX_TURNS 分发（默认兜底）
+            10. 超时（总时长上限）→ TIMEOUT 分发（默认超时降级）
+            11. 未捕获异常 → UNKNOWN 分发（默认保留部分进度）；AgentRunError（RAISE 决策）前置 re-raise
 
         实现：主循环仅保留骨架，各终止/错误分支拆分为职责单一的方法
         （_finalize_* / _handle_*），以 `outcome is not None` 作为终止信号。
@@ -216,6 +223,9 @@ class ReActStrategy:
                 分发硬终止（防死循环烧钱/重复副作用）
             output_schema: 最终答案结构化 JSON Schema（None=不启用）。启用时注入
                 final_answer 工具，模型最后调用提交结构化结果并终止循环
+            cancel_event: 优雅取消信号（asyncio.Event，None=不启用）——置位时在轮次
+                边界停止（对齐 OpenAI after_turn）；主循环顶部 + LLM error 分支识别
+                → CANCELLED 分发（不重试），保留部分进度；同时传给 LLM 层中断调用
 
         Yields:
             SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）
@@ -241,9 +251,19 @@ class ReActStrategy:
         try:
             async with asyncio.timeout(max_execution_time):
                 for iteration in range(1, max_iterations + 1):
+                    # ----- 1. 用户取消（cancel_event 置位）→ CANCELLED 分发（优雅停止）-----
+                    # 置于每轮 LLM 调用前：快速响应（即使不在 LLM 调用中，如工具执行后）；
+                    # 不开始新轮。对齐 OpenAI after_turn 优雅取消语义。
+                    if cancel_event is not None and cancel_event.is_set():
+                        async for event in self._finalize_cancelled(
+                            last_result, iteration, total_usage
+                        ):
+                            yield event
+                        return
+
                     yield build_info_event(f"第 {iteration} 轮推理")
 
-                    # ----- 0. 上下文预算：模型本次调用前作为 gatekeeper 裁剪 -----
+                    # ----- 2. 上下文预算：模型本次调用前作为 gatekeeper 裁剪 -----
                     # 置于循环顶部（而非工具路径后）：所有继续路径共用——工具回喂、
                     # LLM 失败重试 / final_answer 回喂重试 / 空输出重试，下一次 LLM
                     # 调用前均裁剪，否则非工具路径上下文无限增长、预算失效。
@@ -254,7 +274,7 @@ class ReActStrategy:
                             max_tokens=max_context_tokens,
                         )
 
-                    # ----- 1. LLM 推理 -----
+                    # ----- 3. LLM 推理 -----
                     stream_result = StreamResult()
 
                     async for event in self._llm.async_generate(
@@ -263,6 +283,7 @@ class ReActStrategy:
                         temperature=temperature,
                         max_tokens=max_tokens,
                         result=stream_result,
+                        cancel_event=cancel_event,
                     ):
                         yield event
 
@@ -274,7 +295,7 @@ class ReActStrategy:
                                 k, 0
                             ) + stream_result.usage.get(k, 0)
 
-                    # ----- 成本护栏：累计成本超限 → 错误分发（默认 STOP 降级）-----
+                    # ----- 4. 成本护栏：累计成本超限 → 错误分发（默认 STOP 降级）-----
                     # 置于 error 判断前：成本是全局资源护栏，预算超限时不允许
                     # LLM 失败重试 / 工具执行再产生付费调用或副作用；超限即停机。
                     if self._cost_limiter is not None:
@@ -286,10 +307,18 @@ class ReActStrategy:
                                 yield event
                             return
 
-                    # LLM 调用失败（create 失败 / 流中断放弃 / 用户取消）→ 短路返回失败结果，
-                    # 不把「失败」当「空输出」继续空转重试（浪费 LLM 调用 + 错误信息不准确）。
+                    # ----- 5. LLM 失败（stream_result.error 非空）→ 取消判定 / LLM_FAILED 分发 -----
+                    # 短路返回失败结果，不把「失败」当「空输出」继续空转重试（浪费 LLM 调用 + 错误信息不准确）。
                     # 正常空回（stop + 空 content）error 为 None，仍走下方「空输出重试」逻辑。
                     if stream_result.error:
+                        # 用户取消（cancel_event 置位，LLM 调用被中断）→ CANCELLED 分发
+                        # （不重试——取消是用户意图，重试无意义）
+                        if cancel_event is not None and cancel_event.is_set():
+                            async for event in self._finalize_cancelled(
+                                last_result, iteration, total_usage
+                            ):
+                                yield event
+                            return
                         # LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）
                         async for event in self._finalize_llm_failed(
                             stream_result, iteration, total_usage
@@ -299,7 +328,7 @@ class ReActStrategy:
                             return
                         continue  # CONTINUE：重试
 
-                    # ----- 模型拒答（refusal 字段 / content_filter）→ REFUSED 分发（默认 STOP）-----
+                    # ----- 6. 模型拒答（refusal 字段 / content_filter）→ REFUSED 分发（默认 STOP）-----
                     # 显式拒答信号（LLM-004 原则：拒答基于显式信号，不靠 content 空推断）；
                     # 拒答终止不误判为成功答案、不空转重试。DeepSeek stop+空 content 属
                     # 空回答（非显式拒答），保持现有 _finalize_stop 语义。
@@ -316,7 +345,7 @@ class ReActStrategy:
                     full_reasoning = stream_result.reasoning_content
                     full_content = stream_result.content
 
-                    # ----- 2. 将 LLM 回复追加到消息历史 -----
+                    # ----- 7. 将 LLM 回复追加到消息历史 -----
                     assistant_msg: dict = {
                         "role": "assistant",
                         "content": full_content,
@@ -331,7 +360,7 @@ class ReActStrategy:
                         assistant_msg["tool_calls"] = stream_result.tool_calls
                     messages.append(assistant_msg)
 
-                    # ----- 3. 根据 finish_reason 决定下一步 -----
+                    # ----- 8. 根据 finish_reason 决定下一步 -----
                     finish_reason = stream_result.finish_reason or ""
 
                     # ----- 空输出连续计数 -----
@@ -422,7 +451,7 @@ class ReActStrategy:
                         return
                     # CONTINUE（默认）：重试（_handle_empty_output 已 yield 重试信息）
 
-                # ----- 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
+                # ----- 9. 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
                 async for event in self._finalize_max_turns(
                     last_result, max_iterations, total_usage
                 ):
@@ -433,6 +462,7 @@ class ReActStrategy:
             # 不被下方 except Exception 兜底转 UNKNOWN
             raise
         except TimeoutError:
+            # ----- 10. 超时（总时长上限）→ TIMEOUT 分发（默认超时降级）-----
             # 关闭判别：生成器正被 finalizer/aclose 关闭（不同 task 驱动）或外部取消
             # → 干净停止，不 yield 降级事件（避免 RuntimeError: async generator ignored GeneratorExit）
             cur = asyncio.current_task()
@@ -448,6 +478,7 @@ class ReActStrategy:
             return
 
         except Exception as e:  # noqa: BLE001 — 未捕获异常 → UNKNOWN 分发（保留部分进度）
+            # ----- 11. 未捕获异常 → UNKNOWN 分发（默认保留部分进度）-----
             # 关闭判别（对齐 TimeoutError 分支）：生成器被 finalizer/aclose 关闭
             # 或外部取消 → 干净停止，不 yield 降级事件
             cur = asyncio.current_task()
@@ -566,7 +597,7 @@ class ReActStrategy:
     async def _dispatch(
         self, kind: AgentErrorKind, message: str, iteration: int
     ) -> AgentErrorAction:
-        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 11 处分发唯一入口）。"""
+        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 12 处分发唯一入口）。"""
         action = await self._error_handlers.dispatch(
             kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
         )
@@ -1014,6 +1045,32 @@ class ReActStrategy:
         error = f"Agent 运行异常: {exc!s}"[:200]
         async for event in self._finalize_terminal(
             AgentErrorKind.UNKNOWN,
+            error,
+            iteration,
+            success=bool(last_result.content.strip()) if last_result else False,
+            content=last_result.content.strip() if last_result else "",
+            reasoning=last_result.reasoning_content.strip() if last_result else "",
+            total_usage=total_usage,
+            error=error,
+            info_message=error,
+        ):
+            yield event
+
+    async def _finalize_cancelled(
+        self,
+        last_result: StreamResult | None,
+        iteration: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """用户取消（cancel_event 置位）→ 错误分发（默认 STOP；保留部分进度）。
+
+        优雅取消（对齐 OpenAI after_turn）：轮次边界停止，保留已执行工具证据链 +
+        部分内容（对齐 UNKNOWN / TIMEOUT 部分进度保留模式）。复用 _finalize_terminal
+        终结护栏（CONTINUE 忽略，RAISE 由 _dispatch 抛出）。
+        """
+        error = "Agent 已被取消"
+        async for event in self._finalize_terminal(
+            AgentErrorKind.CANCELLED,
             error,
             iteration,
             success=bool(last_result.content.strip()) if last_result else False,

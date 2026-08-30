@@ -117,3 +117,20 @@ async def test_max_concurrent_property():
     """max_concurrent 属性反映配置值。"""
     ts = TaskService(max_concurrent=4)
     assert ts.max_concurrent == 4
+
+
+@pytest.mark.asyncio
+async def test_cancel_event_registry_lifecycle():
+    """取消事件注册表：create/get/clear/cancel 生命周期。"""
+    ts = TaskService(max_concurrent=2)
+
+    ev = ts.create_cancel_event("s1")
+    assert ts.get_cancel_event("s1") is ev
+    assert not ev.is_set()  # 创建时未置位
+
+    assert ts.cancel_session("s1") is True  # 有运行任务 → 置位成功
+    assert ev.is_set()
+
+    ts.clear_cancel_event("s1")
+    assert ts.get_cancel_event("s1") is None  # 清理后不存在
+    assert ts.cancel_session("s1") is False  # 无运行任务 → 置位失败

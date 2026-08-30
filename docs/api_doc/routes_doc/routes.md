@@ -97,7 +97,7 @@ SSE 事件流回客户端（chat/send）
 | `/api/sessions` | GET | 获取用户会话列表 |
 | `/api/session/{session_id}` | DELETE | 删除会话（软删除） |
 | `/api/chat/send` | POST | 发送消息（SSE 流式） |
-| `/api/chat/stop` | POST | 停止生成（当前为占位） |
+| `/api/chat/stop` | POST | 停止生成（优雅取消运行中 Agent） |
 
 **Base URL**：`http://localhost:8000`（`app/main.py` uvicorn 默认端口）。所有路由 `router = APIRouter(prefix="/api", ...)`。
 
@@ -201,9 +201,9 @@ Authorization: Bearer <token>
 
 `session_id` 为**查询参数**（函数参数未绑定 Pydantic 模型，FastAPI 默认按 query 解析）。
 
-处理流程：会话验证与授权（404 / 403，同 `chat/send`）→ 返回 `{"message": "已发送停止信号"}`。
+处理流程：会话验证与授权（404 / 403，同 `chat/send`）→ `task_service.cancel_session(session_id)` 置位会话取消事件 → 返回 `{"message": "已发送停止信号", "cancelled": bool}`。
 
-> ⚠️ **当前为占位实现**：仅校验会话归属并返回固定响应，**未实际取消**正在进行的 Agent 生成（代码注释标注「实际项目中会调用 LLMService 的 cancel 方法」）。真实取消能力（如 `asyncio.Task` 取消或生成器 `aclose`）尚未落地。
+> ✅ **真实优雅取消**：`/chat/stop` 置位 `TaskService` 的会话取消事件（`cancel_event`），运行中的 Agent 在轮次边界感知取消 → `CANCELLED` 分发（优雅停止，不硬中断、保留部分进度）；send 请求结束清理注册表。`cancelled=false` 表示该会话当前无运行任务。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
 
 ### 对外异常契约
 
@@ -223,7 +223,7 @@ Authorization: Bearer <token>
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| 聊天路由 | chat.py | SSE 流式发送（ReAct 闭环）+ 停止（占位） | ✅ |
+| 聊天路由 | chat.py | SSE 流式发送（ReAct 闭环）+ 停止（优雅取消） | ✅ |
 | 会话路由 | session.py | 会话创建 / 详情 / 历史 / 列表 / 删除 | ✅ |
 | 管理路由 | admin.py | 管理接口（系统状态、统计、运维；鉴权需高于普通用户） | ⬜ 预留 |
 | 任务路由 | agent.py | 异步任务受理（规划 `POST /api/tasks/submit` + `GET /api/tasks/{id}`，承接 TaskService 调度，演进见 [architecture Phase C](../../architecture.md)） | ⬜ 预留 |

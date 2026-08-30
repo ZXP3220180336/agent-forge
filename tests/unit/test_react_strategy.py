@@ -878,6 +878,80 @@ async def test_react_unknown_exception_continue_ignored():
     assert len(strategy.outcome.tool_calls) == 1  # 证据链保留
 
 
+# ---------------------------------------------------------------
+# 优雅取消（cancel_event）：用户停止 → CANCELLED 分发（不重试，保留部分进度）
+# ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_react_cancel_event_stops():
+    """cancel_event 置位 → 主循环顶部 CANCELLED 终止（error 记录取消，done 事件）。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "stop", "content": "不会到达"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+    cancel_event = asyncio.Event()
+    cancel_event.set()  # 预置位：第 1 轮顶部立即取消
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        cancel_event=cancel_event,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "已被取消" in (strategy.outcome.error or "")
+    assert strategy.outcome.iterations == 1
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_cancel_event_not_treated_as_llm_failed():
+    """LLM error + cancel_event 置位 → CANCELLED（非 LLM_FAILED，不重试）。"""
+    strategy = ReActStrategy(llm=_ErrorLLM(), tools=None)
+    cancel_event = asyncio.Event()
+    cancel_event.set()  # LLM 调用失败且取消信号置位 → 判取消而非失败
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        cancel_event=cancel_event,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "已被取消" in (strategy.outcome.error or "")
+    assert strategy.outcome.iterations == 1
+
+
+@pytest.mark.asyncio
+async def test_react_cancel_event_untouched_normal():
+    """cancel_event 未置位 → 正常完成（取消检查零开销）。"""
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "完成"}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+    cancel_event = asyncio.Event()  # 未置位
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        cancel_event=cancel_event,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert strategy.outcome.error is None
+
+
 @pytest.mark.asyncio
 async def test_react_execute_timeout_first_iteration():
     """首轮 LLM 调用即超时 → 降级 outcome：success=False + error 记录超时 + iterations=1。"""

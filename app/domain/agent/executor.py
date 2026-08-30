@@ -20,6 +20,7 @@ ReAct 循环逻辑已抽离到 `app/domain/reasoning/react.py` 的 ReActStrategy
 每次 run() 是独立的，上下文通过 AgentContext 传入。
 """
 
+import asyncio
 from collections.abc import AsyncGenerator
 
 from app.domain.ports.context_budget import ContextBudgetPort
@@ -47,8 +48,11 @@ class ReActAgent(BaseAgent):
         context_budget: ContextBudgetPort | None = None,
         error_handlers: ErrorHandlerRegistry | None = None,
         cost_limiter: CostLimiterPort | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> None:
         super().__init__(llm, tools, error_handlers=error_handlers)
+        # 优雅取消信号（/chat/stop 经 TaskService 置位；None=不启用）
+        self._cancel_event = cancel_event
         self._strategy = ReActStrategy(
             llm=llm,
             tools=tools,
@@ -78,6 +82,7 @@ class ReActAgent(BaseAgent):
             max_context_tokens=ctx.max_context_tokens,
             max_empty_retries=ctx.max_empty_retries,
             max_same_action_turns=ctx.max_same_action_turns,
+            cancel_event=self._cancel_event,
         ):
             yield event
 

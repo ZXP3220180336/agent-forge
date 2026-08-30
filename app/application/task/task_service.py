@@ -31,11 +31,37 @@ class TaskService:
 
     def __init__(self, max_concurrent: int = 10) -> None:
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        # 会话级取消事件注册表（/chat/stop 置位 → 运行中的 Agent 感知取消）
+        self._cancel_events: dict[str, asyncio.Event] = {}
 
     @property
     def max_concurrent(self) -> int:
         """最大并发任务数。"""
         return self._semaphore._value
+
+    # ===== 取消事件注册表（优雅取消，会话级） =====
+
+    def create_cancel_event(self, session_id: str) -> asyncio.Event:
+        """创建并注册会话取消事件（send 请求开始），返回事件供 Agent 透传。"""
+        ev = asyncio.Event()
+        self._cancel_events[session_id] = ev
+        return ev
+
+    def get_cancel_event(self, session_id: str) -> asyncio.Event | None:
+        """获取会话取消事件（无运行任务返回 None）。"""
+        return self._cancel_events.get(session_id)
+
+    def clear_cancel_event(self, session_id: str) -> None:
+        """清理会话取消事件（send 请求结束）。"""
+        self._cancel_events.pop(session_id, None)
+
+    def cancel_session(self, session_id: str) -> bool:
+        """置位会话取消事件（/chat/stop）；无运行任务返回 False。"""
+        ev = self._cancel_events.get(session_id)
+        if ev is None:
+            return False
+        ev.set()
+        return True
 
     async def run_agent(
         self,
