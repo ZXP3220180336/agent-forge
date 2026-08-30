@@ -2,7 +2,7 @@
 
 > **更新日期**：2026-08-29
 > **模块**：`app/application/context/context_manager.py`
-> **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、经 `TokenCounter` 端口精确计数、超限截断；并结构实现 `ContextBudgetPort`，承担 Agent 运行中的上下文预算管理。
+> **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、经 `LLMGateway` 端口精确计数、超限截断；并结构实现 `ContextBudgetPort`，承担 Agent 运行中的上下文预算管理。
 
 ---
 
@@ -24,7 +24,7 @@
 ContextManager 是 chat 链路中「拿到会话 → 组装请求」的关键一步，负责：
 
 1. **消息组装**：system prompt + 历史对话 + 当前用户输入，拼接为 LLM 可接受的 messages 格式
-2. **Token 精确控制**：经 `TokenCounter` 端口逐条计算消息与总上下文的 token 消耗，确保不超模型限制
+2. **Token 精确控制**：经 `LLMGateway` 端口逐条计算消息与总上下文的 token 消耗，确保不超模型限制
 3. **窗口管理**：超出 `max_context_tokens - max_output_tokens` 时，从最早的历史消息开始丢弃
 4. **运行中预算管理**：结构实现 `ContextBudgetPort`，在 Agent 循环中（模型每次调用前）做轮次 + token 双层护栏（横切能力，所有 Agent 模式经端口注入共享）
 
@@ -40,7 +40,7 @@ ContextManager（组装 + 计数 + 截断）
 ReActAgent（领域层，经 ContextBudgetPort 复用 trim_messages）→ LLMService
 ```
 
-- 构造依赖 `SessionManager`（会话数据）与 `TokenCounter` 端口（token 计数），均注入传入，不直接接触 Redis / DB / tiktoken
+- 构造依赖 `SessionManager`（会话数据）与 `LLMGateway` 端口（token 计数，`count_tokens` / `count_messages_tokens`），均注入传入，不直接接触 Redis / DB / tiktoken
 - 结构实现 `ContextBudgetPort` 端口（`app/domain/ports/context_budget.py`）：领域层 Agent 经端口依赖本模块的 `trim_messages`（依赖倒置，横切能力注入共享）
 - 上游调用方：`app/api/routes/chat.py`（`build_messages` 组装上下文，并以 `context_budget=context_manager` 注入 `ReActAgent`）
 
@@ -49,7 +49,7 @@ ReActAgent（领域层，经 ContextBudgetPort 复用 trim_messages）→ LLMSer
 | 参数 | 默认值 | 来源 | 说明 |
 | --- | --- | --- | --- |
 | `session_manager` | 必填 | `Container` 注入 | 会话数据来源 |
-| `token_counter` | 必填 | `Container` 注入 | `TokenCounter` 端口实现（tiktoken 适配器） |
+| `llm` | 必填 | `Container` 注入 | `LLMGateway` 端口（`LLMService` 实现；`count_tokens` / `count_messages_tokens` 供 token 计数） |
 | `max_context_tokens` | `128000` | `settings.max_context_tokens` | 上下文 token 上限 |
 | `max_output_tokens` | `4096` | `settings.max_output_tokens` | 输出 token 预算 |
 
@@ -59,8 +59,8 @@ ReActAgent（领域层，经 ContextBudgetPort 复用 trim_messages）→ LLMSer
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `count_tokens` | `(text: str) -> int` | 经 `TokenCounter` 端口精确计算文本 token 数 |
-| `count_messages_tokens` | `(messages: list[dict]) -> int` | 经 `TokenCounter` 端口计算 messages 总 token（计数规则见 [token_counter](../../integration_doc/llm_doc/token_counter.md)） |
+| `count_tokens` | `(text: str) -> int` | 经 `LLMGateway.count_tokens` 精确计算文本 token 数 |
+| `count_messages_tokens` | `(messages: list[dict]) -> int` | 经 `LLMGateway.count_messages_tokens` 计算 messages 总 token（计数规则见 [token_counter](../../integration_doc/llm_doc/token_counter.md)） |
 | `build_messages` | `(session_id, user_message, max_rounds=20) -> tuple[list[dict], int]` | 组装完整 messages，超限自动截断，返回 `(messages, total_tokens)`；`session_id` 不存在抛 `ValueError` |
 | `trim_messages` | `(messages, *, max_rounds, max_tokens) -> None` | 就地裁剪 messages 到预算内（`ContextBudgetPort` 实现，Agent 循环中模型调用前调用） |
 
@@ -70,12 +70,12 @@ ReActAgent（领域层，经 ContextBudgetPort 复用 trim_messages）→ LLMSer
 
 ## 关键实现详解
 
-### Token 计数端口化
+### Token 计量经 LLMGateway
 
-token 计量职责经 `TokenCounter` 端口（`app/domain/ports/token_counter.py`）委托集成层实现 `TiktokenTokenCounter`：
+token 计量归属 LLM 能力（模型特定编码）——经 `LLMGateway` 端口（`count_tokens` / `count_messages_tokens`，`LLMService` 结构实现）接入，应用层不直接接触 tiktoken 子组件：
 
-- 端口契约：`count_tokens` / `count_messages_tokens` 两个方法
-- 实现 `TiktokenTokenCounter`：构造时按 `model_name` 解析 tiktoken 编码器（未知模型回退 `cl100k_base`），`count_messages_tokens` 内含 content 归一化防御（None / 多模态 list 不崩溃）
+- 端口契约：`count_tokens` / `count_messages_tokens` 两个方法（并入 `LLMGateway`，见 [ports.md](../../domain_doc/ports_doc/ports.md)）
+- 实现 `LLMService` 委托 `TiktokenTokenCounter`：按主模型解析 tiktoken 编码器（未知模型回退 `cl100k_base`），`count_messages_tokens` 内含 content 归一化防御（None / 多模态 list 不崩溃）
 - 实现细节见 [token_counter.md](../../integration_doc/llm_doc/token_counter.md)
 
 ### `build_messages` 组装策略
@@ -141,7 +141,7 @@ trim_messages(messages, *, max_rounds, max_tokens)   # 就地修改 messages
 
 ### 成本上限（CostLimiter，同目录兄弟组件）
 
-`CostLimiter` 与 `ContextManager` 同属「Agent 运行中护栏」横切能力（同 `app/application/context/`），结构实现 `CostLimiterPort`（`app/domain/ports/cost_limiter.py`）。成本估算经 **`LLMGateway.calculate_cost`**（成本估算是 LLM 能力，归属 LLM 网关端口，由 LLM 模块 Facade `LLMService` 实现）——应用层不直接 import 集成层、不触及 LLM 子组件 `CostTracker`，对齐 `ContextManager` 经 `TokenCounter` 端口先例。无状态纯函数——装配根可安全共享单例。
+`CostLimiter` 与 `ContextManager` 同属「Agent 运行中护栏」横切能力（同 `app/application/context/`），结构实现 `CostLimiterPort`（`app/domain/ports/cost_limiter.py`）。成本估算经 **`LLMGateway.calculate_cost`**（成本估算是 LLM 能力，归属 LLM 网关端口，由 LLM 模块 Facade `LLMService` 实现）——应用层不直接 import 集成层、不触及 LLM 子组件 `CostTracker`，对齐 `ContextManager` 经 `LLMGateway` 端口先例。无状态纯函数——装配根可安全共享单例。
 
 ```text
 CostLimiter(ceiling=agent_max_cost, llm=llm_service, model=llm_model_id)
@@ -199,7 +199,7 @@ context_manager.trim_messages(messages, max_rounds=10, max_tokens=80000)
 - [应用层说明](../README.md)（ContextManager 的定位）
 - [SessionManager 会话管理](../session_doc/session.md)（数据来源：`get_session` / `get_messages`）
 - [领域层说明](../../domain_doc/README.md)（`ContextBudgetPort` 端口，Agent 消费方）
-- [集成层说明](../../integration_doc/README.md)（`TokenCounter` 端口实现）
+- [集成层说明](../../integration_doc/README.md)（`LLMGateway` 端口实现 / tiktoken）
 - [路由模块](../../api_doc/routes_doc/routes.md)（`chat.py` 路由，本模块上游调用方）
 - [架构设计](../../architecture.md)
 - [配置说明](../../config_doc/config.md)

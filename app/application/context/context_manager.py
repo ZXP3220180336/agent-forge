@@ -1,13 +1,13 @@
 """
 上下文管理器
 - 负责从会话历史中组装 messages
-- 经 TokenCounter 端口自动进行 Token 计数和截断
+- 经 LLMGateway 端口（count_tokens/count_messages_tokens）自动进行 Token 计数和截断
 - 支持历史摘要压缩
 - 结构实现 ContextBudgetPort：Agent 运行中上下文预算管理（横切能力，注入 Agent 共享）
 """
 
 from app.application.session.session_manager import SessionManager
-from app.domain.ports.token_counter import TokenCounter
+from app.domain.ports.llm_gateway import LLMGateway
 from app.shared.types import SessionId
 
 
@@ -15,7 +15,7 @@ class ContextManager:
     """
     上下文管理模块是整个多轮对话系统的核心调度器，它负责：
     1. 消息组装：从会话历史中提取消息，拼接成 LLM 可接受的格式
-    2. Token 精确控制：经 TokenCounter 端口计算每条消息和总上下文的 Token 消耗，确保不超过模型限制
+    2. Token 精确控制：经 LLMGateway 端口（LLMService 实现）计算每条消息和总上下文的 Token 消耗，确保不超过模型限制
     3. 窗口管理：当上下文超出限制时，自动截断或压缩历史
     4. 成本核算：为每次请求提供 Token 消耗数据，用于计费和监控
     """
@@ -23,22 +23,22 @@ class ContextManager:
     def __init__(
         self,
         session_manager: SessionManager,
-        token_counter: TokenCounter,
+        llm: LLMGateway,
         max_context_tokens: int = 128000,
         max_output_tokens: int = 4096,
     ):
         self.session_manager = session_manager
-        self.token_counter = token_counter
+        self.llm = llm
         self.max_context_tokens = max_context_tokens
         self.max_output_tokens = max_output_tokens
 
     def count_tokens(self, text: str) -> int:
-        """精确计算 Token 数量（委托 TokenCounter 端口）"""
-        return self.token_counter.count_tokens(text)
+        """精确计算 Token 数量（委托 LLMGateway.count_tokens）"""
+        return self.llm.count_tokens(text)
 
     def count_messages_tokens(self, messages: list[dict]) -> int:
-        """计算 messages 列表的总 Token 数（委托 TokenCounter 端口）"""
-        return self.token_counter.count_messages_tokens(messages)
+        """计算 messages 列表的总 Token 数（委托 LLMGateway.count_messages_tokens）"""
+        return self.llm.count_messages_tokens(messages)
 
     async def build_messages(
         self,

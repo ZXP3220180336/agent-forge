@@ -1,3 +1,30 @@
+# 2026-08-30 Token 计量并入 LLMGateway：移除 TokenCounter 端口
+
+> 延续 Facade 收窄原则：Token 计量（模型特定编码）同成本估算一样是 LLM 能力，从独立 `TokenCounter` 端口并入 `LLMGateway`（端口 6→5），`ContextManager` 经 `LLMGateway.count_*` 接入，不再接触独立端口。
+
+- [x] `llm_gateway.py`：加 `count_tokens` / `count_messages_tokens`（LLM 能力归属）
+- [x] `llm_service.py`：委托 `TiktokenTokenCounter`（主模型，惰性构建）
+- [x] 删除 `domain/ports/token_counter.py` + `__init__` 导出（端口 6→5）
+- [x] `context_manager.py`：`token_counter` → `llm`（LLMGateway 端口）
+- [x] container：ContextManager 移到 LLMService 之后，`llm=llm_service`
+- [x] 测试：test_chat_flow / test_react_strategy / test_container 构造改 `llm=`（位置参数自动绑定）
+- [x] 文档：ports.md(5 端口) / context.md / ALIGNMENT / llm.md / token_counter.md / 层 README / types.md / ADR
+- [x] 验证：全量 648 passed + verify_alignment
+
+---
+
+# 2026-08-30 LLM 包 Facade 收窄：`__init__` 只导出 LLMService
+
+> 对齐 llm.md 既有原则「LLMService 是唯一对外 Facade，内部组件不对外暴露」：此前 `llm/__init__.py` 全量导出 12 个子组件（ClientManager/CostTracker/RetryHandler/…）与原则矛盾。
+
+- [x] `llm/__init__.py`：收窄为仅 `from .llm_service import LLMService`（对外接口 = Facade）
+- [x] `llm_service.py`：包内组件改相对深路径 import（消除依赖 `__init__` 重导出的循环）
+- [x] container.py（装配根）：`register_config` 接线改深路径 import（组合根例外，消费方仍只见 LLMService）
+- [x] 测试：test_container / test_client_manager / test_stream_rectify 深路径对齐
+- [x] 验证：全量 648 passed + verify_alignment
+
+---
+
 # 2026-08-30 成本上限自动停机（增强项 #20）+ 断点续跑 ADR（#19 升级路径）
 
 > 对标收尾：#20 CostTracker 记账有、无 cost ceiling 自动停机。经 CostLimiterPort 端口注入（镜像 ContextBudgetPort），累计成本超限走 COST_EXCEEDED 分发默认 STOP 停机。约束：react.py 只依赖 ports+shared；成本估算是 LLM 能力，归属 LLMGateway.calculate_cost，应用层 CostLimiter 经该端口取成本（不直接 import 集成层子组件）。

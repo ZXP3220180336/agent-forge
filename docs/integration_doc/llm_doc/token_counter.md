@@ -2,7 +2,7 @@
 
 > **更新日期**：2026-08-30
 > **模块**：`app/integration/llm/token_counter.py`
-> **文档定位**：TokenCounter 端口的集成层实现 —— tiktoken 编码器解析、content 归一化、消息计数。
+> **文档定位**：LLM 模块内部 tiktoken 计数组件（经 `LLMService.count_tokens` / `count_messages_tokens` 对外，经 `LLMGateway` 端口接入）——tiktoken 编码器解析、content 归一化、消息计数。
 > **状态**：✅ 已实现
 
 ---
@@ -22,17 +22,19 @@
 
 ### 定位与职责
 
-`app/integration/llm/token_counter.py` 是 **TokenCounter 端口的集成层适配器**，同时是 tiktoken 依赖的**唯一使用点**（领域/应用层不直接接触 tiktoken）：
+`app/integration/llm/token_counter.py` 是 **LLM 模块内部 tiktoken 计数组件**（不对外暴露端口），tiktoken 依赖的**唯一使用点**（领域/应用层不直接接触 tiktoken）：
 
 1. **`get_encoder(model)`**：按模型名解析 tiktoken 编码器（进程内缓存、未知模型回退 `cl100k_base`）——供 LLM 层 TPM 估算复用（单一事实源）
 2. **`content_to_text(content)`**：消息 content 归一化（None / str / 多模态 list）——避免 `encode(None)` 抛 TypeError
-3. **`TiktokenTokenCounter`**：实现 `TokenCounter` 端口（`count_tokens` / `count_messages_tokens`），供 `ContextManager` 构造注入
+3. **`TiktokenTokenCounter`**：tiktoken 计数实现（`count_tokens` / `count_messages_tokens`），被 `LLMService` 惰性委托（`count_*` 经 `LLMGateway` 端口对外，消费方 `ContextManager` 经端口接入）
 
 ### 与其它服务的关系
 
 ```text
-ContextManager（应用层）── 依赖 TokenCounter 端口（app/domain/ports/token_counter.py）
-        ▲ 构造注入
+ContextManager（应用层）── 依赖 LLMGateway 端口（count_tokens / count_messages_tokens）
+        ▲ 结构实现
+LLMService（Facade）── 惰性委托
+        ▲ 内部
 TiktokenTokenCounter（本模块）── 唯一 tiktoken 使用点
         ▲ 共享底层函数
 llm_service._count_prompt_tokens（别名 import get_encoder / content_to_text，TPM 限流估算）
@@ -42,7 +44,7 @@ llm_service._count_prompt_tokens（别名 import get_encoder / content_to_text�
 
 | 参数 | 默认值 | 来源 | 说明 |
 | --- | --- | --- | --- |
-| `model` | 必填 | `settings.llm_model_id`（`Container` 注入） | 决定 tiktoken 编码器 |
+| `model` | 必填 | 主模型（`ClientManager.get_model("main")`，`LLMService` 惰性构建时解析） | 决定 tiktoken 编码器 |
 
 ---
 
@@ -78,7 +80,7 @@ llm_service._count_prompt_tokens（别名 import get_encoder / content_to_text�
 - 消息带 `name` 字段额外 **+1**
 - 整体末尾固定 **+2** 回复格式开销
 
-> **输出余量（max_tokens）不在此口径内**：那是 TPM 限流特有估算（`llm_service._count_prompt_tokens` 额外加 max_tokens），属集成层内部实现细节，不入端口。
+> **输出余量（max_tokens）不在此口径内**：那是 TPM 限流特有估算（`llm_service._count_prompt_tokens` 额外加 max_tokens），属集成层内部实现细节，不属对外接口。
 
 ### content 防御
 
@@ -93,16 +95,17 @@ llm_service._count_prompt_tokens（别名 import get_encoder / content_to_text�
 ## 使用示例
 
 ```python
+# 直接使用底层组件（仅测试 / 集成层内部）
 from app.integration.llm.token_counter import TiktokenTokenCounter
 
 counter = TiktokenTokenCounter(model="deepseek-chat")
 token_count = counter.count_tokens("分析这批不良率")
 msg_tokens = counter.count_messages_tokens([{"role": "user", "content": "hello"}])
 
-# 装配根注入 ContextManager（见 app/container.py）
+# 消费方（ContextManager 等）经 LLMGateway 端口访问（装配根注入 LLMService）
 context_manager = ContextManager(
     session_manager=session_manager,
-    token_counter=TiktokenTokenCounter(model=settings.llm_model_id),
+    llm=llm_service,  # LLMService.count_tokens / count_messages_tokens 委托本组件
     max_context_tokens=settings.max_context_tokens,
     max_output_tokens=settings.max_output_tokens,
 )
@@ -114,13 +117,13 @@ context_manager = ContextManager(
 
 | 配置项 | 默认值 | 使用位置 | 说明 |
 | --- | --- | --- | --- |
-| `llm_model_id` | `gpt-4` | `TiktokenTokenCounter` 构造参数 | 决定 tiktoken 编码器 |
+| `llm_model_id` | `gpt-4` | 主模型（`LLMService` 惰性构建 `TiktokenTokenCounter` 时） | 决定 tiktoken 编码器 |
 
 ---
 
 ## 相关文档
 
-- [TokenCounter 端口](../../domain_doc/README.md)（领域层契约）
-- [ContextManager 上下文管理](../../application_doc/context_doc/context.md)（端口消费方）
+- [LLMGateway 端口](../../domain_doc/ports_doc/ports.md)（`count_tokens` / `count_messages_tokens` 对外契约）
+- [ContextManager 上下文管理](../../application_doc/context_doc/context.md)（计数消费方）
 - [LLM 服务层](llm_service.md)（`get_encoder` / `content_to_text` 复用方）
 - [LLM 层说明](llm.md)

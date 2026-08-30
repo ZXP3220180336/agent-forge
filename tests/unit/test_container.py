@@ -10,13 +10,11 @@ import pytest
 import app.container as container_module
 from app.config import settings
 from app.container import Container
-from app.integration.llm import (
-    ClientManager,
-    ReservationLimiterManager,
-    RetryHandlerManager,
-    StreamingRectifier,
-    StructuredOutput,
-)
+from app.integration.llm.client import ClientManager
+from app.integration.llm.reservation_limiter import ReservationLimiterManager
+from app.integration.llm.retry import RetryHandlerManager
+from app.integration.llm.streaming_rectifier import StreamingRectifier
+from app.integration.llm.structured import StructuredOutput
 from app.integration.llm.llm_service import LLMService
 
 # initialize() 会修改这些类级注册表/配置，测试后恢复为快照
@@ -118,7 +116,7 @@ async def test_initialize_happy_path(monkeypatch):
     assert c.session_manager is not None
     assert c.session_manager.redis is fake_redis
     assert c.context_manager is not None
-    assert c.context_manager.token_counter is not None
+    assert c.context_manager.llm is not None
     assert c.llm_service is not None
     assert c.tool_service is not None
     # 10 个内置工具（5 通用 + 5 RCA）+ external/ 示例 http_api（冷启动扫描注册，外部工具对 LLM 可见）

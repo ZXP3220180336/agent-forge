@@ -2,7 +2,7 @@
 
 > **对应代码**：`app/integration/`
 > **更新日期**：2026-08-30
-> **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量，待规划）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` / `TokenCounter` 的适配器实现方。
+> **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量，待规划）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` 的适配器实现方。
 > **实现状态**：LLM（✅ 已实现）· Tools（✅ 已实现）· Embedding（🔶 已实现，未接线）
 
 ---
@@ -52,7 +52,7 @@ app/integration/
 │   ├── structured.py             ← StructuredOutput 结构化输出
 │   ├── reservation_limiter.py    ← ReservationLimiter 客户端限流
 │   ├── cost_tracker.py           ← CostTracker 成本计算
-│   └── token_counter.py          ← TokenCounter 端口实现（get_encoder / TiktokenTokenCounter）
+│   └── token_counter.py          ← tiktoken 计数实现
 ├── tools/                        ← 工具系统（ToolService Facade + 六大子组件 + 内置工具）
     ├── base.py                   ← BaseTool / ToolResult（元数据 + 校验委托 + 生命周期钩子）
     ├── tool_service.py           ← ToolService（统一 Facade，对外入口）
@@ -82,7 +82,7 @@ app/integration/
 ### 设计原则
 
 1. **Facade 模式**：`LLMService` / `ToolService` 是各自子系统唯一外部入口，内部组件不对外暴露
-2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` / `TokenCounter`；VectorStorePort 待规划），领域层只依赖抽象；装配根 `container.py` 在启动时注入
+2. **依赖倒置**：集成层实现领域端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort`；VectorStorePort 待规划），领域层只依赖抽象；装配根 `container.py` 在启动时注入
 3. **三权分立（LLM）**：传输层（连接）/ 可靠性层（重试/熔断/限流/降级）/ 数据层（解析）/ 策略层（整流）/ 治理层（日志/成本）各司其职
 4. **God Object 拆分（Tools）**：ToolService 拆为六大子组件（Registry / Selector / Validator / Executor / ResultProcessor / Auditor）+ 辅助组件（Stats / Hooks / Assembler），Facade 聚合
 5. **纯函数优先**：`StreamParser` 等解析组件为无状态静态方法，便于测试与整流重试幂等
@@ -113,7 +113,7 @@ app/integration/
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
 | LLM Facade | `llm/llm_service.py` | ✅ | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost` |
-| LLM 子包 | `llm/`（8 组件） | ✅ | ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / TokenCounter |
+| LLM 子包 | `llm/`（8 组件） | ✅ | ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token_counter（tiktoken 计数） |
 | 工具 Facade | `tools/tool_service.py` | ✅ | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
 | 工具子包 | `tools/`（六大子组件） | ✅ | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler / Loader |
 | 内置工具 | `tools/builtin/` | ✅ | search / readFile / writeFile / code_exec / web_browse + RCA 5 工具（query_batch_yield 等） |
@@ -139,7 +139,7 @@ app/integration/
 | `StructuredOutput` | structured.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则提取） |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流，双 Token Bucket（RPM + TPM），reserve/settle 形态 |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配） |
-| `TokenCounter` | token_counter.py | TokenCounter 端口实现：编码器解析 / content 归一化 / 消息计数（tiktoken 唯一使用点） |
+| `token_counter` | token_counter.py | tiktoken 计数实现：编码器解析 / content 归一化 / 消息计数（经 `LLMService.count_*` 对外） |
 
 四个对外入口：`generate()`（非流式，简单任务）/ `async_generate()`（流式，用户交互 SSE）/ `generate_structured()`（结构化输出）/ `calculate_cost()`（成本）。
 

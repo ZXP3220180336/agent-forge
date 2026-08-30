@@ -15,21 +15,22 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any, ClassVar
 
 from app.domain.ports.llm_gateway import StreamResult
-from app.integration.llm import (
-    ClientManager,
-    ReservationLimiterManager,
-    RetryHandlerManager,
-    StreamingRectifier,
-    StreamParser,
-    StructuredOutput,
-)
-from app.integration.llm.cost_tracker import CostTracker
-from app.integration.llm.reservation_limiter import Reservation
-from app.integration.llm.retry import ErrorCategory, classify_error
-from app.integration.llm.streaming_rectifier import RectifierContext
-from app.integration.llm.token_counter import content_to_text as _content_to_text
-from app.integration.llm.token_counter import get_encoder as _get_encoder
 from app.platform.observability.logger import fill_llm_event_fields
+from app.shared.types import Messages
+
+# 包内组件一律相对深路径 import（LLM 包对外只暴露 LLMService，__init__ 不重导出内部组件）
+from .client import ClientManager
+from .cost_tracker import CostTracker
+from .reservation_limiter import Reservation, ReservationLimiterManager
+from .retry import ErrorCategory, RetryHandlerManager, classify_error
+from .streaming import StreamParser
+from .streaming_rectifier import RectifierContext, StreamingRectifier
+from .structured import StructuredOutput
+from .token_counter import (
+    TiktokenTokenCounter,
+    content_to_text as _content_to_text,
+    get_encoder as _get_encoder,
+)
 
 # =====================================================================
 # 辅助数据结构
@@ -211,6 +212,8 @@ class LLMService:
         model: str = "",
         base_url: str = "",
     ):
+        # 惰性主模型 token 计数器（count_tokens/count_messages_tokens 首次调用时构建）
+        self._counter: TiktokenTokenCounter | None = None
         # 如果传入了手动参数，注册为 "main" 配置
         if api_key:
             if not base_url or not model:
@@ -498,3 +501,17 @@ class LLMService:
         快捷方式，代理 CostTracker。
         """
         return CostTracker.calculate(usage, model)
+
+    def count_tokens(self, text: str) -> int:
+        """计算单段文本 token 数（主模型编码，委托 tiktoken）。"""
+        return self._token_counter().count_tokens(text)
+
+    def count_messages_tokens(self, messages: Messages) -> int:
+        """计算 messages 列表总 token 数（含格式开销，主模型编码）。"""
+        return self._token_counter().count_messages_tokens(messages)
+
+    def _token_counter(self) -> TiktokenTokenCounter:
+        """惰性构建主模型 tiktoken 计数器（计数方法经 LLMGateway 端口对外）。"""
+        if self._counter is None:
+            self._counter = TiktokenTokenCounter(ClientManager.get_model("main"))
+        return self._counter

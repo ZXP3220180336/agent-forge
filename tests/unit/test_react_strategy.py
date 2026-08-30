@@ -851,7 +851,7 @@ async def test_react_context_budget_trims_rounds():
 
     budget = ContextManager(
         session_manager=object(),  # trim_messages 不使用 session_manager
-        token_counter=TiktokenTokenCounter("gpt-4"),
+        llm=TiktokenTokenCounter("gpt-4"),
     )
     echo_call = {
         "id": "call_1",
@@ -893,7 +893,7 @@ async def test_react_context_budget_trims_on_no_tool_retry():
 
     budget = ContextManager(
         session_manager=object(),  # trim_messages 不使用 session_manager
-        token_counter=TiktokenTokenCounter("gpt-4"),
+        llm=TiktokenTokenCounter("gpt-4"),
     )
     # 无工具：每轮空输出重试（_handle_empty_output CONTINUE），不走 _handle_tool_calls
     strategy = ReActStrategy(llm=_EmptyLLM(), tools=None, context_budget=budget)

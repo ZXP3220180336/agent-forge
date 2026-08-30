@@ -9,39 +9,41 @@
 > `LLMService` **内部如何组织组件工作**（编排机制，供内部维护者 / 集成方）
 > **配套**：实现领域端口 `LLMGateway`；依赖 `ClientManager` / `RetryHandler` /
 > `StreamingRectifier` / `StreamParser` / `ReservationLimiter` / `StructuredOutput` /
-> `CostTracker`；复用 `token_counter` 的 `get_encoder` / `content_to_text`（TokenCounter 端口实现）
+> `CostTracker`；复用 `token_counter` 的 `get_encoder` / `content_to_text` / `TiktokenTokenCounter`（tiktoken 计数组件）
 
 ---
 
 ## 📋 目录
 
-- [设计目标](#设计目标)
-- [核心概念解释](#核心概念解释)
-  - [可靠性链（每次调用）](#可靠性链每次调用)
-  - [限流闭环（\_rate\_limited\_call）](#限流闭环_rate_limited_call)
-  - [结算闭环（finally 兜底）](#结算闭环finally-兜底)
-  - [整流 × 限流协作](#整流--限流协作)
-  - [fallback 同 provider](#fallback-同-provider)
-  - [TPM 估算](#tpm-估算)
-- [架构总览](#架构总览)
-- [组件详解](#组件详解)
-  - [\_build\_chat\_kwargs — 请求参数构建](#_build_chat_kwargs--请求参数构建)
-  - [\_build\_fallback\_fn — fallback 降级函数](#_build_fallback_fn--fallback-降级函数)
-  - [\_build\_event\_fields — 事件字段构建](#_build_event_fields--事件字段构建)
-  - [\_rate\_limited\_call — 限流闭环](#_rate_limited_call--限流闭环)
-  - [\_count\_prompt\_tokens — TPM 估算](#_count_prompt_tokens--tpm-估算)
-  - [LLMService 编排方法](#llmservice-编排方法)
-- [执行流程](#执行流程)
-  - [async\_generate（流式全链路）](#async_generate流式全链路)
-  - [generate（非流式全链路）](#generate非流式全链路)
-  - [generate\_structured（委托三级降级）](#generate_structured委托三级降级)
-- [对外接口](#对外接口)
-- [边界情况](#边界情况)
-- [配置项清单](#配置项清单)
-- [测试状态](#测试状态)
-- [设计决策](#设计决策)
-- [问题记录](#问题记录)
-- [相关文档](#相关文档)
+- [LLMService 编排设计文档](#llmservice-编排设计文档)
+  - [📋 目录](#-目录)
+  - [设计目标](#设计目标)
+  - [核心概念解释](#核心概念解释)
+    - [可靠性链（每次调用）](#可靠性链每次调用)
+    - [限流闭环（\_rate\_limited\_call）](#限流闭环_rate_limited_call)
+    - [结算闭环（finally 兜底）](#结算闭环finally-兜底)
+    - [整流 × 限流协作](#整流--限流协作)
+    - [fallback 同 provider](#fallback-同-provider)
+    - [TPM 估算](#tpm-估算)
+  - [架构总览](#架构总览)
+  - [组件详解](#组件详解)
+    - [\_build\_chat\_kwargs — 请求参数构建](#_build_chat_kwargs--请求参数构建)
+    - [\_build\_fallback\_fn — fallback 降级函数](#_build_fallback_fn--fallback-降级函数)
+    - [\_build\_event\_fields — 事件字段构建](#_build_event_fields--事件字段构建)
+    - [\_rate\_limited\_call — 限流闭环](#_rate_limited_call--限流闭环)
+    - [\_count\_prompt\_tokens — TPM 估算](#_count_prompt_tokens--tpm-估算)
+    - [LLMService 编排方法](#llmservice-编排方法)
+  - [执行流程](#执行流程)
+    - [async\_generate（流式全链路）](#async_generate流式全链路)
+    - [generate（非流式全链路）](#generate非流式全链路)
+    - [generate\_structured（委托三级降级）](#generate_structured委托三级降级)
+  - [对外接口](#对外接口)
+  - [边界情况](#边界情况)
+  - [配置项清单](#配置项清单)
+  - [测试状态](#测试状态)
+  - [设计决策](#设计决策)
+  - [问题记录](#问题记录)
+  - [相关文档](#相关文档)
 
 ---
 

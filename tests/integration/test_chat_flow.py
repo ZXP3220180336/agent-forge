@@ -127,7 +127,7 @@ async def test_chat_send_message_react_loop(tmp_path):
     fake_sm = FakeSessionManager(
         {"id": "s1", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
     )
-    context_manager = ContextManager(session_manager=fake_sm, token_counter=TiktokenTokenCounter("gpt-4"))
+    context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
 
     target_file = tmp_path / "out.txt"
     fake_llm = FakeLLM(
@@ -206,7 +206,7 @@ async def test_chat_send_message_no_tools_plain_answer():
     fake_sm = FakeSessionManager(
         {"id": "s2", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
     )
-    context_manager = ContextManager(session_manager=fake_sm, token_counter=TiktokenTokenCounter("gpt-4"))
+    context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
 
     fake_llm = FakeLLM([{"type": "stop", "content": "直接回答"}])
     registry = ToolService()  # 空服务：无工具定义，LLM 只能直接回答

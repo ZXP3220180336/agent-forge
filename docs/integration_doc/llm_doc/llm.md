@@ -42,7 +42,7 @@ LLM 模块是系统的**模型通信基础设施**，负责与大语言模型的
 
 ```text
 app/integration/llm/
-├── __init__.py                ← 包入口，导出所有子模块
+├── __init__.py                ← 包入口，仅导出 LLMService（Facade）
 ├── llm_service.py             ← LLMService（唯一对外 Facade，实现 LLMGateway）
 ├── client.py                  ← ClientManager 连接池管理
 ├── retry.py                   ← RetryHandler + CircuitBreaker
@@ -51,7 +51,7 @@ app/integration/llm/
 ├── structured.py              ← StructuredOutput 结构化输出
 ├── reservation_limiter.py     ← ReservationLimiter 客户端限流
 ├── cost_tracker.py            ← CostTracker 成本计算
-└── token_counter.py           ← TokenCounter 端口实现（get_encoder / content_to_text / TiktokenTokenCounter）
+└── token_counter.py           ← tiktoken 计数实现
 ```
 
 ### 设计原则
@@ -103,6 +103,8 @@ app/integration/llm/
 | `generate(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast") -> StreamResult \| None` | 异步方法 | 非流式单轮生成（简单任务）；可恢复失败返回 None，不可恢复错误上抛 |
 | `generate_structured(messages, schema, model_key="fast", max_tokens=None) -> dict \| None` | 异步方法 | 结构化输出三级降级（JSON Schema → JSON Mode → 正则）；拒答/工具调用抛异常 |
 | `calculate_cost(usage, model="") -> dict` | 同步静态 | 按模型用量估算成本（代理 `CostTracker`） |
+| `count_tokens(text) -> int` | 同步 | 单段文本 token 数（主模型编码，委托 tiktoken） |
+| `count_messages_tokens(messages) -> int` | 同步 | messages 总 token 数（含格式开销，主模型编码） |
 
 **返回 / 异常语义**：
 
@@ -181,7 +183,7 @@ cost = LLMService.calculate_cost(
 | `StructuredOutput` | structured.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则） | [structure.md](structure.md) |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流（RPM + TPM 双桶，reserve/settle + 自适应预留） | [limiter.md](limiter.md) |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配 + 会话级累计） | [cost_tracker.md](cost_tracker.md) |
-| `TokenCounter` | token_counter.py | TokenCounter 端口实现（编码器解析 / content 归一化 / 消息计数） | [token_counter.md](token_counter.md) |
+| `token_counter` | token_counter.py | tiktoken 计数实现（编码器解析 / content 归一化 / 消息计数，经 `LLMService.count_*` 对外） | [token_counter.md](token_counter.md) |
 
 **组件间协作**（可靠性链）：`ReservationLimiter`（事前限流）→ `RetryHandler`
 （重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流）→

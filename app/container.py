@@ -17,18 +17,19 @@ from app.application.context.cost_limiter import CostLimiter
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
 from app.integration.embedding import EmbeddingService
-from app.integration.llm import (
-    CircuitBreakerConfig,
-    ClientManager,
+from app.integration.llm.client import ClientManager
+from app.integration.llm.llm_service import LLMService
+from app.integration.llm.reservation_limiter import (
     ReservationLimiterConfig,
     ReservationLimiterManager,
+)
+from app.integration.llm.retry import (
+    CircuitBreakerConfig,
     RetryConfig,
     RetryHandlerManager,
-    StreamingRectifier,
-    StructuredOutput,
 )
-from app.integration.llm.llm_service import LLMService
-from app.integration.llm.token_counter import TiktokenTokenCounter
+from app.integration.llm.streaming_rectifier import StreamingRectifier
+from app.integration.llm.structured import StructuredOutput
 from app.integration.tools.builtin import (
     CodeExecTool,
     ReadFileTool,
@@ -130,13 +131,6 @@ class Container:
             db_session_factory=self.db_session_factory,
         )
 
-        self.context_manager = ContextManager(
-            session_manager=self.session_manager,
-            token_counter=TiktokenTokenCounter(model=settings.llm_model_id),
-            max_context_tokens=settings.max_context_tokens,
-            max_output_tokens=settings.max_output_tokens,
-        )
-
         # 3. 注册 LLM 客户端配置 & 创建服务
         # ClientManager 管理连接池，三种模型按需获取
         ClientManager.register_config(
@@ -221,6 +215,14 @@ class Container:
             stream_max_retries=settings.llm_stream_max_retries,
         )
         self.llm_service = LLMService()  # 空构造，通过 ClientManager 获取 client
+
+        # ContextManager 依赖 LLMService（token 计数经 LLMGateway 端口），须在其后构造
+        self.context_manager = ContextManager(
+            session_manager=self.session_manager,
+            llm=self.llm_service,
+            max_context_tokens=settings.max_context_tokens,
+            max_output_tokens=settings.max_output_tokens,
+        )
 
         # 4. 内置工具配置注入（register_config，随后空构造装配）
         SearchTool.register_config(
@@ -315,8 +317,6 @@ class Container:
             cleanup_tasks.append(self._engine.dispose())
 
         # 关闭 LLM 客户端连接池（AsyncOpenAI 底层 httpx 连接池），优雅退出
-        from app.integration.llm import ClientManager
-
         cleanup_tasks.append(ClientManager.close_all())
 
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)

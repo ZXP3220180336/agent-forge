@@ -88,3 +88,19 @@ class LLMGateway(Protocol):
             {"cost_usd": float, "input_cost": float, "output_cost": float}（round 6）。
         """
         ...
+
+    def count_tokens(self, text: str) -> int:
+        """计算单段文本的 token 数（模型编码，同步纯函数）。
+
+        Token 计数是 LLM 能力（模型特定编码）——归属 LLMGateway，供应用层
+        ContextManager 等经同一端口接入，不触及集成层子组件 tiktoken。
+        实现方 LLMService 委托 tiktoken 编码器（主模型编码）。
+        """
+        ...
+
+    def count_messages_tokens(self, messages: Messages) -> int:
+        """计算 messages 列表的总 token 数（含每条消息格式开销 + 末尾回复开销）。
+
+        口径与实现方一致：每条消息 +4 + content token 数 + name 额外 +1；末尾 +2。
+        """
+        ...

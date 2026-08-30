@@ -89,7 +89,7 @@
 | 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（[react.py:290-303](../../../app/domain/reasoning/react.py#L290-L303)） |
 | 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（[react.py:145-161](../../../app/domain/reasoning/react.py#L145-L161)） |
 | 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（[react.py:348-358](../../../app/domain/reasoning/react.py#L348-L358)），模型可知结果不完整 |
-| 10 | 上下文预算管理 | ✅ | context_manager 统一提供（经 ContextBudgetPort 注入 Agent）：轮次滑动窗口（保 assistant/tool 配对）+ token 预算硬上限（复用 TokenCounter），模型调用前作为 gatekeeper |
+| 10 | 上下文预算管理 | ✅ | context_manager 统一提供（经 ContextBudgetPort 注入 Agent）：轮次滑动窗口（保 assistant/tool 配对）+ token 预算硬上限（经 LLMGateway.count_* 计数），模型调用前作为 gatekeeper |
 | 11 | 事件 / 回调体系 | ✅ | SSE 事件（reasoning/message/tool_call/tool_result/info/done）+ BaseAgent 钩子（on_thought/on_tool_call/on_tool_result/on_complete），与工业级 `on_tool_start/end` 同构 |
 | 12 | 步数 / token 统计 | ✅ | outcome 含 iterations/total_tokens/usage/tool_calls（duration/success）+ ToolStats + Auditor |
 | 13 | 流式输出 | ✅ | reasoning_content 与 content 分事件流式输出（[react.py:125-132](../../../app/domain/reasoning/react.py#L125-L132)） |

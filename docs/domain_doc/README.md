@@ -53,10 +53,10 @@ app/domain/
 ├── memory/                    ← 记忆系统（预留）
 │   ├── base.py / working.py / short_term.py / long_term.py / memory_service.py
 ├── ports/                     ← 领域端口契约（依赖倒置抽象）
-│   ├── llm_gateway.py         ← LLMGateway / StreamResult
+│   ├── llm_gateway.py         ← LLMGateway / StreamResult（含成本估算 / Token 计量）
 │   ├── tool_gateway.py        ← ToolGateway / ToolResult
 │   ├── context_budget.py      ← ContextBudgetPort（上下文预算管理）
-│   ├── token_counter.py       ← TokenCounter
+│   ├── cost_limiter.py        ← CostLimiterPort（成本上限护栏）
 │   └── embedding_port.py      ← EmbeddingPort
 ├── prompts/                   ← 提示词管理（指令层）
 │   ├── base.py                ← PromptTemplate 模板基类
@@ -72,7 +72,7 @@ app/domain/
 
 1. **策略模式**：`BaseAgent.run()` 统一入口，`_strategy_cycle()` 抽象策略接口；子类（ReActAgent / PlannerAgent / ReflectionAgent）选择并组合推理策略
 2. **编排与实现分离**：agent/ 管策略编排与生命周期，reasoning/ 管策略实现（原子推理算法）——依赖方向 `agent → reasoning`，策略层不反向依赖
-3. **依赖倒置**：领域层定义端口（`LLMGateway` / `ToolGateway` / `TokenCounter` / `EmbeddingPort`），集成层结构实现，装配根 `container.py` 注入
+3. **依赖倒置**：领域层定义端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` 等），集成层结构实现，装配根 `container.py` 注入
 4. **零外部框架依赖**：领域层只依赖标准库 + `shared` + `ports`，禁止 import 集成层 / 基础设施 / 外部框架
 5. **无状态设计**：Agent 每次 `run()` 新建实例，上下文经 `AgentContext` 传入，运行期间不变
 
@@ -84,7 +84,7 @@ app/domain/
 app/domain/
   ├── agent/ ──→ reasoning/（编排调用原子策略）
   ├── agent/ ──→ prompts/（提示词组装）
-  ├── agent/ / memory/ ──→ ports/（依赖倒置：LLMGateway / ToolGateway / TokenCounter / EmbeddingPort）
+  ├── agent/ / memory/ ──→ ports/（依赖倒置：LLMGateway / ToolGateway / EmbeddingPort 等）
   └── 全部 ──→ shared/（events / exceptions / types，共享内核）
         │  端口由集成层实现
         ▼
@@ -104,7 +104,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | Memory | base / working / short_term / long_term / memory_service | ⬜ | 三层记忆（预留） |
 | Reasoning | react.py | ✅ | ReActStrategy（见 [react.md](reasoning_doc/react.md)） |
 | Reasoning | reflection / chain_of_thought | ⬜ | Reflection / CoT 策略（预留） |
-| Ports | llm_gateway / tool_gateway / context_budget / token_counter / embedding_port | ✅ | 领域端口契约（依赖倒置，见 [ports.md](ports_doc/ports.md)） |
+| Ports | llm_gateway / tool_gateway / context_budget / cost_limiter / embedding_port | ✅ | 领域端口契约（依赖倒置，见 [ports.md](ports_doc/ports.md)） |
 
 ---
 
@@ -169,10 +169,10 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 | 端口 | 文件 | 契约 | 实现 |
 | --- | --- | --- | --- |
-| `LLMGateway` / `StreamResult` | [llm_gateway.py](../../app/domain/ports/llm_gateway.py) | 流式 / 非流式 / 结构化 LLM 调用 | [LLMService](../integration_doc/llm_doc/llm.md) |
+| `LLMGateway` / `StreamResult` | [llm_gateway.py](../../app/domain/ports/llm_gateway.py) | 流式 / 非流式 / 结构化 LLM 调用 + 成本估算 + Token 计量 | [LLMService](../integration_doc/llm_doc/llm.md) |
 | `ToolGateway` / `ToolResult` | [tool_gateway.py](../../app/domain/ports/tool_gateway.py) | 工具 Schema 导出 + 执行 | [ToolService](../integration_doc/tools_doc/tools.md) |
 | `ContextBudgetPort` | [context_budget.py](../../app/domain/ports/context_budget.py) | 上下文预算（轮次 + token 双层护栏） | [ContextManager](../application_doc/context_doc/context.md) |
-| `TokenCounter` | [token_counter.py](../../app/domain/ports/token_counter.py) | token 计量（单文本 / 消息） | [TiktokenTokenCounter](../integration_doc/llm_doc/token_counter.md) |
+| `CostLimiterPort` | [cost_limiter.py](../../app/domain/ports/cost_limiter.py) | 成本上限（美元） | [CostLimiter](../application_doc/context_doc/context.md) |
 | `EmbeddingPort` | [embedding_port.py](../../app/domain/ports/embedding_port.py) | 文本向量化（单条 / 批量） | [EmbeddingService](../integration_doc/embedding_doc/embedding.md) |
 
 ---

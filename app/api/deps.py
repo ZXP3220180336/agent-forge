@@ -6,7 +6,6 @@
 from fastapi import Header
 
 from app.application.context.context_manager import ContextManager
-from app.application.context.cost_limiter import CostLimiter
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
 from app.container import container
@@ -48,7 +47,7 @@ async def get_context_manager() -> ContextManager:
     获取上下文管理器实例（依赖注入）。
 
     ContextManager 依赖 SessionManager 获取历史消息，
-    并经 TokenCounter 端口（tiktoken）计算 Token 数。
+    并经 LLMGateway 端口（count_*）计算 Token 数。
     """
     if container.context_manager is None:
         raise RuntimeError(

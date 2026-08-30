@@ -19,11 +19,8 @@ import pytest
 from openai import APIResponseValidationError, BadRequestError, RateLimitError
 
 from app.config import settings
-from app.integration.llm import (
-    ClientManager,
-    RetryConfig,
-    RetryHandlerManager,
-)
+from app.integration.llm.client import ClientManager
+from app.integration.llm.retry import RetryConfig, RetryHandlerManager
 from app.integration.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
 from app.integration.llm.llm_service import LLMService
 from app.domain.ports.llm_gateway import StreamResult
@@ -349,7 +346,7 @@ async def test_cancel_during_rectify_stops_new_attempt(monkeypatch):
     第一轮死流（RETRYABLE）→ 整流退避期间 cancel 置位 → 退避后/循环入口拦截，
     第二轮 create 不发起（calls==1，不发费不占配额）。
     """
-    from app.integration.llm import StreamingRectifier
+    from app.integration.llm.streaming_rectifier import StreamingRectifier
 
     cancel = asyncio.Event()
     script = [

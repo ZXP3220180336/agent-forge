@@ -3,7 +3,7 @@
 应用层实现：依赖领域端口 `LLMGateway` 获得「usage + model → 成本（USD）」折算
 （`calculate_cost`，由 LLM 模块 Facade `LLMService` 结构实现）——应用层不直接
 import 集成层，成本估算归属 LLM 能力、经 LLM 网关端口接入（对齐 ContextManager
-经 `TokenCounter` 端口先例）。按 ceiling 判定超限。无状态纯函数——容器可安全
+经 `LLMGateway.count_*` 端口先例）。按 ceiling 判定超限。无状态纯函数——容器可安全
 共享单例。
 """
 

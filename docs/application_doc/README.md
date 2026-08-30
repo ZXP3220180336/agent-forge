@@ -125,7 +125,7 @@ POST /api/chat/send
 | --- | --- |
 | 输入侧组装 | `build_messages`：system + 历史 + user，超限截断 |
 | 运行中护栏 | `trim_messages`：轮次 + token 双层护栏（`ContextBudgetPort` 横切能力） |
-| 依赖 | `SessionManager`（会话数据）+ `TokenCounter` 端口（计数） |
+| 依赖 | `SessionManager`（会话数据）+ `LLMGateway` 端口（token 计数） |
 
 ## TaskService 任务调度
 

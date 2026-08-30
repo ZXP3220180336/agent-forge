@@ -11,7 +11,7 @@
 ## Decision
 
 1. **端口注入**：新 `domain/ports/cost_limiter.py`（`CostLimiterPort.check(usage) -> (exceeded, cost_usd)`，无状态纯函数——容器可安全共享单例，并发请求不串扰）；应用层 `CostLimiter` 结构实现。`ReActStrategy` / `ReActAgent` 构造注入（与 context_budget / error_handlers 同构，端口依赖不进 execute 标量 / AgentContext）。
-2. **成本估算归属 LLMGateway**：成本估算是 LLM 能力（模型定价），并入 `LLMGateway` 端口（`calculate_cost(usage, model) -> dict`，由 `LLMService.calculate_cost` Facade 结构实现），不设独立成本端口——`CostLimiter`（应用层）经 `LLMGateway` 端口接入，应用层**不直接 import 集成层、不触及 LLM 子组件（CostTracker）**（对齐 ContextManager 经 `TokenCounter` 端口先例；端口数量 7→6 更内聚）。
+2. **成本估算归属 LLMGateway**：成本估算是 LLM 能力（模型定价），并入 `LLMGateway` 端口（`calculate_cost(usage, model) -> dict`，由 `LLMService.calculate_cost` Facade 结构实现），不设独立成本端口——`CostLimiter`（应用层）经 `LLMGateway` 端口接入，应用层**不直接 import 集成层、不触及 LLM 子组件（CostTracker）**（对齐 ContextManager 经 `LLMGateway.count_*` 端口先例；端口数量 7→6→5 更内聚）。
 3. **口径美元**：`CostTracker.calculate(usage, model)["cost_usd"]` 与 ceiling 比较（严格 `>` 超限）。model 取 `settings.llm_model_id`（ReAct 主推理路径）；空/未知 model 走 `DEFAULT_PRICE` 兜底（对表内模型高估 → 停机偏早，方向保守安全）。
 4. **错误分发停机**：新 `AgentErrorKind.COST_EXCEEDED`（终结性，默认 STOP）。主循环**每轮 usage 累加后** `check(累计 usage)`，超限走 `_finalize_cost_exceeded`（对齐 `_finalize_timeout` 降级：用 last_result 组装 outcome、error 记录「成本超限（累计 $X）」、done 恰一次）。检查点置于 error 判断前：预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用。
 5. **成本不记录领域 outcome**：成本可由 `usage` + `LLMGateway.calculate_cost` 确定性推导；领域层记录成本会把定价口径带进领域（职责越界）。停机可见性由 `outcome.error` 文案覆盖。

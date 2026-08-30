@@ -42,7 +42,7 @@
 | --- | --- | --- |
 | `SessionId` | `NewType("SessionId", str)` | 会话标识（SessionManager 方法参数、AgentContext 字段） |
 | `UserId` | `NewType("UserId", str)` | 用户标识（SessionManager 方法参数、AgentContext 字段） |
-| `Messages` | `type Messages = list[dict]`（PEP 695） | LLM 消息列表（llm_gateway / token_counter 端口契约） |
+| `Messages` | `type Messages = list[dict]`（PEP 695） | LLM 消息列表（llm_gateway 端口契约） |
 
 ---
 
