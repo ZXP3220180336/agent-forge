@@ -299,6 +299,20 @@ class ReActStrategy:
                             return
                         continue  # CONTINUE：重试
 
+                    # ----- 模型拒答（refusal 字段 / content_filter）→ REFUSED 分发（默认 STOP）-----
+                    # 显式拒答信号（LLM-004 原则：拒答基于显式信号，不靠 content 空推断）；
+                    # 拒答终止不误判为成功答案、不空转重试。DeepSeek stop+空 content 属
+                    # 空回答（非显式拒答），保持现有 _finalize_stop 语义。
+                    if (
+                        stream_result.refusal
+                        or stream_result.finish_reason == "content_filter"
+                    ):
+                        async for event in self._finalize_refused(
+                            stream_result, iteration, total_usage
+                        ):
+                            yield event
+                        return
+
                     full_reasoning = stream_result.reasoning_content
                     full_content = stream_result.content
 
@@ -531,7 +545,7 @@ class ReActStrategy:
     async def _dispatch(
         self, kind: AgentErrorKind, message: str, iteration: int
     ) -> AgentErrorAction:
-        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 9 处分发唯一入口）。"""
+        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 10 处分发唯一入口）。"""
         action = await self._error_handlers.dispatch(
             kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
         )
@@ -928,6 +942,33 @@ class ReActStrategy:
             success=False,
             content="",
             reasoning=full_reasoning.strip(),
+            total_usage=total_usage,
+            error=error,
+            info_message=error,
+        ):
+            yield event
+
+    async def _finalize_refused(
+        self,
+        stream_result: StreamResult,
+        iteration: int,
+        total_usage: dict,
+    ) -> AsyncGenerator[str]:
+        """模型拒答 → 错误分发（默认 STOP；不误判为成功答案、不空转重试）。
+
+        显式拒答信号（refusal 字段 / content_filter，LLM-004 原则）。拒答文本
+        截断（LLM-008 基线：拒答常引用触发内容，完整文本不落盘）。复用
+        _finalize_terminal 终结护栏（CONTINUE 忽略，RAISE 由 _dispatch 抛出）。
+        """
+        reason = stream_result.refusal or "内容安全策略触发（content_filter）"
+        error = f"模型拒答: {reason[:200]}"
+        async for event in self._finalize_terminal(
+            AgentErrorKind.REFUSED,
+            error,
+            iteration,
+            success=False,
+            content=stream_result.content,
+            reasoning=stream_result.reasoning_content,
             total_usage=total_usage,
             error=error,
             info_message=error,

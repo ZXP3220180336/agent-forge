@@ -69,7 +69,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 ### 错误处理分发（ErrorHandlerRegistry）
 
-错误处理是共享内核横切能力（`app.shared.error_handling`）：按 `AgentErrorKind` 注册 handler，决策 `CONTINUE`（回喂继续）/ `STOP`（终止）/ `RAISE`（上抛 `AgentRunError`）。ReAct 循环内触发 9 类 kind，与 BaseAgent 的 `CANCELLED` / `UNKNOWN` 合计 11 类：
+错误处理是共享内核横切能力（`app.shared.error_handling`）：按 `AgentErrorKind` 注册 handler，决策 `CONTINUE`（回喂继续）/ `STOP`（终止）/ `RAISE`（上抛 `AgentRunError`）。ReAct 循环内触发 10 类 kind，与 BaseAgent 的 `CANCELLED` / `UNKNOWN` 合计 12 类：
 
 | `AgentErrorKind` | 触发场景 | 默认 action |
 | --- | --- | --- |
@@ -79,6 +79,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 | `TIMEOUT` | 总时长超限 | STOP（降级） |
 | `COST_EXCEEDED` | 累计成本超限 | STOP（停机降级） |
 | `STALLED` | 连续相同工具调用（工具+参数） | STOP（停机） |
+| `REFUSED` | 模型拒答（refusal 字段 / content_filter） | STOP（停机） |
 | `TOOL_FAILED` | 工具执行失败 | CONTINUE（回喂） |
 | `PARSE_FAILED` | 工具参数 JSON 解析失败 | CONTINUE（回喂） |
 | `STRUCTURED_INVALID` | final_answer 参数校验失败 | CONTINUE（回喂） |
@@ -90,6 +91,10 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 ### 循环停滞检测（动作指纹 + STALLED）
 
 死循环护栏：模型「反复调用同一工具同一参数」原地打转时，靠 `max_same_action_turns`（默认 3）主动停机——连续相同工具调用（工具+参数）超过上限走 `STALLED` 分发硬终止（默认 STOP），**不执行本轮工具**（防重复副作用 / 烧钱）。动作指纹 = 本轮 tool_calls 的（名, 规范化参数）序列化：参数 `json.loads` 后 `sort_keys=True` 重 dump（key 顺序 / 空白不同指纹一致），非法 JSON 回退原始串；换工具 / 换参数重置计数；`final_answer` 不参与（终止工具）；STALLED handler 可 RAISE 上抛（对齐 COST_EXCEEDED 终结护栏）。
+
+### 模型拒答（REFUSED）
+
+模型拒答（内容安全策略触发）基于**显式信号**判定（LLM-004 原则）：`refusal` 字段非空或 `finish_reason=content_filter` → 主循环走 `REFUSED` 分发硬终止（默认 STOP），**不误判为成功答案、不空转重试**。error 记录「模型拒答: <截断文本>」（拒答文本截断，LLM-008 基线——拒答常引用触发内容，完整文本不落盘）。DeepSeek 无 refusal 字段的 stop+空 content 属「空回答」而非显式拒答，保持 `_finalize_stop` 空回答语义（不靠 content 空推断拒答）。
 
 ### 多工具失败聚合与仲裁
 
@@ -164,7 +169,7 @@ ReActStrategy.execute()（ReAct 主循环）
 
 - `_finalize_outcome(*, success, content, reasoning, iteration, total_usage, error, info_message, structured) -> AsyncGenerator[str]`：统一收尾——组装 outcome + 产出事件（可选 info + done 恰一次），供各终结 / STOP 分支复用（dispatch 由调用方负责——CONTINUE 语义各异：重试 / 回喂 / 忽略）
 - `_finalize_terminal(kind, message, iteration, *, success, content, reasoning, total_usage, error, info_message, structured) -> AsyncGenerator[str]`：终结性护栏统一收尾——dispatch（RAISE 上抛，CONTINUE 忽略）→ 复用 `_finalize_outcome`；供 TIMEOUT / COST_EXCEEDED / STALLED / MAX_TURNS 复用
-- `_dispatch(kind, message, iteration) -> AgentErrorAction`：错误分发唯一入口——`RAISE` 决策抛 `AgentRunError`，否则返回 action（统一 9 处分发点）
+- `_dispatch(kind, message, iteration) -> AgentErrorAction`：错误分发唯一入口——`RAISE` 决策抛 `AgentRunError`，否则返回 action（统一 10 处分发点）
 
 ### 工具并行原语（execute_tool_calls）
 
@@ -200,6 +205,8 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
   │         预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用）
   ├─ 3. stream_result.error 非空？→ _finalize_llm_failed
   │       STOP（默认）→ 短路失败；CONTINUE → 重试下一轮
+  ├─ 3.5 模型拒答（refusal 字段 / content_filter）→ _finalize_refused（默认 STOP 停机，
+  │       不误判为成功答案、不空转重试；DeepSeek stop+空 content 保持空回答语义）
   ├─ 4. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
   ├─ 4.5 空输出连续计数：本轮有产出（工具调用/stop/length/有内容）→ 清零；空输出 → +1
   ├─ 5. finish_reason 分支：
@@ -257,6 +264,7 @@ result = strategy.outcome  # ReActOutcome
 13. **多工具失败** → 按 kind 聚合（同 kind 原因合并给 handler）+ 最严重优先仲裁（RAISE > STOP > CONTINUE）；终止/上报时其他失败不回喂，但全部失败已进证据链
 14. **空输出重试上限**（`max_empty_retries`，默认 2）→ 连续空输出计数，超过上限在空输出分支硬终止（`error` 记录「连续空输出（N 轮）」，先 dispatch 供 handler RAISE，CONTINUE 忽略）；有产出轮计数清零（非连续不累计）；LLM 失败重试轮不参与
 15. **循环停滞检测**（`max_same_action_turns`，默认 3）→ 连续相同工具调用（工具+参数）超过上限 → STALLED 分发硬终止（本轮工具不执行，error 记录「连续 N 轮相同工具调用」）；参数规范化（key 顺序 / 空白不同指纹一致）；换工具 / 换参数重置；`final_answer` 不参与；STALLED handler 可 RAISE 上抛
+16. **模型拒答**（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，error 记录「模型拒答: <截断文本>」）；显式信号原则（LLM-004，不靠 content 空推断）——DeepSeek 无 refusal 字段的 stop+空 content 保持空回答语义；拒答文本截断（LLM-008 基线）
 
 ## 配置项清单
 
@@ -275,7 +283,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（50 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（54 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）
@@ -283,6 +291,7 @@ result = strategy.outcome  # ReActOutcome
 - **成本上限**：首轮超限 STOP 降级 / 中途超限保留部分进度 / 宽松上限不触发 / `cost_limiter=None` 不启用 / COST_EXCEEDED→RAISE 上抛 / CONTINUE 忽略
 - **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛
 - **循环停滞检测**：同工具同参数达上限终止 / 未达上限正常 / 参数变化重置 / 换工具重置 / 上限可配置 / final_answer 不参与 / STALLED handler RAISE / 参数 key 顺序规范化指纹相同
+- **模型拒答**：refusal 非空终止（content 保留）/ content_filter 终止 / REFUSED handler RAISE / CONTINUE 忽略
 - **工具失败**：失败回喂 / 证据链记录 error+error_code / 无效工具名 NOT_REGISTERED / 解析失败不执行工具 + JSON_PARSE / 截断标记（带标记不超限 / 短结果无标记）
 - **reasoning 回喂**：`has_reasoning` 回喂空串 / 无信号不回喂
 - **上下文预算**：注入 ContextBudgetPort 后轮次裁剪生效 / 非工具路径（空输出重试）每次 LLM 调用前也裁剪

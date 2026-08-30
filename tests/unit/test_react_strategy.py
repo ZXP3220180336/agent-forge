@@ -660,6 +660,111 @@ async def test_react_stall_args_normalized():
     assert len(strategy.outcome.tool_calls) == 3
 
 
+# ---------------------------------------------------------------
+# 模型拒答（增强项 #26）：refusal 字段 / content_filter → REFUSED 分发硬终止
+# ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_react_refused_stops():
+    """模型拒答（refusal 非空 + stop + 有 content）→ REFUSED 终止，不误判为成功答案。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "stop",
+                "content": "抱歉，我无法回答这个问题。",
+                "refusal": "内容安全策略触发，拒绝回答",
+            }
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 1
+    assert "模型拒答" in (strategy.outcome.error or "")
+    # content 保留（拒答同时有部分输出，但不算成功）
+    assert strategy.outcome.content == "抱歉，我无法回答这个问题。"
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_refused_content_filter_stops():
+    """finish_reason=content_filter（无 refusal 字段）→ REFUSED 终止，不落入空输出重试。"""
+    llm = _ScriptedLLM([{"finish_reason": "content_filter", "content": ""}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 1
+    assert "模型拒答" in (strategy.outcome.error or "")
+    assert "content_filter" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_refused_handler_raise():
+    """REFUSED handler → RAISE：抛 AgentRunError(kind=REFUSED)。"""
+    async def on_refused(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.REFUSED, on_refused)
+
+    llm = _ScriptedLLM(
+        [{"finish_reason": "stop", "content": "", "refusal": "拒绝"}]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=3, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.REFUSED
+    assert "模型拒答" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_react_refused_continue_ignored():
+    """REFUSED handler → CONTINUE 被忽略：终结护栏仍 STOP 组装（不重试拒答）。"""
+    async def on_refused(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.REFUSED, on_refused)
+
+    llm = _ScriptedLLM(
+        [{"finish_reason": "stop", "content": "", "refusal": "拒绝"}]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 1
+    assert "模型拒答" in (strategy.outcome.error or "")
+
+
 @pytest.mark.asyncio
 async def test_react_execute_timeout_first_iteration():
     """首轮 LLM 调用即超时 → 降级 outcome：success=False + error 记录超时 + iterations=1。"""
