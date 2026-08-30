@@ -1,5 +1,7 @@
 """app/shared/error_handling.py ErrorHandlerRegistry 单元测试。"""
 
+import asyncio
+
 import pytest
 
 from app.shared.error_handling import (
@@ -130,3 +132,45 @@ def test_agent_error_fields():
     assert isinstance(e, Exception)
     # 纳入统一异常树：可被 except AppError 批量捕获
     assert isinstance(e, AppError)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_handler_exception_falls_back_to_default():
+    """handler 自身抛异常 → 不传播，降级为该 kind 默认 action（扩展点缺陷不破坏主循环）。"""
+    async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
+        raise RuntimeError("handler bug")
+
+    reg = ErrorHandlerRegistry()
+    # 终结性 kind：默认 STOP
+    reg.register(AgentErrorKind.LLM_FAILED, broken_handler)
+    assert (
+        await reg.dispatch(
+            AgentErrorKind.LLM_FAILED,
+            AgentErrorContext(AgentErrorKind.LLM_FAILED, "x"),
+        )
+        == AgentErrorAction.STOP
+    )
+    # 可恢复 kind：默认 CONTINUE
+    reg.register(AgentErrorKind.TOOL_FAILED, broken_handler)
+    assert (
+        await reg.dispatch(
+            AgentErrorKind.TOOL_FAILED,
+            AgentErrorContext(AgentErrorKind.TOOL_FAILED, "x"),
+        )
+        == AgentErrorAction.CONTINUE
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_cancelled_error_not_swallowed():
+    """handler 抛 asyncio.CancelledError（BaseException）→ 不降级，向上传播（保持取消语义）。"""
+    async def cancel_handler(ctx: AgentErrorContext) -> AgentErrorAction:
+        raise asyncio.CancelledError()
+
+    reg = ErrorHandlerRegistry()
+    reg.register(AgentErrorKind.LLM_FAILED, cancel_handler)
+    with pytest.raises(asyncio.CancelledError):
+        await reg.dispatch(
+            AgentErrorKind.LLM_FAILED,
+            AgentErrorContext(AgentErrorKind.LLM_FAILED, "x"),
+        )

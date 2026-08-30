@@ -87,6 +87,8 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 | `PARSE_FAILED` | 工具参数 JSON 解析失败 / finish_reason=tool_calls 但无 tool_calls（协议异常） | CONTINUE（回喂/重试） |
 | `STRUCTURED_INVALID` | final_answer 参数校验失败 | CONTINUE（回喂） |
 
+**handler 异常防御**：handler 是调用方扩展点，其自身异常不破坏主循环——`dispatch` 捕获 `Exception`（不含 `BaseException`，`CancelledError` 穿透）后记日志并按该 kind 默认 action 降级（= 未注册行为），扩展点缺陷可观测且不掩盖被分发的原始错误（见 [SHARED-001](../../../issues/shared/error_handling/2026-08-30-handler-exception-defense.md)）。
+
 ### 成本上限（CostLimiterPort）
 
 成本上限是横切护栏，由应用层 `CostLimiter` 结构实现（经 `CostLimiterPort` 注入；成本估算经 `LLMGateway.calculate_cost` 取——成本估算是 LLM 能力，应用层不直接依赖集成层），ReAct 不实现算法。每轮 usage 累加后 `check(累计 usage)` 折算成本（USD），超限即 `_finalize_cost_exceeded` 走 `COST_EXCEEDED` 分发（默认 STOP 降级，error 记录「成本超限（累计 $X）」）。置于 error 判断前：预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用。`cost_limiter=None`（未配置 `agent_max_cost`）整段零开销。与上下文预算互补：trim 在 LLM 调用前（减少发送 token），cost check 在调用后（审计花费）。
@@ -297,7 +299,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（65 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（68 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）
@@ -315,6 +317,7 @@ result = strategy.outcome  # ReActOutcome
 - **错误处理**：LLM_FAILED→CONTINUE 重试 / LLM_FAILED→RAISE 上抛 / EMPTY_OUTPUT→STOP / TOOL_FAILED→STOP（部分进度保留）/ STRUCTURED_INVALID→STOP
 - **多工具失败**：同 kind 聚合 message / 跨 kind STOP 仲裁 / 跨 kind RAISE 仲裁
 - **协议异常**：finish_reason=tool_calls 空列表默认重试后正常结束 / 连续协议异常不入空输出计数（max_iterations 兜底）/ PARSE_FAILED handler STOP 终止 / RAISE 上抛 / 无工具场景同样识别
+- **handler 异常防御**：LLM_FAILED handler 抛异常默认 STOP（error 为 LLM 失败原因）/ TOOL_FAILED handler 抛异常默认 CONTINUE（回喂继续）/ UNKNOWN handler 抛异常兜底不崩（registry 层另经 test_error_handling 覆盖）
 
 另经 `tests/unit/test_agent.py`（6 用例）间接覆盖（`ReActAgent` 编排路径 + cost_limiter 透传，见 [executor.md](../agent_doc/executor.md)）。
 

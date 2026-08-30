@@ -17,6 +17,9 @@
 | ID | 问题 | 状态 | 涉及模块 | 日期 |
 | --- | --- | --- | --- | --- |
 | [REASON-001](2026-08-30-context-budget-placement.md) | 上下文预算仅工具路径生效，非工具重试路径漏裁 | ✅ 已修复 | reasoning/react | 2026-08-30 |
+| [REASON-002](2026-08-30-unknown-partial-progress.md) | 未捕获异常（UNKNOWN）路径不保留部分进度，与其余终结护栏不一致 | ✅ 已修复 | reasoning/react | 2026-08-30 |
+| [REASON-003](2026-08-30-cancel-event-semantics.md) | 取消信号语义错位 + 未接线：优雅取消被误判为 LLM 失败 / 无调用方 | ✅ 已修复 | reasoning/react · agent/executor · task · chat | 2026-08-30 |
+| [REASON-004](2026-08-30-protocol-error-empty-tool-calls.md) | finish_reason=tool_calls 但 tool_calls 空被误入空输出重试 / 空转执行 | ✅ 已修复 | reasoning/react | 2026-08-30 |
 
 ## 新问题登记规范
 

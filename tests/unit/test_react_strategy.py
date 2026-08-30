@@ -2171,3 +2171,103 @@ async def test_react_protocol_error_no_tools():
     # 走协议异常重试而非空输出重试（事件可区分）
     assert any("协议异常" in e for e in events)
     assert not any("LLM 未生成有效输出" in e for e in events)
+
+
+# ======================================================================
+# 问题 4：错误处理 handler 自身异常 → 防御降级（不破坏主循环）
+# ======================================================================
+
+
+@pytest.mark.asyncio
+async def test_react_handler_exception_llm_failed_default_stop():
+    """LLM_FAILED handler 抛异常 → 降级为默认 STOP 短路（不崩，error 为 LLM 失败原因）。"""
+    async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
+        raise RuntimeError("handler bug")
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, broken_handler)
+
+    strategy = ReActStrategy(
+        llm=_ErrorLLM(), tools=None, error_handlers=registry
+    )
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # 不抛 handler 异常；按默认 STOP 短路，error 记录 LLM 失败原因（非 handler bug）
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "401 认证失败" in (strategy.outcome.error or "")
+    assert "handler bug" not in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_handler_exception_tool_failed_default_continue():
+    """TOOL_FAILED handler 抛异常 → 降级为默认 CONTINUE（回喂继续，下一轮正常结束）。"""
+    async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
+        raise RuntimeError("handler bug")
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.TOOL_FAILED, broken_handler)
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "fail", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "已重试"},
+        ]
+    )
+    tools = _make_registry(tools=[_FailingTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # handler 异常不破坏主循环：工具失败回喂继续，下一轮 stop 正常结束
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "已重试"
+    assert strategy.outcome.iterations == 2
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_handler_exception_not_breaking():
+    """UNKNOWN handler 抛异常 → 主循环 UNKNOWN 兜底不崩（默认 STOP 保留部分进度）。"""
+    async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
+        raise RuntimeError("handler bug")
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.UNKNOWN, broken_handler)
+
+    # _RaisingLLM 第一轮抛 RuntimeError → 主循环 UNKNOWN 分发
+    strategy = ReActStrategy(
+        llm=_RaisingLLM([{"finish_reason": "stop", "content": "x"}], raise_on_call=1),
+        tools=None,
+        error_handlers=registry,
+    )
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # 修复前：UNKNOWN handler 异常从 except 块逃逸 → execute() 调用方收到异常；
+    # 修复后：降级默认 STOP，outcome 正常组装（保留部分进度）
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "Agent 运行异常" in (strategy.outcome.error or "")

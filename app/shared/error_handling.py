@@ -10,11 +10,16 @@ ReActStrategy 等）依赖，不绑定单个子域，reasoning 与 agent 均可�
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
 from app.shared.exceptions import AppError
+
+# 共享内核无依赖约束：不用 platform 的 get_logger（shared 被所有层引用、自身无依赖），
+# 直接用标准库 logging，logger 名对齐 app.* 命名空间（可被 setup_logging 的 handler 捕获）。
+_logger = logging.getLogger("app.shared.error_handling")
 
 
 class AgentErrorKind(StrEnum):
@@ -143,8 +148,22 @@ class ErrorHandlerRegistry:
         kind: AgentErrorKind,
         ctx: AgentErrorContext,
     ) -> AgentErrorAction:
-        """分发错误：有注册 handler 则调用，否则用默认 action（= 现有行为）。"""
+        """分发错误：有注册 handler 则调用，否则用默认 action（= 现有行为）。
+
+        handler 是调用方扩展点（可恢复/终结策略覆盖），其自身异常不破坏主循环：
+        捕获后记日志（warning + traceback）并按默认 action 降级——扩展点缺陷应被
+        可观测、且不掩盖被分发的原始错误（对齐工业界回调异常记录 + 继续默认流程）。
+        BaseException（CancelledError / KeyboardInterrupt 等）不捕获，保持原语义。
+        """
         handler = self._handlers.get(kind)
         if handler is not None:
-            return await handler(ctx)
+            try:
+                return await handler(ctx)
+            except Exception as e:
+                _logger.warning(
+                    "错误处理 handler 异常（%s），按默认 action 处理: %s",
+                    kind.value,
+                    e,
+                    exc_info=True,
+                )
         return _DEFAULT_ACTIONS[kind]
