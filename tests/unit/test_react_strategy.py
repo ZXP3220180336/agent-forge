@@ -164,6 +164,32 @@ class _EmptyLLM:
         return
 
 
+class _RaisingLLM:
+    """第 N 次调用起抛异常（模拟主循环未捕获异常，验证 UNKNOWN 部分进度保留）。"""
+
+    def __init__(
+        self,
+        scripts: list[dict],
+        raise_on_call: int = 1,
+        exc: Exception | None = None,
+    ):
+        self.scripts = scripts
+        self.raise_on_call = raise_on_call
+        self.exc = exc or RuntimeError("意外故障")
+        self.calls = 0
+
+    async def async_generate(self, *args, result=None, **kwargs):
+        self.calls += 1
+        if self.calls >= self.raise_on_call:
+            raise self.exc
+        spec = self.scripts[min(self.calls - 1, len(self.scripts) - 1)]
+        if result is not None:
+            for key, value in spec.items():
+                setattr(result, key, value)
+        yield build_message_event(spec.get("content", ""))
+        return
+
+
 class _SleepyLLM:
     """第 N 次调用前 sleep，用于触发 max_execution_time 超时（脚本耗尽复用最后一条）。"""
 
@@ -763,6 +789,93 @@ async def test_react_refused_continue_ignored():
     assert strategy.outcome.success is False
     assert strategy.outcome.iterations == 1
     assert "模型拒答" in (strategy.outcome.error or "")
+
+
+# ---------------------------------------------------------------
+# 未捕获异常（UNKNOWN 分发）：主循环兜底，保留部分进度
+# ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_exception_keeps_partial_progress():
+    """主循环中途未捕获异常 → UNKNOWN 终止，保留已执行工具证据链。"""
+    llm = _RaisingLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "stop", "content": "不会到达"},
+        ],
+        raise_on_call=2,  # 第 1 轮工具已执行，第 2 轮 LLM 调用抛异常
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "Agent 运行异常" in (strategy.outcome.error or "")
+    # 第 1 轮工具已执行，证据链保留（修复前异常路径全部丢失）
+    assert len(strategy.outcome.tool_calls) == 1
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_exception_handler_raise():
+    """UNKNOWN handler → RAISE：中途异常抛 AgentRunError(kind=UNKNOWN)。"""
+    async def on_unknown(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.RAISE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.UNKNOWN, on_unknown)
+
+    llm = _RaisingLLM([{"finish_reason": "stop", "content": "x"}], raise_on_call=1)
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=3, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.UNKNOWN
+    assert "Agent 运行异常" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_exception_continue_ignored():
+    """UNKNOWN handler → CONTINUE 忽略：终结护栏仍 STOP 组装（部分进度保留）。"""
+    async def on_unknown(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.UNKNOWN, on_unknown)
+
+    llm = _RaisingLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "stop", "content": "不会到达"},
+        ],
+        raise_on_call=2,
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "Agent 运行异常" in (strategy.outcome.error or "")
+    assert len(strategy.outcome.tool_calls) == 1  # 证据链保留
 
 
 @pytest.mark.asyncio

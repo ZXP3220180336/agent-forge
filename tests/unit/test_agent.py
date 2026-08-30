@@ -260,7 +260,11 @@ class _ThrowingLLM:
 
 @pytest.mark.asyncio
 async def test_unknown_handler_raise_propagates():
-    """自定义 UNKNOWN handler → RAISE：未捕获异常上抛给调用方。"""
+    """自定义 UNKNOWN handler → RAISE：抛 AgentRunError(kind=UNKNOWN) 给调用方。
+
+    主循环未捕获异常 → UNKNOWN 分发（与其余 kind 统一 RAISE 语义，抛 AgentRunError
+    而非 re-raise 原始异常）；BaseAgent.run 对 AgentRunError 不吞、上抛。
+    """
     async def on_unknown(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
@@ -272,11 +276,14 @@ async def test_unknown_handler_raise_propagates():
     )
     ctx = AgentContext(session_id="s", user_id="u", max_iterations=3)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(AgentRunError) as exc_info:
         async for _ in agent.run(
             "hi", [{"role": "user", "content": "hi"}], ctx
         ):
             pass
+
+    assert exc_info.value.kind == AgentErrorKind.UNKNOWN
+    assert "Agent 运行异常" in exc_info.value.message
 
 
 @pytest.mark.asyncio

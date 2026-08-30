@@ -69,7 +69,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 ### 错误处理分发（ErrorHandlerRegistry）
 
-错误处理是共享内核横切能力（`app.shared.error_handling`）：按 `AgentErrorKind` 注册 handler，决策 `CONTINUE`（回喂继续）/ `STOP`（终止）/ `RAISE`（上抛 `AgentRunError`）。ReAct 循环内触发 10 类 kind，与 BaseAgent 的 `CANCELLED` / `UNKNOWN` 合计 12 类：
+错误处理是共享内核横切能力（`app.shared.error_handling`）：按 `AgentErrorKind` 注册 handler，决策 `CONTINUE`（回喂继续）/ `STOP`（终止）/ `RAISE`（上抛 `AgentRunError`）。ReAct 循环内触发 11 类 kind，与 BaseAgent 的 `CANCELLED` 合计 12 类（`UNKNOWN` 由主循环 `except Exception` 兜底触发，BaseAgent 仍保留逃逸异常兜底）：
 
 | `AgentErrorKind` | 触发场景 | 默认 action |
 | --- | --- | --- |
@@ -80,6 +80,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 | `COST_EXCEEDED` | 累计成本超限 | STOP（停机降级） |
 | `STALLED` | 连续相同工具调用（工具+参数） | STOP（停机） |
 | `REFUSED` | 模型拒答（refusal 字段 / content_filter） | STOP（停机） |
+| `UNKNOWN` | 未捕获异常（主循环 except 兜底） | STOP（保留部分进度） |
 | `TOOL_FAILED` | 工具执行失败 | CONTINUE（回喂） |
 | `PARSE_FAILED` | 工具参数 JSON 解析失败 | CONTINUE（回喂） |
 | `STRUCTURED_INVALID` | final_answer 参数校验失败 | CONTINUE（回喂） |
@@ -169,7 +170,7 @@ ReActStrategy.execute()（ReAct 主循环）
 
 - `_finalize_outcome(*, success, content, reasoning, iteration, total_usage, error, info_message, structured) -> AsyncGenerator[str]`：统一收尾——组装 outcome + 产出事件（可选 info + done 恰一次），供各终结 / STOP 分支复用（dispatch 由调用方负责——CONTINUE 语义各异：重试 / 回喂 / 忽略）
 - `_finalize_terminal(kind, message, iteration, *, success, content, reasoning, total_usage, error, info_message, structured) -> AsyncGenerator[str]`：终结性护栏统一收尾——dispatch（RAISE 上抛，CONTINUE 忽略）→ 复用 `_finalize_outcome`；供 TIMEOUT / COST_EXCEEDED / STALLED / MAX_TURNS 复用
-- `_dispatch(kind, message, iteration) -> AgentErrorAction`：错误分发唯一入口——`RAISE` 决策抛 `AgentRunError`，否则返回 action（统一 10 处分发点）
+- `_dispatch(kind, message, iteration) -> AgentErrorAction`：错误分发唯一入口——`RAISE` 决策抛 `AgentRunError`，否则返回 action（统一 11 处分发点）
 
 ### 工具并行原语（execute_tool_calls）
 
@@ -218,7 +219,10 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
   │     ├─ "stop"/"length"/有内容 → _finalize_stop（正常结束）
   │     └─ 空输出 → _handle_empty_output（默认 CONTINUE 重试；连续超 max_empty_retries 硬终止；STOP → 终止）
   ├─ 6. 循环耗尽 → _finalize_max_turns（默认 STOP：last_result 兜底）
-  └─ 7. asyncio.timeout(max_execution_time) 触发 → _finalize_timeout（默认 STOP 降级）
+  ├─ 7. asyncio.timeout(max_execution_time) 触发 → _finalize_timeout（默认 STOP 降级）
+  └─ 8. 其他未捕获异常（except Exception）→ _finalize_unknown（默认 STOP：保留部分进度）；
+        AgentRunError（RAISE 决策）前置 re-raise 不被吞；asyncio.CancelledError / GeneratorExit
+        是 BaseException 不被捕获（保持 CANCELLED / 生成器关闭语义）
 ```
 
 ## 对外接口
@@ -265,6 +269,7 @@ result = strategy.outcome  # ReActOutcome
 14. **空输出重试上限**（`max_empty_retries`，默认 2）→ 连续空输出计数，超过上限在空输出分支硬终止（`error` 记录「连续空输出（N 轮）」，先 dispatch 供 handler RAISE，CONTINUE 忽略）；有产出轮计数清零（非连续不累计）；LLM 失败重试轮不参与
 15. **循环停滞检测**（`max_same_action_turns`，默认 3）→ 连续相同工具调用（工具+参数）超过上限 → STALLED 分发硬终止（本轮工具不执行，error 记录「连续 N 轮相同工具调用」）；参数规范化（key 顺序 / 空白不同指纹一致）；换工具 / 换参数重置；`final_answer` 不参与；STALLED handler 可 RAISE 上抛
 16. **模型拒答**（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，error 记录「模型拒答: <截断文本>」）；显式信号原则（LLM-004，不靠 content 空推断）——DeepSeek 无 refusal 字段的 stop+空 content 保持空回答语义；拒答文本截断（LLM-008 基线）
+17. **未捕获异常**（UNKNOWN）→ 主循环 `except Exception` 兜底：用 `last_result` 组装 outcome 保留部分进度 + 证据链，error 记录「Agent 运行异常: <截断文本>」；RAISE 决策（`AgentRunError`）前置 re-raise 不被吞；`asyncio.CancelledError` / `GeneratorExit` 是 `BaseException`，保持 CANCELLED / 生成器关闭语义
 
 ## 配置项清单
 
@@ -283,7 +288,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（54 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（57 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）
@@ -292,6 +297,7 @@ result = strategy.outcome  # ReActOutcome
 - **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛
 - **循环停滞检测**：同工具同参数达上限终止 / 未达上限正常 / 参数变化重置 / 换工具重置 / 上限可配置 / final_answer 不参与 / STALLED handler RAISE / 参数 key 顺序规范化指纹相同
 - **模型拒答**：refusal 非空终止（content 保留）/ content_filter 终止 / REFUSED handler RAISE / CONTINUE 忽略
+- **未捕获异常**：中途异常保留证据链 / UNKNOWN handler RAISE 抛 AgentRunError / CONTINUE 忽略
 - **工具失败**：失败回喂 / 证据链记录 error+error_code / 无效工具名 NOT_REGISTERED / 解析失败不执行工具 + JSON_PARSE / 截断标记（带标记不超限 / 短结果无标记）
 - **reasoning 回喂**：`has_reasoning` 回喂空串 / 无信号不回喂
 - **上下文预算**：注入 ContextBudgetPort 后轮次裁剪生效 / 非工具路径（空输出重试）每次 LLM 调用前也裁剪

@@ -428,6 +428,10 @@ class ReActStrategy:
                 ):
                     yield event
 
+        except AgentRunError:
+            # RAISE 决策的领域错误：不吞，传播到 BaseAgent.run（统一 re-raise），
+            # 不被下方 except Exception 兜底转 UNKNOWN
+            raise
         except TimeoutError:
             # 关闭判别：生成器正被 finalizer/aclose 关闭（不同 task 驱动）或外部取消
             # → 干净停止，不 yield 降级事件（避免 RuntimeError: async generator ignored GeneratorExit）
@@ -438,6 +442,23 @@ class ReActStrategy:
             # 真超时 → 错误分发 + 降级
             async for event in self._finalize_timeout(
                 last_result, iteration, total_usage, max_execution_time
+            ):
+                yield event
+
+            return
+
+        except Exception as e:  # noqa: BLE001 — 未捕获异常 → UNKNOWN 分发（保留部分进度）
+            # 关闭判别（对齐 TimeoutError 分支）：生成器被 finalizer/aclose 关闭
+            # 或外部取消 → 干净停止，不 yield 降级事件
+            cur = asyncio.current_task()
+            if cur is None or cur is not entered_task or cur.cancelling() > 0:
+                return
+
+            # 真异常 → UNKNOWN 分发（默认 STOP，保留 last_result 部分进度 + 证据链）。
+            # asyncio.CancelledError / GeneratorExit 是 BaseException，不被本分支捕获
+            # → 保持 CANCELLED / 生成器关闭语义不变。
+            async for event in self._finalize_unknown(
+                last_result, iteration, total_usage, e
             ):
                 yield event
 
@@ -545,7 +566,7 @@ class ReActStrategy:
     async def _dispatch(
         self, kind: AgentErrorKind, message: str, iteration: int
     ) -> AgentErrorAction:
-        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 10 处分发唯一入口）。"""
+        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 11 处分发唯一入口）。"""
         action = await self._error_handlers.dispatch(
             kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
         )
@@ -969,6 +990,35 @@ class ReActStrategy:
             success=False,
             content=stream_result.content,
             reasoning=stream_result.reasoning_content,
+            total_usage=total_usage,
+            error=error,
+            info_message=error,
+        ):
+            yield event
+
+    async def _finalize_unknown(
+        self,
+        last_result: StreamResult | None,
+        iteration: int,
+        total_usage: dict,
+        exc: Exception,
+    ) -> AsyncGenerator[str]:
+        """未捕获异常 → 错误分发（默认 STOP；保留部分进度）。
+
+        对齐 _finalize_timeout 降级：用 last_result 组装 outcome（保留已执行工具
+        证据链 + 部分内容），与 TIMEOUT / COST_EXCEEDED / STALLED 的「部分进度保留」
+        模式一致。复用 _finalize_terminal 终结护栏（CONTINUE 忽略，RAISE 由 _dispatch
+        抛出）。asyncio.CancelledError / GeneratorExit 是 BaseException，不被主循环
+        except Exception 捕获（保持 CANCELLED / 生成器关闭语义）。
+        """
+        error = f"Agent 运行异常: {exc!s}"[:200]
+        async for event in self._finalize_terminal(
+            AgentErrorKind.UNKNOWN,
+            error,
+            iteration,
+            success=bool(last_result.content.strip()) if last_result else False,
+            content=last_result.content.strip() if last_result else "",
+            reasoning=last_result.reasoning_content.strip() if last_result else "",
             total_usage=total_usage,
             error=error,
             info_message=error,
