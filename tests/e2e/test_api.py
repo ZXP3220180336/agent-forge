@@ -91,7 +91,7 @@ def _wire(monkeypatch, session, llm_script=None):
     monkeypatch.setattr(
         container,
         "agent_params",
-        {"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000},
+        {"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2},
     )
     return fake_sm
 

@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     agent_timeout: int = 300  # 5分钟
     agent_streaming: bool = True
     agent_max_context_rounds: int = 8  # 上下文预算：Agent 循环保留最近轮数（0/None 走 AgentContext 默认）
+    agent_max_empty_retries: int = 2  # 连续空输出重试上限：空输出最多重试 N 次，第 N+1 次仍空输出则终止（0=首次空输出即终止）
     agent_max_cost: float | None = None  # 成本上限（美元 USD）；None=不启用（0 则任何正成本即停）
 
     # 任务优先级配置
@@ -225,6 +226,14 @@ class Settings(BaseSettings):
         """验证成本上限（美元）：None=不启用，非负。"""
         if v is not None and v < 0:
             raise ValueError(f"成本上限不能为负，当前值: {v}")
+        return v
+
+    @field_validator("agent_max_empty_retries")
+    @classmethod
+    def validate_max_empty_retries(cls, v: int) -> int:
+        """验证空输出重试上限（非负；0=首次空输出即终止）。"""
+        if v < 0:
+            raise ValueError(f"空输出重试上限不能为负，当前值: {v}")
         return v
 
     @field_validator("agent_max_concurrent_tasks")

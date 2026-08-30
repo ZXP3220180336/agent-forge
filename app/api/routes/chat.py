@@ -88,6 +88,7 @@ async def send_message(
             max_execution_time=agent_params["max_execution_time"],
             max_context_rounds=agent_params["max_context_rounds"],
             max_context_tokens=agent_params["max_context_tokens"],
+            max_empty_retries=agent_params["max_empty_retries"],
         )
         agent = ReActAgent(
             llm=llm_service,

@@ -31,6 +31,7 @@ VALIDATOR_CASES = [
     ("llm_reserve_min_samples", [0]),
     ("llm_reserve_window", [0]),
     ("agent_max_cost", [-0.1, -5]),
+    ("agent_max_empty_retries", [-1, -5]),
 ]
 
 
@@ -55,6 +56,7 @@ VALID_BOUNDARY_CASES = [
     ("llm_reserve_min_samples", [1]),
     ("llm_reserve_window", [1]),
     ("agent_max_cost", [0.0, 1.5]),
+    ("agent_max_empty_retries", [0, 1, 5]),
 ]
 
 
@@ -118,6 +120,11 @@ def test_agent_max_cost_default_none():
     """agent_max_cost 默认 None（不启用）；显式 None 也接受。"""
     assert _make().agent_max_cost is None
     assert _make(agent_max_cost=None).agent_max_cost is None
+
+
+def test_agent_max_empty_retries_default_two():
+    """agent_max_empty_retries 默认 2（连续空输出最多重试 2 次，第 3 次终止）。"""
+    assert _make().agent_max_empty_retries == 2
 
 
 def test_llm_embedding_config():

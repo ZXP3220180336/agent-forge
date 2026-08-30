@@ -281,6 +281,8 @@ class Container:
             # 上下文预算：轮次（agent_max_context_rounds）+ token（复用全局 max_context_tokens）
             "max_context_rounds": settings.agent_max_context_rounds,
             "max_context_tokens": settings.max_context_tokens,
+            # 空输出重试上限（连续空输出防空转烧钱）
+            "max_empty_retries": settings.agent_max_empty_retries,
         }
 
         # 成本上限：agent_max_cost 未配置（None）或 LLM 服务降级 → 不注入，ReAct 循环零开销。

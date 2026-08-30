@@ -292,6 +292,138 @@ async def test_react_execute_max_iterations_fallback():
     assert strategy.outcome.success is False
 
 
+# ---------------------------------------------------------------
+# 空输出重试上限（增强项 #25）：连续空输出超过 max_empty_retries → EMPTY_OUTPUT 分发硬终止
+# ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_react_empty_output_retry_limit_stops():
+    """持续空输出超过默认上限（2）→ 第 3 次空输出硬终止（iterations=3，error 记录）。"""
+    strategy = ReActStrategy(llm=_EmptyLLM(), tools=None)
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 3  # 2 次重试 + 第 3 次硬终止
+    assert "连续空输出" in (strategy.outcome.error or "")
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_empty_output_retry_limit_recovers():
+    """空输出恰好 2 次（= 上限）后第 3 轮 stop → 正常结束（count > 上限才终止）。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "", "content": ""},
+            {"finish_reason": "", "content": ""},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=5, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert strategy.outcome.iterations == 3
+
+
+@pytest.mark.asyncio
+async def test_react_empty_output_retry_limit_configurable():
+    """max_empty_retries=1 → 第 2 次空输出硬终止（iterations=2）。"""
+    strategy = ReActStrategy(llm=_EmptyLLM(), tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=5, temperature=0.2, max_tokens=1024,
+        max_empty_retries=1,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.iterations == 2
+    assert "连续空输出" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_empty_output_count_resets_after_output():
+    """空输出 → 工具调用（有产出计数清零）→ 空输出 → stop：非连续空输出不达上限。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "", "content": ""},
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "hi"}),
+                        },
+                    }
+                ],
+            },
+            {"finish_reason": "", "content": ""},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # 空输出 count=1 → 工具调用清零 → 空输出 count=1（未超限）→ stop 正常结束
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert strategy.outcome.iterations == 4
+
+
+@pytest.mark.asyncio
+async def test_react_empty_output_retry_limit_handler_raise():
+    """达空输出上限：硬终止分支仍先 dispatch——handler 前 2 次 CONTINUE、第 3 次 RAISE 则上抛。"""
+    calls = {"n": 0}
+
+    async def on_empty(ctx: AgentErrorContext) -> AgentErrorAction:
+        calls["n"] += 1
+        # 前 2 次（重试）→ CONTINUE；第 3 次（硬终止）→ RAISE
+        return AgentErrorAction.RAISE if calls["n"] >= 3 else AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.EMPTY_OUTPUT, on_empty)
+
+    strategy = ReActStrategy(llm=_EmptyLLM(), tools=None, error_handlers=registry)
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=6, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.EMPTY_OUTPUT
+    assert "连续空输出" in exc_info.value.message  # 硬终止分支的消息
+    assert calls["n"] == 3  # 2 次重试分发 + 1 次硬终止分发
+
+
 @pytest.mark.asyncio
 async def test_react_execute_timeout_first_iteration():
     """首轮 LLM 调用即超时 → 降级 outcome：success=False + error 记录超时 + iterations=1。"""
@@ -901,7 +1033,7 @@ async def test_react_context_budget_trims_on_no_tool_retry():
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
         "hi", messages, max_iterations=6, temperature=0.2, max_tokens=1024,
-        max_context_rounds=2,
+        max_context_rounds=2, max_empty_retries=5,  # 大上限保持 6 轮空输出重试，验证预算裁剪
     ):
         pass
 

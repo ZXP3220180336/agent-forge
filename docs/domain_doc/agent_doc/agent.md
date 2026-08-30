@@ -99,6 +99,7 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | `max_execution_time` | `float \| None = None` | 整个 ReAct 循环总时长上限（秒）；None=不设限（生产值由装配根注入 `agent_timeout`） |
 | `max_context_rounds` | `int \| None = None` | 上下文预算：保留最近 N 轮 assistant/tool 配对；None=不裁剪（生产值 `agent_max_context_rounds`） |
 | `max_context_tokens` | `int \| None = None` | 上下文预算：消息总 token 上限；None=不裁剪 |
+| `max_empty_retries` | `int = 2` | 连续空输出重试上限（0=首次空输出即终止，生产值 `agent_max_empty_retries`） |
 | `metadata` | `dict = {}` | 扩展字段（如 `model_key`） |
 
 传递原则：值对象，每次 `run()` 传入，运行期间不变。`iteration_limit` 属性为 `max_iterations` 的语义别名。
@@ -224,6 +225,7 @@ Agent 模块与 `settings.py` 配置项关联（完整表见 [config 文档](../
 | `llm_max_tokens` | 4096 | `AgentContext.max_tokens` 默认值 |
 | `agent_timeout` | 300 | `AgentContext.max_execution_time` 生产值（循环总时长上限，秒） |
 | `agent_max_context_rounds` | 8 | `AgentContext.max_context_rounds` 生产值（上下文预算保留轮数） |
+| `agent_max_empty_retries` | 2 | `AgentContext.max_empty_retries` 生产值（连续空输出重试上限） |
 | `agent_max_concurrent_tools` | 3 | 单任务工具级并发（ToolGateway） |
 
 ---

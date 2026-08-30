@@ -74,6 +74,7 @@ class AgentContext:
         None  # 上下文预算：保留最近 N 轮 assistant/tool 配对；None=不裁剪
     )
     max_context_tokens: int | None = None  # 上下文预算：消息总 token 上限；None=不裁剪
+    max_empty_retries: int = 2  # 连续空输出重试上限（0=首次空输出即终止）
 
     # 扩展字段
     metadata: dict[str, Any] = field(default_factory=dict)

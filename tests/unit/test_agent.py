@@ -75,6 +75,17 @@ class _ErrorLLM:
         return
 
 
+class _EmptyLLM:
+    """每轮返回空输出（finish_reason 为空），用于触发重试 / 空输出上限硬终止。"""
+
+    async def async_generate(self, *args, result=None, **kwargs):
+        if result is not None:
+            result.finish_reason = ""
+            result.content = ""
+        yield ""
+        return
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_calls_parallel_preserves_order(monkeypatch):
     """并行执行工具：tool_messages 顺序保持 = tool_calls 输入顺序。"""
@@ -126,6 +137,22 @@ async def test_react_agent_passes_cost_limiter_to_strategy():
     agent = ReActAgent(llm=llm, tools=None, cost_limiter=cl)
 
     assert agent._strategy._cost_limiter is cl
+
+
+@pytest.mark.asyncio
+async def test_react_agent_passes_max_empty_retries_to_strategy():
+    """ReActAgent 经 AgentContext.max_empty_retries 透传给 execute（空输出超限硬终止）。"""
+    agent = ReActAgent(llm=_EmptyLLM(), tools=None)
+    ctx = AgentContext(session_id="s", user_id="u", max_iterations=6, max_empty_retries=1)
+
+    async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
+        pass
+
+    # max_empty_retries=1：1 次重试 + 第 2 次空输出终止（iterations=2）
+    assert agent.result is not None
+    assert agent.result.success is False
+    assert agent.result.iterations == 2
+    assert "连续空输出" in (agent.result.error or "")
 
 
 @pytest.mark.asyncio

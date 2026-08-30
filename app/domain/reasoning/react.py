@@ -138,6 +138,8 @@ class ReActStrategy:
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
         self._cost_limiter = cost_limiter
         self._tool_call_records: list[dict[str, Any]] = []
+        # 连续空输出重试计数（execute 每次开头重置；本轮有产出清零、空输出 +1）
+        self._empty_retries = 0
         # 结果载体，execute() 结束后读取
         self.outcome: ReActOutcome | None = None
 
@@ -152,6 +154,7 @@ class ReActStrategy:
         max_execution_time: float | None = None,
         max_context_rounds: int | None = None,
         max_context_tokens: int | None = None,
+        max_empty_retries: int = 2,
         output_schema: dict | None = None,
     ) -> AsyncGenerator[str]:
         """
@@ -164,6 +167,7 @@ class ReActStrategy:
                - "stop"       → 生成最终结果，结束循环
                - "length"     → 生成部分结果，结束循环
                - "tool_calls" → final_answer 检测 → 执行工具，追加结果，继续循环
+               - 空输出       → 连续计数 +1；超过 max_empty_retries 硬终止，否则错误分发重试
             3. 达到最大迭代次数 → 错误分发（默认兜底）
             4. 达到 max_execution_time（总时长上限）→ 错误分发（默认超时降级）
 
@@ -180,6 +184,9 @@ class ReActStrategy:
                 超时对齐 max_iterations 兜底模式降级，error 记录超时原因
             max_context_rounds: 上下文预算——保留最近 N 轮 assistant/tool 配对（None=不裁剪）
             max_context_tokens: 上下文预算——消息总 token 上限（None=不裁剪）
+            max_empty_retries: 连续空输出重试上限——空输出最多重试 N 次，第
+                N+1 次仍空输出则终止（0=首次空输出即终止）；达上限走 EMPTY_OUTPUT
+                分发硬终止（防模型空转烧钱）
             output_schema: 最终答案结构化 JSON Schema（None=不启用）。启用时注入
                 final_answer 工具，模型最后调用提交结构化结果并终止循环
 
@@ -193,6 +200,8 @@ class ReActStrategy:
         has_tools = bool(tool_defs)
 
         self._tool_call_records = []
+        # 连续空输出重试计数：execute 每次独立（有产出清零 / 空输出 +1，见主循环）
+        self._empty_retries = 0
         last_result: StreamResult | None = None
         total_usage: dict = {}
         # 记录进入 timeout 的 task：超时降级时判别「真超时」与「生成器被 finalizer
@@ -281,6 +290,19 @@ class ReActStrategy:
                     # ----- 3. 根据 finish_reason 决定下一步 -----
                     finish_reason = stream_result.finish_reason or ""
 
+                    # ----- 空输出连续计数 -----
+                    # 本轮有产出（工具调用 / stop / length / 有内容）→ 清零；空输出 → +1。
+                    # LLM 失败轮（error 非空）在上方已 return/continue，天然不参与。
+                    # 达 max_empty_retries 上限后，空输出分支硬终止（防空转烧钱）。
+                    if (
+                        stream_result.tool_calls
+                        or finish_reason in ("stop", "length")
+                        or full_content.strip()
+                    ):
+                        self._empty_retries = 0
+                    else:
+                        self._empty_retries += 1
+
                     # ----- （1）调用工具 → 继续调用大模型
                     if finish_reason == "tool_calls" and has_tools:
                         yield build_info_event(
@@ -328,7 +350,7 @@ class ReActStrategy:
 
                     # ----- （3）空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）
                     async for event in self._handle_empty_output(
-                        full_reasoning, iteration, total_usage
+                        full_reasoning, iteration, total_usage, max_empty_retries
                     ):
                         yield event
                     if self.outcome is not None:
@@ -392,7 +414,7 @@ class ReActStrategy:
     async def _dispatch(
         self, kind: AgentErrorKind, message: str, iteration: int
     ) -> AgentErrorAction:
-        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 7 处分发唯一入口）。"""
+        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 8 处分发唯一入口）。"""
         action = await self._error_handlers.dispatch(
             kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
         )
@@ -596,8 +618,33 @@ class ReActStrategy:
         full_reasoning: str,
         iteration: int,
         total_usage: dict,
+        max_empty_retries: int,
     ) -> AsyncGenerator[str]:
-        """空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）。"""
+        """空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）。
+
+        连续空输出重试上限：计数超过 max_empty_retries 后硬终止——即使 handler 返回
+        CONTINUE 也不继续（终结护栏，对齐 TIMEOUT / COST_EXCEEDED），防模型空转烧钱。
+        """
+        # 硬终止分支：先 dispatch（handler 可 RAISE 上抛），STOP/CONTINUE 均终止
+        if self._empty_retries > max_empty_retries:
+            error = f"连续空输出（{self._empty_retries} 轮），已终止"
+            await self._dispatch(AgentErrorKind.EMPTY_OUTPUT, error, iteration)
+            self.outcome = self._build_outcome(
+                success=False,
+                content="",
+                reasoning=full_reasoning.strip(),
+                iteration=iteration,
+                total_tokens=total_usage.get("total_tokens", 0),
+                usage=total_usage or None,
+                error=error,
+            )
+            yield build_info_event(error)
+            yield build_done_event(
+                iterations=iteration,
+                total_tokens=total_usage.get("total_tokens", 0),
+            )
+            return
+
         action = await self._dispatch(
             AgentErrorKind.EMPTY_OUTPUT, "LLM 未生成有效输出", iteration
         )

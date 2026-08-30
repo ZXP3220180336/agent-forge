@@ -148,6 +148,8 @@ llm_service = LLMService(**settings.llm_config)
 | --- | --- | --- |
 | `validate_temperature` | `llm_temperature` | 0 ≤ t ≤ 2 |
 | `validate_max_iterations` | `agent_max_iterations` | 1 ≤ n ≤ 100 |
+| `validate_max_cost` | `agent_max_cost` | ≥ 0（None=不启用） |
+| `validate_max_empty_retries` | `agent_max_empty_retries` | ≥ 0 |
 | `validate_concurrent_tasks` | `agent_max_concurrent_tasks` | 1 ≤ n ≤ 100 |
 | `validate_queue_size` | `agent_priority_queue_size` | 1 ≤ n ≤ 10000 |
 | `validate_embedding_dimensions` | `llm_embedding_dimensions` | > 0 |
@@ -156,7 +158,7 @@ llm_service = LLMService(**settings.llm_config)
 | `validate_reserve_quantile` | `llm_reserve_quantile` / `llm_reserve_reasoning_quantile` | 0 < v < 1（开区间） |
 | `validate_reserve_positive_int` | `llm_reserve_min_samples` / `llm_reserve_window` | ≥ 1 |
 
-（8 组 `@field_validator`，覆盖 9 个字段域；越界抛 `ValueError` → Pydantic 汇总为 `ValidationError`）
+（11 组 `@field_validator`，覆盖 13 个字段域；越界抛 `ValueError` → Pydantic 汇总为 `ValidationError`）
 
 ---
 
@@ -287,6 +289,7 @@ llm_service = LLMService(**settings.llm_config)
 | `AGENT_STREAMING` | bool | true | 是否启用流式输出 |
 | `AGENT_MAX_CONTEXT_ROUNDS` | int | 8 | Agent 循环保留最近轮数（上下文预算，0/None 走 AgentContext 默认） |
 | `AGENT_MAX_COST` | float \| None | 空 | 成本上限（美元 USD）；空=不启用，0 则任何正成本即停（ReAct 累计成本超限自动停机） |
+| `AGENT_MAX_EMPTY_RETRIES` | int | 2 | 连续空输出重试上限：空输出最多重试 N 次，第 N+1 次仍空输出则终止；0=首次空输出即终止（防模型空转烧钱） |
 
 #### 5.2 任务优先级配置
 
