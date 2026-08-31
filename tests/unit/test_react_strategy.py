@@ -2173,6 +2173,45 @@ async def test_react_protocol_error_no_tools():
     assert not any("LLM 未生成有效输出" in e for e in events)
 
 
+@pytest.mark.asyncio
+async def test_react_protocol_error_no_tools_with_tool_calls():
+    """无工具注册 + finish_reason=tool_calls + 非空 tool_calls → 协议异常短路（不进空输出/空转执行）。"""
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)  # 未注册任何工具
+
+    events = []
+    async for event in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(event)
+
+    # 协议异常重试 → 下一轮 stop 正常结束（修复前：非空 tool_calls 使空输出计数清零，
+    # 误入空输出分支且 max_empty_retries 失效，仅靠 max_iterations 兜底）
+    assert llm.calls == 2
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    # 走协议异常重试而非空输出重试（事件可区分）；无工具执行记录
+    assert any("协议异常" in e for e in events)
+    assert not any("LLM 未生成有效输出" in e for e in events)
+    assert strategy.outcome.tool_calls == []
+
+
 # ======================================================================
 # 问题 4：错误处理 handler 自身异常 → 防御降级（不破坏主循环）
 # ======================================================================

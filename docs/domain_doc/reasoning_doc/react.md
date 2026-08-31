@@ -68,7 +68,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 | finish_reason | 语义 | 处理 |
 | --- | --- | --- |
 | `tool_calls` | 模型请求调用工具 | final_answer 检测 → 执行工具 → 结果回喂 → 下一轮 |
-| `tool_calls` + 空 `tool_calls` | 协议信号不一致（声明调工具却没给出） | `_finalize_protocol_error` 协议异常 → `PARSE_FAILED` 分发（默认重试） |
+| `tool_calls` + 空 `tool_calls` / 无工具可用 | 协议信号不一致（声明调工具却没给出 / 系统未注册工具） | `_finalize_protocol_error` 协议异常 → `PARSE_FAILED` 分发（默认重试） |
 | `stop` / `length` | 正常生成完毕（length 为截断） | `_finalize_stop` 正常结束 |
 | 空 + 无内容 | 模型未生成有效输出 | `_handle_empty_output` 错误分发（默认重试） |
 
@@ -297,7 +297,7 @@ result = strategy.outcome  # ReActOutcome
 16. **模型拒答**（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，error 记录「模型拒答: <截断文本>」）；显式信号原则（LLM-004，不靠 content 空推断）——DeepSeek 无 refusal 字段的 stop+空 content 保持空回答语义；拒答文本截断（LLM-008 基线）
 17. **未捕获异常**（UNKNOWN）→ 主循环 `except Exception` 兜底：用 `last_result` 组装 outcome 保留部分进度 + 证据链，error 记录「Agent 运行异常: <异常类型名>」（**脱敏**——只留分类，不拼接异常 message，完整异常含 traceback 进日志供运维诊断，产品侧不泄漏内部细节，见 [REASON-005](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)）；RAISE 决策（`AgentRunError`）前置 re-raise 不被吞；`asyncio.CancelledError` / `GeneratorExit` 是 `BaseException`，保持 CANCELLED / 生成器关闭语义
 18. **用户取消**（`cancel_event`，None=不启用）→ 主循环顶部 + LLM error 分支识别 → CANCELLED 分发（优雅停止，不重试，保留部分进度）；传给 LLM 层在整流层 chunk 边界中断；`asyncio.CancelledError`（硬取消）仍走 BaseAgent.run 的 CANCELLED（独立路径）
-19. **协议异常**（`finish_reason=tool_calls` 但 `tool_calls` 为空）→ `_finalize_protocol_error` 短路为 `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表，避免空转浪费轮次）；handler 可 STOP 终止（error 记录「协议异常」）/ RAISE 上抛
+19. **协议异常**（`finish_reason=tool_calls` 但 `tool_calls` 为空 **或** 无工具可用）→ `_finalize_protocol_error` 短路为 `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表，避免空转浪费轮次）；handler 可 STOP 终止（error 记录「协议异常」）/ RAISE 上抛。覆盖两类信号不一致：① 声明调工具却没给出 `tool_calls`；② 要调工具但系统未注册任何工具（`has_tools=False`）——后者修复前误入空输出分支且非空 `tool_calls` 清零重试计数使护栏失效（REASON-004）
 
 ---
 
@@ -320,7 +320,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（69 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（70 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）
@@ -337,7 +337,7 @@ result = strategy.outcome  # ReActOutcome
 - **final_answer**：成功提取终止 / 校验失败回喂 / 未配置不注入
 - **错误处理**：LLM_FAILED→CONTINUE 重试 / LLM_FAILED→RAISE 上抛 / EMPTY_OUTPUT→STOP / TOOL_FAILED→STOP（部分进度保留）/ STRUCTURED_INVALID→STOP
 - **多工具失败**：同 kind 聚合 message / 跨 kind STOP 仲裁 / 跨 kind RAISE 仲裁
-- **协议异常**：finish_reason=tool_calls 空列表默认重试后正常结束 / 连续协议异常不入空输出计数（max_iterations 兜底）/ PARSE_FAILED handler STOP 终止 / RAISE 上抛 / 无工具场景同样识别
+- **协议异常**：finish_reason=tool_calls 空列表默认重试后正常结束 / 连续协议异常不入空输出计数（max_iterations 兜底）/ PARSE_FAILED handler STOP 终止 / RAISE 上抛 / 无工具场景同样识别 / **无工具 + 非空 tool_calls 短路**
 - **handler 异常防御**：LLM_FAILED handler 抛异常默认 STOP（error 为 LLM 失败原因）/ TOOL_FAILED handler 抛异常默认 CONTINUE（回喂继续）/ UNKNOWN handler 抛异常兜底不崩（registry 层另经 test_error_handling 覆盖）
 
 另经 `tests/unit/test_agent.py`（8 用例）间接覆盖（`ReActAgent` 编排路径 + cost_limiter / max_empty_retries / max_same_action_turns 透传，见 [executor.md](../agent_doc/executor.md)）。
@@ -366,7 +366,7 @@ result = strategy.outcome  # ReActOutcome
 - [REASON-001 上下文预算仅工具路径生效](../../../issues/domain/reasoning/2026-08-30-context-budget-placement.md)：预算原放 `_handle_tool_calls` 尾部，非工具重试路径漏裁；已移主循环顶部统一裁剪（已修复）
 - [REASON-002 UNKNOWN 部分进度](../../../issues/domain/reasoning/2026-08-30-unknown-partial-progress.md)：未捕获异常路径不保留部分进度，与其余终结护栏不一致；已统一用 last_result 组装（已修复）
 - [REASON-003 取消信号语义错位 + 未接线](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)：优雅取消被误判为 LLM 失败 / 无调用方接线；已贯通 cancel_event 链路 + /chat/stop 真实实现（已修复）
-- [REASON-004 协议异常空 tool_calls](../../../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)：finish_reason=tool_calls 但 tool_calls 空被误入空输出重试 / 空转执行；已短路为 PARSE_FAILED 协议异常分发（已修复）
+- [REASON-004 协议异常 tool_calls 不一致](../../../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)：finish_reason=tool_calls 信号与数据（空列表）/工具可用性（无工具）不一致，误入空输出重试 / 空转执行；已短路为 PARSE_FAILED 协议异常分发（已修复）
 - [REASON-005 UNKNOWN error 脱敏](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)：error 拼接完整异常文本泄漏内部细节；已改异常类型名 + 完整异常进日志（已修复）
 
 ---
