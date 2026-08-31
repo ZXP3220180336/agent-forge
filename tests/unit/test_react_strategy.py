@@ -2213,6 +2213,152 @@ async def test_react_protocol_error_no_tools_with_tool_calls():
 
 
 # ======================================================================
+# LLM 失败重试上限（max_llm_fail_retries）：对齐空输出护栏防无限重试烧钱
+# ======================================================================
+
+
+@pytest.mark.asyncio
+async def test_react_llm_fail_retries_hard_stop():
+    """LLM 持续失败 + handler CONTINUE → 连续失败超 max_llm_fail_retries 硬终止。"""
+    async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
+
+    llm = _ScriptedLLM(
+        [
+            {"error": "401 认证失败"},
+            {"error": "401 认证失败"},
+            {"error": "401 认证失败"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=5, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    # 默认 max_llm_fail_retries=2：第 3 次失败（计数 3 > 2）硬终止，即使 handler CONTINUE
+    assert llm.calls == 3
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "连续 LLM 调用失败（3 轮）" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_llm_fail_retries_resets_on_success():
+    """成功轮清零失败计数：失败→工具成功→再失败不累计硬终止（对齐空输出「有产出清零」）。"""
+    async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
+
+    llm = _ScriptedLLM(
+        [
+            {"error": "401 认证失败"},
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"error": "401 认证失败"},
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=6, temperature=0.2, max_tokens=1024,
+        max_llm_fail_retries=1,
+    ):
+        pass
+
+    # max_llm_fail_retries=1 + 失败/工具成功交替：工具轮（error None）清零失败计数，
+    # 两次 error 各自计数 1 ≤ 1 不累计硬终止（若不清零，第 3 轮 error 计数 2 > 1 硬终止）
+    assert llm.calls == 5
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+
+
+@pytest.mark.asyncio
+async def test_react_llm_fail_retries_handler_raise():
+    """连续失败达上限硬终止 → handler RAISE：抛 AgentRunError(LLM_FAILED)。"""
+    async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return (
+            AgentErrorAction.RAISE
+            if "连续 LLM 调用失败" in ctx.message
+            else AgentErrorAction.CONTINUE
+        )
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
+
+    llm = _ScriptedLLM(
+        [
+            {"error": "401 认证失败"},
+            {"error": "401 认证失败"},
+            {"error": "401 认证失败"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
+
+    with pytest.raises(AgentRunError) as exc_info:
+        async for _ in strategy.execute(
+            "hi", [{"role": "user", "content": "hi"}],
+            max_iterations=5, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+
+    assert exc_info.value.kind == AgentErrorKind.LLM_FAILED
+    assert "连续 LLM 调用失败" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_react_llm_fail_retries_zero():
+    """max_llm_fail_retries=0 → 首次失败即终止（handler CONTINUE 忽略）。"""
+    async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
+
+    strategy = ReActStrategy(llm=_ErrorLLM(), tools=None, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=5, temperature=0.2, max_tokens=1024,
+        max_llm_fail_retries=0,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "连续 LLM 调用失败（1 轮）" in (strategy.outcome.error or "")
+    assert strategy.outcome.iterations == 1
+
+
+@pytest.mark.asyncio
+async def test_react_llm_fail_retries_default_stop_unchanged():
+    """默认 STOP（无 CONTINUE handler）→ 首次失败短路（计数不影响既有行为）。"""
+    strategy = ReActStrategy(llm=_ErrorLLM(), tools=None)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=5, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "401 认证失败" in (strategy.outcome.error or "")
+    assert strategy.outcome.iterations == 1
+
+
+# ======================================================================
 # 问题 4：错误处理 handler 自身异常 → 防御降级（不破坏主循环）
 # ======================================================================
 

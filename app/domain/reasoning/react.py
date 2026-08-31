@@ -183,6 +183,7 @@ class ReActStrategy:
         max_context_rounds: int | None = None,
         max_context_tokens: int | None = None,
         max_empty_retries: int = 2,
+        max_llm_fail_retries: int = 2,
         max_same_action_turns: int = 3,
         output_schema: dict | None = None,
         cancel_event: asyncio.Event | None = None,
@@ -196,6 +197,7 @@ class ReActStrategy:
             3. LLM 推理（流式输出 reasoning / message，cancel_event 传给 LLM 层中断调用）
             4. 成本护栏：累计成本超限 → COST_EXCEEDED 分发（默认停机降级）
             5. LLM 失败（stream_result.error 非空）：取消置位 → CANCELLED；否则 LLM_FAILED 分发
+               （默认 STOP 短路；handler 可 CONTINUE 重试，重试受 max_llm_fail_retries 上限硬终止）
             6. 模型拒答（refusal 字段 / content_filter）→ REFUSED 分发（默认停机）
             7. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
             8. 检查 finish_reason
@@ -224,6 +226,10 @@ class ReActStrategy:
             max_empty_retries: 连续空输出重试上限——空输出最多重试 N 次，第
                 N+1 次仍空输出则终止（0=首次空输出即终止）；达上限走 EMPTY_OUTPUT
                 分发硬终止（防模型空转烧钱）
+            max_llm_fail_retries: LLM 失败重试上限——LLM 调用失败最多重试 N 次，第
+                N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏）；达上限走
+                LLM_FAILED 分发硬终止——即使 handler 返回 CONTINUE 也不继续（防
+                handler 配置失误 / LLM 持续失败时无限重试烧钱）
             max_same_action_turns: 循环停滞检测——连续相同工具调用（工具+参数）
                 超过 N 轮后，下一轮仍相同则终止（默认 3）；达上限走 STALLED
                 分发硬终止（防死循环烧钱/重复副作用）
@@ -245,6 +251,9 @@ class ReActStrategy:
         self._tool_call_records = []
         # 连续空输出重试计数：execute 每次独立（有产出清零 / 空输出 +1，见主循环）
         self._empty_retries = 0
+        # LLM 失败重试计数：execute 每次独立（成功轮清零 / 失败轮 +1，见主循环；
+        # 对齐空输出护栏，防 handler CONTINUE 无限重试烧钱）
+        self._llm_fail_retries = 0
         # 循环停滞检测：execute 每次独立（相同动作指纹 + 连续计数，见主循环）
         self._last_action_fp = None
         self._stall_count = 0
@@ -318,21 +327,27 @@ class ReActStrategy:
                     # 正常空回（stop + 空 content）error 为 None，仍走下方「空输出重试」逻辑。
                     if stream_result.error:
                         # 用户取消（cancel_event 置位，LLM 调用被中断）→ CANCELLED 分发
-                        # （不重试——取消是用户意图，重试无意义）
+                        # （不重试——取消是用户意图，重试无意义；取消不参与失败重试计数）
                         if cancel_event is not None and cancel_event.is_set():
                             async for event in self._finalize_cancelled(
                                 last_result, iteration, total_usage
                             ):
                                 yield event
                             return
-                        # LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）
+                        # 连续 LLM 失败重试计数（对齐空输出护栏）：失败轮 +1，
+                        # 成功轮清零（见下方）。取消不计数（上方已 return）。
+                        self._llm_fail_retries += 1
+                        # LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛，
+                        # 重试受 max_llm_fail_retries 上限硬终止）
                         async for event in self._finalize_llm_failed(
-                            stream_result, iteration, total_usage
+                            stream_result, iteration, total_usage, max_llm_fail_retries
                         ):
                             yield event
                         if self.outcome is not None:
                             return
                         continue  # CONTINUE：重试
+                    # LLM 成功轮（error 为 None）→ 失败重试计数清零（对齐空输出「有产出清零」）
+                    self._llm_fail_retries = 0
 
                     # ----- 6. 模型拒答（refusal 字段 / content_filter）→ REFUSED 分发（默认 STOP）-----
                     # 显式拒答信号（LLM-004 原则：拒答基于显式信号，不靠 content 空推断）；
@@ -671,8 +686,30 @@ class ReActStrategy:
         stream_result: StreamResult,
         iteration: int,
         total_usage: dict,
+        max_llm_fail_retries: int,
     ) -> AsyncGenerator[str]:
-        """LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）。"""
+        """LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）。
+
+        CONTINUE 重试受 max_llm_fail_retries 上限护栏（对齐空输出）：连续失败超上限
+        后硬终止——即使 handler 返回 CONTINUE 也不继续（终结护栏，防 handler 配置
+        失误 / LLM 持续失败时无限重试烧钱）。
+        """
+        # 硬终止分支：先 dispatch（handler 可 RAISE 上抛），STOP/CONTINUE 均终止
+        if self._llm_fail_retries > max_llm_fail_retries:
+            error = f"连续 LLM 调用失败（{self._llm_fail_retries} 轮），已终止"
+            await self._dispatch(AgentErrorKind.LLM_FAILED, error, iteration)
+            async for event in self._finalize_outcome(
+                success=False,
+                content=stream_result.content,
+                reasoning=stream_result.reasoning_content,
+                iteration=iteration,
+                total_usage=total_usage,
+                error=error,
+                info_message=error,
+            ):
+                yield event
+            return
+
         action = await self._dispatch(
             AgentErrorKind.LLM_FAILED, stream_result.error or "", iteration
         )

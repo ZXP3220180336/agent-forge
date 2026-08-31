@@ -283,6 +283,8 @@ class Container:
             "max_context_tokens": settings.max_context_tokens,
             # 空输出重试上限（连续空输出防空转烧钱）
             "max_empty_retries": settings.agent_max_empty_retries,
+            # LLM 失败重试上限（连续失败防 handler CONTINUE 无限重试烧钱）
+            "max_llm_fail_retries": settings.agent_max_llm_fail_retries,
             # 循环停滞检测（连续相同工具调用防死循环）
             "max_same_action_turns": settings.agent_max_same_action_turns,
         }

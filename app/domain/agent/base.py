@@ -75,6 +75,7 @@ class AgentContext:
     )
     max_context_tokens: int | None = None  # 上下文预算：消息总 token 上限；None=不裁剪
     max_empty_retries: int = 2  # 连续空输出重试上限（0=首次空输出即终止）
+    max_llm_fail_retries: int = 2  # LLM 失败重试上限：连续失败超过上限硬终止（0=首次失败即终止；防 handler CONTINUE 无限重试）
     max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）上限
 
     # 扩展字段

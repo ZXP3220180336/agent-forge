@@ -173,6 +173,31 @@ async def test_react_agent_passes_max_empty_retries_to_strategy():
 
 
 @pytest.mark.asyncio
+async def test_react_agent_passes_max_llm_fail_retries_to_strategy():
+    """ReActAgent 经 AgentContext.max_llm_fail_retries 透传给 execute（失败重试上限硬终止）。"""
+    async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
+
+    agent = ReActAgent(llm=_ErrorLLM(), tools=None, error_handlers=registry)
+    ctx = AgentContext(
+        session_id="s", user_id="u", max_iterations=6, max_llm_fail_retries=0
+    )
+
+    async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
+        pass
+
+    # max_llm_fail_retries=0：首次失败即终止（即便 handler CONTINUE）；透传失效则
+    # 默认 2 → 第 3 次失败才终止
+    assert agent.result is not None
+    assert agent.result.success is False
+    assert agent.result.iterations == 1
+    assert "连续 LLM 调用失败" in (agent.result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_react_agent_passes_max_same_action_turns_to_strategy():
     """ReActAgent 经 AgentContext.max_same_action_turns 透传给 execute（停滞超限终止）。"""
     call = {

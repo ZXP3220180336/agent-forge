@@ -100,7 +100,7 @@ result = agent.result  # AgentResult
 - `test_react_agent_passes_max_empty_retries_to_strategy` — max_empty_retries 经 AgentContext 透传
 - `test_react_agent_passes_max_same_action_turns_to_strategy` — max_same_action_turns 经 AgentContext 透传
 
-策略算法本身由 `tests/unit/test_react_strategy.py`（69 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
+策略算法本身由 `tests/unit/test_react_strategy.py`（75 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
 
 ---
 

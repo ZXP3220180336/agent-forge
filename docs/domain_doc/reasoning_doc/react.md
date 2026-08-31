@@ -1,7 +1,7 @@
 # ReActStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/react.py`
-> **更新日期**：2026-08-30
+> **更新日期**：2026-08-31
 > **职责**：ReAct 原子推理策略——推理 ↔ 工具调用的完整循环算法（含工具并行原语、错误分发、结构化最终答案、上下文预算 + 成本上限 + 循环停滞护栏）
 > **状态**：✅ 已实现
 > **配套**：桥接见 [executor.md](../agent_doc/executor.md)（`ReActAgent`）；工业级对标见 [react_benchmark.md](react_benchmark.md)
@@ -78,7 +78,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 | `AgentErrorKind` | 触发场景 | 默认 action |
 | --- | --- | --- |
-| `LLM_FAILED` | LLM 调用失败（`StreamResult.error`） | STOP（短路失败） |
+| `LLM_FAILED` | LLM 调用失败（`StreamResult.error`） | STOP（短路失败；handler 可 CONTINUE 重试，重试受 `max_llm_fail_retries` 上限硬终止） |
 | `EMPTY_OUTPUT` | 空输出 | CONTINUE（重试，连续超过 `max_empty_retries` 硬终止） |
 | `MAX_TURNS` | 迭代耗尽 | STOP（兜底） |
 | `TIMEOUT` | 总时长超限 | STOP（降级） |
@@ -162,7 +162,7 @@ ReActStrategy.execute()（ReAct 主循环）
 | 方法 | 触发 | 默认行为 |
 | --- | --- | --- |
 | `_finalize_stop` | finish_reason=stop/length/有内容 | 正常结束：`outcome.success = content 非空` |
-| `_finalize_llm_failed` | `StreamResult.error` 非空 | STOP 短路失败（`success=False` + error）；handler 可 CONTINUE 重试 / RAISE 上抛 |
+| `_finalize_llm_failed` | `StreamResult.error` 非空 | STOP 短路失败（`success=False` + error）；handler 可 CONTINUE 重试 / RAISE 上抛；重试受 `max_llm_fail_retries` 上限硬终止（对齐空输出护栏） |
 | `_finalize_max_turns` | 循环达到 `max_iterations` | STOP 兜底：用 `last_result` 组装 outcome，error 记录「已达到最大迭代次数(N)」 |
 | `_finalize_timeout` | `asyncio.timeout(max_execution_time)` 触发 | STOP 降级：用 `last_result` 组装（有 content 算部分成功），error 记录超时 |
 | `_finalize_cost_exceeded` | `CostLimiterPort.check(累计 usage)` 超限 | STOP 停机：用 `last_result` 组装（有 content 算部分成功），error 记录「成本超限（累计 $X）」 |
@@ -225,7 +225,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
   │         预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用）
   ├─ 5. stream_result.error 非空？
   │       ├─ cancel_event 置位 → _finalize_cancelled（CANCELLED，不重试）
-  │       └─ LLM 失败 → _finalize_llm_failed（STOP 短路 / CONTINUE 重试）
+  │       └─ LLM 失败 → _finalize_llm_failed（STOP 短路 / CONTINUE 重试，重试受 max_llm_fail_retries 上限硬终止）
   ├─ 6. 模型拒答（refusal 字段 / content_filter）→ _finalize_refused（默认 STOP 停机，
   │       不误判为成功答案、不空转重试；DeepSeek stop+空 content 保持空回答语义）
   ├─ 7. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
@@ -256,7 +256,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
 | `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
-| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_same_action_turns=3, output_schema=None, cancel_event=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome` |
+| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, output_schema=None, cancel_event=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome` |
 | `execute_tool_calls(tool_calls, messages, iteration) -> AsyncGenerator[str]` | 异步生成器 | 工具并行执行原语（gather 保序 + 事件产出 + 记录）；独立使用场景：PlannerAgent 执行阶段 / ReflectionAgent 收集阶段 |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
 
@@ -279,7 +279,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 边界情况
 
-1. **LLM 调用失败**（`StreamResult.error` 非空）→ `_finalize_llm_failed`，默认 STOP 短路 `success=False` + error；不把「失败」当「空输出」空转重试（浪费 LLM 调用 + 错误信息不准确）
+1. **LLM 调用失败**（`StreamResult.error` 非空）→ `_finalize_llm_failed`，默认 STOP 短路 `success=False` + error；不把「失败」当「空输出」空转重试（浪费 LLM 调用 + 错误信息不准确）。**重试上限**（`max_llm_fail_retries`，默认 2）→ 连续失败计数（失败轮 +1、成功轮清零、取消不参与），超过上限在 CONTINUE 分支硬终止（error「连续 LLM 调用失败（N 轮）」；即使 handler CONTINUE 也终止，防空转烧钱）；`0` = 首次失败即终止
 2. **空输出**（finish_reason 空 + content 空）→ `_handle_empty_output`，默认 CONTINUE 重试下一轮
 3. **达到 `max_iterations`** → `_finalize_max_turns`，用 `last_result` 兜底强制结束，error 记录「已达到最大迭代次数(N)」（无 `last_result` 时 `success=False`）
 4. **达到 `max_execution_time`**（None=不设限）→ `_finalize_timeout`，用 `last_result` 降级（有 content 算部分成功），error 记录超时；慢消费者关闭生成器时干净停止、不 yield 降级事件
@@ -312,6 +312,7 @@ result = strategy.outcome  # ReActOutcome
 | `agent_max_context_rounds` | int | 8 | `max_context_rounds` 生产值（上下文预算保留轮数） |
 | `agent_max_cost` | float \| None | None | 成本上限（美元 USD）；None=不启用（装配根据此构造 CostLimiter 注入，0 则任何正成本即停） |
 | `agent_max_empty_retries` | int | 2 | 连续空输出重试上限：空输出最多重试 N 次，第 N+1 次仍空输出则终止（0=首次空输出即终止） |
+| `agent_max_llm_fail_retries` | int | 2 | LLM 失败重试上限：LLM 调用失败最多重试 N 次，第 N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏，防 handler CONTINUE 无限重试） |
 | `agent_max_same_action_turns` | int | 3 | 循环停滞检测：连续相同工具调用（工具+参数）超过 N 轮，下一轮仍相同则 STALLED 终止 |
 
 `max_context_tokens` 无独立配置，由装配根直接注入。完整配置表见 [config 文档](../../config_doc/config.md)。
@@ -320,7 +321,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（70 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（75 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）
@@ -335,7 +336,7 @@ result = strategy.outcome  # ReActOutcome
 - **reasoning 回喂**：`has_reasoning` 回喂空串 / 无信号不回喂
 - **上下文预算**：注入 ContextBudgetPort 后轮次裁剪生效 / 非工具路径（空输出重试）每次 LLM 调用前也裁剪
 - **final_answer**：成功提取终止 / 校验失败回喂 / 未配置不注入
-- **错误处理**：LLM_FAILED→CONTINUE 重试 / LLM_FAILED→RAISE 上抛 / EMPTY_OUTPUT→STOP / TOOL_FAILED→STOP（部分进度保留）/ STRUCTURED_INVALID→STOP
+- **错误处理**：LLM_FAILED→CONTINUE 重试 / LLM_FAILED→RAISE 上抛 / EMPTY_OUTPUT→STOP / TOOL_FAILED→STOP（部分进度保留）/ STRUCTURED_INVALID→STOP / **LLM 失败重试上限**（持续失败硬终止 / 成功轮清零 / 达上限 RAISE / 0=首次即终止 / 默认 STOP 零变化）
 - **多工具失败**：同 kind 聚合 message / 跨 kind STOP 仲裁 / 跨 kind RAISE 仲裁
 - **协议异常**：finish_reason=tool_calls 空列表默认重试后正常结束 / 连续协议异常不入空输出计数（max_iterations 兜底）/ PARSE_FAILED handler STOP 终止 / RAISE 上抛 / 无工具场景同样识别 / **无工具 + 非空 tool_calls 短路**
 - **handler 异常防御**：LLM_FAILED handler 抛异常默认 STOP（error 为 LLM 失败原因）/ TOOL_FAILED handler 抛异常默认 CONTINUE（回喂继续）/ UNKNOWN handler 抛异常兜底不崩（registry 层另经 test_error_handling 覆盖）
@@ -368,6 +369,7 @@ result = strategy.outcome  # ReActOutcome
 - [REASON-003 取消信号语义错位 + 未接线](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)：优雅取消被误判为 LLM 失败 / 无调用方接线；已贯通 cancel_event 链路 + /chat/stop 真实实现（已修复）
 - [REASON-004 协议异常 tool_calls 不一致](../../../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)：finish_reason=tool_calls 信号与数据（空列表）/工具可用性（无工具）不一致，误入空输出重试 / 空转执行；已短路为 PARSE_FAILED 协议异常分发（已修复）
 - [REASON-005 UNKNOWN error 脱敏](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)：error 拼接完整异常文本泄漏内部细节；已改异常类型名 + 完整异常进日志（已修复）
+- [REASON-007 LLM 失败重试上限](../../../issues/domain/reasoning/2026-08-31-llm-fail-retry-limit.md)：LLM 失败重试无独立上限（handler CONTINUE 可无限重试烧钱）；已补 max_llm_fail_retries 护栏（对齐空输出）（已修复）
 
 ---
 
