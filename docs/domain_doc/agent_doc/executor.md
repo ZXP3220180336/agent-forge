@@ -1,7 +1,7 @@
 # ReActAgent 桥接组件说明
 
 > **模块**：`app/domain/agent/executor.py`
-> **更新日期**：2026-08-29
+> **更新日期**：2026-08-30
 > **职责**：`ReActAgent`——把 ReAct 推理策略编排进 `BaseAgent` 生命周期的具体 Agent 类型
 > **状态**：✅ 已实现
 > **配套**：算法实现见 [react.md](../reasoning_doc/react.md)（`ReActStrategy`）
@@ -42,7 +42,7 @@
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `__init__` | `(llm: LLMGateway, tools: ToolGateway, context_budget: ContextBudgetPort \| None = None, error_handlers: ErrorHandlerRegistry \| None = None)` | 构造 `ReActStrategy(llm, tools, context_budget, error_handlers)`；`context_budget` 为上下文预算端口（ContextManager 注入），`error_handlers` 为错误处理横切入口 |
+| `__init__` | `(llm: LLMGateway, tools: ToolGateway, context_budget: ContextBudgetPort \| None = None, error_handlers: ErrorHandlerRegistry \| None = None, cost_limiter: CostLimiterPort \| None = None, cancel_event: asyncio.Event \| None = None)` | 构造 `ReActStrategy(llm, tools, context_budget, error_handlers, cost_limiter)`；`context_budget` 为上下文预算端口（ContextManager 注入），`error_handlers` 为错误处理横切入口，`cost_limiter` 为成本护栏端口（CostLimiter 注入），`cancel_event` 为优雅取消信号（/chat/stop 经 TaskService 置位，None=不启用） |
 | `_strategy_cycle` | `(user_input, messages) -> AsyncGenerator[str]` | 委托 `strategy.execute(...)`，结束后 `_map_outcome` 组装 `AgentResult` |
 | `_execute_tool_calls` | `(tool_calls, messages, iteration) -> AsyncGenerator[str]` | 转发到 `strategy.execute_tool_calls`（工具并行执行原语） |
 | `_map_outcome` | `(outcome: ReActOutcome \| None) -> AgentResult` | 策略产出 → AgentResult 契约转换 |
@@ -60,7 +60,8 @@
 | `AgentContext` 未设置 | `_strategy_cycle` 抛 `RuntimeError` |
 | 策略未产出结果（`outcome is None`） | `_map_outcome` 返回失败 `AgentResult`（`success=False` + `error`） |
 | LLM 调用失败 | 经策略短路返回失败结果（LLM-001，见 react.md 行为边界） |
-| 用户取消 | `BaseAgent.run()` 捕获 `CancelledError` → `state=CANCELLED` |
+| 用户取消（优雅） | `cancel_event` 置位 → 策略层主循环顶部 / LLM error 分支识别 → `CANCELLED` 分发（不重试，保留部分进度）→ `state=CANCELLED`（REASON-003） |
+| 用户取消（硬） | `BaseAgent.run()` 捕获 `asyncio.CancelledError` → `state=CANCELLED`（独立路径，与优雅取消并存） |
 
 ---
 
@@ -88,15 +89,18 @@ result = agent.result  # AgentResult
 
 ## 测试
 
-`tests/unit/test_agent.py`（5 用例）：
+`tests/unit/test_agent.py`（8 用例）：
 
 - `test_execute_tool_calls_parallel_preserves_order` — 工具消息顺序 = 输入顺序（gather 保序）
 - `test_execute_tool_calls_parallel_actually_concurrent` — 并行执行耗时 < 串行和
 - `test_strategy_cycle_short_circuits_on_llm_error` — LLM 失败短路返回失败结果（LLM-001）
 - `test_unknown_handler_raise_propagates` — 未注册 kind 的 handler 决策 RAISE 时上抛
 - `test_agent_error_reraisd_not_swallowed` — AgentRunError 不被 run() 吞掉，上抛给调用方
+- `test_react_agent_passes_cost_limiter_to_strategy` — cost_limiter 构造透传策略
+- `test_react_agent_passes_max_empty_retries_to_strategy` — max_empty_retries 经 AgentContext 透传
+- `test_react_agent_passes_max_same_action_turns_to_strategy` — max_same_action_turns 经 AgentContext 透传
 
-策略算法本身由 `tests/unit/test_react_strategy.py`（30 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
+策略算法本身由 `tests/unit/test_react_strategy.py`（69 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
 
 ---
 

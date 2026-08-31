@@ -1,7 +1,7 @@
 # Agent 模块对外接口文档
 
 > **对应代码**：`app/domain/agent/`
-> **更新日期**：2026-08-29
+> **更新日期**：2026-08-30
 > **文档定位**：Agent 模块对外接口文档——`BaseAgent` 统一入口的接口契约 + 内部组件导航；
 > 服务对象为 Agent 模块的**外部调用方**（应用层 / API 层）
 > **实现状态**：✅ 已实现（BaseAgent + ReActAgent；PlannerAgent / ReflectionAgent 预留）
@@ -135,18 +135,23 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 
 ```python
 agent = ReActAgent(llm=llm_service, tools=tool_service)
-# 可选横切能力注入：context_budget=context_manager, error_handlers=error_handler_registry
+# 可选横切能力注入：context_budget=context_manager, error_handlers=error_handler_registry,
+#                   cost_limiter=cost_limiter, cancel_event=task_service.create_cancel_event(sid)
 ```
 
-构造：`ReActAgent(llm, tools, context_budget=None, error_handlers=None)`——`context_budget` 为上下文预算端口（应用层 ContextManager 注入，见 [ports.md](../ports_doc/ports.md)），`error_handlers` 为错误处理注册表（共享内核横切入口，见「对外异常契约」）。`BaseAgent(llm, tools, error_handlers=None)` 同构。
-
-- `_strategy_cycle` 委托 `ReActStrategy.execute()`（ReAct 主循环），产出事件 + 组装 `AgentResult`
-- 行为契约（ReAct 循环）：推理 → finish_reason 分支 → 工具调用 / 正常结束 / 空输出重试 → 迭代兜底
-- 实现细节见 [executor.md](executor.md)（编排）与 [react.md](../reasoning_doc/react.md)（算法）
+1. 构造：`ReActAgent(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, cancel_event=None)`
+   - `context_budget` 为上下文预算端口（应用层 ContextManager 注入，见 [ports.md](../ports_doc/ports.md)）
+   - `error_handlers` 为错误处理注册表（共享内核横切入口，见「对外异常契约」）
+   - `cost_limiter` 为成本护栏端口（应用层 CostLimiter 注入，见 [ports.md](../ports_doc/ports.md)）
+   - `cancel_event` 为优雅取消信号（/chat/stop 经 TaskService 置位，None=不启用）。
+   - `BaseAgent(llm, tools, error_handlers=None)` 同构。
+2. `_strategy_cycle` 委托 `ReActStrategy.execute()`（ReAct 主循环），产出事件 + 组装 `AgentResult`
+3. 行为契约（ReAct 循环）：推理 → finish_reason 分支 → 工具调用 / 正常结束 / 空输出重试 → 迭代兜底
+4. 实现细节见 [executor.md](executor.md)（编排）与 [react.md](../reasoning_doc/react.md)（算法）
 
 ### 对外异常契约
 
-Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。9 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
+Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。12 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
 
 | `AgentErrorKind` | 默认 action | 场景 → 默认处理 |
 | --- | --- | --- |
@@ -154,10 +159,13 @@ Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（�
 | `EMPTY_OUTPUT` | CONTINUE | LLM 未生成有效输出 → 重试下一轮 |
 | `MAX_TURNS` | STOP | 迭代耗尽 → 用最后结果兜底结束 |
 | `TIMEOUT` | STOP | 总时长超限 → 降级（error 记录超时） |
+| `COST_EXCEEDED` | STOP | 累计成本超限 → 停机降级（error 记录成本） |
+| `STALLED` | STOP | 连续相同工具调用（工具+参数）超限 → 停机（不执行本轮工具） |
+| `REFUSED` | STOP | 模型拒答（refusal 字段 / content_filter）→ 停机 |
 | `CANCELLED` | STOP | 外部取消 → `state=CANCELLED` |
 | `UNKNOWN` | STOP | 未捕获异常 → `state=FAILED`，产 error 事件 |
 | `TOOL_FAILED` | CONTINUE | 工具执行失败 → 回喂模型自纠 |
-| `PARSE_FAILED` | CONTINUE | 工具参数 JSON 解析失败 → 回喂自纠 |
+| `PARSE_FAILED` | CONTINUE | 工具参数 JSON 解析失败 / 协议异常（tool_calls 空）→ 回喂/重试自纠 |
 | `STRUCTURED_INVALID` | CONTINUE | final_answer 参数校验失败 → 回喂自纠 |
 
 调用方视角：默认行为下 `run()` 不抛异常（取消 / 失败均收敛为对应状态 + 结果）；仅当调用方注册 handler 决策 `RAISE` 时，上抛 `AgentRunError`（定义于 `app.shared.error_handling`）——这是 Agent 模块被外部捕获的唯一领域异常类型。
