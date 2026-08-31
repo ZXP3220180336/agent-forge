@@ -1,3 +1,18 @@
+# 2026-08-31 React 策略完成度/职责划分评估 + 文档漂移同步 + 遗留问题收尾
+
+> 两项子智能体评估（完成度 26 项对照 + 策略/编排职责划分）→ 文档漂移同步 4 份 → 未解决问题清单 #1~#4 逐项修复（REASON-006/007/008 + 取舍标注），全部提交推送。
+
+- [x] **完成度评估**：核心必备 13/13 + 增强 8 项，26 项 ✅21 / 🔶1（沙箱降级）/ ❌4（guardrail/compaction/checkpointer/final_answer_checks 均「不做或预留」）；无过设计，达工业级核心基线
+- [x] **职责划分评估**：代码层「策略=算法、编排=生命周期」无越界；文档滞后于 08-30 三批能力（2 高危 + 4 中危 + 数低危漂移）
+- [x] **文档漂移同步**：executor.md（`__init__` 契约补 cost_limiter/cancel_event、优雅/硬取消、测试数 5→8）、agent.md（异常契约 9→12 类）、react.md（架构图 12 类、execute 签名、max_turns 文案、终止分支表、reasoning 语义、_finalize_terminal 复用）、react_benchmark.md（#4 文案、#23 计数）
+- [x] **问题 #1**（REASON-004 扩展）：无工具 + 非空 tool_calls → 协议异常短路（`or not has_tools`）；REASON-006 并入 REASON-004 单档案
+- [x] **问题 #2**（REASON-007）：LLM 失败重试独立上限 `max_llm_fail_retries`（settings→AgentContext→透传→execute 完整链路 + 硬终止，对齐空输出护栏）
+- [x] **问题 #3**：LLM_FAILED 不脱敏 vs UNKNOWN 脱敏取舍标注（诊断价值 vs 无诊断价值，文档）
+- [x] **问题 #4**（REASON-008）：空输出重试轮不追加空 assistant 消息（纯空轮不写历史）+ AGENT-001 except 元组回归
+- [x] 验证：全量 700 passed + verify_alignment；提交推送（c9e7f00 / 0d2bed2 / 5b67e60）
+
+---
+
 # 2026-08-30 Agent 运行异常处理全面性评审（5 问题逐项修复）
 
 > 评审 Agent 运行异常处理全面性，发现 5 个问题（部分进度 / 取消语义 / 协议异常 / handler 防御 / error 脱敏），按问题修复工作流逐项完成（测试驱动 → issue → 文档 → 停等审核），全部修复并推送。
