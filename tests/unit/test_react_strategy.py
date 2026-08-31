@@ -2391,6 +2391,102 @@ async def test_react_empty_output_retry_no_blank_assistant():
 
 
 # ======================================================================
+# 工具级 timeout/max_retries 接线：execute() 透传到 ToolGateway.execute
+# ======================================================================
+
+
+class _RecordingGateway:
+    """记录 execute 参数（timeout/max_retries）的 ToolGateway mock。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def get_openai_tools(self) -> list[dict]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "description": "回声工具",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
+            }
+        ]
+
+    async def execute(
+        self,
+        name: str,
+        parameters: dict,
+        timeout: int | None = None,
+        max_retries: int | None = None,
+        retry_delay: float = 1.0,
+    ) -> ToolResult:
+        self.calls.append(
+            {
+                "name": name,
+                "params": parameters,
+                "timeout": timeout,
+                "max_retries": max_retries,
+            }
+        )
+        return ToolResult(success=True, content=f"echo:{parameters.get('text', '')}")
+
+
+@pytest.mark.asyncio
+async def test_react_tool_timeout_retries_passed_to_gateway():
+    """execute() 的 tool_timeout/tool_max_retries 透传到 ToolGateway.execute。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    gateway = _RecordingGateway()
+    strategy = ReActStrategy(llm=llm, tools=gateway)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        tool_timeout=60, tool_max_retries=5,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0]["timeout"] == 60
+    assert gateway.calls[0]["max_retries"] == 5
+
+
+@pytest.mark.asyncio
+async def test_react_tool_timeout_retries_default_none():
+    """不传 tool_timeout/tool_max_retries → gateway 收到 None（走执行器全局/工具默认）。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    gateway = _RecordingGateway()
+    strategy = ReActStrategy(llm=llm, tools=gateway)
+
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert gateway.calls[0]["timeout"] is None
+    assert gateway.calls[0]["max_retries"] is None
+
+
+# ======================================================================
 # 问题 4：错误处理 handler 自身异常 → 防御降级（不破坏主循环）
 # ======================================================================
 

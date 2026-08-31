@@ -185,6 +185,8 @@ class ReActStrategy:
         max_empty_retries: int = 2,
         max_llm_fail_retries: int = 2,
         max_same_action_turns: int = 3,
+        tool_timeout: int | None = None,
+        tool_max_retries: int | None = None,
         output_schema: dict | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[str]:
@@ -233,6 +235,10 @@ class ReActStrategy:
             max_same_action_turns: 循环停滞检测——连续相同工具调用（工具+参数）
                 超过 N 轮后，下一轮仍相同则终止（默认 3）；达上限走 STALLED
                 分发硬终止（防死循环烧钱/重复副作用）
+            tool_timeout: 工具执行超时（秒）——透传给 ToolGateway.execute；None=
+                走执行器全局/工具自声明（settings.tool_timeout → ToolService）
+            tool_max_retries: 工具执行最大次数——透传给 ToolGateway.execute；None=
+                走执行器全局（settings.tool_max_retries；语义=执行次数，重试=次数-1）
             output_schema: 最终答案结构化 JSON Schema（None=不启用）。启用时注入
                 final_answer 工具，模型最后调用提交结构化结果并终止循环
             cancel_event: 优雅取消信号（asyncio.Event，None=不启用）——置位时在轮次
@@ -470,6 +476,8 @@ class ReActStrategy:
                                 iteration,
                                 total_usage,
                                 full_reasoning,
+                                tool_timeout,
+                                tool_max_retries,
                             ):
                                 yield event
                             if self.outcome is not None:
@@ -543,6 +551,8 @@ class ReActStrategy:
         tool_calls: list[dict],
         messages: list[dict],
         iteration: int,
+        tool_timeout: int | None = None,
+        tool_max_retries: int | None = None,
     ) -> AsyncGenerator[str]:
         """
         并行执行工具调用列表，追加结果到 messages，记录到 _tool_call_records。
@@ -555,6 +565,9 @@ class ReActStrategy:
 
         独立使用场景：PlannerAgent 执行阶段（程序执行计划步骤的工具）、
         ReflectionAgent 收集阶段。此时调用方需自行读取结果（tool 消息已写入 messages）。
+
+        tool_timeout / tool_max_retries：透传给 ToolGateway.execute（None=走执行器
+        全局/工具自声明，见 execute() docstring）——供原语复用方按需指定。
 
         SSE 事件只在主 generator 内按顺序 yield（不在并发 task 内 yield，
         避免事件交错）。
@@ -585,7 +598,12 @@ class ReActStrategy:
                 return exec_result, tool_name, {}, tc, elapsed
 
             start = time.monotonic()
-            exec_result = await self._tools.execute(tool_name, tool_args)
+            exec_result = await self._tools.execute(
+                tool_name,
+                tool_args,
+                timeout=tool_timeout,
+                max_retries=tool_max_retries,
+            )
             elapsed = time.monotonic() - start
             return exec_result, tool_name, tool_args, tc, elapsed
 
@@ -809,6 +827,8 @@ class ReActStrategy:
         iteration: int,
         total_usage: dict,
         full_reasoning: str,
+        tool_timeout: int | None,
+        tool_max_retries: int | None,
     ) -> AsyncGenerator[str]:
         """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。
 
@@ -816,7 +836,13 @@ class ReActStrategy:
         所有继续路径（含非工具重试）共用，见 execute() 第 0 步。
         """
         before = len(self._tool_call_records)
-        async for event in self.execute_tool_calls(tool_calls, messages, iteration):
+        async for event in self.execute_tool_calls(
+            tool_calls,
+            messages,
+            iteration,
+            tool_timeout=tool_timeout,
+            tool_max_retries=tool_max_retries,
+        ):
             yield event
 
         # 可恢复错误分发：本轮失败工具按 kind 分组聚合后逐 kind 分发，
