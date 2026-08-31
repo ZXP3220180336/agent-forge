@@ -84,25 +84,25 @@
 
 | # | 特性 | 状态 | 本项目实现 |
 | --- | --- | --- | --- |
-| 1 | 迭代上限 | ✅ | `max_iterations`（默认 10），`for` 循环 + 超限兜底（[react.py:119](../../../app/domain/reasoning/react.py#L119)），量级与工业级一致 |
-| 2 | 时间上限 | ✅ | `asyncio.timeout` 包整个循环实现总时长上限（[react.py:118](../../../app/domain/reasoning/react.py#L118)），超时对齐 `max_iterations` 兜底降级（[react.py:236](../../../app/domain/reasoning/react.py#L236)）；生产值由 `agent_timeout=300` 注入 |
-| 3 | 正常终止判定 | ✅ | `finish_reason` 分支（tool_calls / stop / length），OpenAI 协议直接判定，比 LangChain 正则解析 `Finish[...]` 更稳（[react.py:181](../../../app/domain/reasoning/react.py#L181)） |
-| 4 | 超限降级 | ✅ | 迭代超限用 `last_result` 兜底，error 记录「已达到最大迭代次数(N)」——等价 LangChain `force` 语义，不抛裸异常（[react.py:214-234](../../../app/domain/reasoning/react.py#L214-L234)） |
-| 5 | 工具异常回喂 | ✅ | 失败回喂 `str(result)`（"错误: <error>"），模型可感知失败自愈（[react.py:308](../../../app/domain/reasoning/react.py#L308)）；`error`/`error_code` 进证据链记录（[react.py:310](../../../app/domain/reasoning/react.py#L310)） |
+| 1 | 迭代上限 | ✅ | `max_iterations`（默认 10），`for` 循环 + 超限兜底（[react.py:274](../../../app/domain/reasoning/react.py#L274)），量级与工业级一致 |
+| 2 | 时间上限 | ✅ | `asyncio.timeout` 包整个循环实现总时长上限（[react.py:273](../../../app/domain/reasoning/react.py#L273)），超时对齐 `max_iterations` 兜底降级（[react.py:1014](../../../app/domain/reasoning/react.py#L1014)）；生产值由 `agent_timeout=300` 注入 |
+| 3 | 正常终止判定 | ✅ | `finish_reason` 分支（tool_calls / stop / length），OpenAI 协议直接判定，比 LangChain 正则解析 `Finish[...]` 更稳（[react.py:402](../../../app/domain/reasoning/react.py#L402)） |
+| 4 | 超限降级 | ✅ | 迭代超限用 `last_result` 兜底，error 记录「已达到最大迭代次数(N)」——等价 LangChain `force` 语义，不抛裸异常（[react.py:1014-L1030](../../../app/domain/reasoning/react.py#L1014-L1030)） |
+| 5 | 工具异常回喂 | ✅ | 失败回喂 `str(result)`（"错误: <error>"），模型可感知失败自愈（[react.py:620](../../../app/domain/reasoning/react.py#L620)）；`error`/`error_code` 进证据链记录（[react.py:622](../../../app/domain/reasoning/react.py#L622)） |
 | 6 | 无效工具名处理 | ✅ | NOT_REGISTERED 失败走同一失败回喂分支，模型可见「工具未注册」；证据链记录 `error_code`（同 #5） |
-| 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（[react.py:290-303](../../../app/domain/reasoning/react.py#L290-L303)） |
-| 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（[react.py:145-161](../../../app/domain/reasoning/react.py#L145-L161)） |
-| 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（[react.py:348-358](../../../app/domain/reasoning/react.py#L348-L358)），模型可知结果不完整 |
+| 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（[react.py:585-L595](../../../app/domain/reasoning/react.py#L585-L595)） |
+| 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（[react.py:334](../../../app/domain/reasoning/react.py#L334)） |
+| 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（[react.py:638-L647](../../../app/domain/reasoning/react.py#L638-L647)），模型可知结果不完整 |
 | 10 | 上下文预算管理 | ✅ | context_manager 统一提供（经 ContextBudgetPort 注入 Agent）：轮次滑动窗口（保 assistant/tool 配对）+ token 预算硬上限（经 LLMGateway.count_* 计数），模型调用前作为 gatekeeper |
 | 11 | 事件 / 回调体系 | ✅ | SSE 事件（reasoning/message/tool_call/tool_result/info/done）+ BaseAgent 钩子（on_thought/on_tool_call/on_tool_result/on_complete），与工业级 `on_tool_start/end` 同构 |
 | 12 | 步数 / token 统计 | ✅ | outcome 含 iterations/total_tokens/usage/tool_calls（duration/success）+ ToolStats + Auditor |
-| 13 | 流式输出 | ✅ | reasoning_content 与 content 分事件流式输出（[react.py:125-132](../../../app/domain/reasoning/react.py#L125-L132)） |
+| 13 | 流式输出 | ✅ | reasoning_content 与 content 分事件流式输出（[react.py:301](../../../app/domain/reasoning/react.py#L301)） |
 
 ### 增强项对照
 
 | # | 特性 | 状态 | 备注 |
 | --- | --- | --- | --- |
-| 14 | 并行工具执行 | ✅ | `asyncio.gather` 保序 + 信号量 + per-tool 锁（[react.py:299](../../../app/domain/reasoning/react.py#L299)），比 LangChain 默认串行更先进 |
+| 14 | 并行工具执行 | ✅ | `asyncio.gather` 保序 + 信号量 + per-tool 锁（[react.py:611](../../../app/domain/reasoning/react.py#L611)），比 LangChain 默认串行更先进 |
 | 15 | 结构化输出约束 | ✅ | Final Answer 工具模式：`output_schema` 注入 final_answer 工具，模型最后调用提交结构化结果并终止循环（模型原生、无额外调用）；参数校验失败回喂（VALIDATION）自纠 |
 | 16 | guardrail | ❌ | 无输入 / 输出 guardrail（增强项，当前单用户本地场景不强制） |
 | 17 | 权限 / 审批 | ✅ | ApprovalGate / RiskLevel L0-L3 / 审计——工具层工程护栏完整（`app/integration/tools/security.py`） |
