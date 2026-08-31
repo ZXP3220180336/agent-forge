@@ -22,6 +22,7 @@
 | [REASON-004](2026-08-30-protocol-error-empty-tool-calls.md) | finish_reason=tool_calls 信号与数据/工具可用性不一致（空列表 / 无工具）→ 协议异常短路 | ✅ 已修复 | reasoning/react | 2026-08-30 |
 | [REASON-005](2026-08-30-unknown-error-redaction.md) | UNKNOWN error 拼接完整异常文本：内部细节（路径/敏感值）泄漏到产品侧 | ✅ 已修复 | reasoning/react | 2026-08-30 |
 | [REASON-007](2026-08-31-llm-fail-retry-limit.md) | LLM 失败重试无独立上限：handler CONTINUE 可无限重试烧钱 | ✅ 已修复 | reasoning/react · agent · settings | 2026-08-31 |
+| [REASON-008](2026-08-31-empty-output-blank-assistant.md) | 空输出重试轮向历史追加空 assistant 消息：累积污染上下文 | ✅ 已修复 | reasoning/react | 2026-08-31 |
 
 ## 新问题登记规范
 

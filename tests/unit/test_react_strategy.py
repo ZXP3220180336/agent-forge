@@ -2359,6 +2359,38 @@ async def test_react_llm_fail_retries_default_stop_unchanged():
 
 
 # ======================================================================
+# 空输出重试轮不追加空 assistant 消息（避免累积污染上下文）
+# ======================================================================
+
+
+@pytest.mark.asyncio
+async def test_react_empty_output_retry_no_blank_assistant():
+    """空输出重试轮不追加空 assistant 消息（修复前连续空输出累积空消息污染上下文）。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "", "content": ""},
+            {"finish_reason": "", "content": ""},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+    messages = [{"role": "user", "content": "hi"}]
+
+    async for _ in strategy.execute(
+        "hi", messages, max_iterations=5, temperature=0.2, max_tokens=1024
+    ):
+        pass
+
+    # 连续 2 轮空输出重试：消息历史只含 user + 最终 assistant，不含空 assistant 记录
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0]["content"] == "完成"
+
+
+# ======================================================================
 # 问题 4：错误处理 handler 自身异常 → 防御降级（不破坏主循环）
 # ======================================================================
 

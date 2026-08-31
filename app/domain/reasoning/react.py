@@ -367,129 +367,132 @@ class ReActStrategy:
                     full_content = stream_result.content
 
                     # ----- 7. 将 LLM 回复追加到消息历史 -----
-                    assistant_msg: dict = {
-                        "role": "assistant",
-                        "content": full_content,
-                    }
-                    # DeepSeek V4 thinking 模式带 tools 时必须回喂 reasoning_content（否则 400）；
-                    # has_reasoning 覆盖空 reasoning 场景（空串也回喂，字段始终存在）
-                    if full_reasoning or stream_result.has_reasoning:
-                        assistant_msg["reasoning_content"] = full_reasoning
-                    # OpenAI 兼容 API 要求：tool 消息必须与前置 assistant 消息的 tool_calls 配对，
-                    # 否则下一轮请求 400（"Messages with role 'tool' must be a response to ..."）
-                    if stream_result.tool_calls:
-                        assistant_msg["tool_calls"] = stream_result.tool_calls
-                    messages.append(assistant_msg)
+                    # 纯空轮（无 content / 无 reasoning / 无 tool_calls / 无 has_reasoning
+                    # 信号）不追加——空 assistant 消息无信息量，空输出重试累积会污染上下文
+                    # （模型下轮看不到空消息也无影响；对齐工业级不把空输出轮写进历史）。
+                    # has_reasoning 保留在条件内：thinking 模型返回空 reasoning 也追加
+                    # （防 400 回喂字段需要，见 reasoning_content 回喂节）。
+                    if (
+                        full_content
+                        or full_reasoning
+                        or stream_result.has_reasoning
+                        or stream_result.tool_calls
+                    ):
+                        assistant_msg: dict = {
+                            "role": "assistant",
+                            "content": full_content,
+                        }
+                        # DeepSeek V4 thinking 模式带 tools 时必须回喂 reasoning_content（否则 400）；
+                        # has_reasoning 覆盖空 reasoning 场景（空串也回喂，字段始终存在）
+                        if full_reasoning or stream_result.has_reasoning:
+                            assistant_msg["reasoning_content"] = full_reasoning
+                        # OpenAI 兼容 API 要求：tool 消息必须与前置 assistant 消息的 tool_calls 配对，
+                        # 否则下一轮请求 400（"Messages with role 'tool' must be a response to ..."）
+                        if stream_result.tool_calls:
+                            assistant_msg["tool_calls"] = stream_result.tool_calls
+                        messages.append(assistant_msg)
 
                     # ----- 8. 根据 finish_reason 决定下一步 -----
                     finish_reason = stream_result.finish_reason or ""
+                    if finish_reason == "tool_calls":
+                        # ----- （1）调用工具 → 协议异常重试或协议正常继续调用大模型
+                        if not stream_result.tool_calls or not has_tools:
+                            # 协议异常：信号与数据/工具可用性不一致
+                            # 两类不一致：
+                            # ① 声明调工具却没给出 tool_calls（服务端异常/被截断）；
+                            # ② 要调工具但系统未注册任何工具（has_tools=False——模型选了工具而
+                            #    注册表为空，协议不一致）。
+                            # - 均非「空输出」（有调用意图）、非「工具失败」（无工具可执行）。
+                            # - 短路为 PARSE_FAILED 分发
+                            # - 不入空输出计数（与 max_empty_retries 独立，
+                            #   避免 tool_calls 为真清零计数后无上限空转）
+                            # - 不进 execute_tool_calls 空转。
+                            # - 默认 CONTINUE 重试，handler 可 STOP/RAISE。
+                            async for event in self._finalize_protocol_error(
+                                full_reasoning, iteration, total_usage
+                            ):
+                                yield event
+                            if self.outcome is not None:
+                                return
+                            continue  # CONTINUE（默认）：重试下一轮
+                        else:
+                            # 协议正常：继续调用大模型
+                            self._empty_retries = (
+                                0  # 本轮有产出（正常工具调用） → 空输出连续计数清零；
+                            )
+                            yield build_info_event(
+                                f"检测到 {len(stream_result.tool_calls)} 个工具调用"
+                            )
 
-                    # ----- 协议异常：finish_reason=tool_calls 但信号与数据/工具可用性不一致 -----
-                    # 两类不一致：① 声明调工具却没给出 tool_calls（服务端异常/被截断）；
-                    # ② 要调工具但系统未注册任何工具（has_tools=False——模型选了工具而
-                    #    注册表为空，协议不一致）。均非「空输出」（有调用意图）、非「工具
-                    # 失败」（无工具可执行）。短路为 PARSE_FAILED 分发：不入空输出计数
-                    # （与 max_empty_retries 独立，避免 tool_calls 为真清零计数后无上限
-                    # 空转）、不进 execute_tool_calls 空转。默认 CONTINUE 重试，handler
-                    # 可 STOP/RAISE。
-                    if finish_reason == "tool_calls" and (
-                        not stream_result.tool_calls or not has_tools
-                    ):
-                        async for event in self._finalize_protocol_error(
-                            full_reasoning, iteration, total_usage
-                        ):
-                            yield event
-                        if self.outcome is not None:
-                            return
-                        continue  # CONTINUE（默认）：重试下一轮
+                            # ----- Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续 -----
+                            # （注入工具非注册工具，识别在主循环，不进 execute_tool_calls）
+                            if output_schema is not None and any(
+                                tc["function"]["name"] == _FINAL_ANSWER_TOOL
+                                for tc in stream_result.tool_calls
+                            ):
+                                async for event in self._handle_final_answer(
+                                    stream_result.tool_calls,
+                                    messages,
+                                    iteration,
+                                    output_schema,
+                                    total_usage,
+                                    full_reasoning,
+                                ):
+                                    yield event
+                                if self.outcome is not None:
+                                    return
+                                continue  # final_answer CONTINUE：回喂后继续
 
-                    # ----- 空输出连续计数 -----
-                    # 本轮有产出（工具调用 / stop / length / 有内容）→ 清零；空输出 → +1。
-                    # LLM 失败轮（error 非空）在上方已 return/continue，天然不参与。
-                    # 达 max_empty_retries 上限后，空输出分支硬终止（防空转烧钱）。
-                    if (
-                        stream_result.tool_calls
-                        or finish_reason in ("stop", "length")
-                        or full_content.strip()
-                    ):
-                        self._empty_retries = 0
-                    else:
-                        self._empty_retries += 1
+                            # ----- 循环停滞检测：相同工具 + 参数连续重复 → STALLED 分发硬终止 -----
+                            # 动作指纹 = 本轮 tool_calls 的（名, 规范化参数）序列化；连续相同
+                            # 超过 max_same_action_turns 轮判死循环（对齐 SMOL same_action_llm_turn_limit）。
+                            # 停滞判定后不执行本轮工具：执行无意义 + 防重复副作用 / 烧钱。
+                            fp = _action_fingerprint(stream_result.tool_calls)
+                            if fp and fp == self._last_action_fp:
+                                self._stall_count += 1
+                            else:
+                                self._stall_count = 1
+                                self._last_action_fp = fp
+                            if self._stall_count > max_same_action_turns:
+                                async for event in self._finalize_stalled(
+                                    stream_result.tool_calls,
+                                    iteration,
+                                    total_usage,
+                                    full_reasoning,
+                                    self._stall_count,
+                                ):
+                                    yield event
+                                return
 
-                    # ----- （1）调用工具 → 继续调用大模型
-                    if finish_reason == "tool_calls" and has_tools:
-                        yield build_info_event(
-                            f"检测到 {len(stream_result.tool_calls)} 个工具调用"
-                        )
-
-                        # Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续
-                        # （注入工具非注册工具，识别在主循环，不进 execute_tool_calls）
-                        if output_schema is not None and any(
-                            tc["function"]["name"] == _FINAL_ANSWER_TOOL
-                            for tc in stream_result.tool_calls
-                        ):
-                            async for event in self._handle_final_answer(
+                            async for event in self._handle_tool_calls(
                                 stream_result.tool_calls,
                                 messages,
                                 iteration,
-                                output_schema,
                                 total_usage,
                                 full_reasoning,
                             ):
                                 yield event
                             if self.outcome is not None:
                                 return
-                            continue  # final_answer CONTINUE：回喂后继续
-
-                        # ----- 循环停滞检测：相同工具 + 参数连续重复 → STALLED 分发硬终止 -----
-                        # 动作指纹 = 本轮 tool_calls 的（名, 规范化参数）序列化；连续相同
-                        # 超过 max_same_action_turns 轮判死循环（对齐 SMOL same_action_llm_turn_limit）。
-                        # 停滞判定后不执行本轮工具：执行无意义 + 防重复副作用 / 烧钱。
-                        fp = _action_fingerprint(stream_result.tool_calls)
-                        if fp and fp == self._last_action_fp:
-                            self._stall_count += 1
-                        else:
-                            self._stall_count = 1
-                            self._last_action_fp = fp
-                        if self._stall_count > max_same_action_turns:
-                            async for event in self._finalize_stalled(
-                                stream_result.tool_calls,
-                                iteration,
-                                total_usage,
-                                full_reasoning,
-                                self._stall_count,
-                            ):
-                                yield event
-                            return
-
-                        async for event in self._handle_tool_calls(
-                            stream_result.tool_calls,
-                            messages,
-                            iteration,
-                            total_usage,
-                            full_reasoning,
-                        ):
-                            yield event
-                        if self.outcome is not None:
-                            return
-                        continue
-
-                    # ----- （2）stop / length / 有内容 → 正常结束
-                    if finish_reason in ("stop", "length") or full_content.strip():
+                            continue
+                    elif finish_reason in ("stop", "length") or full_content.strip():
+                        # ----- （2）stop / length / 有内容 → 正常结束
+                        self._empty_retries = 0  # 本轮有产出（stop / length / 有内容）→ 空输出连续计数清零；
                         async for event in self._finalize_stop(
                             full_reasoning, full_content, iteration, total_usage
                         ):
                             yield event
                         return
-
-                    # ----- （3）空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）
-                    async for event in self._handle_empty_output(
-                        full_reasoning, iteration, total_usage, max_empty_retries
-                    ):
-                        yield event
-                    if self.outcome is not None:
-                        return
-                    # CONTINUE（默认）：重试（_handle_empty_output 已 yield 重试信息）
+                    else:
+                        # ----- （3）空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）
+                        self._empty_retries += 1  # 本轮空输出 → 空输出连续计数+1；
+                        async for event in self._handle_empty_output(
+                            full_reasoning, iteration, total_usage, max_empty_retries
+                        ):
+                            yield event
+                        if self.outcome is not None:
+                            return
+                        # CONTINUE（默认）：重试（_handle_empty_output 已 yield 重试信息）
 
                 # ----- 9. 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
                 async for event in self._finalize_max_turns(

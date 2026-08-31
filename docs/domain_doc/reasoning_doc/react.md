@@ -93,6 +93,8 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 **handler 异常防御**：handler 是调用方扩展点，其自身异常不破坏主循环——`dispatch` 捕获 `Exception`（不含 `BaseException`，`CancelledError` 穿透）后记日志并按该 kind 默认 action 降级（= 未注册行为），扩展点缺陷可观测且不掩盖被分发的原始错误（见 [SHARED-001](../../../issues/shared/error_handling/2026-08-30-handler-exception-defense.md)）。
 
+**error 文本取舍（LLM_FAILED 不脱敏 vs UNKNOWN 脱敏）**：`LLM_FAILED` 的 error 保留整流层失败原因（如 401/429/超时），对良率工程师诊断有直接价值，**不脱敏**（整流层仅截断 500 字符）；`UNKNOWN` 只保留异常类型名（**脱敏**，完整异常进日志）——「未知异常」无诊断价值且异常文本可能含内部路径/敏感值，两类取舍不同（见 [REASON-005](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)）。
+
 ### 成本上限（CostLimiterPort）
 
 成本上限是横切护栏，由应用层 `CostLimiter` 结构实现（经 `CostLimiterPort` 注入；成本估算经 `LLMGateway.calculate_cost` 取——成本估算是 LLM 能力，应用层不直接依赖集成层），ReAct 不实现算法。每轮 usage 累加后 `check(累计 usage)` 折算成本（USD），超限即 `_finalize_cost_exceeded` 走 `COST_EXCEEDED` 分发（默认 STOP 降级，error 记录「成本超限（累计 $X）」）。置于 error 判断前：预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用。`cost_limiter=None`（未配置 `agent_max_cost`）整段零开销。与上下文预算互补：trim 在 LLM 调用前（减少发送 token），cost check 在调用后（审计花费）。
@@ -292,7 +294,7 @@ result = strategy.outcome  # ReActOutcome
 11. **结构化最终答案**（`output_schema`，None=不启用）→ 注入 final_answer 工具；模型调用即终止产出 `outcome.structured`；参数校验失败回喂（VALIDATION/STRUCTURED_INVALID）自纠
 12. **错误处理分发**（`error_handlers`，None=默认行为）→ 各终结/可恢复错误按 kind 分发（CONTINUE/STOP/RAISE）；默认 = 现有行为，调用方按 kind 注册覆盖
 13. **多工具失败** → 按 kind 聚合（同 kind 原因合并给 handler）+ 最严重优先仲裁（RAISE > STOP > CONTINUE）；终止/上报时其他失败不回喂，但全部失败已进证据链
-14. **空输出重试上限**（`max_empty_retries`，默认 2）→ 连续空输出计数，超过上限在空输出分支硬终止（`error` 记录「连续空输出（N 轮）」，先 dispatch 供 handler RAISE，CONTINUE 忽略）；有产出轮计数清零（非连续不累计）；LLM 失败重试轮不参与
+14. **空输出重试上限**（`max_empty_retries`，默认 2）→ 连续空输出计数，超过上限在空输出分支硬终止（`error` 记录「连续空输出（N 轮）」，先 dispatch 供 handler RAISE，CONTINUE 忽略）；有产出轮计数清零（非连续不累计）；LLM 失败重试轮不参与。**空输出重试轮不追加空 assistant 消息**（无产出不写历史，防累积污染上下文；thinking 空 reasoning 轮 `has_reasoning=True` 仍追加保字段）
 15. **循环停滞检测**（`max_same_action_turns`，默认 3）→ 连续相同工具调用（工具+参数）超过上限 → STALLED 分发硬终止（本轮工具不执行，error 记录「连续 N 轮相同工具调用」）；参数规范化（key 顺序 / 空白不同指纹一致）；换工具 / 换参数重置；`final_answer` 不参与；STALLED handler 可 RAISE 上抛
 16. **模型拒答**（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，error 记录「模型拒答: <截断文本>」）；显式信号原则（LLM-004，不靠 content 空推断）——DeepSeek 无 refusal 字段的 stop+空 content 保持空回答语义；拒答文本截断（LLM-008 基线）
 17. **未捕获异常**（UNKNOWN）→ 主循环 `except Exception` 兜底：用 `last_result` 组装 outcome 保留部分进度 + 证据链，error 记录「Agent 运行异常: <异常类型名>」（**脱敏**——只留分类，不拼接异常 message，完整异常含 traceback 进日志供运维诊断，产品侧不泄漏内部细节，见 [REASON-005](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)）；RAISE 决策（`AgentRunError`）前置 re-raise 不被吞；`asyncio.CancelledError` / `GeneratorExit` 是 `BaseException`，保持 CANCELLED / 生成器关闭语义
@@ -321,13 +323,13 @@ result = strategy.outcome  # ReActOutcome
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（75 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（76 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）
 - **时间上限**：首轮超时降级 / 中途超时保留部分进度 / 宽松上限不影响完成 / `None` 显式不设限
 - **成本上限**：首轮超限 STOP 降级 / 中途超限保留部分进度 / 宽松上限不触发 / `cost_limiter=None` 不启用 / COST_EXCEEDED→RAISE 上抛 / CONTINUE 忽略
-- **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛
+- **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛 / 重试轮不追加空 assistant 消息
 - **循环停滞检测**：同工具同参数达上限终止 / 未达上限正常 / 参数变化重置 / 换工具重置 / 上限可配置 / final_answer 不参与 / STALLED handler RAISE / 参数 key 顺序规范化指纹相同
 - **模型拒答**：refusal 非空终止（content 保留）/ content_filter 终止 / REFUSED handler RAISE / CONTINUE 忽略
 - **未捕获异常**：中途异常保留证据链 / UNKNOWN handler RAISE 抛 AgentRunError / CONTINUE 忽略 / error 脱敏（只留异常类型名，敏感 message 不泄漏，完整异常进日志）
@@ -370,6 +372,7 @@ result = strategy.outcome  # ReActOutcome
 - [REASON-004 协议异常 tool_calls 不一致](../../../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)：finish_reason=tool_calls 信号与数据（空列表）/工具可用性（无工具）不一致，误入空输出重试 / 空转执行；已短路为 PARSE_FAILED 协议异常分发（已修复）
 - [REASON-005 UNKNOWN error 脱敏](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)：error 拼接完整异常文本泄漏内部细节；已改异常类型名 + 完整异常进日志（已修复）
 - [REASON-007 LLM 失败重试上限](../../../issues/domain/reasoning/2026-08-31-llm-fail-retry-limit.md)：LLM 失败重试无独立上限（handler CONTINUE 可无限重试烧钱）；已补 max_llm_fail_retries 护栏（对齐空输出）（已修复）
+- [REASON-008 空输出重试空消息污染](../../../issues/domain/reasoning/2026-08-31-empty-output-blank-assistant.md)：空输出重试轮向历史追加空 assistant 消息累积污染；已改纯空轮不追加（无产出不写历史）（已修复）
 
 ---
 
