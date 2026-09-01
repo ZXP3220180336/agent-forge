@@ -1,5 +1,12 @@
 # 研发教训
 
+## 2026-09-01 Reflection 异常面收口（REASON-010）
+
+- **验证调用链完整出口，别凭 grep 断言异常冒泡**（REASON-010）：评估异常处理只看到「某处 raise 某异常」不够——必须追踪调用链每一层是否捕获 / 短路 / 重新抛出。本次误判 `StructuredTruncationError` 会冒泡到 Reflection，实际 `StructuredOutput.extract` 入口三处 `except ... return None` 短路，异常根本不达上层；凭 grep 到 `_raise_boundary` 的 raise 就定性，漏了 extract 外层的短路。
+- **异常捕获范围锚定异常树根，而非枚举已知错误**（REASON-010）：集成层异常面会演进（新增截断类别、不可恢复错误上抛），按具体类型枚举会随演进漏项。业务 / 系统级错误统一捕获树根（`AppError`），编程错误留待冒泡（fail fast，不掩盖 bug）。
+- **降级承诺按「每条失败出口」逐条核验**（REASON-010）：组件承诺 best-effort（不抛错），就要穷举其依赖组件（LLM 网关）的所有失败信号出口——返回 None / 抛 Structured 异常 / 抛不可恢复异常——逐条确认落入降级路由，而非只覆盖「当前已知」的少数几种。
+- **统一异常树的价值依赖「出口归一」闭环**（REASON-010）：`AppError` 树在领域层兜底的前提是集成层把所有透出边界的异常都归一进树——`llm_service.generate` 对 NON_RETRYABLE 直接 `raise` openai 原始异常（`APIStatusError` 非 AppError），领域层 `except AppError` 就兜不住 4xx / 认证。异常归一是集成层职责，勿在领域层 import openai 类型（违反依赖方向）。
+
 ## 2026-08-30/31 Agent 异常处理与 React 策略评审
 
 - **协议一致性校验要看全维度**（REASON-004/006）：`tool_calls` 信号不仅要与「数据非空」一致，还要与「工具可用性（`has_tools`）」一致——任何一侧缺失都是协议异常，不能只校验数据一侧（004 只查了数据侧，遗留能力侧）。
