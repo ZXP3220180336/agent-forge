@@ -37,7 +37,7 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_done_event, build_info_event
-from app.shared.exceptions import StructuredRefusalError, StructuredToolCallError
+from app.shared.exceptions import AppError
 
 from .react import ReActOutcome, ReActStrategy
 
@@ -476,11 +476,15 @@ class ReflectionStrategy:
         draft: dict[str, Any],
         iteration: int,
     ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
-        """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。"""
+        """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
+
+        捕获 AppError 全家族（拒答 / 工具调用 / 截断 / 认证熔断等不可恢复错误）
+        统一分发降级（REASON-010）；非 AppError 编程错误不吞，向上冒泡（fail fast）。
+        """
         try:
             result, usage = await self._generate_critique(evidence, draft)
             return result, None, usage
-        except (StructuredRefusalError, StructuredToolCallError) as e:
+        except AppError as e:
             result, action = await self._dispatch_critique_failed_result(
                 f"自查生成失败: {e}", iteration
             )
@@ -493,11 +497,15 @@ class ReflectionStrategy:
         issues: list[dict[str, Any]],
         iteration: int,
     ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
-        """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。"""
+        """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
+
+        捕获 AppError 全家族（拒答 / 工具调用 / 截断 / 认证熔断等不可恢复错误）
+        统一分发降级（REASON-010）；非 AppError 编程错误不吞，向上冒泡（fail fast）。
+        """
         try:
             result, usage = await self._generate_refine(evidence, draft, issues)
             return result, None, usage
-        except (StructuredRefusalError, StructuredToolCallError) as e:
+        except AppError as e:
             result, action = await self._dispatch_critique_failed_result(
                 f"修正失败: {e}", iteration
             )

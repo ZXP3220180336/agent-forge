@@ -26,7 +26,7 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_message_event
-from app.shared.exceptions import StructuredRefusalError
+from app.shared.exceptions import NonRetryableError, StructuredRefusalError
 
 DRAFT = {
     "summary": "良率下降归因于设备 A 告警",
@@ -552,3 +552,57 @@ async def test_reflect_cost_limit_stops():
     assert strategy.outcome.degraded is True
     assert "成本超限" in strategy.outcome.error
     assert strategy.outcome.structured == REFINED  # 采用最近修正稿
+
+
+# ── REASON-010：自查/修正异常面收口（不可恢复 AppError 降级；编程错误冒泡）──
+# 注：StructuredTruncationError 不在缺口内——StructuredOutput.extract 对截断短路
+# 返回 None（不向上抛），Reflection 走既有「critique is None → 降级」路径（REASON-010）。
+
+
+@pytest.mark.asyncio
+async def test_reflect_critique_nonretryable_degrades_to_draft():
+    """自查抛 NonRetryableError（熔断等不可恢复 AppError）→ 降级采用初稿（degraded=True）。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[NonRetryableError("熔断开启")],
+    )
+    strategy = _make_strategy(llm)
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.degraded is True
+    assert "自查失败" in strategy.outcome.error
+
+
+@pytest.mark.asyncio
+async def test_reflect_refine_nonretryable_degrades_to_draft():
+    """修正抛 NonRetryableError（熔断等不可恢复 AppError）→ 降级采用初稿（degraded=True）。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "critical", "dimension": "grounding", "description": "证据不足"}]},
+            NonRetryableError("上游服务熔断"),
+        ],
+    )
+    strategy = _make_strategy(llm)
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.refine_rounds == 0
+    assert strategy.outcome.degraded is True
+    assert "修正失败" in strategy.outcome.error
+
+
+@pytest.mark.asyncio
+async def test_reflect_critique_bug_propagates():
+    """自查抛非 AppError 编程错误（TypeError）→ 不吞、向上冒泡（fail fast，防止掩盖 bug）。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[TypeError("模拟编程错误")],
+    )
+    strategy = _make_strategy(llm)
+
+    with pytest.raises(TypeError):
+        await _run(strategy)

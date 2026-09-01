@@ -1,3 +1,16 @@
+# 2026-09-01 Reflection 自查/修正阶段异常面收口（REASON-010）
+
+> 评审发现：`_critique`/`_refine` 只捕获 StructuredRefusalError/StructuredToolCallError，漏掉会冒泡的不可恢复错误（熔断 CircuitBreakerOpenError 等 AppError）——违反「不抛错降级」承诺。修复：except 扩展为 AppError（异常树根），编程错误仍冒泡不掩盖。迭代核实：截断（StructuredTruncationError）由集成层 StructuredOutput.extract 短路返回 None，非本层缺口，删除虚假锚定测试；openai 4xx/认证未归一 AppError，留集成层遗留。
+
+- [x] issue：`issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md`（REASON-010）
+- [x] TDD：新增 3 用例（自查/修正抛不可恢复 AppError → 降级；编程错误仍冒泡）——初版含 2 截断用例，核实 extract 短路返回 None 后删除
+- [x] 修复 reflection.py：`_critique`/`_refine` 的 except `(StructuredRefusalError, StructuredToolCallError)` → `AppError`
+- [x] 测试：test_reflection.py（22）+ test_reflection_agent.py（5）通过；全量 pytest 无回归
+- [x] 文档：reflection.md（降级路由/边界情况/测试状态/错误分发）+ reflection_benchmark.md（#9）；ALIGNMENT 无模块结构变化，校验通过
+- [x] 验证：verify_alignment 通过
+
+---
+
 # 2026-09-01 Reflection 自查/修正 token 统计 + cost 护栏（benchmark #11 去 ⚠️）
 
 > generate_structured 回传 usage（仿 async_generate result 模式），critique/refine 纳入 token/成本统计 + cost_limiter。

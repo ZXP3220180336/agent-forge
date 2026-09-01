@@ -66,14 +66,16 @@ Critic 被外部信号（工具记录）锚定：自查消息注入「证据链�
 | --- | --- |
 | ReAct 失败 | 降级 outcome（error 透传，证据链保留），degraded=True |
 | ReAct 无 structured（未调 final_answer） | 降级（content 保留），degraded=True |
-| 自查失败 / 拒答 | CRITIQUE_FAILED 分发，默认采用 draft，degraded=True |
+| 自查失败 / 拒答 / 熔断等不可恢复错误（AppError） | CRITIQUE_FAILED 分发，默认采用 draft，degraded=True |
 | 自查 ok | 采用 draft（degraded=False） |
 | 自查 issues + 修正 + 复查 ok | 采用 refined（degraded=False） |
 | 修正失败 / 达上限（复查未通过） | 采用最近稿，degraded=True |
 
+> 结构化输出截断（StructuredTruncationError）**不在本层缺口内**：`StructuredOutput.extract` 对截断短路返回 `None`（不向上抛，[REASON-010](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md)），Reflection 走「自查/修正返回 None → 降级」既有路径。
+
 ### CRITIQUE_FAILED 错误分发
 
-自查 / 修正失败统一走 `AgentErrorKind.CRITIQUE_FAILED`（默认 CONTINUE）——独立 kind 而非复用 `STRUCTURED_INVALID`（语义不符）或 `REFUSED`（默认 STOP 会硬停整个 Agent）。动作：CONTINUE=降级采用 best（默认）/ STOP=整个失败 / RAISE=抛 `AgentRunError`。
+自查 / 修正失败统一走 `AgentErrorKind.CRITIQUE_FAILED`（默认 CONTINUE）——独立 kind 而非复用 `STRUCTURED_INVALID`（语义不符）或 `REFUSED`（默认 STOP 会硬停整个 Agent）。动作：CONTINUE=降级采用 best（默认）/ STOP=整个失败 / RAISE=抛 `AgentRunError`。失败捕获范围为 **AppError 全家族**（拒答 / 工具调用 / 熔断等不可恢复错误）；非 AppError 编程错误不吞、向上冒泡（fail fast，[REASON-010](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md)）。结构化截断在集成层短路返回 `None`，不进入本分发。
 
 ## 架构总览
 
@@ -151,8 +153,10 @@ ReflectionStrategy.execute()（三阶段）
 | --- | --- |
 | 模型未调用 final_answer（stop 自由文本） | 降级：content 保留、structured=None、degraded=True |
 | ReAct 失败（LLM 错误等） | error 透传、证据链保留、degraded=True |
-| 自查返回 None / 拒答 | CRITIQUE_FAILED 分发 → 默认采用 draft（degraded=True） |
-| 修正返回 None / 达 max_refine_rounds 上限 | 采用最近稿（degraded=True） |
+| 自查返回 None / 拒答 / 熔断等不可恢复错误（AppError） | CRITIQUE_FAILED 分发 → 默认采用 draft（degraded=True） |
+| 修正返回 None / 熔断等不可恢复错误 / 达 max_refine_rounds 上限 | 采用最近稿（degraded=True） |
+| 结构化输出截断 | 集成层短路返回 None → 走自查/修正 None 降级路径（本层无感知） |
+| 自查/修正抛非 AppError 编程错误（TypeError 等） | 不吞，向上冒泡（fail fast） |
 | 证据链含 final_answer 条目 | 序列化时剔除（终止工具非真实证据） |
 | 证据链为空 + draft 引用不存在证据 | 自查 grounding 维度抓出（Grounding 价值） |
 
@@ -164,12 +168,13 @@ ReflectionStrategy.execute()（三阶段）
 
 ## 测试状态
 
-`tests/unit/test_reflection.py`（15 用例）+ `tests/unit/test_reflection_agent.py`（5 用例）：
+`tests/unit/test_reflection.py`（22 用例）+ `tests/unit/test_reflection_agent.py`（5 用例）：
 
 - 三阶段全路径：自查 ok 采用初稿 / 自查 issues 修正 + 复查 ok 采用 refined
 - 真迭代：修正后复查新 issues 再修正（refine_rounds=2）/ 达上限采用最后修正稿（degraded）
 - Grounding 注入断言（自查入参含证据链 + 初稿）
-- 降级路径：自查失败 / 拒答 / 修正失败 / ReAct 无 structured / ReAct 失败
+- 降级路径：自查失败 / 拒答 / **不可恢复 AppError（熔断等）** / 修正失败 / ReAct 无 structured / ReAct 失败
+- 非 AppError 编程错误不吞、向上冒泡（fail fast）
 - max_refine_rounds 上限（max=1 不修正）、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
 - Scope 盲区清单维度穷举（9 dimension）、护栏透传
 - 桥接：_map_outcome 映射 / ctx 透传 / 端到端 / 默认向后兼容

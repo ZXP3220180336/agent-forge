@@ -84,7 +84,7 @@
 | 6 | 终止路由 | ✅ | 显式降级路由表（react 失败 / 无 structured / 自查 ok / issues / 修正失败 / 达上限 → 各终止路径） |
 | 7 | issues 回喂 | ✅ | `REFINE_PROMPT` 注入 draft + issues（结构化 issues 作为受控参数） |
 | 8 | 完整上下文修正 | ✅ | `REFINE_PROMPT` 要求完整重写（非 patch）+ 逐条判断 issues（与证据链矛盾的不采纳，以证据链为准） |
-| 9 | 失败降级（best-effort） | ✅ | 自查/修正失败/ReAct 无 structured 全部 → 采用最近稿（degraded=True），不抛错 |
+| 9 | 失败降级（best-effort） | ✅ | 自查/修正失败/ReAct 无 structured 全部 → 采用最近稿（degraded=True），不抛错；捕获范围覆盖 AppError 全家族（拒答/工具调用/熔断），非 AppError 编程错误仍冒泡（[REASON-010](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md)）；结构化截断由集成层短路返回 None 走 None 降级 |
 | 10 | 结构化初稿（面向证据） | ✅ | 生成阶段复用 `ReActStrategy.execute(output_schema=REFLECTION_SCHEMA)`：工具收集 + final_answer 结构化初稿一次完成 |
 | 11 | token/成本统计 + 预算护栏 | ✅ | ReAct 收集阶段经内部 `_react` 的 cost_limiter / context_budget 完整护栏；critique/refine 经 `generate_structured(usage=...)` 回填 token 用量（仿 async_generate result 模式），累计到 outcome.total_tokens/usage + cost_limiter（循环顶部 check，超限停机降级）——全阶段覆盖 |
 | 12 | 事件 / 可观测性 | ✅ | ReAct 事件零改动 + 阶段 info（进入自查/自查通过/发现 N 问题/降级）+ done |
