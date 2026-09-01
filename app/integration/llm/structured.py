@@ -24,13 +24,14 @@ from typing import Any
 
 from jsonschema import Draft7Validator, ValidationError, validate
 
-from app.integration.llm.retry import ErrorCategory, classify_error
 from app.platform.observability.logger import get_logger
 from app.shared.exceptions import (
     StructuredRefusalError,
     StructuredToolCallError,
     StructuredTruncationError,
 )
+
+from .errors import decide_downstream_error, is_unsupported_response_format_error
 
 logger = get_logger("llm.structured")
 
@@ -49,23 +50,6 @@ _REASK_TEMPLATE = (
     "请根据错误修正，只输出符合 schema 的 JSON 对象，"
     "不要 markdown 代码块、不要额外解释。"
 )
-
-
-def _is_unsupported_response_format_error(exc: Exception) -> bool:
-    """判断是否「模型/网关不支持 response_format」的 400 错误。
-
-    触发：`_build_json_schema_request` 无条件发 strict json_schema，部分模型/
-    兼容网关不支持该 response_format 类型时返回 400（错误信息含 response_format
-    或 json_schema 字样）。这类错误不是「模型能力不足需修复」，而是「该约束
-    模式不支持」——应降级到下一级（JSON mode / 正则），而非当致命错误上抛。
-
-    判据：400 状态码 + 错误信息含 response_format/json_schema 关键词。
-    """
-    if getattr(exc, "status_code", 0) != 400:
-        return False
-    message = str(getattr(exc, "message", "") or exc)
-    lowered = message.lower()
-    return "response_format" in lowered or "json_schema" in lowered
 
 
 def _strict_compliant(schema: dict[str, Any]) -> dict[str, Any]:
@@ -638,22 +622,25 @@ class StructuredOutput:
                 model_key=model_key,
             )
         except Exception as e:
-            # 不可恢复错误（4xx/认证/熔断）向上抛（generate 已对 NON_RETRYABLE raise）；
-            # 可恢复错误（超时/5xx/429）重试耗尽已由 generate 转 None，此处兜底防御。
-            if classify_error(e) == ErrorCategory.NON_RETRYABLE:
-                # 明确因「response_format 不被支持」而 400（模型/兼容网关不支持
-                # strict json_schema）：这不是调用方 bug，而是约束模式不被支持——
-                # 降级到下一级（JSON mode / 正则）而非致命上抛，兑现降级链契约。
-                if _is_unsupported_response_format_error(e):
-                    logger.warning(
-                        "%s 模型/网关不支持 response_format，降级到下一级: %s",
-                        stage,
-                        e,
-                    )
-                    return None
-                logger.error("%s 下游不可恢复错误: %s", stage, e)
-                raise
-            return None  # 下游失败（可靠性层已重试），降级
+            # 明确因「response_format 不被支持」而 400（模型/兼容网关不支持
+            # strict json_schema）：这不是调用方 bug，而是约束模式不被支持——
+            # 降级到下一级（JSON mode / 正则）而非致命上抛，兑现降级链契约。
+            if is_unsupported_response_format_error(e):
+                logger.warning(
+                    "%s 模型/网关不支持 response_format，降级到下一级: %s",
+                    stage,
+                    e,
+                )
+                return None
+            # 统一决策（llm/errors.py）：可恢复错误（超时/5xx/429）兜底防御降级；
+            # 不可恢复错误（generate 已归一为 LLMAPIError 或原样）上抛交上层决策。
+            decision = decide_downstream_error(e)
+            if decision.to_raise is None:
+                return None
+            logger.error("%s 下游不可恢复错误: %s", stage, e)
+            if decision.normalized:
+                raise decision.to_raise from e
+            raise
 
     @staticmethod
     def _classify_result(result: Any) -> str:

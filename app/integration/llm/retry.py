@@ -26,76 +26,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, ClassVar
 
-import httpx
-from openai import (
-    APIConnectionError,
-    APIResponseValidationError,
-    APITimeoutError,
-    ContentFilterFinishReasonError,
-    LengthFinishReasonError,
-    RateLimitError,
-)
-
 from app.shared.exceptions import CircuitBreakerOpenError
 
-# =====================================================================
-# 错误分类
-# =====================================================================
-
-
-class ErrorCategory(Enum):
-    """错误类型分类，决定处理策略。"""
-
-    RETRYABLE = "retryable"  # 可重试（超时、5xx）
-    NON_RETRYABLE = "fatal"  # 不可恢复（认证、参数错误）
-    RATE_LIMITED = "rate_limited"  # 限流（可重试但应退避，不计入熔断）
-
-
-# 可重试的具名异常：网络层故障（超时、连接错误）。无 status_code，必须显式匹配。
-_RETRYABLE_EXC = (TimeoutError, APITimeoutError, APIConnectionError)
-# 非 HTTP 的永久性异常：响应校验失败、token 截断、内容被过滤——重试无效。
-_NON_RETRYABLE_EXC = (
-    APIResponseValidationError,
-    LengthFinishReasonError,
-    ContentFilterFinishReasonError,
-)
-
-
-def classify_error(exc: Exception) -> ErrorCategory:
-    """对异常进行分类（白名单映射，未知异常默认不可重试）。
-
-    分类规则：
-        - RETRYABLE    网络层故障（openai 封装或裸 httpx）、超时、5xx
-        - RATE_LIMITED 429
-        - NON_RETRYABLE 4xx、响应校验错误、token 截断、内容被过滤、
-                        以及未知异常（默认兜底——避免对重试无效的错误盲目重试）
-    """
-    # 1) 网络层：openai 封装（APITimeoutError / APIConnectionError）+ 裸 httpx 异常
-    #    openai 某些路径会直接抛 httpx 异常（ConnectError/ReadError/Timeout 等），不会被封装。
-    #    httpx.TimeoutException 与 httpx.NetworkError 无继承关系，需同时匹配。
-    if isinstance(
-        exc,
-        _RETRYABLE_EXC + (httpx.TimeoutException, httpx.NetworkError),
-    ):
-        return ErrorCategory.RETRYABLE
-    # 2) 限流
-    if isinstance(exc, RateLimitError):
-        return ErrorCategory.RATE_LIMITED
-    # 3) HTTP 状态码（APIStatusError 及其子类都带 status_code）
-    status_code = getattr(exc, "status_code", 0)
-    if status_code:
-        if 500 <= status_code < 600:
-            return ErrorCategory.RETRYABLE
-        if status_code == 429:
-            return ErrorCategory.RATE_LIMITED
-        if 400 <= status_code < 500:
-            return ErrorCategory.NON_RETRYABLE
-    # 4) 明确的非 HTTP 永久性异常
-    if isinstance(exc, _NON_RETRYABLE_EXC):
-        return ErrorCategory.NON_RETRYABLE
-    # 5) 未知异常：默认不可重试（避免对无法恢复的错误盲目重试打下游）
-    return ErrorCategory.NON_RETRYABLE
-
+from .errors import ErrorCategory, classify_error
 
 # =====================================================================
 # 熔断器

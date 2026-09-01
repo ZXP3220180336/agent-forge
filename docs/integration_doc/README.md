@@ -43,9 +43,10 @@
 app/integration/
 ├── embedding/                     ← EmbeddingService 文本向量化
 │   └── embedding_service.py       ← EmbeddingService（embed / embed_batch / 缓存）
-├── llm/                          ← LLM 网关（LLMService Facade + 8 组件）
+├── llm/                          ← LLM 网关（LLMService Facade + 9 组件）
 │   ├── llm_service.py            ← LLMService（统一 Facade，对外入口）
 │   ├── client.py                 ← ClientManager 连接池管理
+│   ├── errors.py                 ← 传输错误处理（分类/归一/降级判定/下游决策）
 │   ├── retry.py                  ← RetryHandler + CircuitBreaker
 │   ├── streaming.py              ← StreamParser 流式解析
 │   ├── streaming_rectifier.py    ← StreamingRectifier 流式整流重试
@@ -128,11 +129,12 @@ app/integration/
 
 **代码**：`app/integration/llm/` · **文档**：[LLM 层详解](llm_doc/llm.md) · [LLMService 编排](llm_doc/llm_service.md)
 
-负责所有与大语言模型的交互，是系统的**模型通信基础设施**。`LLMService` 是唯一外部入口，内部 8 组件各司其职：
+负责所有与大语言模型的交互，是系统的**模型通信基础设施**。`LLMService` 是唯一外部入口，内部 9 组件各司其职：
 
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
 | `ClientManager` | client.py | 全局共享 AsyncOpenAI 连接池，main / reasoning / fast 三档模型懒加载 |
+| 传输错误处理 | errors.py | 传输异常分类/归一/降级判定/下游决策（retry/llm_service/structured/streaming_rectifier 消费） |
 | `RetryHandler` | retry.py | 指数退避 + 抖动 + CircuitBreaker 熔断 + fallback 降级链 |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式响应（纯函数，无状态） |
 | `StreamingRectifier` | streaming_rectifier.py | 流式整流重试：首 token 前中断才重试（防重复输出 / 双倍计费） |
@@ -206,7 +208,7 @@ app/integration/
 - [架构设计](../architecture.md)（集成层在 7 层架构中的位置与演进路径）
 - [应用层说明](../application_doc/README.md)
 - [领域层说明](../domain_doc/README.md)
-- [LLM 层详解](llm_doc/llm.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md) · [TokenCounter](llm_doc/token_counter.md)
+- [LLM 层详解](llm_doc/llm.md) · [传输错误处理](llm_doc/error.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md) · [TokenCounter](llm_doc/token_counter.md)
 - [ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md) · [外部工具热加载](tools_doc/external.md) · [执行调度](tools_doc/executor.md) · [注册中心](tools_doc/registry.md) · [校验](tools_doc/validator.md) · [结果处理](tools_doc/result_processor.md) · [安全审计](tools_doc/security.md) · [选择器](tools_doc/selector.md) · [统计](tools_doc/stats.md)
 - [Embedding 详解](embedding_doc/embedding.md)
 - [配置说明](../config_doc/config.md)

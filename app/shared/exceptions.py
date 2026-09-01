@@ -28,6 +28,7 @@ class AppErrorCode(StrEnum):
     FORBIDDEN = "FORBIDDEN"  # 权限不足（ForbiddenError，403）
     NOT_FOUND = "NOT_FOUND"  # 资源不存在（NotFoundError，404）
     CIRCUIT_OPEN = "CIRCUIT_OPEN"  # 熔断开启（CircuitBreakerOpenError）
+    LLM_API_ERROR = "LLM_API_ERROR"  # LLM 下游不可恢复错误（LLMAPIError，openai 4xx/认证归一）
     LLM_TRUNCATED = "LLM_TRUNCATED"  # 结构化输出截断（StructuredTruncationError）
     LLM_REFUSAL = "LLM_REFUSAL"  # 模型拒答（StructuredRefusalError）
     LLM_TOOL_CALL = "LLM_TOOL_CALL"  # 模型选择调用工具（StructuredToolCallError）
@@ -65,6 +66,26 @@ class CircuitBreakerOpenError(NonRetryableError):
     """熔断器开启时请求被拒绝（无 fallback 兜底），调用方需等待冷却或降级备用链路。"""
 
     code = AppErrorCode.CIRCUIT_OPEN
+
+
+class LLMAPIError(NonRetryableError):
+    """LLM 下游不可恢复错误：openai APIStatusError 系列的归一类型（4xx/认证/响应校验）。
+
+    集成层 `llm_service.generate` 边界把 openai 不可恢复传输异常包装为本异常
+    （`raise LLMAPIError(...) from e` 保留原始异常供诊断）。归一目标（REASON-010）：
+    领域层 `except AppError` 能统一兜住集成层透出的所有业务/系统级错误。
+
+    status_code 保留供下游判断：如 llm/errors.py 的 `is_unsupported_response_format_error`
+    依赖 status_code==400 + message 关键词判定「response_format 不被支持」降级——
+    不保留该降级链即断裂。status_code 为 None 表示非 HTTP 类错误
+    （APIResponseValidationError / 长度截断 / 内容过滤）。
+    """
+
+    code = AppErrorCode.LLM_API_ERROR
+
+    def __init__(self, message: str = "", status_code: int | None = None) -> None:
+        self.status_code = status_code
+        super().__init__(message)
 
 
 class ParameterValidationError(NonRetryableError, ValueError):

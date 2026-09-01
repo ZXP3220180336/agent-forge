@@ -21,14 +21,19 @@ from app.shared.types import Messages
 # 包内组件一律相对深路径 import（LLM 包对外只暴露 LLMService，__init__ 不重导出内部组件）
 from .client import ClientManager
 from .cost_tracker import CostTracker
+from .errors import decide_downstream_error
 from .reservation_limiter import Reservation, ReservationLimiterManager
-from .retry import ErrorCategory, RetryHandlerManager, classify_error
+from .retry import RetryHandlerManager
 from .streaming import StreamParser
 from .streaming_rectifier import RectifierContext, StreamingRectifier
 from .structured import StructuredOutput
 from .token_counter import (
     TiktokenTokenCounter,
+)
+from .token_counter import (
     content_to_text as _content_to_text,
+)
+from .token_counter import (
     get_encoder as _get_encoder,
 )
 
@@ -406,12 +411,17 @@ class LLMService:
                 error=str(e)[:200],
                 duration=time.monotonic() - start_time,
             )
-            # 契约：可恢复错误（超时/5xx/429）可靠性层已重试耗尽 → 返回 None
-            # （调用方按「业务无结果」降级）；不可恢复错误（4xx/认证/熔断开启）
-            # 是调用方问题或下游拒绝，降级无意义 → 向上抛让调用方感知并决策。
-            if classify_error(e) == ErrorCategory.NON_RETRYABLE:
-                raise
-            return None
+            # 统一决策（llm/errors.py）：可恢复错误（超时/5xx/429）可靠性层已
+            # 重试耗尽 → 降级 return None（业务无结果）；openai 不可恢复错误
+            # （4xx/认证）归一为 LLMAPIError（AppError 树）上抛 → 领域层
+            # except AppError 统一兜底（REASON-010 闭环）；非 openai 异常
+            # （CircuitBreakerOpenError / 编程错误）原样 re-raise 保留 traceback。
+            decision = decide_downstream_error(e)
+            if decision.to_raise is None:
+                return None
+            if decision.normalized:
+                raise decision.to_raise from e
+            raise
 
         # 解析非流式响应 + 结算退差（LLM-002：try/finally 兜底，与流式
         # rectified_stream 的 finally 对齐——解析失败 / settle 被取消时不泄漏配额）。

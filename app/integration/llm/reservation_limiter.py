@@ -179,7 +179,7 @@ class Reservation:
     终态幂等：settle/cancel 任一调用后，再次调用为 no-op。
     """
 
-    __slots__ = ("_entries", "_settle_callback", "_settled", "_lock")
+    __slots__ = ("_entries", "_lock", "_settle_callback", "_settled")
 
     def __init__(self, settle_callback: Callable[[int], None] | None = None) -> None:
         self._entries: list[tuple[TokenBucket, float]] = []

@@ -52,7 +52,7 @@
 | --- | --- |
 | 首 token 前（`emitted_any=False`） | `reasoning_token` / `message_token` / `tool_call_deltas` 任一非空即置位；`finish_reason` / `usage` **不算**"首 token"（纯 usage/finish 死流仍可整流） |
 | 未超整流上限 | `attempt < stream_max_retries` |
-| 异常可恢复 | `classify_error` ∈ `RETRYABLE` / `RATE_LIMITED`；NON_RETRYABLE（4xx/校验错误/截断/未知）不整流 |
+| 异常可恢复 | `classify_error`（llm/errors.py，见 [error.md](error.md)）∈ `RETRYABLE` / `RATE_LIMITED`；NON_RETRYABLE（4xx/校验错误/截断/未知）不整流 |
 | 用户未取消 | `cancel_event` 未置位 |
 
 > 全部条件满足才整流（`_should_rectify`）。
@@ -258,6 +258,6 @@ async_generate → rectified_stream（整流循环）
 
 - [LLM 层总览](llm.md)（async_generate 编排）
 - [StreamParser](streaming.md)（chunk 解析，`ParsedChunk`）
-- [重试与熔断](retry.md)（`RetryHandler` / `classify_error` / 熔断 feeding）
+- [重试与熔断](retry.md)（`RetryHandler` / 熔断 feeding）· [传输错误处理](error.md)（`classify_error` 分类）
 - [限流器](limiter.md)（reserve/settle 结算闭环）
 - [全局日志框架](../../platform_doc/observability/logging.md)（`fill_llm_event_fields`）

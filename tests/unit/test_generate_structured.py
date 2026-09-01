@@ -835,7 +835,7 @@ async def test_strict_schema_normalizes_additional_properties_true():
     """strict 请求把 additionalProperties: true 归一为 false（LLM-009）。
 
     修复前：strict 固定 true，显式 additionalProperties: true 必然 400 且被
-    `_is_unsupported_response_format_error` 误判「模型不支持」白打调用。
+    `is_unsupported_response_format_error` 误判「模型不支持」白打调用。
     修复后：strict 请求 schema 递归归一 true→false（副本），本地校验仍用原 schema。
     """
     llm = LLMService()

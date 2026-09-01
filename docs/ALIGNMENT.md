@@ -1,6 +1,6 @@
 # 代码模块 ↔ 文档 ↔ 测试 对齐表
 
-> 更新日期：2026-08-30
+> 更新日期：2026-09-01
 > 原则：**代码树是唯一事实来源**。每个代码模块在此登记状态、对应文档与测试；新增/移动/删除模块时三处同步。
 > 状态徽标：✅ 代码 + 文档 + 测试齐全 ｜ 🔶 已实现但文档或测试不全 ｜ ⬜ 空壳待实现。
 > 本表由 `scripts/verify_alignment.py` 校验，所有路径相对仓库根。
@@ -61,9 +61,10 @@
 | app/integration/embedding/embedding_service.py | 🔶 | docs/integration_doc/embedding_doc/embedding.md | tests/unit/test_embedding.py | 文本向量化（结构实现 EmbeddingPort；已实现未接线，RAG 接线待 Phase D） |
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
 | app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪（CostTracker 静态定价，经 LLMService Facade 对外） |
-| app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；专属测试覆盖 fallback 传递/结算 |
+| app/integration/llm/errors.py | ✅ | docs/integration_doc/llm_doc/error.md | tests/unit/test_errors.py | 传输错误统一处理（分类契约 ErrorCategory/ErrorClassifier + 归一/降级判定/下游决策；归一 LLMAPIError） |
+| app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；专属测试覆盖 fallback 传递/结算/异常归一决策（decide_downstream_error → LLMAPIError） |
 | app/integration/llm/reservation_limiter.py | ✅ | docs/integration_doc/llm_doc/limiter.md | tests/unit/test_reservation_limiter.py | reserve/settle 限流 |
-| app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试/错误分类 |
+| app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试机制（错误分类/归一迁至 llm/errors.py，经 classify_error 消费分类） |
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |
 | app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流 |
 | app/integration/llm/structured.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | 结构化三级降级 |
@@ -93,7 +94,7 @@
 | app/integration/tools/builtin/rca/history_tool.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/rca.md | tests/unit/test_rca_tools.py | 历史案例检索（search_historical_rca，L0） |
 | app/shared/events.py | ✅ | docs/shared_doc/events.md | tests/unit/test_events.py | 7 种 SSE 事件 |
 | app/shared/error_handling.py | 🔶 | docs/shared_doc/error_handling.md | tests/unit/test_error_handling.py | Agent 错误处理策略（AgentErrorKind / Handler / Registry，共享内核横切） |
-| app/shared/exceptions.py | ✅ | docs/shared_doc/error_handling.md | tests/unit/test_exceptions.py | 统一异常树 + AppErrorCode（7 异常收敛，集成层 re-export） |
+| app/shared/exceptions.py | ✅ | docs/shared_doc/error_handling.md | tests/unit/test_exceptions.py | 统一异常树 + AppErrorCode（含 LLMAPIError，集成层 re-export） |
 | app/shared/types.py | ✅ | docs/shared_doc/types.md | tests/unit/test_types.py | 通用类型/标识（SessionId/UserId/Messages） |
 | app/shared/encoding.py | ✅ | docs/shared_doc/encoding.md | tests/integration/test_tool_execution.py | 双编码解码（UTF-8 优先 + locale 回退），code_exec/readFile 复用 |
 | app/platform/observability/logger.py | ✅ | docs/platform_doc/observability/logging.md | tests/unit/test_logger.py | 全局日志框架 |

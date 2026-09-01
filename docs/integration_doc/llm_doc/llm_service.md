@@ -253,7 +253,7 @@ generate(messages, tools, temperature=0, max_tokens=1024, response_format, model
   ├─ 估算（同 async_generate）+ limiter
   ├─ retry.execute(call_fn=_rate_limited_call, fallback_fn)
   │    ├─ 可恢复错误（超时/5xx/429）重试耗尽 → fill 事件(error) → 返回 None
-  │    └─ 不可恢复错误（NON_RETRYABLE）→ fill 事件(error) → raise
+  │    └─ 不可恢复错误（NON_RETRYABLE）→ fill 事件(error) → 统一决策（见 [error.md](error.md)）：openai 归一 LLMAPIError（from 原异常）；其余 raise
   ├─ try: StreamParser.parse_non_stream(response) → 填 StreamResult
   └─ finally: active.res → settle(usage.total_tokens)；settle 被取消 → settle(None) 兜底 + re-raise
   └─ fill_llm_event_fields(success=True, usage, finish_reason) → 返回 StreamResult
@@ -293,8 +293,12 @@ generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=N
 4. **解析异常结算**：`parse_non_stream` 抛异常 → `sr.usage` 为 None → `settle(None)`
    保留全部预留 + 标记终态（闭环不泄漏）
 5. **可恢复 vs 不可恢复错误**：`generate` 对可恢复（超时/5xx/429）重试耗尽返回 None
-   （调用方按「业务无结果」）；不可恢复（4xx/认证/熔断开启）`classify_error ==
-   NON_RETRYABLE` → 上抛让调用方感知
+   （调用方按「业务无结果」）；不可恢复（4xx/认证/熔断开启）统一决策（`decide_downstream_error`，
+   见 [error.md](error.md)）→ 上抛让调用方感知。其中 openai `APIStatusError` 系列（4xx/认证/
+   响应校验）归一为 `LLMAPIError`（`AppError` 树，`raise ... from e` 保留原始异常，
+   status_code 保留供 structured 的 response_format 400 降级判定）——领域层
+   `except AppError` 可统一兜底集成层透出的不可恢复错误（REASON-010 闭环）；
+   非 openai 异常（`CircuitBreakerOpenError`/编程错误）原样透传
 6. **fallback 同 provider 约束（LLM-012）**：跨 provider 配置 fallback → 400/404 静默
    失效；fallback 成败不进入熔断状态机（纯兜底）
 7. **多模态 content 估算**：content 为 list（多模态）只取文本片段参与 token 估算，

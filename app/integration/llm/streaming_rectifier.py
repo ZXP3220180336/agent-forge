@@ -39,11 +39,6 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.integration.llm.retry import (
-    ErrorCategory,
-    RetryHandler,
-    classify_error,
-)
 from app.integration.llm.streaming import StreamParser
 from app.platform.observability.logger import fill_llm_event_fields
 from app.shared.events import (
@@ -51,6 +46,9 @@ from app.shared.events import (
     build_message_event,
     build_reasoning_event,
 )
+
+from .errors import ErrorCategory, classify_error
+from .retry import RetryHandler
 
 if TYPE_CHECKING:
     from app.domain.ports.llm_gateway import StreamResult

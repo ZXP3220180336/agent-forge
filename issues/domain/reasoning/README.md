@@ -1,7 +1,7 @@
 # 领域层 Reasoning 模块问题追踪
 
 > **用途**：登记 Domain 层 Reasoning 模块（`app/domain/reasoning/`）的问题记录（发现 → 分析 → 修复 → 验证 → 教训）。
-> **更新日期**：2026-08-30
+> **更新日期**：2026-09-01
 > **关联**：[推理策略说明文档](../../../docs/domain_doc/reasoning_doc/reasoning.md) · [ADR context-budget](../../../adr/domain/reasoning/2026-08-28-context-budget.md)
 
 ## 状态图例
@@ -23,6 +23,7 @@
 | [REASON-005](2026-08-30-unknown-error-redaction.md) | UNKNOWN error 拼接完整异常文本：内部细节（路径/敏感值）泄漏到产品侧 | ✅ 已修复 | reasoning/react | 2026-08-30 |
 | [REASON-007](2026-08-31-llm-fail-retry-limit.md) | LLM 失败重试无独立上限：handler CONTINUE 可无限重试烧钱 | ✅ 已修复 | reasoning/react · agent · settings | 2026-08-31 |
 | [REASON-008](2026-08-31-empty-output-blank-assistant.md) | 空输出重试轮向历史追加空 assistant 消息：累积污染上下文 | ✅ 已修复 | reasoning/react | 2026-08-31 |
+| [REASON-010](2026-09-01-reflection-degradation-coverage.md) | 自查/修正阶段不可恢复错误未降级：AppError 家族冒泡（熔断等）；openai 4xx/认证未归一 → 集成层 LLMAPIError 闭环 | ✅ 已修复 | reasoning/reflection · integration/llm | 2026-09-01 |
 
 ## 新问题登记规范
 

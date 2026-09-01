@@ -26,7 +26,7 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_message_event
-from app.shared.exceptions import NonRetryableError, StructuredRefusalError
+from app.shared.exceptions import LLMAPIError, NonRetryableError, StructuredRefusalError
 
 DRAFT = {
     "summary": "良率下降归因于设备 A 告警",
@@ -583,6 +583,46 @@ async def test_reflect_refine_nonretryable_degrades_to_draft():
         structured_scripts=[
             {"ok": False, "issues": [{"severity": "critical", "dimension": "grounding", "description": "证据不足"}]},
             NonRetryableError("上游服务熔断"),
+        ],
+    )
+    strategy = _make_strategy(llm)
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.refine_rounds == 0
+    assert strategy.outcome.degraded is True
+    assert "修正失败" in strategy.outcome.error
+
+
+@pytest.mark.asyncio
+async def test_reflect_critique_llm_api_error_degrades_to_draft():
+    """自查抛 LLMAPIError(401)（集成层归一后的 openai 认证错误）→ 降级采用初稿（REASON-010 闭环）。
+
+    修复前：openai 401 未归一为 AppError，`except AppError` 接不住 → 冒泡整次失败。
+    修复后：LLMAPIError 属 AppError 树 → CRITIQUE_FAILED 分发降级。
+    """
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[LLMAPIError("下游 401 认证失败", status_code=401)],
+    )
+    strategy = _make_strategy(llm)
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.degraded is True
+    assert "自查失败" in strategy.outcome.error
+
+
+@pytest.mark.asyncio
+async def test_reflect_refine_llm_api_error_degrades_to_draft():
+    """修正抛 LLMAPIError(403)（归一后的 openai 权限错误）→ 降级采用初稿（degraded=True）。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "critical", "dimension": "grounding", "description": "证据不足"}]},
+            LLMAPIError("下游 403 权限拒绝", status_code=403),
         ],
     )
     strategy = _make_strategy(llm)

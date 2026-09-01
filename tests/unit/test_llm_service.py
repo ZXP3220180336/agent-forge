@@ -11,9 +11,12 @@ LLMService 单元测试（Facade 编排层专属）
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APITimeoutError, APIResponseValidationError, AuthenticationError
 
 from app.integration.llm.llm_service import LLMService
+from app.shared.exceptions import LLMAPIError
 
 
 # =====================================================================
@@ -126,6 +129,16 @@ class _FakeRetryDirect:
 
     async def execute(self, call_fn, fallback_fn=None):
         return await call_fn()
+
+
+class _RaisingCompletions:
+    """模拟 create 抛指定异常的 chat.completions（测 generate 归一分支）。"""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def create(self, **kwargs):
+        raise self._exc
 
 
 def _patch_generate_env(monkeypatch, client, retry, reservation):
@@ -319,3 +332,83 @@ async def test_generate_settles_when_settle_cancelled(monkeypatch):
     assert reservation.settle_calls == 2, "settle(actual) 抛 + finally 兜底 settle(None) 共 2 次"
     assert reservation.cancel_calls == 0, "请求已发出，不 cancel 退 RPM"
     assert reservation.settled, "settle(None) 收尾后应到终态"
+
+
+# =====================================================================
+# 集成层异常归一（REASON-010）：generate 边界把 openai 不可恢复异常
+# 包装为 LLMAPIError（AppError 树）→ 领域层 except AppError 统一兜底
+# =====================================================================
+
+
+def _openai_status_error(cls, status_code: int):
+    """构造带指定状态码的 openai HTTP 异常（对齐 test_classify_error._http_exc）。"""
+    resp = httpx.Response(status_code, request=httpx.Request("POST", "http://x"))
+    return cls("error", response=resp, body=None)
+
+
+@pytest.mark.asyncio
+async def test_generate_normalizes_openai_401_to_llm_api_error(monkeypatch):
+    """generate 遇 openai 401（NON_RETRYABLE）→ 归一为 LLMAPIError（AppError 树）+ 链原异常。
+
+    REASON-010 闭环：领域层 except AppError 能统一兜住集成层透出的认证/4xx 错误，
+    不再直接暴露 openai.APIStatusError。
+    """
+    reservation = _TrackingReservation()
+    original = _openai_status_error(AuthenticationError, 401)
+    client = _FakeClient(_RaisingCompletions(original))
+    _patch_generate_env(monkeypatch, client, _FakeRetryDirect(), reservation)
+
+    llm = LLMService()
+    with pytest.raises(LLMAPIError) as exc_info:
+        await llm.generate(messages=[{"role": "user", "content": "hi"}])
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.__cause__ is original, "应链原始 openai 异常（诊断经 __cause__）"
+    # create 抛异常 → _rate_limited_call cancel 全额退（请求未确认发出），非 settle
+    assert reservation.cancel_calls == 1
+    assert reservation.settled, "cancel 后应标记终态"
+
+
+@pytest.mark.asyncio
+async def test_generate_normalizes_response_validation_error(monkeypatch):
+    """APIResponseValidationError（NON_RETRYABLE，无 status_code）→ LLMAPIError(status_code=None)。"""
+    reservation = _TrackingReservation()
+    original = APIResponseValidationError(
+        response=httpx.Response(200, request=httpx.Request("POST", "http://x")),
+        body=None,
+        message="schema mismatch",
+    )
+    client = _FakeClient(_RaisingCompletions(original))
+    _patch_generate_env(monkeypatch, client, _FakeRetryDirect(), reservation)
+
+    llm = LLMService()
+    with pytest.raises(LLMAPIError) as exc_info:
+        await llm.generate(messages=[{"role": "user", "content": "hi"}])
+    assert exc_info.value.status_code is None
+
+
+@pytest.mark.asyncio
+async def test_generate_passes_through_unknown_non_retryable(monkeypatch):
+    """未知异常（classify 默认 NON_RETRYABLE）不包装、原样透传（编程错误 fail fast）。"""
+    reservation = _TrackingReservation()
+    original = ValueError("模拟编程错误")
+    client = _FakeClient(_RaisingCompletions(original))
+    _patch_generate_env(monkeypatch, client, _FakeRetryDirect(), reservation)
+
+    llm = LLMService()
+    with pytest.raises(ValueError):
+        await llm.generate(messages=[{"role": "user", "content": "hi"}])
+    # 归一不影响 CircuitBreakerOpenError 等 AppError 透传（非 openai 类型）
+
+
+@pytest.mark.asyncio
+async def test_generate_returns_none_for_retryable_exhausted(monkeypatch):
+    """可恢复错误（超时，RETRYABLE）→ 重试耗尽返回 None（归一不触碰可恢复分支）。"""
+    reservation = _TrackingReservation()
+    original = APITimeoutError(request=httpx.Request("POST", "http://x"))
+    client = _FakeClient(_RaisingCompletions(original))
+    _patch_generate_env(monkeypatch, client, _FakeRetryDirect(), reservation)
+
+    llm = LLMService()
+    result = await llm.generate(messages=[{"role": "user", "content": "hi"}])
+    assert result is None

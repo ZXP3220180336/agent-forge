@@ -25,7 +25,7 @@
     - [CircuitBreaker — 熔断器](#circuitbreaker--熔断器)
     - [RetryHandler — 重试执行器](#retryhandler--重试执行器)
     - [RetryHandlerManager — 重试执行器管理](#retryhandlermanager--重试执行器管理)
-    - [classify\_error — 错误分类](#classify_error--错误分类)
+    - [错误分类与传输错误处理（见 error.md）](#错误分类与传输错误处理见-errormd)
   - [执行流程](#执行流程)
     - [完整流程图](#完整流程图)
     - [场景推演：一次完整的"熔断-恢复"周期](#场景推演一次完整的熔断-恢复周期)
@@ -157,7 +157,7 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 | 配置层 | `RetryConfig` | 重试参数（次数、退避、抖动） |
 | 配置层 | `CircuitBreakerConfig` | 熔断参数（滑动窗口、错误率阈值、冷却、半开探针数） |
 | 保护层 | `CircuitBreaker` | 熔断状态机（关闭/开启/半开），持有 `CircuitBreakerConfig` |
-| 判定层 | `classify_error()` | 异常分类（可重试/致命/限流） |
+| 判定层 | `classify_error()` | 异常分类（可重试/致命/限流；实现于 llm/errors.py，见 [error.md](error.md)） |
 | 编排层 | `RetryHandler` | 整合上述四者的主循环 |
 
 ---
@@ -303,28 +303,17 @@ class RetryHandlerManager:
 - **None 保留语义**：`register_config()` 的 `config` / `circuit_breaker_config` 传 `None` 时**不覆盖**现有配置（保持现有或默认），只对传入非 None 的配置项生效
 - **配置全局一致**：当前重试/熔断配置为进程级全局（不按 model_key 差异化），仅熔断状态按 key 隔离；未来若需按模型差异化重试参数，在 `_build` 中按 key 读配置即可
 
-### classify_error — 错误分类
+### 错误分类与传输错误处理（见 error.md）
 
-```python
-RETRYABLE       # 网络层（openai 封装 + 裸 httpx）、超时、5xx → 重试 + 计入熔断窗口
-RATE_LIMITED    # 429 → 退避重试（尊重 Retry-After），不计入熔断窗口
-NON_RETRYABLE   # 4xx、响应校验错误、token 截断、内容被过滤、未知异常 → 直接抛出，不重试
-```
+`classify_error`（分类）/ `normalize_transport_error`（归一）/ `is_unsupported_response_format_error`
+（降级判定）/ `decide_downstream_error`（下游决策）实现于 **`app/integration/llm/errors.py`**（llm
+模块错误处理单一归属），`retry.py` 经 `classify_error` 消费分类决定重试策略（NON_RETRYABLE 直接抛 /
+RATE_LIMITED、RETRYABLE 退避重试，429 尊重 Retry-After）。
 
-**分类规则**（白名单映射，**未知异常默认不可重试**）：
-
-| 异常 / HTTP 状态 | 分类 | 处理 |
-| --- | --- | --- |
-| `TimeoutError` / `APITimeoutError` / `APIConnectionError` | RETRYABLE | 重试 + 计入熔断窗口 |
-| 裸 `httpx` 网络异常（`ConnectError` / `ReadError` / `TimeoutException` 等） | RETRYABLE | 重试 + 计入熔断窗口 |
-| 5xx（500-599，含 `InternalServerError`） | RETRYABLE | 重试 + 计入熔断窗口 |
-| 429 / `RateLimitError` | RATE_LIMITED | 退避重试（尊重 Retry-After），**不计入熔断** |
-| 4xx（400/401/403/404/405/409/413/422 等） | NON_RETRYABLE | 直接抛出不重试 |
-| `APIResponseValidationError`（响应 schema 不匹配） | NON_RETRYABLE | 直接抛出不重试（重试无效） |
-| `LengthFinishReasonError`（token 截断）/ `ContentFilterFinishReasonError`（内容被过滤） | NON_RETRYABLE | 直接抛出不重试（重试无效） |
-| 未知异常（无 status_code、非已知类型） | **NON_RETRYABLE（默认兜底）** | 直接抛出不重试 |
-
-> **坑：`InternalServerError` 没有硬编码 status_code** —— openai `InternalServerError` 继承 `APIStatusError` 但无字面量状态码（不像 `BadRequestError` 硬编码 400），`status_code` 是响应里的实际 5xx 值。**`classify_error` 不能依赖 `isinstance(exc, InternalServerError)` 判定**，必须走 `status_code` 分支（5xx → RETRYABLE）。
+> **契约位置**：`ErrorCategory` 枚举与 `classify_error` 签名契约与实现同属 `llm/errors.py`——LLM
+> 传输层分类语言，仅集成层 LLM 消费（领域/应用层不引用），不入 shared；与 `AgentErrorKind`（Agent
+> 编排分发）、工具层 `ErrorCode` 正交。分类矩阵 / 归一 / 降级判定 / 下游决策完整契约见
+> **[error.md](error.md)**。
 
 ---
 
@@ -508,7 +497,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
-| `classify_error(exc) -> ErrorCategory` | 同步函数 | 异常分类（RETRYABLE / RATE_LIMITED / NON_RETRYABLE） |
+| `classify_error(exc) -> ErrorCategory` | 同步函数 | 异常分类（RETRYABLE / RATE_LIMITED / NON_RETRYABLE；实现于 [error.md](error.md)） |
 | `RetryHandlerManager.get(model_key="main") -> RetryHandler` | 同步类方法 | 获取/懒创建共享 RetryHandler（含熔断器） |
 | `RetryHandlerManager.register_config(config=None, circuit_breaker_config=None)` | 同步类方法 | 注入重试/熔断配置并重建实例（None 不覆盖） |
 | `RetryHandler.execute(call_fn, fallback_fn=None) -> Any` | 异步方法 | 执行调用（重试 + 熔断 + fallback） |
@@ -572,6 +561,8 @@ T3 + 30s 后 → 请求 H（探针 #1）
 ## 测试状态
 
 `tests/unit/test_retry.py`（41 用例）：覆盖
+
+- **test_errors.py / test_classify_error.py / test_error_category.py**（传输错误处理测试，见 [error.md](error.md)）
 
 - **熔断窗口**：错误率打开 / 阈值下保持 / 请求量不足不评估 / 低流量纯失败 / 窗口过期剔除
 - **请求级记账**：一次 execute 只记录一条

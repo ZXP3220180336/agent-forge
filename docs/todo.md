@@ -1,4 +1,60 @@
-# 2026-09-01 Reflection 自查/修正阶段异常面收口（REASON-010）
+# 2026-09-01 llm_doc/error.md：传输错误处理组件文档 + 文档链接收敛
+
+> 用户要求 llm 异常处理文档同步：新建 error.md（组件模板 B），其他文档异常相关说明链接到它（一个事实一个家）。
+
+- [x] 创建 `docs/integration_doc/llm_doc/error.md`（分类 / 归一 / 降级判定 / 下游决策 + 契约归属 + 测试 / ADR / issue）
+- [x] retry.md：错误处理两节缩减为链接 error.md（目录 / 架构表 / 对外接口 / 测试状态同步）
+- [x] llm.md：模块结构 + 内部组件表 + 对外异常契约链接 error.md
+- [x] llm_service.md / structure.md / streaming_rectifier.md：异常说明链接 error.md（顺带修正 `_is_unsupported_response_format_error` 旧名 → `is_unsupported_response_format_error`）
+- [x] ALIGNMENT：errors.py 文档列 → error.md；层 README 结构图 / 组件表 / 相关文档登记 errors.py
+- [x] 验证：verify_alignment 通过
+
+---
+
+# 2026-09-01 ErrorCategory 契约归属修正：shared → llm/errors.py
+
+> 上移 shared 后复核发现：ErrorCategory 是 LLM 传输层分类，仅集成层 LLM 消费（领域/应用层实际不引用），放 shared 是过早泛化（shared = 被所有层引用的零依赖核心库）。契约与实现同归 `app/integration/llm/errors.py`。
+
+- [x] errors.py：ErrorCategory/ErrorClassifier 契约从 shared/error_category.py 移回本模块（契约与实现同层，单一消费方）
+- [x] 删除 app/shared/error_category.py + adr/shared/error_category/（上移决策被修正）
+- [x] import 源收敛：retry / streaming_rectifier / test_classify_error / test_error_category → app.integration.llm.errors
+- [x] 文档：ALIGNMENT（删 error_category 行 + 更新 errors.py 行）/ retry.md / error_handling.md / issue REASON-010
+- [x] 测试：全量 pytest + verify_alignment 通过
+
+---
+
+# 2026-09-01 llm 模块异常处理收敛：新建 llm/errors.py（错误知识 + 决策 helper）
+
+> 用户指出 llm 模块异常处理散乱（分类/归一/降级判定散在 retry.py + structured.py，4 处消费方各自决策）。收敛：新建 `app/integration/llm/errors.py` 作为传输错误处理单一归属 + `decide_downstream_error` 统一 generate 下游决策。
+
+- [x] errors.py：迁移白名单 / `classify_error` / `normalize_transport_error` / `is_unsupported_response_format_error`（自 retry.py / structured.py）+ 新增 `DownstreamDecision` / `decide_downstream_error`
+- [x] retry.py：删迁移符号，从 errors 导入 classify_error（保留熔断/重试机制）
+- [x] llm_service.py / structured.py：generate / _call_generate except 改用 decide_downstream_error；unsupported 400 降级下一级特判保留 structured（降级链私有语义 + 诊断日志）
+- [x] streaming_rectifier.py：classify_error import 源收敛
+- [x] 测试：新增 test_errors.py（16 用例：normalize / unsupported / decide 决策矩阵）；test_classify_error / test_error_category import 源更新；全量 755 passed
+- [x] 文档：ALIGNMENT（登记 errors.py + 更新 retry/llm_service 行）+ retry.md（错误处理节归属与决策描述）
+- [x] 验证：verify_alignment
+
+---
+
+# 2026-09-01 集成层 openai 异常归一（LLMAPIError）+ ErrorCategory 契约上移 shared
+
+> 用户批准归一方案（REASON-010 遗留闭环）并新增「契约上移 shared」决策，实施完整重构（TDD）。归一目标：领域层 `except AppError` 统一兜住集成层透出的不可恢复错误。
+
+- [x] **契约上移**：新建 `app/shared/error_category.py`（ErrorCategory + ErrorClassifier 类型别名 + 契约 docstring，零依赖）；retry.py 删本地定义改 import shared，classify_error 标注结构实现契约；llm_service/structured/streaming_rectifier/test_classify_error import 源收敛（grep 全量核对）
+- [x] **异常归一**：`app/shared/exceptions.py` 新增 `LLMAPIError(NonRetryableError)`（code=LLM_API_ERROR，携带 status_code）+ `AppErrorCode.LLM_API_ERROR`；retry.py 新增 `normalize_transport_error`（包装 APIStatusError + 非 HTTP 永久性异常，其余 None）；llm_service.generate except 边界 `raise LLMAPIError(...) from e`（非 openai 原样透传）
+- [x] **流式不归一**：async_generate 保持 StreamResult.error 字符串语义（无异常逃逸，不构成缺口）
+- [x] **status_code 硬约束**：`_is_unsupported_response_format_error` 依赖 status_code==400 + message 关键词 → 保留两属性，response_format 400 降级链存活（test_generate_structured 既有用例保护）
+- [x] **TDD（先写失败测试）**：test_reflection.py 新增 LLMAPIError(401/403) 自查/修正降级 2 用例（修复前红色：模块缺失）；test_llm_service.py 新增归一 4 例（401→LLMAPIError + cause 链 / APIResponseValidationError→status_code=None / ValueError 透传 / APITimeoutError→return None）；test_error_category.py 契约归属 3 例
+- [x] **测试**：受影响 189 passed → 全量 740 passed（test_verify_alignment::test_current_repo_passes 在 ALIGNMENT 更新后转绿）
+- [x] **文档同步**：error_handling.md（异常清单 LLMAPIError/全景/传播链/四码边界）+ retry.md（契约位置 + normalize_transport_error 节）+ llm_service.md（边界 5）+ llm.md（对外异常契约）+ ALIGNMENT.md（新增 error_category 登记 + 更新 3 行 + 日期）
+- [x] **ADR**：`adr/integration/llm/2026-09-01-openai-error-normalization.md`（归一决策）；`adr/shared/error_category/2026-09-01-error-category-contract-up.md` 已删除（契约归属决策被修正，见顶部「契约归属修正」条目）
+- [x] **issue 收尾**：REASON-010 遗留标记闭环 + 「遗留闭环」节 + reasoning README 索引登记（REASON-010）
+- [x] **验证**：全量 pytest + verify_alignment 通过
+
+> 评审要点：归一位置选 generate 边界而非 retry 层（retry 内部对原始异常分类/记账零扰动）；不复用 UnauthorizedError/ForbiddenError/NotFoundError（BusinessError 承载 API 会话语义，避免混淆）；error_handler 映射 LLM_API_ERROR→502（不映射 401 防误导客户端会话失效）；reflection.py 零代码改动（except AppError 已就位）。
+
+---
 
 > 评审发现：`_critique`/`_refine` 只捕获 StructuredRefusalError/StructuredToolCallError，漏掉会冒泡的不可恢复错误（熔断 CircuitBreakerOpenError 等 AppError）——违反「不抛错降级」承诺。修复：except 扩展为 AppError（异常树根），编程错误仍冒泡不掩盖。迭代核实：截断（StructuredTruncationError）由集成层 StructuredOutput.extract 短路返回 None，非本层缺口，删除虚假锚定测试；openai 4xx/认证未归一 AppError，留集成层遗留。
 

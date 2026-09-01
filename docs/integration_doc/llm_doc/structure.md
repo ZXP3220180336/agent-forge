@@ -182,12 +182,11 @@ StructuredOutput.extract(llm_service, messages, schema, model_key)
 | 统一入口 | `LLMService.generate_structured` | 对外唯一入口，委托 extract |
 | 编排（类内） | `StructuredOutput.extract` | 三级降级顺序控制（成功即返回，失败逐级下探） |
 | 提取流程（类内） | `StructuredOutput._try_extract` / `_fallback_extract` | 调 generate + 解析 content + 返回 dict/None |
-| 调用辅助（类内） | `_call_generate` | 统一调 generate + 下游异常分类（NON_RETRYABLE raise / 可恢复返回 None / response_format 400 降级） |
+| 调用辅助（类内） | `_call_generate` | 统一调 generate + 下游异常统一决策（`decide_downstream_error`，见 [error.md](error.md)：降级 / 上抛 / response_format 400 降级） |
 | 短路辅助（类内） | `_raise_boundary` | 统一 refusal / tool_calls / truncated 短路抛异常（truncated 为主调用点可选） |
 | 分类（类内） | `_classify_result` | API 边界分类（refusal / truncated / tool_calls / empty / ok） |
 | 请求构造（模块级） | `_build_json_schema_request` / `_build_json_mode_request` | 构造 response_format 参数 |
 | schema 处理（模块级） | `_strict_compliant` / `_enforce_no_extra_fields` | strict 归一 `additionalProperties:true→false` / 深拷贝递归补全 `additionalProperties:false` |
-| 错误识别（模块级） | `_is_unsupported_response_format_error` | 识别「response_format 不被支持」的 400（触发降级而非致命上抛） |
 | 解析校验（模块级） | `_try_parse_json` / `_parse_and_validate` / `_collect_schema_errors` / `_collect_schema_error_summaries` / `_validate_schema` | JSON 解析 + Schema 校验（完整错误回喂模型 / 脱敏摘要写日志） |
 | 消息构造（模块级） | `_build_reask_messages` | 构造错误回喂消息（clone + assistant 失败输出 + user 反馈） |
 | 日志脱敏（模块级） | `_truncate_json_for_log` / `_truncate_text_for_log` | 模型输出 / 拒答文本截断落盘（`_LOG_TRUNCATE_LIMIT`=500） |
@@ -335,7 +334,7 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
 - **解析前 API 边界检查**：`_classify_result` 分类 refusal / truncated / tool_calls / empty / ok（见 [LLM-016](../../../issues/integration/llm/2026-08-08-finish-reason-refusal-unchecked.md)）——截断扩 token 重试 1 次、拒答/工具调用短路、empty 空响应降级，均不进降级链
 - **错误回喂**：解析/校验失败回喂错误重试 `_REASK_MAX_RETRIES=2` 次，耗尽返回 None 触发降级（见 [LLM-017](../../../issues/integration/llm/2026-08-08-degrade-instead-of-error-reask.md)）。**终态解析**：循环「解析→失败→再请求」以请求收尾，退出后补一次解析——否则最后一次修正成功的结果被静默丢弃 + 白付一次调用
 - **下游失败降级**：`generate` 对**可恢复错误**（超时/5xx/429）重试耗尽返回 None → 降级到下一级；对**不可恢复错误**（4xx/认证/熔断开启）抛异常 → structured 记录 ERROR 日志后 re-raise，不再白打降级请求
-- **response_format 400 降级**：`_call_generate` 识别「明确因 response_format 不被支持而 400」（`_is_unsupported_response_format_error`：状态码 400 + 错误信息含 response_format/json_schema）→ 记 WARNING 后返回 None 触发降级，而非当致命错误上抛——兑现「模型不支持 strict JSON Schema 时降级到 JSON Mode」的降级链契约（如 DeepSeek 等不支持 `json_schema` 类型的兼容网关）；**其余 NON_RETRYABLE 400 仍上抛**（调用方 bug 不静默吞掉）
+- **response_format 400 降级**：`_call_generate` 识别「明确因 response_format 不被支持而 400」（`is_unsupported_response_format_error`，见 [error.md](error.md)：状态码 400 + 错误信息含 response_format/json_schema）→ 记 WARNING 后返回 None 触发降级，而非当致命错误上抛——兑现「模型不支持 strict JSON Schema 时降级到 JSON Mode」的降级链契约（如 DeepSeek 等不支持 `json_schema` 类型的兼容网关）；**其余 NON_RETRYABLE 400 仍上抛**（调用方 bug 不静默吞掉）
 - **回喂内截断一律短路**：不与扩 token 逻辑组合，防 token 爆炸（对齐顶层「截断与降级正交」）
 
 ### _fallback_extract — 正则兜底提取（无 response_format）
@@ -444,7 +443,7 @@ generate_structured(messages, schema, model_key="fast")
 5. **输出预算可配置**：`max_tokens` 由 `StructuredOutput.register_config()` 注入（Container 读 `settings.llm_structured_max_tokens`，默认 2048），调用方经 `generate_structured(max_tokens=...)` 按业务覆盖；截断时扩 2 倍重试 1 次（随参数缩放），超限后放弃
 6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（`_enforce_no_extra_fields`），模型无法扩展接口；显式 `additionalProperties:true` 在本地校验中仍被尊重；**strict 请求再经 `_strict_compliant` 把 true 归一为 false**（见 [LLM-018](../../../issues/integration/llm/2026-08-08-extra-fields-not-rejected.md) / [LLM-009](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)）
 7. **schema 非法防护**：`Draft7Validator(schema)` 构造或 `iter_errors` 抛异常（UnknownType / SchemaError / TypeError 等）→ 捕获并返回错误信息，按校验失败处理触发降级，不崩溃（`_validate_schema` / `_collect_schema_errors` / `_collect_schema_error_summaries` 一致兜底，见 [LLM-007](../../../issues/integration/llm/2026-08-16-invalid-schema-crash.md)）
-8. **response_format 400 降级**：`_is_unsupported_response_format_error` 识别「模型/网关不支持 response_format」的 400 → 记 WARNING 降级到下一级（JSON mode / 正则）；**其余 NON_RETRYABLE 400 仍上抛**（调用方 bug 不静默吞掉）
+8. **response_format 400 降级**：`is_unsupported_response_format_error`（llm/errors.py，见 [error.md](error.md)）识别「模型/网关不支持 response_format」的 400 → 记 WARNING 降级到下一级（JSON mode / 正则）；**其余 NON_RETRYABLE 400 仍上抛**（调用方 bug 不静默吞掉）
 9. **校验失败日志脱敏**：`_validate_schema` 失败日志用**结构化字段摘要**（字段路径 + `validator` + `validator_value`）替代 `e.message`——jsonschema 的 `message` 会嵌入完整实例值（模型输出可能含业务敏感数据，Yield RCA 场景为良率/晶圆数据）；`parsed` 经 `_truncate_json_for_log` 截断到 `_LOG_TRUNCATE_LIMIT`（500 字符），`schema`（接口契约）保留完整。**回喂模型仍用完整错误**：`_collect_schema_errors` 保留 `e.message` 供回喂（模型需要具体错误修正），新增 `_collect_schema_error_summaries`（结构化字段摘要）用于回喂日志——回喂与落盘两套文本，敏感数据不因日志泄露、模型纠错能力不损（见 [LLM-037](../../../issues/integration/llm/2026-08-16-schema-validation-log-redaction.md)）
 10. **拒答日志截断**：`_raise_boundary` 拒答文本经 `_truncate_text_for_log` 截断落盘——拒答常引用触发内容（Yield RCA 晶圆/良率数据），不能完整落日志；异常 message 保持简洁（不含拒答文本），日志保留截断前缀供诊断（见 [LLM-008](../../../issues/integration/llm/2026-08-16-refusal-log-truncation.md)）
 

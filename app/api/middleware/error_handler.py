@@ -20,6 +20,7 @@ _CODE_TO_STATUS: dict[AppErrorCode, int] = {
     AppErrorCode.SSRF_BLOCKED: 400,
     AppErrorCode.LLM_REFUSAL: 502,
     AppErrorCode.LLM_TRUNCATED: 502,
+    AppErrorCode.LLM_API_ERROR: 502,  # LLM 下游不可恢复（4xx/认证）→ 上游故障语义
     AppErrorCode.CIRCUIT_OPEN: 503,
     AppErrorCode.INTERNAL: 500,
 }

@@ -45,6 +45,7 @@ app/integration/llm/
 ├── __init__.py                ← 包入口，仅导出 LLMService（Facade）
 ├── llm_service.py             ← LLMService（唯一对外 Facade，实现 LLMGateway）
 ├── client.py                  ← ClientManager 连接池管理
+├── errors.py                  ← 传输错误处理（分类/归一/降级判定/下游决策）
 ├── retry.py                   ← RetryHandler + CircuitBreaker
 ├── streaming.py               ← StreamParser 流式/非流式解析
 ├── streaming_rectifier.py     ← StreamingRectifier 流式整流重试
@@ -111,7 +112,8 @@ app/integration/llm/
 - `generate`：成功返回 `StreamResult`（含 content / reasoning_content / finish_reason /
   tool_calls / usage / refusal / error）；**可恢复错误**（超时 / 5xx / 429）可靠性层重试
   耗尽返回 `None`（调用方按「业务无结果」处理）；**不可恢复错误**（4xx / 认证 / 熔断开启）
-  向上抛（降级无意义，调用方需感知）
+  向上抛（降级无意义，调用方需感知）——其中 openai `APIStatusError` 系列归一为
+  `LLMAPIError`（AppError 树，`raise ... from e` 保留原始异常），非 openai 原样上抛
 - `generate_structured`：成功返回 `dict`，三级降级耗尽返回 `None`；拒答抛
   `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`（需差异化处理）
 - `async_generate`：产出 SSE 事件字符串（`StreamParser` 逐 chunk 解析的增量事件）；
@@ -119,7 +121,7 @@ app/integration/llm/
 
 ### 对外异常契约
 
-> 以下异常经 `LLMService` 向上抛，外部调用方需捕获并差异化处理：
+> 以下异常经 `LLMService` 向上抛，外部调用方需捕获并差异化处理。传输异常的**分类 / 归一 / 降级判定 / 下游决策**（`classify_error` / `normalize_transport_error` / `is_unsupported_response_format_error` / `decide_downstream_error`）完整契约见 **[error.md](error.md)**：
 
 | 异常 | 触发 | 调用方处理 |
 | --- | --- | --- |
@@ -127,7 +129,8 @@ app/integration/llm/
 | `StructuredRefusalError` | `generate_structured` 模型拒答（内容安全策略触发） | 安全兜底 / 差异化文案 |
 | `StructuredToolCallError` | `generate_structured` 模型转工具调用（`finish_reason=tool_calls`） | 按工具调用走 Agent 循环 |
 | `StructuredTruncationError` | 结构化输出截断（扩 token 重试后仍不完整） | 扩大预算重试 / 降级处理 |
-| 不可恢复错误（原样上抛） | 4xx / 认证 / 熔断开启（`NON_RETRYABLE`） | 修复调用参数 / 返回错误响应 |
+| `LLMAPIError` | `generate` 下游不可恢复（openai 4xx/认证/响应校验归一，携带 status_code） | 领域层 `except AppError` 统一兜底（如 Reflection 降级） |
+| 不可恢复错误（非 openai 原样上抛） | 熔断开启 / 编程错误（`NON_RETRYABLE`） | 修复调用参数 / 返回错误响应 |
 
 ### 最小调用示例
 
@@ -183,6 +186,7 @@ cost = LLMService.calculate_cost(
 | `StructuredOutput` | structured.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则） | [structure.md](structure.md) |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流（RPM + TPM 双桶，reserve/settle + 自适应预留） | [limiter.md](limiter.md) |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配 + 会话级累计） | [cost_tracker.md](cost_tracker.md) |
+| 传输错误处理 | errors.py | 传输异常分类/归一/降级判定/下游决策（retry/llm_service/structured/streaming_rectifier 消费） | [error.md](error.md) |
 | `token_counter` | token_counter.py | tiktoken 计数实现（编码器解析 / content 归一化 / 消息计数，经 `LLMService.count_*` 对外） | [token_counter.md](token_counter.md) |
 
 **组件间协作**（可靠性链）：`ReservationLimiter`（事前限流）→ `RetryHandler`

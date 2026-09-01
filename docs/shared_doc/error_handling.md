@@ -41,12 +41,12 @@
 | 类别 | 典型 | 处理策略 | 例子 |
 | --- | --- | --- | --- |
 | **可恢复（重试型）** | 超时、5xx、429 | 可靠性层重试/退避/降级；重试耗尽才向上抛 | `APITimeoutError`、`httpx.TimeoutException`、`RateLimitError` |
-| **不可恢复（调用方错误）** | 4xx、认证、熔断开启、配置错误 | **直接向上抛**，调用方决定换模型/修参数/告警 | `BadRequestError`（400）、`AuthenticationError`（401）、`CircuitBreakerOpenError`、`ValueError("未注册")` |
+| **不可恢复（调用方错误）** | 4xx、认证、熔断开启、配置错误 | **直接向上抛**，调用方决定换模型/修参数/告警 | `LLMAPIError`（openai 4xx/认证归一）、`BadRequestError`（400）、`AuthenticationError`（401）、`CircuitBreakerOpenError`、`ValueError("未注册")` |
 | **业务边界（非传输错误）** | 截断、拒答、工具调用 | 转成**具名异常**短路，调用方差异化处理 | `StructuredTruncationError` / `StructuredRefusalError` / `StructuredToolCallError` |
 
 ### 关键：不可恢复错误必须能穿透到调用方
 
-如果 401/配置错误被吞成 None，调用方永远不知道 key 失效或参数错了——只能看到「模型没返回」。工业级网关（LiteLLM 等）把 provider 异常归一化为 `AuthenticationError`/`BadRequestError`/`RateLimitError` 等并**向上抛**，正是为了让调用方能精确处理。
+如果 401/配置错误被吞成 None，调用方永远不知道 key 失效或参数错了——只能看到「模型没返回」。工业级网关（LiteLLM 等）把 provider 异常归一化为 `AuthenticationError`/`BadRequestError`/`RateLimitError` 等并**向上抛**，正是为了让调用方能精确处理。本项目经 `llm_service.generate` 边界把 openai `APIStatusError` 系列（4xx/认证/响应校验）归一为 `LLMAPIError`（AppError 树，`raise ... from e` 保留原始异常），让领域层 `except AppError` 能统一兜底集成层透出的所有不可恢复错误（REASON-010 遗留闭环）。
 
 ---
 
@@ -79,7 +79,7 @@
         ↓
 [llm_service.py]  （流式整流策略在 streaming_rectifier.py）
     ⑧ async_generate()：编排 StreamingRectifier——迭代异常转 build_error_event()（错误进事件流）
-    ⑨ generate()：      except Exception → 记日志；NON_RETRYABLE re-raise / 可恢复 return None
+    ⑨ generate()：      except Exception → 记日志；NON_RETRYABLE → openai 归一 LLMAPIError 上抛 / 可恢复 return None
         ↓
 [structured.py]  StructuredOutput.extract()
     ⑩ StructuredTruncationError → extract 顶层捕获 → return None（截断短路，不降级）
@@ -100,7 +100,7 @@
        ├─ _build_chat_kwargs()      ← try 块外：配置错误（get_model ValueError）fail fast 传播
        ├─ retry.execute()           ← try 块内：可恢复错误已内部重试耗尽
        └─ except Exception
-            ├─ classify_error == NON_RETRYABLE（4xx/认证/熔断开启/未知）→ raise（向上抛）
+            ├─ classify_error == NON_RETRYABLE（4xx/认证/熔断开启/未知）→ openai 归一 LLMAPIError（`from` 原异常）；其余 raise（向上抛）
             └─ 可恢复（超时/5xx/429）→ return None（调用方按「业务无结果」降级）
 ```
 
@@ -247,10 +247,11 @@ AppError（根，code 默认 INTERNAL）
 | `UnauthorizedError` | `BusinessError` | `UNAUTHORIZED` | API 未认证（缺凭证） | error_handler 转 401 |
 | `ForbiddenError` | `BusinessError` | `FORBIDDEN` | API 已认证但无权访问 | error_handler 转 403 |
 | `NotFoundError` | `BusinessError` | `NOT_FOUND` | API 目标资源不存在 | error_handler 转 404 |
+| `LLMAPIError` | `NonRetryableError` | `LLM_API_ERROR` | LLM 下游不可恢复（openai APIStatusError 归一：4xx/认证/响应校验，携带 status_code） | 领域层 `except AppError` 统一兜底（Reflection 自查/修正降级）；error_handler 转 502 |
 
-> **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。
+> **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。`LLMAPIError` 由集成层 `llm_service.generate` 边界经 `normalize_transport_error`（retry.py）包装 openai 不可恢复异常产生（`raise ... from e` 保留原始异常）。
 > **对外边界**：`app/api/middleware/error_handler.py` 把 `AppError` 翻译为 HTTP 状态 + 统一 `{code, message, details}` 信封（业务码与 HTTP 状态解耦，映射表见该模块）——API 层不抛 `HTTPException`，全走统一树。
-> **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，ErrorHandlerRegistry 消费）。
+> **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类，契约与实现同属 `app/integration/llm/errors.py`）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，ErrorHandlerRegistry 消费）。
 
 ---
 
