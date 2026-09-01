@@ -88,6 +88,7 @@ async def test_default_actions():
         AgentErrorKind.TOOL_FAILED,
         AgentErrorKind.PARSE_FAILED,
         AgentErrorKind.STRUCTURED_INVALID,
+        AgentErrorKind.CRITIQUE_FAILED,
     ):
         assert (
             await reg.dispatch(kind, AgentErrorContext(kind, "x"))

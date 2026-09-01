@@ -200,6 +200,21 @@
 
 ---
 
+# 2026-08-31 Reflection 推理决策 + ReflectionAgent 编排（领域层 Slice 4）
+
+> 以工业级 Reflection 决策为评价指标（reflection_benchmark.md 对标）。三阶段分离 + Grounding（证据锚定，反内在自查）。
+
+- [x] 共享内核：AgentErrorKind 加 CRITIQUE_FAILED（默认 CONTINUE，12→13 类）+ 配置 agent_max_refine_rounds
+- [x] `reasoning/reflection.py`：ReflectionStrategy（生成复用 ReAct.execute(output_schema) + 自查 CRITIQUE_SCHEMA + 修正 REFINE_SCHEMA + 降级路由）+ ReflectionOutcome + schema 契约
+- [x] prompts：templates/reflection.py（REFLECTION_SYSTEM / CRITIQUE_PROMPT 9 维清单 / REFINE_PROMPT）+ manager builder
+- [x] `agent/reflection.py`：ReflectionAgent 桥接（构造注入 + _map_outcome 进 metadata）
+- [x] 测试：test_reflection.py（15 用例）+ test_reflection_agent.py（5 用例），全量 723+ passed
+- [x] 文档：reflection.md / reflection_benchmark.md（核心必备 12 项对照）/ reasoning.md / agent.md / config.md / ALIGNMENT / domain README
+- [x] ADR：`adr/domain/reasoning/2026-08-31-reflection-strategy.md`
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-27 领域层推理决策架构建设 · Slice 0：ReAct 策略抽离
 
 > Phase C 前置：领域层四模块完整建设（策略 / prompt / 记忆 / 编排），单步执行。

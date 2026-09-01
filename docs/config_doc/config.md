@@ -152,6 +152,7 @@ llm_service = LLMService(**settings.llm_config)
 | `validate_max_empty_retries` | `agent_max_empty_retries` | ≥ 0 |
 | `validate_max_llm_fail_retries` | `agent_max_llm_fail_retries` | ≥ 0 |
 | `validate_max_same_action_turns` | `agent_max_same_action_turns` | ≥ 1 |
+| `validate_max_refine_rounds` | `agent_max_refine_rounds` | 0 ≤ n ≤ 20 |
 | `validate_concurrent_tasks` | `agent_max_concurrent_tasks` | 1 ≤ n ≤ 100 |
 | `validate_queue_size` | `agent_priority_queue_size` | 1 ≤ n ≤ 10000 |
 | `validate_embedding_dimensions` | `llm_embedding_dimensions` | > 0 |
@@ -160,7 +161,7 @@ llm_service = LLMService(**settings.llm_config)
 | `validate_reserve_quantile` | `llm_reserve_quantile` / `llm_reserve_reasoning_quantile` | 0 < v < 1（开区间） |
 | `validate_reserve_positive_int` | `llm_reserve_min_samples` / `llm_reserve_window` | ≥ 1 |
 
-（12 组 `@field_validator`，覆盖 14 个字段域；越界抛 `ValueError` → Pydantic 汇总为 `ValidationError`）
+（13 组 `@field_validator`，覆盖 15 个字段域；越界抛 `ValueError` → Pydantic 汇总为 `ValidationError`）
 
 ---
 

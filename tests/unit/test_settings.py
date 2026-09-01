@@ -33,6 +33,7 @@ VALIDATOR_CASES = [
     ("agent_max_cost", [-0.1, -5]),
     ("agent_max_empty_retries", [-1, -5]),
     ("agent_max_same_action_turns", [0, -1]),
+    ("agent_max_refine_rounds", [-1, 21]),
 ]
 
 
@@ -59,6 +60,7 @@ VALID_BOUNDARY_CASES = [
     ("agent_max_cost", [0.0, 1.5]),
     ("agent_max_empty_retries", [0, 1, 5]),
     ("agent_max_same_action_turns", [1, 3, 100]),
+    ("agent_max_refine_rounds", [0, 1, 20]),
 ]
 
 

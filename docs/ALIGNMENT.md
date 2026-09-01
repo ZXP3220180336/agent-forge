@@ -29,7 +29,7 @@
 | app/domain/agent/base.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | Agent 基类与数据定义 |
 | app/domain/agent/executor.py | ✅ | docs/domain_doc/agent_doc/executor.md | tests/unit/test_agent.py | ReActAgent 桥接（ReActStrategy 到 BaseAgent 生命周期） |
 | app/domain/agent/planner.py | ⬜ | docs/domain_doc/agent_doc/agent.md | (无) | 空文件，PlannerAgent 待实现 |
-| app/domain/agent/reasoning.py | ⬜ | docs/domain_doc/agent_doc/agent.md | (无) | 空文件待实现 |
+| app/domain/agent/reflection.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_reflection_agent.py | ReflectionAgent 桥接（ReflectionStrategy 到 BaseAgent 生命周期） |
 | app/domain/memory/base.py | ⬜ | docs/domain_doc/memory_doc/memory.md | tests/unit/test_memory.py | 空壳；test_memory.py 空文件 |
 | app/domain/memory/long_term.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/memory_service.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
@@ -45,9 +45,10 @@
 | app/domain/prompts/templates/planning.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
 | app/domain/prompts/templates/system.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
 | app/domain/prompts/templates/tools.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
+| app/domain/prompts/templates/reflection.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_reflection.py | Reflection 自查/修正提示词模板 |
 | app/domain/reasoning/chain_of_thought.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
 | app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现（ReActStrategy + ReActOutcome） |
-| app/domain/reasoning/reflection.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
+| app/domain/reasoning/reflection.py | ✅ | docs/domain_doc/reasoning_doc/reflection.md | tests/unit/test_reflection.py | Reflection 策略实现（ReflectionStrategy + ReflectionOutcome） |
 | app/infrastructure/database.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，DB 由 container 直管 |
 | app/infrastructure/redis_client.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，Redis 由 container 直管 |
 | app/infrastructure/models/database/base.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | 共享 declarative_base |

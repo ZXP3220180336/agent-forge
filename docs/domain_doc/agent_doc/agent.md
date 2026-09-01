@@ -4,7 +4,7 @@
 > **更新日期**：2026-08-30
 > **文档定位**：Agent 模块对外接口文档——`BaseAgent` 统一入口的接口契约 + 内部组件导航；
 > 服务对象为 Agent 模块的**外部调用方**（应用层 / API 层）
-> **实现状态**：✅ 已实现（BaseAgent + ReActAgent；PlannerAgent / ReflectionAgent 预留）
+> **实现状态**：✅ 已实现（BaseAgent + ReActAgent + ReflectionAgent；PlannerAgent 预留）
 > **配套**：实现依赖领域端口 `LLMGateway` / `ToolGateway`（可选 `ContextBudgetPort`）；推理策略实现见
 > [reasoning 模块](../reasoning_doc/reasoning.md)（ReAct 策略在 `reasoning/react.py`）
 
@@ -51,7 +51,7 @@ app/domain/agent/
 ├── base.py              # 基类与数据定义（AgentState, AgentContext, AgentResult, BaseAgent）
 ├── executor.py          # ReActAgent（桥接 reasoning/react.py 的 ReActStrategy）
 ├── planner.py           # PlannerAgent（Plan-then-Execute，预留）
-└── reasoning.py         # ReflectionAgent（预留）
+└── reflection.py       # ReflectionAgent（桥接 reasoning/reflection.py 的 ReflectionStrategy）
 ```
 
 ### 设计原则
@@ -152,7 +152,7 @@ agent = ReActAgent(llm=llm_service, tools=tool_service)
 
 ### 对外异常契约
 
-Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。12 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
+Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy / ReflectionStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。13 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
 
 | `AgentErrorKind` | 默认 action | 场景 → 默认处理 |
 | --- | --- | --- |
@@ -196,14 +196,14 @@ print(result.content, result.tool_calls, result.usage)
 | --- | --- | --- | --- |
 | [executor.md](executor.md) | `executor.py` | ReActAgent：桥接 ReActStrategy 到 BaseAgent 生命周期 | ✅ |
 | planner.py | `planner.py` | PlannerAgent：Plan-then-Execute 编排（规划→执行→汇总） | ⬜ 预留 |
-| reasoning.py | `reasoning.py` | ReflectionAgent：Reflection 编排（生成→自查→修正） | ⬜ 预留 |
+| reflection.py | `reflection.py` | ReflectionAgent：Reflection 编排（生成→自查→修正，桥接 reflection.py） | ✅ |
 
 **配套策略库**（[reasoning 模块](../reasoning_doc/reasoning.md)）：
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
 | [react.md](../reasoning_doc/react.md) | `reasoning/react.py` | ReActStrategy：推理 ↔ 工具循环原子算法 | ✅ |
-| reflection | `reasoning/reflection.py` | Reflection 策略 | ⬜ 预留 |
+| reflection | `reasoning/reflection.py` | Reflection 策略（见 [reflection.md](../reasoning_doc/reflection.md)） | ✅ |
 | chain_of_thought | `reasoning/chain_of_thought.py` | CoT 策略 | ⬜ 预留 |
 
 ---
