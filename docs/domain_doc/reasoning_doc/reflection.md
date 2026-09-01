@@ -116,7 +116,7 @@ ReflectionStrategy.execute()（三阶段）
 
 ### Schema 契约
 
-- `REFLECTION_SCHEMA`（初稿）：summary / conclusions[]（claim + supporting_evidence[] + confidence 0~1）/ next_steps[] / assumptions[] / explicit_abstention[]，required=[summary, conclusions, next_steps]
+- `REFLECTION_SCHEMA`（初稿）：summary / conclusions[]（claim + supporting_evidence[] + confidence 0~1）/ next_steps[] / assumptions[] / explicit_abstention[]，required=[summary, conclusions, next_steps, explicit_abstention]（模型必须产出 explicit_abstention，空数组表示无放弃——产品「证据不足显式放弃」程序化强制，P4）
 - `CRITIQUE_SCHEMA`（自查）：ok / issues[]（severity + dimension 9 枚举 + claim + description），required=[ok]
 
 ## 执行流程
@@ -159,6 +159,8 @@ ReflectionStrategy.execute()（三阶段）
 | 自查/修正抛非 AppError 编程错误（TypeError 等） | 不吞，向上冒泡（fail fast） |
 | 循环中用户取消（cancel_event 置位） | 停机降级采用最近稿（degraded=True，error 标注用户取消） |
 | 总时长超限（elapsed > max_execution_time） | 停机降级采用最近稿（degraded=True，error 标注执行超时） |
+| critique/refine 结构化输出超预算 | 走 generate_structured 默认预算（settings.llm_structured_max_tokens）；截断由集成层短路返回 None → 走 None 降级（不崩溃，P4） |
+| 同一实例并发 / 多次 execute | 不并发复用——outcome/_structured_usage 被覆盖，每次运行新建或串行读取（P4） |
 | 证据链含 final_answer 条目 | 序列化时剔除（终止工具非真实证据） |
 | 证据链为空 + draft 引用不存在证据 | 自查 grounding 维度抓出（Grounding 价值） |
 

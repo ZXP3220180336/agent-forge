@@ -97,7 +97,7 @@ REFLECTION_SCHEMA: dict[str, Any] = {
             "description": "证据不足显式放弃（不硬编结论）",
         },
     },
-    "required": ["summary", "conclusions", "next_steps"],
+    "required": ["summary", "conclusions", "next_steps", "explicit_abstention"],
     "additionalProperties": False,
 }
 
@@ -195,6 +195,9 @@ class ReflectionStrategy:
 
     构造注入端口依赖 + 可选 schema 覆盖；execute() 完成后通过 outcome 读取结果。
     内部复用 ReActStrategy 做「收集 + 结构化初稿」。
+
+    约束：实例单次执行——outcome / _structured_usage 在每次 execute 覆盖，
+    不并发复用同一实例（每次运行新建，或串行调用后及时读取 outcome）。
     """
 
     def __init__(

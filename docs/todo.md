@@ -1,3 +1,16 @@
+# 2026-09-01 Reflection P4 次要项：explicit_abstention 必填 + 单次使用声明 + max_tokens 评估
+
+> 评审遗留 P4 三项：required 缺 explicit_abstention（产品「显式放弃」软契约）、实例非协程安全未声明、critique/refine 未传 max_tokens。
+
+- [x] P4-2：`REFLECTION_SCHEMA.required` 加 `explicit_abstention`（模型必须产出，空数组表示无放弃；jsonschema 校验强制，fixture 均含该字段）
+- [x] P4-3：ReflectionStrategy docstring + reflection.md 声明实例单次执行（outcome 覆盖，不并发复用）
+- [x] P4-1：评估 critique/refine max_tokens——走 generate_structured 默认预算（`llm_structured_max_tokens`=2048），输出紧凑 JSON 足够；截断由集成层短路返回 None → 降级兜底，**非缺口**，文档说明
+- [x] 测试：test_reflection 35 + agent 5 通过
+- [x] 文档：reflection.md（Schema 契约 / 边界情况）
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-09-01 Reflection 反思循环终止护栏（P3）：cancel + 超时降级
 
 > 评审发现：Reflection 自查/修正循环只有 cost_limiter 一重护栏，`cancel_event` / `max_execution_time` 只透传 react 收集阶段——用户取消或超时后仍发起付费调用（与 ReAct 三重护栏不对称）。

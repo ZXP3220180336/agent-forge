@@ -395,7 +395,12 @@ def test_critique_prompt_exhausts_dimensions():
 
 def test_reflection_schema_is_strict():
     """schema 契约：required 字段与 additionalProperties:false 约束。"""
-    assert REFLECTION_SCHEMA["required"] == ["summary", "conclusions", "next_steps"]
+    assert REFLECTION_SCHEMA["required"] == [
+        "summary",
+        "conclusions",
+        "next_steps",
+        "explicit_abstention",
+    ]
     assert REFLECTION_SCHEMA["additionalProperties"] is False
     assert CRITIQUE_SCHEMA["additionalProperties"] is False
 
