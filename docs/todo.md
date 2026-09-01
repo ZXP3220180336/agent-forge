@@ -1,3 +1,14 @@
+# 2026-09-01 Reflection 反思循环终止护栏（P3）：cancel + 超时降级
+
+> 评审发现：Reflection 自查/修正循环只有 cost_limiter 一重护栏，`cancel_event` / `max_execution_time` 只透传 react 收集阶段——用户取消或超时后仍发起付费调用（与 ReAct 三重护栏不对称）。
+
+- [x] reflection.py：`_should_abort`（用户取消 / 总时长超限检查）+ execute 循环顶部调用 → 停机降级采用最近稿（复用 `_finalize` 降级路径）
+- [x] 测试：`_should_abort` 单元 3 例（取消 / 超时 / 正常）+ 循环中取消降级集成 1 例；test_reflection 30 + agent 5 通过
+- [x] 文档：reflection.md（测试状态 26→30 / 边界情况补 cancel + 超时）
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-09-01 Reflection done 事件口径修复（REASON-011 / P2）+ 抑制 ReAct 中间 done
 
 > 评审发现：`_finalize` 的 done 事件只用 react 阶段 total_tokens，漏计 critique/refine 用量——SSE 事件与 outcome 两个事实源漂移（成本审计失真）；且 Reflection 透传 ReAct 的 done 造成事件流 2 个口径不同的完成事件（噪音）。

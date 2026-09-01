@@ -600,6 +600,80 @@ async def test_reflect_cost_limit_stops():
     assert strategy.outcome.structured == REFINED  # 采用最近修正稿
 
 
+# ── P3：反思循环终止护栏（用户取消 / 总时长超限 → 停机降级采用最近稿）──
+
+
+def test_should_abort_cancel_event():
+    """用户取消 → 终止（原因含「用户取消」）。"""
+    strategy = _make_strategy(_ReflectionLLM([], []))
+    cancel = asyncio.Event()
+    cancel.set()
+    aborted, reason = strategy._should_abort(cancel, 0.0, None)
+    assert aborted is True
+    assert "用户取消" in reason
+
+
+def test_should_abort_timeout():
+    """总时长超限（start 在过去）→ 终止（原因含「执行超时」）。"""
+    import time as _time
+
+    strategy = _make_strategy(_ReflectionLLM([], []))
+    aborted, reason = strategy._should_abort(
+        None, start_time=_time.monotonic() - 100, max_execution_time=5
+    )
+    assert aborted is True
+    assert "执行超时" in reason
+
+
+def test_should_abort_ok():
+    """无取消 + 未超时 → 不终止。"""
+    strategy = _make_strategy(_ReflectionLLM([], []))
+    aborted, reason = strategy._should_abort(None, 0.0, None)
+    assert aborted is False
+    assert reason == ""
+
+
+@pytest.mark.asyncio
+async def test_reflect_cancel_event_stops_degrades_to_draft():
+    """循环中取消（自查后置位）→ 停机降级采用最近稿（degraded=True，error 标注用户取消）。
+
+    注：cancel 检查在迭代顶部——自查返回 issues 后进入修正（本迭代内不再检查），
+    修正成功 current=refined，下一迭代顶部检测到取消 → 采用 refined（最近稿）。
+    """
+    cancel_event = asyncio.Event()
+
+    class _CancelOnCritiqueLLM(_ReflectionLLM):
+        async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None):
+            cancel_event.set()  # 自查调用后置位取消（模拟运行中用户取消）
+            return await super().generate_structured(messages, schema, model_key, max_tokens, usage)
+
+    llm = _CancelOnCritiqueLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺信号"}]},
+            REFINED,
+        ],
+    )
+    strategy = _make_strategy(llm)
+    events = []
+    async for ev in strategy.execute(
+        "分析良率下降原因",
+        [{"role": "user", "content": "分析良率下降原因"}],
+        max_iterations=5,
+        temperature=0.2,
+        max_tokens=1024,
+        cancel_event=cancel_event,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == REFINED  # 采用最近修正稿
+    assert strategy.outcome.degraded is True
+    assert strategy.outcome.refine_rounds == 1
+    assert "用户取消" in strategy.outcome.error
+    assert any("降级" in e for e in events)
+
+
 # ── REASON-010：自查/修正异常面收口（不可恢复 AppError 降级；编程错误冒泡）──
 # 注：StructuredTruncationError 不在缺口内——StructuredOutput.extract 对截断短路
 # 返回 None（不向上抛），Reflection 走既有「critique is None → 降级」路径（REASON-010）。

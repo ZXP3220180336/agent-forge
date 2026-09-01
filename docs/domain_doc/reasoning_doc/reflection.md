@@ -157,6 +157,8 @@ ReflectionStrategy.execute()（三阶段）
 | 修正返回 None / 熔断等不可恢复错误 / 达 max_refine_rounds 上限 | 采用最近稿（degraded=True） |
 | 结构化输出截断 | 集成层短路返回 None → 走自查/修正 None 降级路径（本层无感知） |
 | 自查/修正抛非 AppError 编程错误（TypeError 等） | 不吞，向上冒泡（fail fast） |
+| 循环中用户取消（cancel_event 置位） | 停机降级采用最近稿（degraded=True，error 标注用户取消） |
+| 总时长超限（elapsed > max_execution_time） | 停机降级采用最近稿（degraded=True，error 标注执行超时） |
 | 证据链含 final_answer 条目 | 序列化时剔除（终止工具非真实证据） |
 | 证据链为空 + draft 引用不存在证据 | 自查 grounding 维度抓出（Grounding 价值） |
 
@@ -168,7 +170,7 @@ ReflectionStrategy.execute()（三阶段）
 
 ## 测试状态
 
-`tests/unit/test_reflection.py`（26 用例）+ `tests/unit/test_reflection_agent.py`（5 用例）：
+`tests/unit/test_reflection.py`（30 用例）+ `tests/unit/test_reflection_agent.py`（5 用例）：
 
 - 三阶段全路径：自查 ok 采用初稿 / 自查 issues 修正 + 复查 ok 采用 refined
 - 真迭代：修正后复查新 issues 再修正（refine_rounds=2）/ 达上限采用最后修正稿（degraded）
@@ -176,6 +178,7 @@ ReflectionStrategy.execute()（三阶段）
 - 降级路径：自查失败 / 拒答 / **不可恢复 AppError（熔断 / LLMAPIError 401/403）** / 修正失败 / ReAct 无 structured / ReAct 失败
 - 非 AppError 编程错误不吞、向上冒泡（fail fast）
 - done 事件 total_tokens 与 outcome 一致 + 抑制 ReAct 中间 done（P2 / REASON-011，事件流仅收尾 1 个 done）
+- 反思循环终止护栏（P3）：`_should_abort` 单元（取消 / 超时 / 正常）+ 循环中取消降级采用最近稿
 - max_refine_rounds 上限（max=1 不修正）、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
 - Scope 盲区清单维度穷举（9 dimension）、护栏透传
 - 桥接：_map_outcome 映射 / ctx 透传 / 端到端 / 默认向后兼容

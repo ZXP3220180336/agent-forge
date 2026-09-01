@@ -20,6 +20,7 @@ Reflection 推理策略（ReflectionStrategy）
 """
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
@@ -254,6 +255,8 @@ class ReflectionStrategy:
         """
         # 每次 execute 独立：重置自查/修正阶段 token 用量累计
         self._structured_usage = {}
+        # 总时长护栏起点（反思循环顶部检查 elapsed > max_execution_time，P3）
+        start_time = time.monotonic()
 
         # ── 阶段一：收集 + 初稿（复用 ReAct，工具证据链 + final_answer 结构化）──
         async for event in self._react.execute(
@@ -320,6 +323,24 @@ class ReflectionStrategy:
         current = draft  # 当前候选稿（初稿 → 各轮修正稿）
         refine_round = 0
         while True:
+            # 终止护栏（P3）：用户取消 / 总时长超限 → 停机降级采用最近稿（保留进度）
+            aborted, abort_reason = self._should_abort(
+                cancel_event, start_time, max_execution_time
+            )
+            if aborted:
+                async for event in self._finalize(
+                    react_outcome,
+                    draft=draft,
+                    structured=current,
+                    critique=None,
+                    refine_rounds=refine_round,
+                    success=bool(current),
+                    degraded=True,
+                    error=f"{abort_reason}，采用最近稿（降级）",
+                    info=f"{abort_reason}，采用最近稿（降级）",
+                ):
+                    yield event
+                return
             # 成本护栏：发起新付费调用前 check（react + 自查/修正累计，超限停机降级）
             if self._cost_limiter is not None:
                 exceeded, cost = self._cost_limiter.check(
@@ -427,6 +448,26 @@ class ReflectionStrategy:
                 return
             current = refined
             # 回到循环顶部 → 重新自查修正稿（真迭代的关键：新反馈驱动下一轮）
+
+    def _should_abort(
+        self,
+        cancel_event: asyncio.Event | None,
+        start_time: float,
+        max_execution_time: float | None,
+    ) -> tuple[bool, str]:
+        """反思循环终止检查：用户取消 / 总时长超限。返回 (是否终止, 原因)。
+
+        P3 护栏：与 ReAct 收集阶段对称——自查/修正循环除 cost_limiter 外补
+        cancel（用户取消保留进度）与 max_execution_time（总预算）两重护栏。
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            return True, "用户取消"
+        if (
+            max_execution_time is not None
+            and time.monotonic() - start_time > max_execution_time
+        ):
+            return True, "执行超时"
+        return False, ""
 
     # ── 内部辅助 ──
 
