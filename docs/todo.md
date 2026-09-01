@@ -1,3 +1,28 @@
+# 2026-09-01 Reflection 自查/修正 token 统计 + cost 护栏（benchmark #11 去 ⚠️）
+
+> generate_structured 回传 usage（仿 async_generate result 模式），critique/refine 纳入 token/成本统计 + cost_limiter。
+
+- [x] 端口 llm_gateway.generate_structured 加 `usage` 可变参数（返回签名不变，向后兼容）
+- [x] LLMService / StructuredOutput（extract / _try_extract / _fallback_extract）透传 + 回填 usage
+- [x] ReflectionStrategy：_generate_* 返回 (result, usage)；累计 _structured_usage → outcome.total_tokens/usage 合并；循环顶部 cost_limiter.check 超限停机降级
+- [x] 测试：新增 usage 累计 + cost 超限 2 用例；假对象适配 usage 参数；全量 728 passed
+- [x] 文档：ADR（cost 缺口 → 完整）/ benchmark #11 ✅ / reflection.md / ports.md / structure.md / llm.md / llm_service.md
+
+---
+
+# 2026-09-01 Reflection 修正循环缺陷修复（REASON-009）
+
+> 审查发现：修正循环复用同一批 issues 反复修正（工业反模式）。调研确认「迭代必须新反馈」后重构为真迭代。
+
+- [x] issue：`issues/domain/reasoning/2026-09-01-reflect-refine-loop.md`（发现→分析→修复→验证→教训）
+- [x] 重构 reflection.py：阶段二+三改为 while 真迭代（修正 refined → 重新自查 refined → ok 采用 / 新 issues 再修正 → 达上限 best-effort）
+- [x] 达上限判断修正：`refine_round >= max_refine_rounds - 1`（max=1 时初稿有 issues 即不修正）
+- [x] 测试：新增真迭代 2 用例（复查新 issues 再修正 / 达上限采用最后稿）+ 更新 issues_refine 测试，22 passed
+- [x] 文档：ADR（re_critique 决策改为真迭代 + REASON-009 链接）/ reflection.md / reflection_benchmark.md（#5/#17）
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-31 React 策略完成度/职责划分评估 + 文档漂移同步 + 遗留问题收尾
 
 > 两项子智能体评估（完成度 26 项对照 + 策略/编排职责划分）→ 文档漂移同步 4 份 → 未解决问题清单 #1~#4 逐项修复（REASON-006/007/008 + 取舍标注），全部提交推送。
@@ -10,6 +35,21 @@
 - [x] **问题 #3**：LLM_FAILED 不脱敏 vs UNKNOWN 脱敏取舍标注（诊断价值 vs 无诊断价值，文档）
 - [x] **问题 #4**（REASON-008）：空输出重试轮不追加空 assistant 消息（纯空轮不写历史）+ AGENT-001 except 元组回归
 - [x] 验证：全量 700 passed + verify_alignment；提交推送（c9e7f00 / 0d2bed2 / 5b67e60）
+
+---
+
+# 2026-08-31 Reflection 推理决策 + ReflectionAgent 编排（领域层 Slice 4）
+
+> 以工业级 Reflection 决策为评价指标（reflection_benchmark.md 对标）。三阶段分离 + Grounding（证据锚定，反内在自查）。
+
+- [x] 共享内核：AgentErrorKind 加 CRITIQUE_FAILED（默认 CONTINUE，12→13 类）+ 配置 agent_max_refine_rounds
+- [x] `reasoning/reflection.py`：ReflectionStrategy（生成复用 ReAct.execute(output_schema) + 自查 CRITIQUE_SCHEMA + 修正 REFINE_SCHEMA + 降级路由）+ ReflectionOutcome + schema 契约
+- [x] prompts：templates/reflection.py（REFLECTION_SYSTEM / CRITIQUE_PROMPT 9 维清单 / REFINE_PROMPT）+ manager builder
+- [x] `agent/reflection.py`：ReflectionAgent 桥接（构造注入 + _map_outcome 进 metadata）
+- [x] 测试：test_reflection.py（15 用例）+ test_reflection_agent.py（5 用例），全量 723+ passed
+- [x] 文档：reflection.md / reflection_benchmark.md（核心必备 12 项对照）/ reasoning.md / agent.md / config.md / ALIGNMENT / domain README
+- [x] ADR：`adr/domain/reasoning/2026-08-31-reflection-strategy.md`
+- [x] 验证：全量 pytest + verify_alignment
 
 ---
 
@@ -200,43 +240,27 @@
 
 ---
 
-# 2026-09-01 Reflection 自查/修正 token 统计 + cost 护栏（benchmark #11 去 ⚠️）
+# 2026-08-27 领域层推理决策架构完整建设（Phase C 前置）——总体规划与进度
 
-> generate_structured 回传 usage（仿 async_generate result 模式），critique/refine 纳入 token/成本统计 + cost_limiter。
+> 完整计划见 [domain-layer-plan.md](../domain-layer-plan.md)（临时计划文件，源自 2026-08-27 会话记录）。
+> 目标：领域层四模块（策略 / prompt / 记忆 / 编排）建设完整、跑通单 Agent 任务后再上应用层多任务编排（Orchestrator 依赖 PlannerAgent 拆分）。
+> 产品锚点：PlannerAgent.plan() = 主 Agent 拆分原语（Phase C 主链路第一步）。
 
-- [x] 端口 llm_gateway.generate_structured 加 `usage` 可变参数（返回签名不变，向后兼容）
-- [x] LLMService / StructuredOutput（extract / _try_extract / _fallback_extract）透传 + 回填 usage
-- [x] ReflectionStrategy：_generate_* 返回 (result, usage)；累计 _structured_usage → outcome.total_tokens/usage 合并；循环顶部 cost_limiter.check 超限停机降级
-- [x] 测试：新增 usage 累计 + cost 超限 2 用例；假对象适配 usage 参数；全量 728 passed
-- [x] 文档：ADR（cost 缺口 → 完整）/ benchmark #11 ✅ / reflection.md / ports.md / structure.md / llm.md / llm_service.md
+- [x] **Slice 0** ReAct 抽离：reasoning/react.py（ReActStrategy 收标量参数）+ executor.py 变薄桥接（保留 _execute_tool_calls 转发）
+- [ ] **Slice 1** Prompts 完整化：planning.py 从 draft 完整化（depends_on / re-plan / 汇总）+ reflection 模板 + manager 3 builder + run() 默认 system 注入
+- [ ] **Slice 2** Memory 基座：VectorStorePort + memory/ 六文件（端口 + 骨架，向量实现留 Phase D）
+- [ ] **Slice 3** PlannerAgent：agent/planner.py（plan 结构化拆分 / depends_on 拓扑执行 / replan 限 2 次 / summarize 降级）
+- [x] **Slice 4** ReflectionAgent：reasoning/reflection.py + agent/reflection.py（✅ 2026-08-31 完成，见当日条目）
+- [ ] **Slice 5** 装配接线：container / deps / chat / task_service / base（memory_enabled 默认 False 惰性零行为变化）
+- [ ] **Slice 6** 文档 + ADR + 对齐：ALIGNMENT / architecture / 各模块文档 + 4 ADR / verify_alignment
 
----
+## 关键设计决策
 
-# 2026-09-01 Reflection 修正循环缺陷修复（REASON-009）
-
-> 审查发现：修正循环复用同一批 issues 反复修正（工业反模式）。调研确认「迭代必须新反馈」后重构为真迭代。
-
-- [x] issue：`issues/domain/reasoning/2026-09-01-reflect-refine-loop.md`（发现→分析→修复→验证→教训）
-- [x] 重构 reflection.py：阶段二+三改为 while 真迭代（修正 refined → 重新自查 refined → ok 采用 / 新 issues 再修正 → 达上限 best-effort）
-- [x] 达上限判断修正：`refine_round >= max_refine_rounds - 1`（max=1 时初稿有 issues 即不修正）
-- [x] 测试：新增真迭代 2 用例（复查新 issues 再修正 / 达上限采用最后稿）+ 更新 issues_refine 测试，22 passed
-- [x] 文档：ADR（re_critique 决策改为真迭代 + REASON-009 链接）/ reflection.md / reflection_benchmark.md（#5/#17）
-- [x] 验证：全量 pytest + verify_alignment
-
----
-
-# 2026-08-31 Reflection 推理决策 + ReflectionAgent 编排（领域层 Slice 4）
-
-> 以工业级 Reflection 决策为评价指标（reflection_benchmark.md 对标）。三阶段分离 + Grounding（证据锚定，反内在自查）。
-
-- [x] 共享内核：AgentErrorKind 加 CRITIQUE_FAILED（默认 CONTINUE，12→13 类）+ 配置 agent_max_refine_rounds
-- [x] `reasoning/reflection.py`：ReflectionStrategy（生成复用 ReAct.execute(output_schema) + 自查 CRITIQUE_SCHEMA + 修正 REFINE_SCHEMA + 降级路由）+ ReflectionOutcome + schema 契约
-- [x] prompts：templates/reflection.py（REFLECTION_SYSTEM / CRITIQUE_PROMPT 9 维清单 / REFINE_PROMPT）+ manager builder
-- [x] `agent/reflection.py`：ReflectionAgent 桥接（构造注入 + _map_outcome 进 metadata）
-- [x] 测试：test_reflection.py（15 用例）+ test_reflection_agent.py（5 用例），全量 723+ passed
-- [x] 文档：reflection.md / reflection_benchmark.md（核心必备 12 项对照）/ reasoning.md / agent.md / config.md / ALIGNMENT / domain README
-- [x] ADR：`adr/domain/reasoning/2026-08-31-reflection-strategy.md`
-- [x] 验证：全量 pytest + verify_alignment
+- ReActStrategy 收标量参数 → 遵守 reasoning→ports+shared 依赖方向，策略可独立测试
+- PlannerAgent 执行阶段复用 execute_tool_calls 不复用完整 ReAct 循环（plan-then-execute 灵魂）
+- generate_structured 返回 None 降级：plan None→ReAct 兜底；summarize None→纯文本；critique None→采用初稿
+- 记忆不 mock 向量库：LongTermMemory 端口注入，None 时 no-op（Phase D 接 Milvus）
+- 记忆避免孤儿：BaseAgent 完成钩子 + chat 接线（memory_enabled 默认 False 惰性）
 
 ---
 
@@ -322,57 +346,34 @@
 
 ---
 
-# RateLimiter 审核问题修复计划
+# 2026-08-17 工具模块重构：对齐工业级六大子组件
 
-> 来源：`docs/llm/rate_limiter.md` 附录「2026-08-01 代码审核记录」6 个遗留问题。
-> 方式：**逐个修复**，每修完一个停下来总结并更新文档。
+> 背景：工具模块原为 Facade + 5 组件（registry/executor/stats/hooks/assembler），对照工业级 Agent 工具模块存在差距（参数校验仅查未知+必填、无统一结果处理、无风险分级与审计、无选择机制）。网络调研工业级方案后，与用户「六大子组件」蓝图对比整合，确认四个方向性决策：全盘对齐六大子组件 / 安全分级+审计留痕（不拦截）/ 选择器只留接口不实现 / 引入 jsonschema。
 
----
+## 任务清单（垂直切片）
 
-# 结算退差 + reserve/settle（后续任务）
+- [x] **Slice 0** Facade 骨架 + 最小链路：新建 selector / validator / result_processor / security 四组件，wire 进 ToolService/executor，既有测试全绿（12 passed）
+- [x] **Slice 1** validator 细化（iter_errors 全量收集 + 中文归因 + reject_unknown + 类型名映射）；base.py 委托改造；`test_tool_validator.py`（13 用例）
+- [x] **Slice 2** result_processor 细化（head+tail 截断 + 错误归一化）；内置工具删内联截断 + 元数据（risk/category/concurrency_safe/max_output_length）；`test_result_processor.py` + readFile 大文件截断集成用例
+- [x] **Slice 3** security 细化（RiskLevel L0-L3 + ToolAuditor 审计到日志）；executor 审计全路径接入 + per-tool 串行化锁；`test_tool_audit.py` + executor 组件测试
+- [x] **Slice 4** selector 接入 get_openai_tools；修 domain/agent/executor.py:210 PEP 758 语法；`test_tool_selector.py` + `test_tool_registry_metadata.py` + `test_tool_executor_components.py` + `test_tool_hooks.py`
+- [x] **Slice 5** 文档：tools.md 重写为模块接口文档 + tool_service.md/builtin.md/集成层 README 更新 + validator/result_processor/security/selector 四子文档 + ALIGNMENT + ADR×3 + issue + verify_alignment 通过
 
-> 承接「工业级对比」章节的可改进点（对比 3/4），2026-08-02 已实现。
+## 评审（2026-08-17）
 
-- [x] `rate_limiter.py`：TokenBucket.refund + Reservation + ReservationTokenBucket + ReservationRateLimiter（超集单类）+ Manager 单类单缓存
-- [x] `llm_service.py`：迁移到 reserve/settle 统一闭环（R1/R2/R3/R8 防护：create 失败 cancel、create 成功后 settle、迭代硬取消 finally 兜底）
-- [x] `test_rate_limiter.py`：新增 11 个测试（refund/Reservation/reserve），24/24 通过
-- [x] `test_stream_rectify.py`：stub 适配 reserve，15/15 通过
-- [x] 文档：rate_limiter.md 组件详解/调用流程/工业级对比更新
+- **全量测试 414 passed**（原 12 工具测试 + 新增 ~40 用例），无回归
+- **`uv run python -m scripts.verify_alignment` 通过**（4 新组件已登记，文档死链清零）
+- **Container 装配冒烟**：5 工具注册 + code_exec 正确标注 L2_DANGEROUS + 审计默认启用
+- **受控审计冒烟**：search 未配置 key 优雅失败路径触发 `tool_call` 审计事件
+- **新增组件**：selector（接口+全量注入）/ validator（jsonschema 严格校验）/ result_processor（head+tail 截断）/ security（分级+审计）
+- **行为变更**：参数校验从「未知+必填」升级为 jsonschema 完整校验（LLM 传字符串化数字会校验失败并归因）——ADR-002 记录；结果截断从「只留前 N」升级为 head+tail（含 marker）
+- **顺带修复**：domain/agent/executor.py `except json.JSONDecodeError, KeyError:` → 显式元组（PEP 758 可移植性，issue AGENT-001）；hooks.py `asyncio.iscoroutinefunction` → `inspect`（3.16 弃用告警）
 
-## 进度
+### 遗留（工具模块重构）
 
-- [x] **问题 1（严重）** 配置 0 除零崩溃 —— `TokenBucket.acquire` 对 `refill_rate <= 0` 防御，直接放行
-- [x] **问题 2（中）** 持锁 sleep —— `acquire` 重构为「锁内计算 → 锁外 sleep → 循环重检」（连带解决问题 6）
-- [x] **问题 3（中）** TPM 只算 prompt —— `_count_prompt_tokens` 加 `max_tokens` 输出余量
-- [x] **问题 4（低）** `acquire` 返回值表述不准 —— 修正 docstring
-- [x] **问题 5（低）** `async with` 用法误导 —— 移除 `__aenter__/__aexit__` 死代码 + 更新 docstring
-- [x] **问题 6（低）** `_tokens` 轻微为负 —— 已由问题 2 重构连带解决（只在 `_tokens >= tokens` 时扣减）
-
-## 评审（2026-08-02 全部完成）
-
-6 个审核问题全部修复，测试 13/13 通过（rate_limiter）+ 37/37（stream_rectify + retry）无回归。
-
-| 问题 | 修复方式 | 验证 |
-| --- | --- | --- |
-| 1 | `TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行 | `test_bucket_zero_refill_disabled` |
-| 2 | 锁外 sleep 循环重检 | `test_bucket_wait_does_not_block_others` / `test_bucket_cancel_does_not_corrupt_state` |
-| 3 | `_count_prompt_tokens` 加 `max_tokens` 输出余量 | 37 测试无回归 |
-| 4 | docstring 明确返回值语义 | 纯文档 |
-| 5 | 移除 `__aenter__/__aexit__` 死代码 | `py_compile` + 全测试 |
-| 6 | 由问题 2 重构连带解决 | `test_bucket_cancel_does_not_corrupt_state` 覆盖 |
-
-## 关联文件
-
-| 文件 | 改动 |
-| --- | --- |
-| `app/services/llm/rate_limiter.py` | TokenBucket.acquire / RateLimiter.acquire / docstring |
-| `app/services/llm/llm_service.py` | `_count_prompt_tokens` 输出余量（问题 3） |
-| `tests/unit/test_rate_limiter.py` | 新增各问题回归测试 |
-| `docs/llm/rate_limiter.md` | 附录问题标记修复 + 正文已知边界同步 |
-
-## 评审
-
-（待各问题修复后逐条补充）
+- `app/main.py:27`、`app/integration/llm/retry.py:595` 同型 PEP 758 逗号语法，超出本次范围，仅 issue AGENT-001 记录待后续处理
+- 审计密钥脱敏（params 中的 api_key 等）列为未来增强；审计默认常开（不设 settings 开关）
+- 选择器向量召回（embedding 粗排 + LLM 精排）留待工具数 >50 时实现（ADR-001 记录升级路径）
 
 ---
 
@@ -426,31 +427,54 @@
 
 ---
 
-# 2026-08-17 工具模块重构：对齐工业级六大子组件
+# RateLimiter 审核问题修复计划
 
-> 背景：工具模块原为 Facade + 5 组件（registry/executor/stats/hooks/assembler），对照工业级 Agent 工具模块存在差距（参数校验仅查未知+必填、无统一结果处理、无风险分级与审计、无选择机制）。网络调研工业级方案后，与用户「六大子组件」蓝图对比整合，确认四个方向性决策：全盘对齐六大子组件 / 安全分级+审计留痕（不拦截）/ 选择器只留接口不实现 / 引入 jsonschema。
+> 来源：`docs/llm/rate_limiter.md` 附录「2026-08-01 代码审核记录」6 个遗留问题。
+> 方式：**逐个修复**，每修完一个停下来总结并更新文档。
 
-## 任务清单（垂直切片）
+---
 
-- [x] **Slice 0** Facade 骨架 + 最小链路：新建 selector / validator / result_processor / security 四组件，wire 进 ToolService/executor，既有测试全绿（12 passed）
-- [x] **Slice 1** validator 细化（iter_errors 全量收集 + 中文归因 + reject_unknown + 类型名映射）；base.py 委托改造；`test_tool_validator.py`（13 用例）
-- [x] **Slice 2** result_processor 细化（head+tail 截断 + 错误归一化）；内置工具删内联截断 + 元数据（risk/category/concurrency_safe/max_output_length）；`test_result_processor.py` + readFile 大文件截断集成用例
-- [x] **Slice 3** security 细化（RiskLevel L0-L3 + ToolAuditor 审计到日志）；executor 审计全路径接入 + per-tool 串行化锁；`test_tool_audit.py` + executor 组件测试
-- [x] **Slice 4** selector 接入 get_openai_tools；修 domain/agent/executor.py:210 PEP 758 语法；`test_tool_selector.py` + `test_tool_registry_metadata.py` + `test_tool_executor_components.py` + `test_tool_hooks.py`
-- [x] **Slice 5** 文档：tools.md 重写为模块接口文档 + tool_service.md/builtin.md/集成层 README 更新 + validator/result_processor/security/selector 四子文档 + ALIGNMENT + ADR×3 + issue + verify_alignment 通过
+# 结算退差 + reserve/settle（后续任务）
 
-## 评审（2026-08-17）
+> 承接「工业级对比」章节的可改进点（对比 3/4），2026-08-02 已实现。
 
-- **全量测试 414 passed**（原 12 工具测试 + 新增 ~40 用例），无回归
-- **`uv run python -m scripts.verify_alignment` 通过**（4 新组件已登记，文档死链清零）
-- **Container 装配冒烟**：5 工具注册 + code_exec 正确标注 L2_DANGEROUS + 审计默认启用
-- **受控审计冒烟**：search 未配置 key 优雅失败路径触发 `tool_call` 审计事件
-- **新增组件**：selector（接口+全量注入）/ validator（jsonschema 严格校验）/ result_processor（head+tail 截断）/ security（分级+审计）
-- **行为变更**：参数校验从「未知+必填」升级为 jsonschema 完整校验（LLM 传字符串化数字会校验失败并归因）——ADR-002 记录；结果截断从「只留前 N」升级为 head+tail（含 marker）
-- **顺带修复**：domain/agent/executor.py `except json.JSONDecodeError, KeyError:` → 显式元组（PEP 758 可移植性，issue AGENT-001）；hooks.py `asyncio.iscoroutinefunction` → `inspect`（3.16 弃用告警）
+- [x] `rate_limiter.py`：TokenBucket.refund + Reservation + ReservationTokenBucket + ReservationRateLimiter（超集单类）+ Manager 单类单缓存
+- [x] `llm_service.py`：迁移到 reserve/settle 统一闭环（R1/R2/R3/R8 防护：create 失败 cancel、create 成功后 settle、迭代硬取消 finally 兜底）
+- [x] `test_rate_limiter.py`：新增 11 个测试（refund/Reservation/reserve），24/24 通过
+- [x] `test_stream_rectify.py`：stub 适配 reserve，15/15 通过
+- [x] 文档：rate_limiter.md 组件详解/调用流程/工业级对比更新
 
-### 遗留（工具模块重构）
+## 进度
 
-- `app/main.py:27`、`app/integration/llm/retry.py:595` 同型 PEP 758 逗号语法，超出本次范围，仅 issue AGENT-001 记录待后续处理
-- 审计密钥脱敏（params 中的 api_key 等）列为未来增强；审计默认常开（不设 settings 开关）
-- 选择器向量召回（embedding 粗排 + LLM 精排）留待工具数 >50 时实现（ADR-001 记录升级路径）
+- [x] **问题 1（严重）** 配置 0 除零崩溃 —— `TokenBucket.acquire` 对 `refill_rate <= 0` 防御，直接放行
+- [x] **问题 2（中）** 持锁 sleep —— `acquire` 重构为「锁内计算 → 锁外 sleep → 循环重检」（连带解决问题 6）
+- [x] **问题 3（中）** TPM 只算 prompt —— `_count_prompt_tokens` 加 `max_tokens` 输出余量
+- [x] **问题 4（低）** `acquire` 返回值表述不准 —— 修正 docstring
+- [x] **问题 5（低）** `async with` 用法误导 —— 移除 `__aenter__/__aexit__` 死代码 + 更新 docstring
+- [x] **问题 6（低）** `_tokens` 轻微为负 —— 已由问题 2 重构连带解决（只在 `_tokens >= tokens` 时扣减）
+
+## 评审（2026-08-02 全部完成）
+
+6 个审核问题全部修复，测试 13/13 通过（rate_limiter）+ 37/37（stream_rectify + retry）无回归。
+
+| 问题 | 修复方式 | 验证 |
+| --- | --- | --- |
+| 1 | `TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行 | `test_bucket_zero_refill_disabled` |
+| 2 | 锁外 sleep 循环重检 | `test_bucket_wait_does_not_block_others` / `test_bucket_cancel_does_not_corrupt_state` |
+| 3 | `_count_prompt_tokens` 加 `max_tokens` 输出余量 | 37 测试无回归 |
+| 4 | docstring 明确返回值语义 | 纯文档 |
+| 5 | 移除 `__aenter__/__aexit__` 死代码 | `py_compile` + 全测试 |
+| 6 | 由问题 2 重构连带解决 | `test_bucket_cancel_does_not_corrupt_state` 覆盖 |
+
+## 关联文件
+
+| 文件 | 改动 |
+| --- | --- |
+| `app/services/llm/rate_limiter.py` | TokenBucket.acquire / RateLimiter.acquire / docstring |
+| `app/services/llm/llm_service.py` | `_count_prompt_tokens` 输出余量（问题 3） |
+| `tests/unit/test_rate_limiter.py` | 新增各问题回归测试 |
+| `docs/llm/rate_limiter.md` | 附录问题标记修复 + 正文已知边界同步 |
+
+## 评审
+
+（待各问题修复后逐条补充）
