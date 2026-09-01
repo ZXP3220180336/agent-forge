@@ -242,7 +242,7 @@
 
 # 2026-08-27 领域层推理决策架构完整建设（Phase C 前置）——总体规划与进度
 
-> 完整计划见 [domain-layer-plan.md](../domain-layer-plan.md)（临时计划文件，源自 2026-08-27 会话记录）。
+> 完整计划见 [domain-layer-plan-tmp.md](domain_doc/domain-layer-plan-tmp.md)（临时计划文件，源自 2026-08-27 会话记录）。
 > 目标：领域层四模块（策略 / prompt / 记忆 / 编排）建设完整、跑通单 Agent 任务后再上应用层多任务编排（Orchestrator 依赖 PlannerAgent 拆分）。
 > 产品锚点：PlannerAgent.plan() = 主 Agent 拆分原语（Phase C 主链路第一步）。
 
