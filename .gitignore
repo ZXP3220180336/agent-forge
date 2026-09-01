@@ -30,3 +30,6 @@ Thumbs.db
 # 日志
 logs/
 *.log
+
+# 临时完整计划文件（各层规划，不提交入库；如 domain-layer-plan-tmp.md）
+*plan-tmp.md
