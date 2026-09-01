@@ -262,7 +262,7 @@ generate(messages, tools, temperature=0, max_tokens=1024, response_format, model
 ### generate_structured（委托三级降级）
 
 ```text
-generate_structured(messages, schema, model_key="fast", max_tokens=None)
+generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None)
   └─ StructuredOutput.extract(llm_service=self, ...)   # 三级降级见 structure.md
        第一级 JSON Schema(strict) → 第二级 JSON Mode → 第三级 正则提取
        截断短路返回 None；拒答/工具调用抛异常

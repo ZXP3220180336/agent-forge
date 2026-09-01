@@ -416,7 +416,7 @@ generate_structured(messages, schema, model_key="fast")
 
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
-| `LLMService.generate_structured(messages, schema, model_key="fast", max_tokens=None) -> dict \| None` | 异步方法 | 对外唯一入口，委托 `StructuredOutput.extract` 三级降级；拒答/工具调用抛异常（见 Raises） |
+| `LLMService.generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None) -> dict \| None` | 异步方法 | 对外唯一入口，委托 `StructuredOutput.extract` 三级降级；拒答/工具调用抛异常（见 Raises）；`usage` 可变引用回填 token 用量 |
 | `StructuredOutput.extract(llm_service, messages, schema, model_key="fast", max_tokens=None) -> dict \| None` | 静态异步 | 三级降级编排（JSON Schema strict → JSON Mode → 正则），返回 dict/None |
 | `StructuredOutput.register_config(max_tokens)` | 同步类方法 | 注入默认输出预算（Container 读 settings 后调用） |
 

@@ -150,6 +150,17 @@ CRITIQUE_SCHEMA: dict[str, Any] = {
 }
 
 
+def _merge_usage(*usages: dict | None) -> dict:
+    """合并多个 usage dict（prompt/completion/total 累加）；全空返回空 dict。"""
+    merged: dict = {}
+    for usage in usages:
+        if not usage:
+            continue
+        for key, value in usage.items():
+            merged[key] = merged.get(key, 0) + value
+    return merged
+
+
 @dataclass
 class ReflectionOutcome:
     """Reflection 策略执行的最终结果载体（供桥接方组装 AgentResult）。"""
@@ -198,10 +209,13 @@ class ReflectionStrategy:
         )
         self._llm = llm
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
+        self._cost_limiter = cost_limiter
         self._output_schema = output_schema or REFLECTION_SCHEMA
         self._critique_schema = critique_schema or CRITIQUE_SCHEMA
         # 增强项「异模型 critic」入口：critic/refine 默认走 fast，可构造注入覆盖
         self._critique_model_key = critique_model_key
+        # 自查/修正阶段 token 用量累计（execute 开始重置；供成本护栏 + outcome 统计）
+        self._structured_usage: dict = {}
         # 结果载体，execute() 结束后读取
         self.outcome: ReflectionOutcome | None = None
 
@@ -234,6 +248,9 @@ class ReflectionStrategy:
         Yields:
             SSE 事件字符串（react 事件 + 阶段 info + done）
         """
+        # 每次 execute 独立：重置自查/修正阶段 token 用量累计
+        self._structured_usage = {}
+
         # ── 阶段一：收集 + 初稿（复用 ReAct，工具证据链 + final_answer 结构化）──
         async for event in self._react.execute(
             user_input,
@@ -294,10 +311,34 @@ class ReflectionStrategy:
         current = draft  # 当前候选稿（初稿 → 各轮修正稿）
         refine_round = 0
         while True:
+            # 成本护栏：发起新付费调用前 check（react + 自查/修正累计，超限停机降级）
+            if self._cost_limiter is not None:
+                exceeded, cost = self._cost_limiter.check(
+                    _merge_usage(react_outcome.usage, self._structured_usage)
+                )
+                if exceeded:
+                    async for event in self._finalize(
+                        react_outcome,
+                        draft=draft,
+                        structured=current,
+                        critique=None,
+                        refine_rounds=refine_round,
+                        success=bool(current),
+                        degraded=True,
+                        error=f"成本超限（累计 ${cost}），采用最近稿（降级）",
+                        info="成本超限，采用最近稿（降级）",
+                    ):
+                        yield event
+                    return
+
             # ── 自查当前稿 ──
-            critique, crit_action = await self._critique(
+            critique, crit_action, crit_usage = await self._critique(
                 evidence, current, react_outcome.iterations
             )
+            if crit_usage:
+                self._structured_usage = _merge_usage(
+                    self._structured_usage, crit_usage
+                )
             if critique is None:
                 # 自查失败 → 降级采用当前稿（best-effort，不抛错）
                 suffix = "（STOP）" if crit_action == AgentErrorAction.STOP else ""
@@ -352,9 +393,13 @@ class ReflectionStrategy:
             yield build_info_event(
                 f"自查发现 {len(issues)} 个问题，修正第 {refine_round} 轮"
             )
-            refined, ref_action = await self._refine(
+            refined, ref_action, ref_usage = await self._refine(
                 evidence, current, issues, react_outcome.iterations
             )
+            if ref_usage:
+                self._structured_usage = _merge_usage(
+                    self._structured_usage, ref_usage
+                )
             if refined is None:
                 # 修正失败 → 降级采用当前稿（best-effort）
                 suffix = "（STOP）" if ref_action == AgentErrorAction.STOP else ""
@@ -407,8 +452,9 @@ class ReflectionStrategy:
             reasoning=react_outcome.reasoning,
             tool_calls=react_outcome.tool_calls,
             iterations=react_outcome.iterations,
-            total_tokens=react_outcome.total_tokens,
-            usage=react_outcome.usage,
+            total_tokens=react_outcome.total_tokens
+            + self._structured_usage.get("total_tokens", 0),
+            usage=_merge_usage(react_outcome.usage, self._structured_usage) or None,
             structured=structured,
             draft=draft,
             critique=critique,
@@ -429,14 +475,16 @@ class ReflectionStrategy:
         evidence: list[dict[str, Any]],
         draft: dict[str, Any],
         iteration: int,
-    ) -> tuple[dict | None, AgentErrorAction | None]:
-        """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作)；RAISE 抛 AgentRunError。"""
+    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
+        """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。"""
         try:
-            return await self._generate_critique(evidence, draft), None
+            result, usage = await self._generate_critique(evidence, draft)
+            return result, None, usage
         except (StructuredRefusalError, StructuredToolCallError) as e:
-            return await self._dispatch_critique_failed_result(
+            result, action = await self._dispatch_critique_failed_result(
                 f"自查生成失败: {e}", iteration
             )
+            return result, action, None
 
     async def _refine(
         self,
@@ -444,21 +492,27 @@ class ReflectionStrategy:
         draft: dict[str, Any],
         issues: list[dict[str, Any]],
         iteration: int,
-    ) -> tuple[dict | None, AgentErrorAction | None]:
-        """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作)；RAISE 抛 AgentRunError。"""
+    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
+        """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。"""
         try:
-            return await self._generate_refine(evidence, draft, issues), None
+            result, usage = await self._generate_refine(evidence, draft, issues)
+            return result, None, usage
         except (StructuredRefusalError, StructuredToolCallError) as e:
-            return await self._dispatch_critique_failed_result(
+            result, action = await self._dispatch_critique_failed_result(
                 f"修正失败: {e}", iteration
             )
+            return result, action, None
 
     async def _generate_critique(
         self,
         evidence: list[dict[str, Any]],
         draft: dict[str, Any],
-    ) -> dict | None:
-        """自查：对照证据链审查初稿，产出结构化自查报告（CRITIQUE_SCHEMA）。"""
+    ) -> tuple[dict | None, dict | None]:
+        """自查：对照证据链审查初稿，产出结构化自查报告（CRITIQUE_SCHEMA）。
+
+        Returns:
+            (自查结果, 本次调用 token 用量)——用量经 usage 可变参数回填（成本计量）。
+        """
         messages = [
             {
                 "role": "user",
@@ -467,19 +521,26 @@ class ReflectionStrategy:
                 ),
             }
         ]
-        return await self._llm.generate_structured(
+        usage: dict = {}
+        result = await self._llm.generate_structured(
             messages,
             self._critique_schema,
             model_key=self._critique_model_key,
+            usage=usage,
         )
+        return result, usage or None
 
     async def _generate_refine(
         self,
         evidence: list[dict[str, Any]],
         draft: dict[str, Any],
         issues: list[dict[str, Any]],
-    ) -> dict | None:
-        """修正：基于证据链 + 审查意见完整重写（REFLECTION_SCHEMA）。"""
+    ) -> tuple[dict | None, dict | None]:
+        """修正：基于证据链 + 审查意见完整重写（REFLECTION_SCHEMA）。
+
+        Returns:
+            (修正结果, 本次调用 token 用量)——用量经 usage 可变参数回填（成本计量）。
+        """
         messages = [
             {
                 "role": "user",
@@ -488,11 +549,14 @@ class ReflectionStrategy:
                 ),
             }
         ]
-        return await self._llm.generate_structured(
+        usage: dict = {}
+        result = await self._llm.generate_structured(
             messages,
             self._output_schema,
             model_key=self._critique_model_key,
+            usage=usage,
         )
+        return result, usage or None
 
     async def _dispatch_critique_failed_result(
         self,

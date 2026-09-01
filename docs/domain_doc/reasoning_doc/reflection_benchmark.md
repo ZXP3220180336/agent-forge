@@ -27,7 +27,7 @@
 
 - **三种「Reflection」必须分清**：`Reflexion`（跨轮次，反思存长期记忆）+ `Self-Refine`（同轮内迭代）+ `框架 Reflection`（generate→critique→revise 图循环）。本项目落地形态 = 框架 Reflection（单次报告内的自查修正），Reflexion 的跨轮次记忆对应 MemoryService 预留。
 - **工业级共同红线（Huang et al. 反证）**：**纯内在自查（intrinsic）不可靠，critic 必须被外部信号（工具结果 / 证据链）锚定**——本项目以 Grounding 为核心（自查注入证据链记录），满足该红线。
-- **核心必备 12 项全部落地**（逐项对照见下），1 项 ⚠️（#11 成本统计缺口：critique/refine 无 usage 回传，如实标注）。
+- **核心必备 12 项全部落地**（逐项对照见下），成本统计与护栏（#11）已通过 `generate_structured(usage=...)` 回填全阶段覆盖。
 - **增强项取舍**：异模型 critic（构造注入入口）✅ / 停滞检测（复用 ReAct）✅；跨轮次记忆、多 critic、HITL、回流微调按「不做或预留」降级（见产品导向视角）。
 
 ## 工业级参照：Reflection 能力清单
@@ -86,7 +86,7 @@
 | 8 | 完整上下文修正 | ✅ | `REFINE_PROMPT` 要求完整重写（非 patch）+ 逐条判断 issues（与证据链矛盾的不采纳，以证据链为准） |
 | 9 | 失败降级（best-effort） | ✅ | 自查/修正失败/ReAct 无 structured 全部 → 采用最近稿（degraded=True），不抛错 |
 | 10 | 结构化初稿（面向证据） | ✅ | 生成阶段复用 `ReActStrategy.execute(output_schema=REFLECTION_SCHEMA)`：工具收集 + final_answer 结构化初稿一次完成 |
-| 11 | token/成本统计 + 预算护栏 | ⚠️ | ReAct 收集阶段经内部 `_react` 的 cost_limiter / context_budget 完整护栏；**critique/refine 无 usage 回传**（`generate_structured` 契约限制），靠 `max_refine_rounds`（≤2 次 fast 调用）结构性兜底 |
+| 11 | token/成本统计 + 预算护栏 | ✅ | ReAct 收集阶段经内部 `_react` 的 cost_limiter / context_budget 完整护栏；critique/refine 经 `generate_structured(usage=...)` 回填 token 用量（仿 async_generate result 模式），累计到 outcome.total_tokens/usage + cost_limiter（循环顶部 check，超限停机降级）——全阶段覆盖 |
 | 12 | 事件 / 可观测性 | ✅ | ReAct 事件零改动 + 阶段 info（进入自查/自查通过/发现 N 问题/降级）+ done |
 
 ### 增强项对照

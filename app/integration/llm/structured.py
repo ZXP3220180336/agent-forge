@@ -344,6 +344,7 @@ class StructuredOutput:
         schema: dict[str, Any],
         model_key: str = "fast",
         max_tokens: int | None = None,
+        usage: dict | None = None,
     ) -> dict[str, Any] | None:
         """
         根据 JSON Schema 从消息中提取结构化数据（三级降级）。
@@ -361,6 +362,7 @@ class StructuredOutput:
             max_tokens: 输出预算上限。None 用 register_config 注入的默认值
                 （Container 注入 settings.llm_structured_max_tokens，默认 2048）；
                 截断时扩 2 倍重试 1 次。
+            usage: 可选，可变引用回填本次成功调用的 token 用量（供成本计量）。
 
         Returns:
             解析后的 dict，三级均失败返回 None
@@ -384,6 +386,7 @@ class StructuredOutput:
                 model_key,
                 schema=schema,
                 max_tokens=max_tokens,
+                usage=usage,
             )
         except StructuredTruncationError:
             return None  # 截断短路，不降级
@@ -400,6 +403,7 @@ class StructuredOutput:
                 model_key,
                 schema=schema,
                 max_tokens=max_tokens,
+                usage=usage,
             )
         except StructuredTruncationError:
             return None  # 截断短路，不降级
@@ -414,6 +418,7 @@ class StructuredOutput:
                 model_key,
                 schema=schema,
                 max_tokens=max_tokens,
+                usage=usage,
             )
         except StructuredTruncationError:
             return None  # 截断短路
@@ -426,6 +431,7 @@ class StructuredOutput:
         model_key: str,
         schema: dict[str, Any] | None = None,
         max_tokens: int | None = None,
+        usage: dict | None = None,
     ) -> dict[str, Any] | None:
         """尝试用指定 response_format 提取（解析前做边界检查）。
 
@@ -501,6 +507,8 @@ class StructuredOutput:
         for _ in range(_REASK_MAX_RETRIES):
             parsed, errors = _parse_and_validate(content, schema)
             if parsed is not None:
+                if usage is not None and result.usage:
+                    usage.update(result.usage)
                 return parsed
 
             # 日志脱敏：schema 校验失败的错误文本（`- 字段 …：e.message`）含
@@ -550,6 +558,8 @@ class StructuredOutput:
         # 解析，模型在最后一次回喂修正成功的结果会被静默丢弃（返回 None + 白付一次
         # 调用）。循环退出后再解析一次，保证每次请求的输出都经过解析/校验。
         parsed, _ = _parse_and_validate(content, schema)
+        if parsed is not None and usage is not None and result.usage:
+            usage.update(result.usage)
         return parsed  # 回喂耗尽（含终态）仍失败 → None 触发降级
 
     @staticmethod
@@ -559,6 +569,7 @@ class StructuredOutput:
         model_key: str,
         schema: dict[str, Any] | None = None,
         max_tokens: int | None = None,
+        usage: dict | None = None,
     ) -> dict[str, Any] | None:
         """纯 prompt 约束降级方案（同样做三态检查，截断/拒答短路）。
 
@@ -589,12 +600,16 @@ class StructuredOutput:
         fenced = re.sub(r"\s*```$", "", fenced, flags=re.MULTILINE)
         parsed = _try_parse_json(fenced, schema)
         if parsed is not None:
+            if usage is not None and result.usage:
+                usage.update(result.usage)
             return parsed
         # 2) 正则定位首个 `{` 到末个 `}` 的候选块（prose 包裹场景）
         m = re.search(r"\{.*\}", fenced, flags=re.DOTALL)
         if m:
             parsed = _try_parse_json(m.group(0), schema)
             if parsed is not None:
+                if usage is not None and result.usage:
+                    usage.update(result.usage)
                 return parsed
         return None
 

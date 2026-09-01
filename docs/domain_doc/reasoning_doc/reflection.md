@@ -109,7 +109,7 @@ ReflectionStrategy.execute()（三阶段）
 | `draft` / `critique` | 初稿 / 自查结果（供审计） |
 | `refine_rounds` / `degraded` | 实际修正轮数 / 是否经降级路径 |
 | `tool_calls` | 证据链（来自 ReAct outcome） |
-| `iterations` / `total_tokens` / `usage` | 统计（ReAct 累计；critique/refine 无 usage 回传，见 benchmark ⚠️） |
+| `iterations` / `total_tokens` / `usage` | 统计（ReAct 收集 + 自查/修正全阶段累计） |
 | `error` / `success` | 失败原因 / 是否成功 |
 
 ### Schema 契约
@@ -127,6 +127,7 @@ ReflectionStrategy.execute()（三阶段）
 阶段二+三 自查 → 修正 → 复查 循环（真迭代，每次修正后重新自查）：
   current = draft
   while True:
+    ├─ 成本护栏：发起新付费调用前 check（react + 自查/修正累计），超限 → 停机降级
     ├─ 自查 current（CRITIQUE_SCHEMA）→ 失败 → 降级采用 current（degraded）
     ├─ critique.ok → 采用 current（degraded=False，early exit）
     ├─ refine_round >= max_refine_rounds-1 → 达上限，采用 current（degraded）

@@ -200,6 +200,18 @@
 
 ---
 
+# 2026-09-01 Reflection 自查/修正 token 统计 + cost 护栏（benchmark #11 去 ⚠️）
+
+> generate_structured 回传 usage（仿 async_generate result 模式），critique/refine 纳入 token/成本统计 + cost_limiter。
+
+- [x] 端口 llm_gateway.generate_structured 加 `usage` 可变参数（返回签名不变，向后兼容）
+- [x] LLMService / StructuredOutput（extract / _try_extract / _fallback_extract）透传 + 回填 usage
+- [x] ReflectionStrategy：_generate_* 返回 (result, usage)；累计 _structured_usage → outcome.total_tokens/usage 合并；循环顶部 cost_limiter.check 超限停机降级
+- [x] 测试：新增 usage 累计 + cost 超限 2 用例；假对象适配 usage 参数；全量 728 passed
+- [x] 文档：ADR（cost 缺口 → 完整）/ benchmark #11 ✅ / reflection.md / ports.md / structure.md / llm.md / llm_service.md
+
+---
+
 # 2026-09-01 Reflection 修正循环缺陷修复（REASON-009）
 
 > 审查发现：修正循环复用同一批 issues 反复修正（工业反模式）。调研确认「迭代必须新反馈」后重构为真迭代。

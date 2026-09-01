@@ -101,7 +101,7 @@ app/integration/llm/
 | `__init__(api_key="", model="", base_url="")` | 构造 | 空构造走 `ClientManager`（需先注册配置）；手动构造须 api_key / model / base_url 齐备 |
 | `async_generate(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None)` | 异步生成器 | 流式生成，yield SSE 事件字符串（Agent 专用）；`cancel_event` 置位优雅终止 |
 | `generate(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast") -> StreamResult \| None` | 异步方法 | 非流式单轮生成（简单任务）；可恢复失败返回 None，不可恢复错误上抛 |
-| `generate_structured(messages, schema, model_key="fast", max_tokens=None) -> dict \| None` | 异步方法 | 结构化输出三级降级（JSON Schema → JSON Mode → 正则）；拒答/工具调用抛异常 |
+| `generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None) -> dict \| None` | 异步方法 | 结构化输出三级降级（JSON Schema → JSON Mode → 正则）；拒答/工具调用抛异常；`usage` 可变引用回填 token 用量 |
 | `calculate_cost(usage, model="") -> dict` | 同步静态 | 按模型用量估算成本（代理 `CostTracker`） |
 | `count_tokens(text) -> int` | 同步 | 单段文本 token 数（主模型编码，委托 tiktoken） |
 | `count_messages_tokens(messages) -> int` | 同步 | messages 总 token 数（含格式开销，主模型编码） |

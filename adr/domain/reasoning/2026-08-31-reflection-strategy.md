@@ -23,6 +23,6 @@
 - ✅ 核心必备 12 项工业基准全部落地（1 项 ⚠️ cost 缺口），见 reflection_benchmark.md。
 - ✅ Grounding 直接踩产品证据链亮点（结论可回溯 / 无编造 / 置信度分级 / explicit_abstention 显式放弃）。
 - ✅ **真迭代已实现**：修正后重新自查（early exit + cap），修正初版「refine 后不二次自查」决策（见 [REASON-009](../../../issues/domain/reasoning/2026-09-01-reflect-refine-loop.md)）。
-- ⚠️ **cost 缺口**：`generate_structured` 契约不返回 usage → critique/refine 实际 token/成本不可精确计量。取舍：收集阶段（token 主体）经内部 react 的 cost_limiter 完整护栏；critique/refine 由 `max_refine_rounds`（≤2 次 fast 调用）结构性兜底。升级路径：扩展 `generate_structured` 回传 usage（跨层改造，后续评估）。
+- ✅ **cost 护栏完整**：`generate_structured` 新增 `usage` 可变参数回填（仿 `async_generate` 的 result 模式，返回签名不变向后兼容）——critique/refine 的 token 用量累计到 outcome.total_tokens/usage，并纳入 cost_limiter（循环顶部 check，超限停机降级）。成本统计与护栏全阶段覆盖。
 - ⚠️ **共享内核影响**：`AgentErrorKind` 12→13 类（error_handling.py），所有 Agent 共享——Reflection 独有 kind，ReAct 不受影响。
 - 📌 增强项（跨轮次记忆 / 多 critic / HITL / 回流微调）按「不做或预留」降级（产品导向，见 reflection_benchmark 产品视角）。

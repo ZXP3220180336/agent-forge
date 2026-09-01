@@ -65,6 +65,7 @@ class LLMGateway(Protocol):
         schema: dict[str, Any],
         model_key: str = "fast",
         max_tokens: int | None = None,
+        usage: dict | None = None,
     ) -> dict | None: ...
 
     def calculate_cost(

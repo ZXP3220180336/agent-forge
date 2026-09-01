@@ -70,7 +70,7 @@ class _ReflectionLLM:
         yield build_message_event(spec.get("content", ""))
         return
 
-    async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None):
+    async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None):
         self.structured_calls += 1
         spec = self.structured_scripts[
             min(self.structured_calls - 1, len(self.structured_scripts) - 1)

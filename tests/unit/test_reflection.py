@@ -81,9 +81,10 @@ class _EchoTool(BaseTool):
 class _ReflectionLLM:
     """脚本化 LLM 替身：async_generate 回填 StreamResult，generate_structured 脚本返回。"""
 
-    def __init__(self, react_scripts: list[dict], structured_scripts: list):
+    def __init__(self, react_scripts: list[dict], structured_scripts: list, usage: dict | None = None):
         self.react_scripts = react_scripts
         self.structured_scripts = structured_scripts
+        self.usage_spec = usage or {}
         self.react_calls = 0
         self.structured_calls = 0
         self.structured_messages: list[list[dict]] = []
@@ -97,7 +98,7 @@ class _ReflectionLLM:
         yield build_message_event(spec.get("content", ""))
         return
 
-    async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None):
+    async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None):
         self.structured_calls += 1
         self.structured_messages.append(messages)
         spec = self.structured_scripts[
@@ -105,6 +106,8 @@ class _ReflectionLLM:
         ]
         if isinstance(spec, Exception):
             raise spec
+        if usage is not None and self.usage_spec:
+            usage.update(self.usage_spec)
         return spec
 
 
@@ -490,3 +493,62 @@ async def test_reflect_reaches_limit_adopts_last():
     assert strategy.outcome.degraded is True
     assert "达到修正上限" in strategy.outcome.error
     assert any("达到修正上限" in e for e in events)
+
+
+class _FakeCostLimiterThreshold:
+    """按累计 total_tokens 超阈值返回超限（react 阶段 usage 为空不超，reflection 累计后超）。"""
+
+    def __init__(self, threshold: float):
+        self.threshold = threshold
+
+    def check(self, usage):
+        total = usage.get("total_tokens", 0)
+        return total > self.threshold, float(total)
+
+
+@pytest.mark.asyncio
+async def test_reflect_usage_accumulated():
+    """critique/refine 的 token 用量累计到 outcome（total_tokens/usage 合并 react + 结构化）。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺信号"}]},
+            REFINED,
+            {"ok": True, "issues": []},
+        ],
+        usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    )
+    strategy = _make_strategy(llm)
+    await _run(strategy)
+
+    # 自查 + 修正 + 复查 = 3 次结构化调用，每次 total 30 → 累计 90（react 阶段无 usage）
+    assert strategy.outcome is not None
+    assert strategy.outcome.total_tokens == 90
+    assert strategy.outcome.usage["total_tokens"] == 90
+    assert strategy.outcome.usage["prompt_tokens"] == 30
+    assert strategy.outcome.usage["completion_tokens"] == 60
+
+
+@pytest.mark.asyncio
+async def test_reflect_cost_limit_stops():
+    """成本护栏：自查/修正累计超限 → 停机降级采用当前稿（error 记录成本超限）。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺信号"}]},
+            REFINED,
+            {"ok": True, "issues": []},
+        ],
+        usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    )
+    tools = ToolService(max_concurrent_tools=10)
+    tools.register(_EchoTool())
+    strategy = ReflectionStrategy(
+        llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(20)
+    )
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.degraded is True
+    assert "成本超限" in strategy.outcome.error
+    assert strategy.outcome.structured == REFINED  # 采用最近修正稿
