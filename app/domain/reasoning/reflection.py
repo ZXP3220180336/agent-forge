@@ -36,7 +36,11 @@ from app.shared.error_handling import (
     AgentRunError,
     ErrorHandlerRegistry,
 )
-from app.shared.events import build_done_event, build_info_event
+from app.shared.events import (
+    AgentEventType,
+    build_done_event,
+    build_info_event,
+)
 from app.shared.exceptions import AppError
 
 from .react import ReActOutcome, ReActStrategy
@@ -269,6 +273,11 @@ class ReflectionStrategy:
             output_schema=self._output_schema,
             cancel_event=cancel_event,
         ):
+            # 抑制 ReAct 中间 done：Reflection 收尾 _finalize 统一产出 done（含
+            # 全阶段 total_tokens），透传 ReAct 的 done 会造成事件流两个口径不同
+            # 的完成事件（噪音 + 事实源漂移，P2 / REASON-011）
+            if f'"type": "{AgentEventType.DONE.value}"' in event:
+                continue
             yield event
 
         react_outcome = self._react.outcome
@@ -465,9 +474,13 @@ class ReflectionStrategy:
         )
         if info:
             yield build_info_event(info)
+        # done 事件 token 口径与 outcome 一致（P2）：react 收集 + 自查/修正全阶段
+        # 累计——避免 SSE 事件只报收集阶段、漏计 critique/refine 成本（事件流与
+        # 结果对象两个事实源对齐）
         yield build_done_event(
             iterations=react_outcome.iterations,
-            total_tokens=react_outcome.total_tokens,
+            total_tokens=react_outcome.total_tokens
+            + self._structured_usage.get("total_tokens", 0),
         )
 
     async def _critique(

@@ -168,13 +168,14 @@ ReflectionStrategy.execute()（三阶段）
 
 ## 测试状态
 
-`tests/unit/test_reflection.py`（22 用例）+ `tests/unit/test_reflection_agent.py`（5 用例）：
+`tests/unit/test_reflection.py`（26 用例）+ `tests/unit/test_reflection_agent.py`（5 用例）：
 
 - 三阶段全路径：自查 ok 采用初稿 / 自查 issues 修正 + 复查 ok 采用 refined
 - 真迭代：修正后复查新 issues 再修正（refine_rounds=2）/ 达上限采用最后修正稿（degraded）
 - Grounding 注入断言（自查入参含证据链 + 初稿）
-- 降级路径：自查失败 / 拒答 / **不可恢复 AppError（熔断等）** / 修正失败 / ReAct 无 structured / ReAct 失败
+- 降级路径：自查失败 / 拒答 / **不可恢复 AppError（熔断 / LLMAPIError 401/403）** / 修正失败 / ReAct 无 structured / ReAct 失败
 - 非 AppError 编程错误不吞、向上冒泡（fail fast）
+- done 事件 total_tokens 与 outcome 一致 + 抑制 ReAct 中间 done（P2 / REASON-011，事件流仅收尾 1 个 done）
 - max_refine_rounds 上限（max=1 不修正）、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
 - Scope 盲区清单维度穷举（9 dimension）、护栏透传
 - 桥接：_map_outcome 映射 / ctx 透传 / 端到端 / 默认向后兼容

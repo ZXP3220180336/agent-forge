@@ -530,6 +530,52 @@ async def test_reflect_usage_accumulated():
 
 
 @pytest.mark.asyncio
+async def test_reflect_done_event_tokens_match_outcome():
+    """done 事件 total_tokens 与 outcome 一致（全阶段累计，P2 口径修复）。
+
+    修复前：done 事件只用 react 阶段 total_tokens，漏计 critique/refine 用量——
+    SSE 事件与 outcome 两个事实源漂移，成本审计失真。
+    """
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺信号"}]},
+            REFINED,
+            {"ok": True, "issues": []},
+        ],
+        usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    )
+    strategy = _make_strategy(llm)
+    events = await _run(strategy)
+
+    assert strategy.outcome is not None
+    done = [e for e in events if '"type": "done"' in e]
+    assert done
+    # 抑制 ReAct 中间 done 后事件流仅 1 个 done（Reflection 收尾产出），
+    # total_tokens 须与 outcome 一致（90）——修复前为 react 阶段值 0
+    assert f'"total_tokens": {strategy.outcome.total_tokens}' in done[-1]
+
+
+@pytest.mark.asyncio
+async def test_reflect_suppresses_react_done_event():
+    """抑制 ReAct 中间 done：事件流只保留 Reflection 收尾的 1 个 done（噪音治理）。
+
+    修复前：Reflection 透传 ReAct 收集阶段的 done + 自己收尾的 done = 2 个，
+    且两处 done 的 total_tokens 口径不同（react 仅收集阶段）——消费方困惑。
+    """
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[{"ok": True, "issues": []}],
+    )
+    strategy = _make_strategy(llm)
+    events = await _run(strategy)
+
+    done = [e for e in events if '"type": "done"' in e]
+    assert len(done) == 1  # 仅 Reflection 收尾 done（修复前 = 2）
+    assert f'"total_tokens": {strategy.outcome.total_tokens}' in done[0]
+
+
+@pytest.mark.asyncio
 async def test_reflect_cost_limit_stops():
     """成本护栏：自查/修正累计超限 → 停机降级采用当前稿（error 记录成本超限）。"""
     llm = _ReflectionLLM(

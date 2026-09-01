@@ -1,3 +1,15 @@
+# 2026-09-01 Reflection done 事件口径修复（REASON-011 / P2）+ 抑制 ReAct 中间 done
+
+> 评审发现：`_finalize` 的 done 事件只用 react 阶段 total_tokens，漏计 critique/refine 用量——SSE 事件与 outcome 两个事实源漂移（成本审计失真）；且 Reflection 透传 ReAct 的 done 造成事件流 2 个口径不同的完成事件（噪音）。
+
+- [x] 修复 reflection.py：`_finalize` 的 `build_done_event` total_tokens 改为 `react + _structured_usage`（与 outcome 一致）
+- [x] 抑制 ReAct 中间 done：Reflection 透传 ReAct 事件时过滤 done（`AgentEventType.DONE.value` 匹配），事件流仅保留收尾 1 个 done
+- [x] 测试：`test_reflect_done_event_tokens_match_outcome` + `test_reflect_suppresses_react_done_event`；test_reflection 26 + agent 5 通过
+- [x] 文档：reflection.md 测试状态（22→26）+ issue REASON-011（教训 2 更新为已修复）
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-09-01 llm_doc/error.md：传输错误处理组件文档 + 文档链接收敛
 
 > 用户要求 llm 异常处理文档同步：新建 error.md（组件模板 B），其他文档异常相关说明链接到它（一个事实一个家）。
