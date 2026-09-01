@@ -1,7 +1,7 @@
 # Reflection 策略工业级对标（完成度基准）
 
 > **对象**：`app/domain/reasoning/reflection.py`（ReflectionStrategy）
-> **更新日期**：2026-08-31
+> **更新日期**：2026-09-02
 > **定位**：Reflection 推理策略（生成 → 自查 → 修正）的工业级能力基准与差距清单——供策略增强、实现评价参考
 > **依据**：Reflexion（NeurIPS 2023）/ Self-Refine（ICLR 2023）/ Huang et al.（ICLR 2024 反证）/ LangChain / LangGraph / OpenAI Agents SDK / SMOLagents / Claude Agent SDK / DSPy / CrewAI 源码级调研（2026-08-31）
 
@@ -18,6 +18,7 @@
   - [本项目逐项对照](#本项目逐项对照)
     - [核心必备对照](#核心必备对照)
     - [增强项对照](#增强项对照)
+  - [完成度评估遗留问题收尾](#完成度评估遗留问题收尾)
   - [产品导向视角](#产品导向视角)
   - [相关文档](#相关文档)
 
@@ -103,6 +104,19 @@
 | 20 | HITL 人工审批 | ❌ | 工具层已有 ApprovalGate 审批；反思环节 HITL 留 Phase D |
 | 21 | 自适应触发 | ❌ | 当前 ReflectionAgent 显式触发；按置信度跳过低风险任务留后续 |
 | 22 | 循环停滞检测 | ✅ | 复用 ReAct 收集阶段内建 STALLED（`max_same_action_turns`）——反思死循环同样被覆盖 |
+
+---
+
+## 完成度评估遗留问题收尾
+
+> 2026-09-01 工业级完成度评审发现 4 类缺口（P1~P4），均已修复收口；问题生命周期见各 issue，评审要点与修复细节见 [reflection.md](reflection.md)。
+
+| # | 问题 | 修复 | 状态 |
+| --- | --- | --- | --- |
+| **P1** | 自查/修正异常捕获只覆盖 `StructuredRefusalError`/`ToolCallError`，熔断等不可恢复 AppError 冒泡崩溃（降级保证不完整） | `_critique`/`_refine` 改 `except AppError` 统一捕获 + 集成层 openai 不可恢复异常归一 `LLMAPIError`（AppError 树）→ 领域层统一兜底 | ✅ [REASON-010](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md) |
+| **P2** | done 事件 total_tokens 只报 react 收集阶段，漏计 critique/refine 用量（SSE 事件与 outcome 事实源漂移，成本审计失真） | `_finalize` done 事件口径与 outcome 一致（react + 结构化累计）+ 抑制 ReAct 中间 done（事件流仅保留收尾 1 个） | ✅ [REASON-011](../../../issues/domain/reasoning/2026-09-01-reflect-done-token-caliber.md) |
+| **P3** | 反思循环只有 cost_limiter 一重护栏，cancel / 总时长超限未检查（与 ReAct 收集阶段三重护栏不对称，取消/超时后仍发付费调用） | `_should_abort` 循环顶部检查（用户取消 / `max_execution_time` 超限 → 停机降级采用最近稿） | ✅ 见 [reflection.md](reflection.md) 边界情况 |
+| **P4** | 次要项：`explicit_abstention` 可选（产品「显式放弃」软契约）· 实例非协程安全未声明 · critique/refine 未显式传 max_tokens | P4-2 `required` 加 `explicit_abstention`（程序化强制）· P4-3 docstring 声明实例单次执行 · P4-1 评估非缺口（默认预算 `llm_structured_max_tokens` + 截断降级兜底），文档说明 | ✅ 见 [reflection.md](reflection.md) 边界情况 |
 
 ---
 
