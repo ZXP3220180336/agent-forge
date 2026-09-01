@@ -292,140 +292,105 @@ class ReflectionStrategy:
         draft = react_outcome.structured
         evidence = react_outcome.tool_calls
 
-        # ── 阶段二：自查（Critic 上下文隔离 + Grounding）──
+        # ── 阶段二 + 三：自查 → 修正 → 复查 循环（真迭代，每次修正后重新自查）──
+        # 工业标准（Self-Refine / LangGraph）：迭代必须由新反馈驱动——修正 refined 后
+        # 重新自查 refined，ok 则采用、新 issues 再修正，直到通过或达 max_refine_rounds。
+        # 复用同一批 issues 反复修正 = 反模式（refined 已被处理，旧 issues 无新信息）。
         yield build_info_event("生成初稿完成，进入自查")
-        critique: dict | None = None
-        try:
-            critique = await self._generate_critique(evidence, draft)
-        except (StructuredRefusalError, StructuredToolCallError) as e:
-            action = await self._dispatch_critique_failed(
-                f"自查生成失败: {e}", react_outcome.iterations
+        current = draft  # 当前候选稿（初稿 → 各轮修正稿）
+        refine_round = 0
+        while True:
+            # ── 自查当前稿 ──
+            critique, crit_action = await self._critique(
+                evidence, current, react_outcome.iterations
             )
-            if action == AgentErrorAction.RAISE:
-                raise AgentRunError(
-                    AgentErrorKind.CRITIQUE_FAILED,
-                    f"自查生成失败: {e}",
-                    react_outcome.iterations,
-                )
-            if action == AgentErrorAction.STOP:
+            if critique is None:
+                # 自查失败 → 降级采用当前稿（best-effort，不抛错）
+                suffix = "（STOP）" if crit_action == AgentErrorAction.STOP else ""
                 self.outcome = self._finalize(
                     react_outcome,
                     draft=draft,
-                    error=f"自查失败（STOP）: {e}",
-                    success=False,
+                    structured=current,
+                    critique=None,
+                    refine_rounds=refine_round,
+                    success=crit_action != AgentErrorAction.STOP and bool(current),
                     degraded=True,
+                    error=f"自查失败{suffix}，采用最近稿（降级）",
+                )
+                yield build_info_event("自查失败，采用最近稿（降级）")
+                yield build_done_event(
+                    iterations=react_outcome.iterations,
+                    total_tokens=react_outcome.total_tokens,
+                )
+                return
+
+            if critique.get("ok"):
+                # 自查通过 → 采用当前稿（degraded=False）
+                self.outcome = self._finalize(
+                    react_outcome,
+                    draft=draft,
+                    structured=current,
+                    critique=critique,
+                    refine_rounds=refine_round,
+                    success=True,
+                )
+                yield build_info_event("自查通过，采用当前稿")
+                yield build_done_event(
+                    iterations=react_outcome.iterations,
+                    total_tokens=react_outcome.total_tokens,
+                )
+                return
+
+            # 有 issues 且已达修正上限 → best-effort 采用当前稿（未通过自查）
+            # max_refine_rounds = 报告生成尝试总次数（初稿 + 至多 max_refine_rounds-1 次修正）
+            if refine_round >= max_refine_rounds - 1:
+                self.outcome = self._finalize(
+                    react_outcome,
+                    draft=draft,
+                    structured=current,
+                    critique=critique,
+                    refine_rounds=refine_round,
+                    success=bool(current),
+                    degraded=True,
+                    error=f"达到修正上限({max_refine_rounds})，采用最近稿（未通过自查）",
+                )
+                yield build_info_event(
+                    f"达到修正上限({max_refine_rounds})，采用最近稿"
                 )
                 yield build_done_event(
                     iterations=react_outcome.iterations,
                     total_tokens=react_outcome.total_tokens,
                 )
                 return
-            # CONTINUE → 降级采用 draft
 
-        if critique is None:
-            self.outcome = self._finalize(
-                react_outcome,
-                draft=draft,
-                structured=draft,
-                critique=None,
-                success=bool(draft),
-                degraded=True,
-                error="自查失败，采用初稿（降级）",
+            # 有 issues 且未达上限 → 修正（issues 回喂 + 完整上下文重写，ground-truth 兜底）
+            issues = critique.get("issues") or []
+            refine_round += 1
+            yield build_info_event(f"自查发现 {len(issues)} 个问题，修正第 {refine_round} 轮")
+            refined, ref_action = await self._refine(
+                evidence, current, issues, react_outcome.iterations
             )
-            yield build_info_event("自查失败，采用初稿（降级）")
-            yield build_done_event(
-                iterations=react_outcome.iterations,
-                total_tokens=react_outcome.total_tokens,
-            )
-            return
-
-        if critique.get("ok"):
-            self.outcome = self._finalize(
-                react_outcome,
-                draft=draft,
-                structured=draft,
-                critique=critique,
-                refine_rounds=0,
-                success=True,
-            )
-            yield build_info_event("自查通过，采用初稿")
-            yield build_done_event(
-                iterations=react_outcome.iterations,
-                total_tokens=react_outcome.total_tokens,
-            )
-            return
-
-        issues = critique.get("issues") or []
-        yield build_info_event(f"自查发现 {len(issues)} 个问题，进入修正")
-
-        # ── 阶段三：修正（issues 回喂 + 完整上下文重写，ground-truth 兜底）──
-        best = draft
-        for refine_round in range(1, max_refine_rounds):
-            yield build_info_event(f"修正第 {refine_round} 轮")
-            refined: dict | None = None
-            try:
-                refined = await self._generate_refine(evidence, best, issues)
-            except (StructuredRefusalError, StructuredToolCallError) as e:
-                action = await self._dispatch_critique_failed(
-                    f"修正失败: {e}", react_outcome.iterations
-                )
-                if action == AgentErrorAction.RAISE:
-                    raise AgentRunError(
-                        AgentErrorKind.CRITIQUE_FAILED,
-                        f"修正失败: {e}",
-                        react_outcome.iterations,
-                    )
-                if action == AgentErrorAction.STOP:
-                    self.outcome = self._finalize(
-                        react_outcome,
-                        draft=draft,
-                        structured=best,
-                        critique=critique,
-                        refine_rounds=refine_round - 1,
-                        error=f"修正失败（STOP）: {e}",
-                        success=bool(best),
-                        degraded=True,
-                    )
-                    yield build_done_event(
-                        iterations=react_outcome.iterations,
-                        total_tokens=react_outcome.total_tokens,
-                    )
-                    return
-                # CONTINUE → 降级采用 best
-
             if refined is None:
+                # 修正失败 → 降级采用当前稿（best-effort）
+                suffix = "（STOP）" if ref_action == AgentErrorAction.STOP else ""
                 self.outcome = self._finalize(
                     react_outcome,
                     draft=draft,
-                    structured=best,
+                    structured=current,
                     critique=critique,
                     refine_rounds=refine_round - 1,
-                    success=bool(best),
+                    success=ref_action != AgentErrorAction.STOP and bool(current),
                     degraded=True,
-                    error="修正失败，采用最近初稿（降级）",
+                    error=f"修正失败{suffix}，采用最近稿（降级）",
                 )
-                yield build_info_event("修正失败，采用最近初稿（降级）")
+                yield build_info_event("修正失败，采用最近稿（降级）")
                 yield build_done_event(
                     iterations=react_outcome.iterations,
                     total_tokens=react_outcome.total_tokens,
                 )
                 return
-            best = refined
-
-        # 达修正上限 → 采用最近成功稿（best-effort）
-        self.outcome = self._finalize(
-            react_outcome,
-            draft=draft,
-            structured=best,
-            critique=critique,
-            refine_rounds=max_refine_rounds - 1,
-            success=bool(best),
-        )
-        yield build_info_event(f"达到修正上限({max_refine_rounds})，采用最近初稿")
-        yield build_done_event(
-            iterations=react_outcome.iterations,
-            total_tokens=react_outcome.total_tokens,
-        )
+            current = refined
+            # 回到循环顶部 → 重新自查修正稿（真迭代的关键：新反馈驱动下一轮）
 
     # ── 内部辅助 ──
 
@@ -457,6 +422,46 @@ class ReflectionStrategy:
             error=error,
             success=success,
         )
+
+    async def _critique(
+        self,
+        evidence: list[dict[str, Any]],
+        draft: dict[str, Any],
+        iteration: int,
+    ) -> tuple[dict | None, AgentErrorAction | None]:
+        """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作)；RAISE 抛 AgentRunError。"""
+        try:
+            return await self._generate_critique(evidence, draft), None
+        except (StructuredRefusalError, StructuredToolCallError) as e:
+            return await self._dispatch_critique_failed_result(
+                f"自查生成失败: {e}", iteration
+            )
+
+    async def _refine(
+        self,
+        evidence: list[dict[str, Any]],
+        draft: dict[str, Any],
+        issues: list[dict[str, Any]],
+        iteration: int,
+    ) -> tuple[dict | None, AgentErrorAction | None]:
+        """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作)；RAISE 抛 AgentRunError。"""
+        try:
+            return await self._generate_refine(evidence, draft, issues), None
+        except (StructuredRefusalError, StructuredToolCallError) as e:
+            return await self._dispatch_critique_failed_result(
+                f"修正失败: {e}", iteration
+            )
+
+    async def _dispatch_critique_failed_result(
+        self,
+        message: str,
+        iteration: int,
+    ) -> tuple[None, AgentErrorAction]:
+        """CRITIQUE_FAILED 分发：RAISE 抛 AgentRunError；否则返回 (None, action) 供调用方降级。"""
+        action = await self._dispatch_critique_failed(message, iteration)
+        if action == AgentErrorAction.RAISE:
+            raise AgentRunError(AgentErrorKind.CRITIQUE_FAILED, message, iteration)
+        return None, action
 
     async def _generate_critique(
         self,

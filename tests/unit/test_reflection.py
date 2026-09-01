@@ -182,12 +182,13 @@ async def test_reflect_ok_adopts_draft():
 
 @pytest.mark.asyncio
 async def test_reflect_issues_refine_adopts_refined():
-    """自查发现 issues→修正→采用 refined（refine_rounds=1）。"""
+    """自查 issues→修正→复查 refined ok→采用 refined（refine_rounds=1，真迭代）。"""
     llm = _ReflectionLLM(
         react_scripts=_react_scripts_with_draft(DRAFT),
         structured_scripts=[
             {"ok": False, "issues": [{"severity": "critical", "dimension": "grounding", "description": "证据不足"}]},
-            REFINED,
+            REFINED,  # 修正
+            {"ok": True, "issues": []},  # 复查 refined → ok
         ],
     )
     strategy = _make_strategy(llm)
@@ -197,7 +198,8 @@ async def test_reflect_issues_refine_adopts_refined():
     assert strategy.outcome.structured == REFINED
     assert strategy.outcome.refine_rounds == 1
     assert strategy.outcome.degraded is False
-    assert any("进入修正" in e for e in events)
+    assert strategy.outcome.critique["ok"] is True  # 最后一次自查（修正后复查）通过
+    assert any("修正第 1 轮" in e for e in events)
 
 
 @pytest.mark.asyncio
@@ -428,3 +430,63 @@ async def test_reflect_guardrails_passthrough_to_react():
 
     assert strategy._react._cost_limiter is cl
     assert strategy._react._context_budget is cb
+
+
+REFINED2 = {
+    "summary": "良率下降归因于设备 A 告警（最终版）",
+    "conclusions": [
+        {
+            "claim": "设备 A 告警与良率下降时间吻合，且历史类似 excursion 佐证",
+            "supporting_evidence": ["echo: query=alerts", "echo: query=yield", "echo: query=history"],
+            "confidence": 0.9,
+        }
+    ],
+    "next_steps": ["查询设备 A 详细告警记录"],
+    "explicit_abstention": [],
+}
+
+
+@pytest.mark.asyncio
+async def test_reflect_recritique_issues_refines_again():
+    """真迭代：修正后复查发现新 issues → 再修正 → 复查 ok → 采用（refine_rounds=2）。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "critical", "dimension": "grounding", "description": "证据不足"}]},
+            REFINED,  # 修正 1
+            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺历史佐证"}]},  # 复查 refined → 新 issues
+            REFINED2,  # 修正 2
+            {"ok": True, "issues": []},  # 复查 refined2 → ok
+        ],
+    )
+    strategy = _make_strategy(llm)
+    events = await _run(strategy, max_refine_rounds=3)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == REFINED2
+    assert strategy.outcome.refine_rounds == 2
+    assert strategy.outcome.degraded is False
+    assert strategy.outcome.critique["ok"] is True
+    assert any("修正第 2 轮" in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_reflect_reaches_limit_adopts_last():
+    """真迭代达上限：修正后复查仍有 issues 且达 max_refine_rounds → 采用最后修正稿（degraded=True）。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "critical", "dimension": "grounding", "description": "证据不足"}]},
+            REFINED,  # 修正 1
+            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "仍缺信号"}]},  # 复查 refined → 仍有 issues → 达上限
+        ],
+    )
+    strategy = _make_strategy(llm)
+    events = await _run(strategy)  # max_refine_rounds=2
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == REFINED  # 采用最后修正稿
+    assert strategy.outcome.refine_rounds == 1
+    assert strategy.outcome.degraded is True
+    assert "达到修正上限" in strategy.outcome.error
+    assert any("达到修正上限" in e for e in events)

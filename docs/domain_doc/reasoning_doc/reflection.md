@@ -68,8 +68,8 @@ Critic 被外部信号（工具记录）锚定：自查消息注入「证据链�
 | ReAct 无 structured（未调 final_answer） | 降级（content 保留），degraded=True |
 | 自查失败 / 拒答 | CRITIQUE_FAILED 分发，默认采用 draft，degraded=True |
 | 自查 ok | 采用 draft（degraded=False） |
-| 自查 issues + 修正成功 | 采用 refined（degraded=False） |
-| 修正失败 / 达上限 | 采用最近稿，degraded=True |
+| 自查 issues + 修正 + 复查 ok | 采用 refined（degraded=False） |
+| 修正失败 / 达上限（复查未通过） | 采用最近稿，degraded=True |
 
 ### CRITIQUE_FAILED 错误分发
 
@@ -124,16 +124,17 @@ ReflectionStrategy.execute()（三阶段）
   ├─ react 失败 → 降级 outcome（error 透传）
   ├─ react 无 structured → 降级（content 保留）
   └─ draft = outcome.structured；evidence = outcome.tool_calls（序列化剔除 final_answer）
-阶段二 自查：generate_structured(CRITIQUE_PROMPT + 证据链 + draft, CRITIQUE_SCHEMA)
-  ├─ 失败/拒答 → CRITIQUE_FAILED 分发 → 默认采用 draft（degraded）
-  ├─ ok → 采用 draft
-  └─ issues → 阶段三
-阶段三 修正：for round in 1..(max_refine_rounds-1):
-  ├─ generate_structured(REFINE_PROMPT + 证据链 + draft + issues, REFLECTION_SCHEMA)
-  ├─ 失败 → CRITIQUE_FAILED 分发 → 采用最近稿（degraded）
-  └─ 成功 → 采用 refined（refine_rounds=round）
-  达上限 → 采用最近稿
+阶段二+三 自查 → 修正 → 复查 循环（真迭代，每次修正后重新自查）：
+  current = draft
+  while True:
+    ├─ 自查 current（CRITIQUE_SCHEMA）→ 失败 → 降级采用 current（degraded）
+    ├─ critique.ok → 采用 current（degraded=False，early exit）
+    ├─ refine_round >= max_refine_rounds-1 → 达上限，采用 current（degraded）
+    └─ issues → 修正（REFINE_PROMPT + 证据链 + current + issues）→
+        成功 current = refined → 回到循环顶部重新自查修正稿
 ```
+
+> 真迭代依据（工业标准）：Self-Refine 每轮用新 feedback；LangGraph「revise 后必 re-reflect，否则循环无效」。复用同一批 issues 反复修正是反模式（[REASON-009](../../../issues/domain/reasoning/2026-09-01-reflect-refine-loop.md)）。
 
 ## 对外接口
 
@@ -164,10 +165,11 @@ ReflectionStrategy.execute()（三阶段）
 
 `tests/unit/test_reflection.py`（15 用例）+ `tests/unit/test_reflection_agent.py`（5 用例）：
 
-- 三阶段全路径：自查 ok 采用初稿 / issues 修正采用 refined
+- 三阶段全路径：自查 ok 采用初稿 / 自查 issues 修正 + 复查 ok 采用 refined
+- 真迭代：修正后复查新 issues 再修正（refine_rounds=2）/ 达上限采用最后修正稿（degraded）
 - Grounding 注入断言（自查入参含证据链 + 初稿）
 - 降级路径：自查失败 / 拒答 / 修正失败 / ReAct 无 structured / ReAct 失败
-- max_refine_rounds 上限、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
+- max_refine_rounds 上限（max=1 不修正）、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
 - Scope 盲区清单维度穷举（9 dimension）、护栏透传
 - 桥接：_map_outcome 映射 / ctx 透传 / 端到端 / 默认向后兼容
 

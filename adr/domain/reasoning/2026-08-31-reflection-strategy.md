@@ -16,12 +16,13 @@
 4. **新增 `AgentErrorKind.CRITIQUE_FAILED`（默认 CONTINUE）**：自查/修正失败走独立 kind——`STRUCTURED_INVALID` 语义不符（回喂自纠 vs 降级 best），`REFUSED` 默认 STOP 会硬停整个 Agent（违背「返回 best 而非抛错」）。动作：CONTINUE=降级采用最近稿（默认）/ STOP=整个失败 / RAISE=抛 `AgentRunError`。
 5. **降级路由（best-effort）**：react 失败 / 无 structured / 自查失败 / 修正失败 → 采用最近稿（degraded=True），不抛错。
 6. **Schema 模块常量 + 构造注入覆盖，不进 AgentContext**：schema 是结构性领域契约非每次运行的标量参数；`AgentContext` 只加 `max_refine_rounds`（生产值经 `agent_max_refine_rounds` 注入）。
-7. **refine 后不二次自查**（`re_critique` 开放项默认 False）：ground-truth 锚定重写已含 issues 修正，二次自查双倍成本且学习实验未证收益。
+7. **真迭代（修正后重新自查）**：修正 refined 后**重新自查 refined**，ok 则采用（early exit）、新 issues 再修正，直到通过或达 `max_refine_rounds` 上限（cap）——工业标准（Self-Refine 每轮新 feedback；LangGraph「revise 后必 re-reflect，否则循环无效」）。复用同一批 issues 反复修正 = 反模式，见 [REASON-009](../../../issues/domain/reasoning/2026-09-01-reflect-refine-loop.md)。
 
 ## Consequences
 
 - ✅ 核心必备 12 项工业基准全部落地（1 项 ⚠️ cost 缺口），见 reflection_benchmark.md。
 - ✅ Grounding 直接踩产品证据链亮点（结论可回溯 / 无编造 / 置信度分级 / explicit_abstention 显式放弃）。
+- ✅ **真迭代已实现**：修正后重新自查（early exit + cap），修正初版「refine 后不二次自查」决策（见 [REASON-009](../../../issues/domain/reasoning/2026-09-01-reflect-refine-loop.md)）。
 - ⚠️ **cost 缺口**：`generate_structured` 契约不返回 usage → critique/refine 实际 token/成本不可精确计量。取舍：收集阶段（token 主体）经内部 react 的 cost_limiter 完整护栏；critique/refine 由 `max_refine_rounds`（≤2 次 fast 调用）结构性兜底。升级路径：扩展 `generate_structured` 回传 usage（跨层改造，后续评估）。
 - ⚠️ **共享内核影响**：`AgentErrorKind` 12→13 类（error_handling.py），所有 Agent 共享——Reflection 独有 kind，ReAct 不受影响。
 - 📌 增强项（跨轮次记忆 / 多 critic / HITL / 回流微调）按「不做或预留」降级（产品导向，见 reflection_benchmark 产品视角）。

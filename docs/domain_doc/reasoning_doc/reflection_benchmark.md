@@ -80,7 +80,7 @@
 | 2 | Critic 上下文隔离 | ✅ | 自查消息 = 独立 LLM 调用（证据链记录 + 初稿），与生成循环中间推理隔离；`critique_model_key` 可注入异模型（增强 #14 入口） |
 | 3 | Grounding（证据锚定） | ✅ | `CRITIQUE_PROMPT` 注入证据链记录，grounding 为自查第 1 维度——每条 claim 的 supporting_evidence 必须引用真实工具记录 |
 | 4 | 结构化 Critique 输出 | ✅ | `CRITIQUE_SCHEMA`：ok + issues[]（severity / dimension 9 枚举 / claim / description） |
-| 5 | 迭代上限 | ✅ | `max_refine_rounds`（默认 2 = 初稿 + 至多 1 修正），落在工业 1–3 轮 |
+| 5 | 迭代上限 | ✅ | `max_refine_rounds`（默认 2 = 初稿 + 至多 1 修正），**真迭代**：修正后复查（ok 即停 early exit / 新 issues 再修正），cap + early exit，落在工业 1–3 轮 |
 | 6 | 终止路由 | ✅ | 显式降级路由表（react 失败 / 无 structured / 自查 ok / issues / 修正失败 / 达上限 → 各终止路径） |
 | 7 | issues 回喂 | ✅ | `REFINE_PROMPT` 注入 draft + issues（结构化 issues 作为受控参数） |
 | 8 | 完整上下文修正 | ✅ | `REFINE_PROMPT` 要求完整重写（非 patch）+ 逐条判断 issues（与证据链矛盾的不采纳，以证据链为准） |
@@ -97,7 +97,7 @@
 | 14 | 异模型 critic | ✅ | `critique_model_key` 构造注入（默认 "fast"），可换更强/不同模型破盲区 |
 | 15 | 执行/测试回填 | ⚠️ | critic 基于收集阶段的工具记录（执行反馈已 grounding）；critic 本身不再次跑工具（RCA 场景 critic 是纯审查，无需再执行） |
 | 16 | 多 critic 对抗 | ❌ | 单 critic 自查；多 Agent 对抗留 Phase C 编排 |
-| 17 | 最终答案校验 | ❌ | refine 后不二次自查（`re_critique` 开放项默认 False）；二次自查双倍成本且实验未证收益 |
+| 17 | 最终答案校验 | ⚠️ | 修正后已复查（真迭代，[REASON-009](../../../issues/domain/reasoning/2026-09-01-reflect-refine-loop.md)）；最终答案的确定性断言校验（final_answer_checks）留证据链报告产物层 |
 | 18 | 修正策略可配置 | ⚠️ | 默认完整重写（工业默认）；patch 不提供（RCA 证据链需完整重写 + 重新锚定） |
 | 19 | 反思回流微调 | ❌ | 当前单用户本地场景不服务 |
 | 20 | HITL 人工审批 | ❌ | 工具层已有 ApprovalGate 审批；反思环节 HITL 留 Phase D |
@@ -124,3 +124,4 @@
 - [ReActStrategy 策略组件](react.md) + [react_benchmark.md](react_benchmark.md)（同级组件与对标）
 - [Agent 模块对外接口文档](../agent_doc/agent.md)（含 ReflectionAgent 桥接）
 - [ADR reflection-strategy](../../../adr/domain/reasoning/2026-08-31-reflection-strategy.md)
+- [问题记录 REASON-009](../../../issues/domain/reasoning/2026-09-01-reflect-refine-loop.md)（修正循环真迭代）

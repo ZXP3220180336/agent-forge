@@ -200,6 +200,19 @@
 
 ---
 
+# 2026-09-01 Reflection 修正循环缺陷修复（REASON-009）
+
+> 审查发现：修正循环复用同一批 issues 反复修正（工业反模式）。调研确认「迭代必须新反馈」后重构为真迭代。
+
+- [x] issue：`issues/domain/reasoning/2026-09-01-reflect-refine-loop.md`（发现→分析→修复→验证→教训）
+- [x] 重构 reflection.py：阶段二+三改为 while 真迭代（修正 refined → 重新自查 refined → ok 采用 / 新 issues 再修正 → 达上限 best-effort）
+- [x] 达上限判断修正：`refine_round >= max_refine_rounds - 1`（max=1 时初稿有 issues 即不修正）
+- [x] 测试：新增真迭代 2 用例（复查新 issues 再修正 / 达上限采用最后稿）+ 更新 issues_refine 测试，22 passed
+- [x] 文档：ADR（re_critique 决策改为真迭代 + REASON-009 链接）/ reflection.md / reflection_benchmark.md（#5/#17）
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-08-31 Reflection 推理决策 + ReflectionAgent 编排（领域层 Slice 4）
 
 > 以工业级 Reflection 决策为评价指标（reflection_benchmark.md 对标）。三阶段分离 + Grounding（证据锚定，反内在自查）。
