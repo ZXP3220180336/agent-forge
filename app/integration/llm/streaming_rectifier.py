@@ -23,9 +23,7 @@ StreamingRectifier — 流式整流重试策略
         retry=retry,
         cancel_event=cancel_event,
         stream_max_retries=stream_max_retries,  # 由调用方传入（如 settings 值）
-        result=result,
-        active=active,
-        event_fields=event_fields,
+        context=context,  # RectifierContext（含 result / active / event_fields，调用方构造）
     ):
         yield event
 """

@@ -5,6 +5,7 @@
 > **来源**：2026-08-01 代码审核（问题 1）· 2026-08-16 从 limiter.md 提取归档
 > **涉及模块**：`app/integration/llm/reservation_limiter.py`（`TokenBucket.acquire`）
 > **关联文档**：[limiter.md](../../../docs/integration_doc/llm_doc/limiter.md)
+> **演进注**：原声称的回归测试 `test_bucket_zero_refill_disabled` 于修复时未落盘，2026-09-02 文档审查确认后补录于 `tests/unit/test_reservation_limiter.py`（refill_rate<=0 直接放行语义锚定）。
 
 ---
 

@@ -65,6 +65,40 @@ async def test_bucket_acquire_waits_when_empty():
 
 
 @pytest.mark.asyncio
+async def test_bucket_zero_refill_disabled():
+    """refill_rate<=0 = 禁用限流：acquire 直接放行（0 等待），不除零崩溃（LLM-026）。"""
+    b = TokenBucket(capacity=0, refill_rate=0)
+    wait = await b.acquire(10)
+    assert wait == 0.0, "refill_rate=0 应禁用限流直接放行"
+
+
+@pytest.mark.asyncio
+async def test_bucket_wait_does_not_block_others():
+    """锁外 sleep：桶空时并发的 acquire 各自等待补充，互不串行阻塞（LLM-027）。"""
+    b = TokenBucket(capacity=10, refill_rate=10)
+    await b.acquire(10)  # 耗尽
+    # 并发三个 acquire(1)：锁外 sleep 下各自等待补充后完成（sleep 持锁则只能串行排队）
+    waits = await asyncio.wait_for(
+        asyncio.gather(*(b.acquire(1) for _ in range(3))), timeout=3.0
+    )
+    assert len(waits) == 3, "并发 acquire 均应完成（等待不互锁）"
+
+
+@pytest.mark.asyncio
+async def test_bucket_cancel_does_not_corrupt_state():
+    """等待（锁外 sleep）中取消：CancelledError 不被锁吞，桶状态不破坏（LLM-027）。"""
+    b = TokenBucket(capacity=1, refill_rate=1)  # 慢 refill，制造确定性等待窗口
+    await b.acquire(1)  # 耗尽（此后需 ~1s 才有 1 token）
+    task = asyncio.create_task(b.acquire(1))
+    await asyncio.sleep(0.05)  # 让 task 进入 acquire 等待（锁外 sleep）
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # 桶状态未被取消破坏：后续 acquire 仍能正常获得补充配额（锁未泄漏、不卡死）
+    await asyncio.wait_for(b.acquire(1), timeout=2.0)
+
+
+@pytest.mark.asyncio
 async def test_bucket_acquire_oversized_does_not_hang():
     """tokens > capacity：截断到容量立即放行，不无限等待。
 

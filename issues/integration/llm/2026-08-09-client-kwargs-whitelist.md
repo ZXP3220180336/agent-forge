@@ -5,6 +5,7 @@
 > **来源**：2026-08-09 审核修复（client.md Q3）· 2026-08-16 从 client.md 提取归档
 > **涉及模块**：`app/integration/llm/client.py`（`ClientManager.get_client`）
 > **关联文档**：[client.md](../../../docs/integration_doc/llm_doc/client.md)
+> **演进注**：原声称的参数透传回归测试未落盘，2026-09-02 文档审查确认后补录 `test_get_client_passes_only_whitelisted_kwargs` 于 `tests/unit/test_client_manager.py`（白名单过滤语义锚定）。
 
 ---
 

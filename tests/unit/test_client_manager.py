@@ -259,3 +259,33 @@ async def test_background_close_failure_logged(caplog):
     assert any("LLM client" in r.message and "失败" in r.message for r in caplog.records), (
         f"后台关闭失败应记 WARNING 日志，实际: {[r.message for r in caplog.records]}"
     )
+
+
+# =====================================================================
+# kwargs 透传白名单（LLM-033）
+# =====================================================================
+
+
+def test_get_client_passes_only_whitelisted_kwargs(monkeypatch):
+    """kwargs 透传白名单：仅白名单字段传 AsyncOpenAI，未知/管理字段被过滤（LLM-033）。"""
+    captured: dict = {}
+
+    class _RecordingClient:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("app.integration.llm.client.AsyncOpenAI", _RecordingClient)
+    ClientManager.register_config(
+        "custom", api_key="k", base_url="http://x", model="m",
+        timeout=30, max_retries=1, organization="org-1", bogus_extra="ignored",
+    )
+    ClientManager.get_client("custom")
+    # 白名单字段透传
+    assert captured["api_key"] == "k"
+    assert captured["base_url"] == "http://x"
+    assert captured["timeout"] == 30
+    assert captured["max_retries"] == 1
+    assert captured["organization"] == "org-1"
+    # 白名单之外不传给 AsyncOpenAI：model 是管理字段（供 get_model），bogus_extra 是未知 extra
+    assert "model" not in captured
+    assert "bogus_extra" not in captured
