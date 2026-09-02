@@ -304,6 +304,21 @@ def _truncate_text_for_log(text: str) -> str:
     return text
 
 
+def _accumulate_usage(target: dict | None, src: dict | None) -> None:
+    """把一次成功调用的 usage 累加进目标 dict（成本计量需反映全程真实消耗）。
+
+    与 reflection._merge_usage 同语义：逐 key 相加。嵌套明细（token details）无可累加
+    语义，保留最新值。
+    """
+    if target is None or not src:
+        return
+    for key, value in src.items():
+        if isinstance(value, (int, float)):
+            target[key] = target.get(key, 0) + value
+        else:
+            target[key] = value
+
+
 class StructuredOutput:
     """
     结构化输出提取器（三级降级实现载体）。
@@ -346,7 +361,8 @@ class StructuredOutput:
             max_tokens: 输出预算上限。None 用 register_config 注入的默认值
                 （Container 注入 settings.llm_structured_max_tokens，默认 2048）；
                 截断时扩 2 倍重试 1 次。
-            usage: 可选，可变引用回填本次成功调用的 token 用量（供成本计量）。
+            usage: 可选，可变引用回填本次 extract 全程调用的 token 用量累计
+                （含多级降级 / 截断重试 / 回喂的所有成功调用，供成本计量）。
 
         Returns:
             解析后的 dict，三级均失败返回 None
@@ -439,6 +455,7 @@ class StructuredOutput:
             model_key,
             max_tokens,
             response_format=response_format,
+            usage=usage,
         )
         if result is None:
             return None
@@ -466,6 +483,7 @@ class StructuredOutput:
                 else StructuredOutput._default_max_tokens * 2,
                 response_format=response_format,
                 stage="结构化输出截断重试",
+                usage=usage,
             )
             if retry is None:
                 return None  # 下游失败 → 降级，与首次调用语义一致
@@ -491,8 +509,7 @@ class StructuredOutput:
         for _ in range(_REASK_MAX_RETRIES):
             parsed, errors = _parse_and_validate(content, schema)
             if parsed is not None:
-                if usage is not None and result.usage:
-                    usage.update(result.usage)
+                # usage 已由每次成功调用在 _call_generate 累加，此处不再回填
                 return parsed
 
             # 日志脱敏：schema 校验失败的错误文本（`- 字段 …：e.message`）含
@@ -520,6 +537,7 @@ class StructuredOutput:
                 max_tokens,
                 response_format=response_format,
                 stage="结构化输出回喂",
+                usage=usage,
             )
             if retry is None:
                 return None  # 下游失败 → 降级
@@ -542,8 +560,6 @@ class StructuredOutput:
         # 解析，模型在最后一次回喂修正成功的结果会被静默丢弃（返回 None + 白付一次
         # 调用）。循环退出后再解析一次，保证每次请求的输出都经过解析/校验。
         parsed, _ = _parse_and_validate(content, schema)
-        if parsed is not None and usage is not None and result.usage:
-            usage.update(result.usage)
         return parsed  # 回喂耗尽（含终态）仍失败 → None 触发降级
 
     @staticmethod
@@ -566,6 +582,7 @@ class StructuredOutput:
             model_key,
             max_tokens,
             stage="结构化输出 fallback",
+            usage=usage,
         )
         if result is None:
             return None
@@ -584,16 +601,12 @@ class StructuredOutput:
         fenced = re.sub(r"\s*```$", "", fenced, flags=re.MULTILINE)
         parsed = _try_parse_json(fenced, schema)
         if parsed is not None:
-            if usage is not None and result.usage:
-                usage.update(result.usage)
-            return parsed
+            return parsed  # usage 已由 _call_generate 累加
         # 2) 正则定位首个 `{` 到末个 `}` 的候选块（prose 包裹场景）
         m = re.search(r"\{.*\}", fenced, flags=re.DOTALL)
         if m:
             parsed = _try_parse_json(m.group(0), schema)
             if parsed is not None:
-                if usage is not None and result.usage:
-                    usage.update(result.usage)
                 return parsed
         return None
 
@@ -606,15 +619,19 @@ class StructuredOutput:
         *,
         response_format: dict | None = None,
         stage: str = "结构化输出",
+        usage: dict | None = None,
     ) -> Any | None:
         """调用 generate 并统一处理下游异常（_try_extract/_fallback_extract 复用）。
 
         不可恢复错误（4xx/认证/熔断，NON_RETRYABLE）向上抛——generate 已对
         NON_RETRYABLE raise，此处防御性兜底；可恢复错误（超时/5xx/429）可靠性层
         已重试耗尽，generate 转 None，此处同样返回 None 触发降级。
+
+        所有真实成功调用（多级降级 / 截断重试 / 回喂任一）在此累加 usage——成本计量
+        需要全程消耗，只回填"最后一次成功"会系统性低估（缺陷修复的单一归口）。
         """
         try:
-            return await llm_service.generate(
+            result = await llm_service.generate(
                 messages=messages,
                 temperature=0,
                 max_tokens=max_tokens,
@@ -641,6 +658,12 @@ class StructuredOutput:
             if decision.normalized:
                 raise decision.to_raise from e
             raise
+
+        # usage 累加：每次真实成功调用（多级降级 / 截断重试 / 回喂任一）的 token 消耗
+        # 都计入成本计量——只回填"最后一次成功"会低估真实开销。
+        if result is not None:
+            _accumulate_usage(usage, result.usage)
+        return result
 
     @staticmethod
     def _classify_result(result: Any) -> str:

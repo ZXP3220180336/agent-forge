@@ -415,7 +415,7 @@ generate_structured(messages, schema, model_key="fast")
 
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
-| `LLMService.generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None) -> dict \| None` | 异步方法 | 对外唯一入口，委托 `StructuredOutput.extract` 三级降级；拒答/工具调用抛异常（见 Raises）；`usage` 可变引用回填 token 用量 |
+| `LLMService.generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None) -> dict \| None` | 异步方法 | 对外唯一入口，委托 `StructuredOutput.extract` 三级降级；拒答/工具调用抛异常（见 Raises）；`usage` 可变引用回填**全程累计** token 用量（含降级/截断重试/回喂的所有成功调用，供成本计量） |
 | `StructuredOutput.extract(llm_service, messages, schema, model_key="fast", max_tokens=None) -> dict \| None` | 静态异步 | 三级降级编排（JSON Schema strict → JSON Mode → 正则），返回 dict/None |
 | `StructuredOutput.register_config(max_tokens)` | 同步类方法 | 注入默认输出预算（Container 读 settings 后调用） |
 
@@ -528,6 +528,7 @@ response_format 控制     RetryHandlerManager（重试/熔断，model_key 共�
 - [strict + additionalProperties:true 必然 400（LLM-009）](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)
 - [generate_structured 参数名契约（LLM-036）](../../../issues/integration/llm/2026-08-16-generate-structured-model-key-param.md)
 - [校验失败日志未脱敏（LLM-037）](../../../issues/integration/llm/2026-08-16-schema-validation-log-redaction.md)
+- [usage 回填不累计 + 变量错位，成本护栏低估（LLM-038）](../../../issues/integration/llm/2026-09-02-structured-usage-accumulate.md)
 
 > **超出本模块范围**（属于 Agent 层与上层业务，structured 模块不负责）：语义/业务正确、工具执行权在后端、权限/幂等键、评测集闭环、SFT。这些由 Agent 循环与业务规则承载。
 

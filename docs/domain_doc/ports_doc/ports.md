@@ -81,7 +81,7 @@ LLM 调用契约（流式 / 非流式 / 结构化 / 成本估算 / Token 计量�
 | --- | --- | --- | --- |
 | `async_generate` | `(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None)` | `AsyncGenerator[str]` | 流式生成：yield reasoning / message SSE 事件，增量结果写入 `result` |
 | `generate` | `(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast")` | `StreamResult \| None` | 非流式生成（简单任务） |
-| `generate_structured` | `(messages, schema, model_key="fast", max_tokens=None, usage=None)` | `dict \| None` | 结构化输出（非 Agent 提取场景）；`usage` 可变引用回填 token 用量（成本计量） |
+| `generate_structured` | `(messages, schema, model_key="fast", max_tokens=None, usage=None)` | `dict \| None` | 结构化输出（非 Agent 提取场景）；`usage` 可变引用回填**全程累计** token 用量（含降级/截断重试/回喂的所有成功调用，供成本计量） |
 | `calculate_cost` | `(usage, model="")` | `dict[str, float]` | 成本估算（LLM 能力）：按 model 定价折算 usage 为 `{cost_usd, input_cost, output_cost}`（round 6）；供成本上限护栏经同一端口接入 |
 | `count_tokens` | `(text)` | `int` | 单段文本 token 数（主模型编码） |
 | `count_messages_tokens` | `(messages)` | `int` | messages 总 token 数（每条消息 +4 格式开销 + content + name 额外 +1；末尾 +2）——Token 计量归属 LLM 能力，供 ContextManager 等经同一端口接入 |

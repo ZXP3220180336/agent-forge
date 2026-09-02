@@ -479,8 +479,9 @@ class LLMService:
             model_key: 模型标识（默认 fast）
             max_tokens: 输出预算上限。None 用 settings.llm_structured_max_tokens
                 （默认 2048）；截断时扩 2 倍重试 1 次。
-            usage: 可选，可变引用回填本次调用的 token 用量（成功时填充
-                prompt_tokens / completion_tokens / total_tokens，供成本计量）。
+            usage: 可选，可变引用回填本次 extract 全程调用的 token 用量累计
+                （prompt_tokens / completion_tokens / total_tokens，含多级降级 /
+                截断重试 / 回喂的所有成功调用，供成本计量）。
                 仿 ``async_generate`` 的 ``result`` 参数模式——返回签名不变，向后兼容。
 
         Returns:

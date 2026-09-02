@@ -126,6 +126,43 @@ async def test_third_level_regex_fallback():
     assert len(calls) == 7
 
 
+@pytest.mark.asyncio
+async def test_usage_accumulates_across_degrade_and_reask():
+    """usage 回填累计全程真实消耗（降级 + 回喂的成功调用都计入），非最后一次成功。
+
+    回归护栏：修复前 usage 只回填最后一次成功调用、且回喂路径取错变量（result 而非
+    retry 的 usage）——成本护栏（reflection._merge_usage 累计）据此系统性低估。
+    """
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        sr = _sr(
+            "not valid json {" if len(calls) <= 3
+            else json.dumps({"name": "李四"}, ensure_ascii=False)
+        )
+        n = len(calls)
+        sr.usage = {
+            "prompt_tokens": 10 * n,
+            "completion_tokens": n,
+            "total_tokens": 11 * n,
+        }
+        return sr
+
+    llm.generate = fake_generate
+    usage: dict = {}
+    result = await llm.generate_structured(MESSAGES, SCHEMA, usage=usage)
+    assert result == {"name": "李四"}
+    assert len(calls) == 4  # 第一级(1) + 回喂(2) 均失败 → 第二级(1) 成功
+    # 4 次成功调用全部累加：10+20+30+40 / 1+2+3+4 / 11+22+33+44
+    assert usage == {
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "total_tokens": 110,
+    }
+
+
 # =====================================================================
 # 失败路径
 # =====================================================================
