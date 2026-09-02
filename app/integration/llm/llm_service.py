@@ -12,17 +12,26 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from app.domain.ports.llm_gateway import StreamResult
 from app.platform.observability.logger import fill_llm_event_fields
 from app.shared.types import Messages
 
+if TYPE_CHECKING:
+    # 注解-only：llm_service 不直接依赖 openai 运行时（client 由 .client 子模块管理），
+    # `from __future__ import annotations` 下注解不求值，守卫即可。
+    from openai import AsyncOpenAI
+
 # 包内组件一律相对深路径 import（LLM 包对外只暴露 LLMService，__init__ 不重导出内部组件）
 from .client import ClientManager
 from .cost_tracker import CostTracker
 from .errors import decide_downstream_error
-from .reservation_limiter import Reservation, ReservationLimiterManager
+from .reservation_limiter import (
+    Reservation,
+    ReservationLimiter,
+    ReservationLimiterManager,
+)
 from .retry import RetryHandlerManager
 from .streaming import StreamParser
 from .streaming_rectifier import RectifierContext, StreamingRectifier
@@ -121,8 +130,8 @@ def _build_event_fields(
 
 async def _rate_limited_call(
     adaptive: bool,
-    limiter: Any,
-    client: Any,
+    limiter: ReservationLimiter,
+    client: AsyncOpenAI,
     kwargs: dict[str, Any],
     active: dict[str, Reservation],
     prompt_tokens: int = 0,
