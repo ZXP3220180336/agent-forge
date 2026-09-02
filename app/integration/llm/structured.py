@@ -24,6 +24,7 @@ from typing import Any
 
 from jsonschema import Draft7Validator, ValidationError, validate
 
+from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.platform.observability.logger import get_logger
 from app.shared.exceptions import (
     StructuredRefusalError,
@@ -338,7 +339,7 @@ class StructuredOutput:
 
     @staticmethod
     async def extract(
-        llm_service: Any,
+        llm_service: LLMGateway,
         messages: list[dict],
         schema: dict[str, Any],
         model_key: str = "fast",
@@ -354,7 +355,7 @@ class StructuredOutput:
         拒答通常需要业务层差异化处理（安全兜底/文案）。
 
         Args:
-            llm_service: LLMService 实例（generate 代理）
+            llm_service: LLM 网关（本路径只调用 generate）
             messages: 完整消息列表（调用方构建）
             schema: JSON Schema 定义
             model_key: 使用的模型标识（默认 fast，低延迟低成本）
@@ -380,10 +381,10 @@ class StructuredOutput:
         response_format = _build_json_schema_request(schema)
         try:
             result = await StructuredOutput._try_extract(
-                llm_service,
-                messages,
-                response_format,
-                model_key,
+                llm_service=llm_service,
+                messages=messages,
+                response_format=response_format,
+                model_key=model_key,
                 schema=schema,
                 max_tokens=max_tokens,
                 usage=usage,
@@ -397,10 +398,10 @@ class StructuredOutput:
         response_format = _build_json_mode_request()
         try:
             result = await StructuredOutput._try_extract(
-                llm_service,
-                messages,
-                response_format,
-                model_key,
+                llm_service=llm_service,
+                messages=messages,
+                response_format=response_format,
+                model_key=model_key,
                 schema=schema,
                 max_tokens=max_tokens,
                 usage=usage,
@@ -413,9 +414,9 @@ class StructuredOutput:
         # 第三级：最终降级纯 prompt 约束 + 正则提取
         try:
             return await StructuredOutput._fallback_extract(
-                llm_service,
-                messages,
-                model_key,
+                llm_service=llm_service,
+                messages=messages,
+                model_key=model_key,
                 schema=schema,
                 max_tokens=max_tokens,
                 usage=usage,
@@ -425,7 +426,8 @@ class StructuredOutput:
 
     @staticmethod
     async def _try_extract(
-        llm_service: Any,
+        *,
+        llm_service: LLMGateway,
         messages: list[dict],
         response_format: dict,
         model_key: str,
@@ -450,10 +452,10 @@ class StructuredOutput:
             schema: 传入则对解析结果做 Schema 校验（校验失败返回 None 触发降级）
         """
         result = await StructuredOutput._call_generate(
-            llm_service,
-            messages,
-            model_key,
-            max_tokens,
+            llm_service=llm_service,
+            messages=messages,
+            model_key=model_key,
+            max_tokens=max_tokens,
             response_format=response_format,
             usage=usage,
         )
@@ -475,10 +477,10 @@ class StructuredOutput:
             )
 
             retry = await StructuredOutput._call_generate(
-                llm_service,
-                messages,
-                model_key,
-                max_tokens * 2
+                llm_service=llm_service,
+                messages=messages,
+                model_key=model_key,
+                max_tokens=max_tokens * 2
                 if max_tokens is not None
                 else StructuredOutput._default_max_tokens * 2,
                 response_format=response_format,
@@ -531,10 +533,10 @@ class StructuredOutput:
             )
             # 回喂：clone + assistant 失败输出 + user 错误反馈（不污染调用方 messages）
             retry = await StructuredOutput._call_generate(
-                llm_service,
-                _build_reask_messages(messages, content, "\n".join(errors)),
-                model_key,
-                max_tokens,
+                llm_service=llm_service,
+                messages=_build_reask_messages(messages, content, "\n".join(errors)),
+                model_key=model_key,
+                max_tokens=max_tokens,
                 response_format=response_format,
                 stage="结构化输出回喂",
                 usage=usage,
@@ -564,7 +566,8 @@ class StructuredOutput:
 
     @staticmethod
     async def _fallback_extract(
-        llm_service: Any,
+        *,
+        llm_service: LLMGateway,
         messages: list[dict],
         model_key: str,
         schema: dict[str, Any] | None = None,
@@ -577,10 +580,10 @@ class StructuredOutput:
         拒答/截断记日志后抛异常短路。
         """
         result = await StructuredOutput._call_generate(
-            llm_service,
-            messages,
-            model_key,
-            max_tokens,
+            llm_service=llm_service,
+            messages=messages,
+            model_key=model_key,
+            max_tokens=max_tokens,
             stage="结构化输出 fallback",
             usage=usage,
         )
@@ -612,15 +615,15 @@ class StructuredOutput:
 
     @staticmethod
     async def _call_generate(
-        llm_service: Any,
+        *,
+        llm_service: LLMGateway,
         messages: list[dict],
         model_key: str,
         max_tokens: int | None,
-        *,
         response_format: dict | None = None,
         stage: str = "结构化输出",
         usage: dict | None = None,
-    ) -> Any | None:
+    ) -> StreamResult | None:
         """调用 generate 并统一处理下游异常（_try_extract/_fallback_extract 复用）。
 
         不可恢复错误（4xx/认证/熔断，NON_RETRYABLE）向上抛——generate 已对
@@ -631,10 +634,15 @@ class StructuredOutput:
         需要全程消耗，只回填"最后一次成功"会系统性低估（缺陷修复的单一归口）。
         """
         try:
+            # max_tokens 上游（extract）已把 None 归一为默认预算，此处兜底防御直接调用
             result = await llm_service.generate(
                 messages=messages,
                 temperature=0,
-                max_tokens=max_tokens,
+                max_tokens=(
+                    max_tokens
+                    if max_tokens is not None
+                    else StructuredOutput._default_max_tokens
+                ),
                 response_format=response_format,
                 model_key=model_key,
             )
@@ -666,7 +674,7 @@ class StructuredOutput:
         return result
 
     @staticmethod
-    def _classify_result(result: Any) -> str:
+    def _classify_result(result: StreamResult) -> str:
         """分类结构化响应失败类型（解析前 API 边界检查，问题 2）。
 
         检查顺序：refusal 字段 → finish_reason 拒答/过滤 → finish_reason 截断 →
@@ -696,7 +704,7 @@ class StructuredOutput:
         return "ok"
 
     @staticmethod
-    def _raise_boundary(failure: str, result: Any, stage: str) -> None:
+    def _raise_boundary(failure: str, result: StreamResult, stage: str) -> None:
         """按失败类型短路抛异常（refusal / tool_calls / truncated，可选统一处理）。
 
         - refusal / tool_calls 在任意调用点语义一致：模型已放弃输出 JSON，短路
