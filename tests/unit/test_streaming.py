@@ -276,9 +276,13 @@ def test_merge_empty_list():
 # =====================================================================
 
 
-def _non_stream_response(content="", finish_reason="stop", tool_calls=None, usage=None):
-    """构造非流式响应 mock。"""
-    msg = SimpleNamespace(content=content, tool_calls=tool_calls)
+def _non_stream_response(content="", finish_reason="stop", tool_calls=None, usage=None, reasoning_content=None):
+    """构造非流式响应 mock。reasoning_content 默认 None（chat 模型无该字段形态）。"""
+    msg = SimpleNamespace(
+        content=content,
+        tool_calls=tool_calls,
+        reasoning_content=reasoning_content,
+    )
     choice = SimpleNamespace(message=msg, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice], usage=usage)
 
@@ -336,7 +340,33 @@ def test_parse_non_stream_empty_choices():
         "tool_calls": [],
         "usage": None,
         "refusal": None,
+        "reasoning_content": "",
+        "has_reasoning": False,
     }, "空 choices 应返回空结果，让调用方按业务无结果处理"
+
+
+def test_parse_non_stream_reasoning():
+    """非流式 thinking 响应：提取 reasoning_content + has_reasoning 置位。"""
+    resp = _non_stream_response(content="回答", reasoning_content="思考过程")
+    r = StreamParser.parse_non_stream(resp)
+    assert r["reasoning_content"] == "思考过程"
+    assert r["has_reasoning"] is True
+
+
+def test_parse_non_stream_reasoning_absent_vs_empty():
+    """has_reasoning 区分「未返回」（chat 模型，字段 None）与「返回空」（thinking，""）。
+
+    对齐流式 has_reasoning 语义——返回空 reasoning 仍是 thinking 信号，编排层需回喂空串。
+    """
+    empty = StreamParser.parse_non_stream(
+        _non_stream_response(content="x", reasoning_content="")
+    )
+    assert empty["reasoning_content"] == ""
+    assert empty["has_reasoning"] is True
+
+    absent = StreamParser.parse_non_stream(_non_stream_response(content="x"))
+    assert absent["reasoning_content"] == ""
+    assert absent["has_reasoning"] is False
 
 
 # =====================================================================

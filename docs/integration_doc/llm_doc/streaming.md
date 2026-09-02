@@ -168,7 +168,7 @@ def merge_tool_calls(deltas: list[ToolCallDelta]) -> list[dict[str, Any]]:
 def parse_non_stream(response: Any) -> dict[str, Any]:
 ```
 
-直接读取完整响应对象，产出统一 dict：`{"content", "finish_reason", "tool_calls", "usage", "refusal"}`。**空 choices 防护**：某些适配层/异常响应可能返回空 choices（无生成内容），直接 `response.choices[0]` 会抛裸 `IndexError`——返回空结果让调用方按「业务无结果」处理（见 [问题记录](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）。**refusal 保留 None 与空串区分**：`or ""` 会把拒答的 None 抹成空串，下游无法判断「未拒答」与「拒答但文本为空」——直接透传原值。
+直接读取完整响应对象，产出统一 dict：`{"content", "finish_reason", "tool_calls", "usage", "refusal", "reasoning_content", "has_reasoning"}`。**空 choices 防护**：某些适配层/异常响应可能返回空 choices（无生成内容），直接 `response.choices[0]` 会抛裸 `IndexError`——返回空结果让调用方按「业务无结果」处理（见 [问题记录](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）。**refusal 保留 None 与空串区分**：`or ""` 会把拒答的 None 抹成空串，下游无法判断「未拒答」与「拒答但文本为空」——直接透传原值。**reasoning_content 同样经 has_reasoning 区分「未返回 / 返回空」**（thinking 模型非流式也携带思考内容；空串仍是 thinking 信号，供编排层回喂——对齐流式语义）。
 
 ---
 
@@ -199,7 +199,7 @@ chunk 流（async for）
 ```text
 parse_non_stream(response)
   ├─ 空 choices → 返回空结果（业务无结果，不抛 IndexError）
-  └─ 有 choices → 读 msg.content / tool_calls / usage / refusal → 统一 dict
+  └─ 有 choices → 读 msg.content / tool_calls / usage / refusal / reasoning_content → 统一 dict
 ```
 
 ---
@@ -232,11 +232,11 @@ parse_non_stream(response)
 
 ## 测试状态
 
-`tests/unit/test_streaming.py`（22 用例）：覆盖
+`tests/unit/test_streaming.py`（24 用例）：覆盖
 
 - **parse_chunk**：content / reasoning / finish_reason / usage / tool_call 提取 / 字段缺失兜底 / 空 chunk / 混合 chunk（content + tool_calls）/ 漏洞回归（delta=None 丢 finish_reason、usage 与空 delta 共存）
 - **merge_tool_calls**：单工具增量拼接 / 多工具交错 / 输出按 index 排序 / 缺 id 按 index 兜底 / id 覆盖策略 / 空列表
-- **parse_non_stream**：content / tool_calls / usage / content 为 None 兜底
+- **parse_non_stream**：content / tool_calls / usage / content 为 None 兜底 / reasoning（非空 + 空串 vs 未返回）
 
 另被 `test_stream_rectify.py` 间接使用（通过 `async_generate` 走真实解析路径）。
 
@@ -252,6 +252,7 @@ parse_non_stream(response)
 > 审核发现的问题已提取归档，完整生命周期（发现 → 分析 → 修复 → 验证 → 教训）见：
 
 - [流式/非流式解析健壮性（finish_reason 丢失 / usage 丢弃 / tool_deltas 残留 / 空 choices 崩溃）](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)
+- [非流式 generate 丢弃 reasoning_content / has_reasoning（LLM-040）](../../../issues/integration/llm/2026-09-02-non-stream-reasoning-content.md)
 
 ## 相关文档
 

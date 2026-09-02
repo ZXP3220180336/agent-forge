@@ -32,9 +32,17 @@ class _FakeUsage:
 class _FakeResponse:
     """模拟非流式 OpenAI 响应（parse_non_stream 消费：choices / usage）。"""
 
-    def __init__(self, content: str, finish_reason: str = "stop") -> None:
+    def __init__(
+        self,
+        content: str,
+        finish_reason: str = "stop",
+        reasoning_content: str | None = None,
+    ) -> None:
         message = SimpleNamespace(
-            content=content, tool_calls=None, refusal=None
+            content=content,
+            tool_calls=None,
+            refusal=None,
+            reasoning_content=reasoning_content,
         )
         choice = SimpleNamespace(message=message, finish_reason=finish_reason)
         self.choices = [choice]
@@ -221,6 +229,29 @@ async def test_generate_passes_fallback_fn(monkeypatch):
         LLMService._fallback_model_id = ""
         LLMService._adaptive_reserve = False
         LLMService._stream_max_retries = 1
+
+
+@pytest.mark.asyncio
+async def test_generate_fills_reasoning_fields(monkeypatch):
+    """非流式 generate：thinking 响应带回 reasoning_content + has_reasoning。
+
+    回归护栏（缺陷2 修复）：parse_non_stream 曾只取 content/finish_reason/tool_calls/
+    usage/refusal，thinking 模型非流式的思考内容被静默丢弃（如 generate_structured 以
+    reasoning model_key 调用）。
+    """
+    llm = LLMService()
+    completions = _FakeCompletions([_FakeResponse("回答", reasoning_content="思考")])
+    _patch_generate_env(
+        monkeypatch,
+        client=_FakeClient(completions),
+        retry=_FakeRetryDirect(),
+        reservation=_TrackingReservation(),
+    )
+    result = await llm.generate(messages=[{"role": "user", "content": "hi"}])
+    assert result is not None
+    assert result.content == "回答"
+    assert result.reasoning_content == "思考"
+    assert result.has_reasoning is True
 
 
 # =====================================================================

@@ -446,6 +446,8 @@ class LLMService:
             sr.tool_calls = parsed.get("tool_calls", [])
             sr.usage = parsed.get("usage")
             sr.refusal = parsed.get("refusal")
+            sr.reasoning_content = parsed.get("reasoning_content", "")
+            sr.has_reasoning = parsed.get("has_reasoning", False)
         finally:
             res = active.pop("res", None)
             if res is not None and not res.settled:

@@ -165,6 +165,8 @@ class StreamParser:
                 "tool_calls": list[dict],
                 "usage": dict | None,
                 "refusal": str | None,
+                "reasoning_content": str,
+                "has_reasoning": bool,
             }
         """
         # 空 choices 防护：某些适配层/异常响应可能返回空 choices（无生成内容），
@@ -177,6 +179,8 @@ class StreamParser:
                 "tool_calls": [],
                 "usage": response.usage.model_dump() if response.usage else None,
                 "refusal": None,
+                "reasoning_content": "",
+                "has_reasoning": False,
             }
 
         choice = response.choices[0]
@@ -196,6 +200,11 @@ class StreamParser:
                     }
                 )
 
+        # reasoning_content（thinking 模型非流式响应同样携带）：None=未返回（chat
+        # 模型），""/非空=返回——由 has_reasoning 承载「未返回」与「返回空」的区分，
+        # 与流式 has_reasoning 语义一致（供编排层 thinking 回喂决策）。
+        reasoning = getattr(msg, "reasoning_content", None)
+
         return {
             "content": msg.content or "",
             "finish_reason": choice.finish_reason,
@@ -204,4 +213,6 @@ class StreamParser:
             # refusal 必须保留 None 与空串的区分：`or ""` 会把拒答的 None 抹成空串，
             # 下游无法判断「未拒答」与「拒答但文本为空」——直接透传原值。
             "refusal": getattr(msg, "refusal", None),
+            "reasoning_content": reasoning or "",
+            "has_reasoning": reasoning is not None,
         }
