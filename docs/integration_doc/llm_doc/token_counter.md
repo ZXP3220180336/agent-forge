@@ -1,6 +1,6 @@
 # TiktokenTokenCounter Token 计数实现说明
 
-> **更新日期**：2026-08-30
+> **更新日期**：2026-09-02
 > **模块**：`app/integration/llm/token_counter.py`
 > **文档定位**：LLM 模块内部 tiktoken 计数组件（经 `LLMService.count_tokens` / `count_messages_tokens` 对外，经 `LLMGateway` 端口接入）——tiktoken 编码器解析、content 归一化、消息计数。
 > **状态**：✅ 已实现
@@ -50,7 +50,7 @@ llm_service._count_prompt_tokens（别名 import get_encoder / content_to_text�
 
 ## 核心类与方法
 
-### `get_encoder(model: str) -> Any`（模块级函数）
+### `get_encoder(model: str) -> tiktoken.Encoding`（模块级函数）
 
 按模型名解析 tiktoken 编码器；进程内缓存（`_encoder_cache`），未知模型回退 `cl100k_base`。
 只捕获 `KeyError`：tiktoken 缺失（`ImportError`）是硬依赖损坏，自然传播 fail fast。

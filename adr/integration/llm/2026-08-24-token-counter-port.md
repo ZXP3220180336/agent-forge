@@ -1,11 +1,15 @@
 # TokenCounter 端口：tiktoken 隔离到集成层（依赖倒置 + 单一事实源）
 
-> **状态**：✅ 已采纳
+> **状态**：🔶 已替代（独立端口结构被 LLM 能力并入 LLMGateway 替代；tiktoken 隔离核心经 LLMGateway 承载保持生效，见下方「演进」）
 > **决策日期**：2026-08-24
-> **涉及模块**：`app/domain/ports/token_counter.py` · `app/integration/llm/token_counter.py` · `app/application/context/context_manager.py` · `app/integration/llm/llm_service.py`
+> **涉及模块**：`app/integration/llm/token_counter.py` · `app/application/context/context_manager.py` · `app/integration/llm/llm_service.py` · `app/domain/ports/llm_gateway.py`
 > **关联文档**：[token_counter.md](../../../docs/integration_doc/llm_doc/token_counter.md) · [context.md](../../../docs/application_doc/context_doc/context.md) · [architecture.md](../../../docs/architecture.md)
 
 ---
+
+## 演进（2026-09-02）
+
+独立 `TokenCounter` 端口（`domain/ports/token_counter.py`）+ ContextManager 构造注入的结构已被 [cea3245]（LLM 模块 Facade 收窄 + LLM 能力并入 LLMGateway）替代：计数能力并入 `LLMGateway` 端口，经 `LLMService.count_tokens` / `count_messages_tokens` 对外；ContextManager 改为委托 `LLMGateway`。本决策**核心意图保持**——tiktoken 仍隔离在集成层（`token_counter.py` 唯一使用点）、`get_encoder` / `content_to_text` 单一事实源、ContextManager 不直接依赖 tiktoken。
 
 ## Context
 

@@ -1,15 +1,16 @@
 # LLMService 编排设计文档
 
 > **模块**：`app/integration/llm/llm_service.py`
-> **更新日期**：2026-08-30
-> **职责**：LLM 网关统一 Facade——组织 8 组件协作完成一次 LLM 调用（可靠性链 +
+> **更新日期**：2026-09-02
+> **职责**：LLM 网关统一 Facade——组织 9 组件协作完成一次 LLM 调用（可靠性链 +
 > 配额结算闭环 + 事件日志）
 > **状态**：✅ 已实现
 > **定位**：对外接口契约见 [llm.md](llm.md)（模块对外接口文档）；本文档解释
 > `LLMService` **内部如何组织组件工作**（编排机制，供内部维护者 / 集成方）
 > **配套**：实现领域端口 `LLMGateway`；依赖 `ClientManager` / `RetryHandler` /
 > `StreamingRectifier` / `StreamParser` / `ReservationLimiter` / `StructuredOutput` /
-> `CostTracker`；复用 `token_counter` 的 `get_encoder` / `content_to_text` / `TiktokenTokenCounter`（tiktoken 计数组件）
+> `CostTracker` / `errors`（`decide_downstream_error` 下游决策）；复用 `token_counter` 的
+> `get_encoder` / `content_to_text` / `TiktokenTokenCounter`（tiktoken 计数组件）
 
 ---
 
@@ -50,7 +51,7 @@
 ## 设计目标
 
 1. **Facade 统一编排**：`async_generate` / `generate` / `generate_structured` 是唯一对外
-   入口，调用方不直接触碰 8 组件；内部组织组件协作的细节对调用方透明
+   入口，调用方不直接触碰 9 组件；内部组织组件协作的细节对调用方透明
 2. **可靠性链闭环**：限流（事前排队）→ 重试/熔断/降级（保护 create 阶段）→ 整流
    （流式）→ 解析 → 事件日志，一次调用走完整链路
 3. **配额结算闭环**：每个 `reserve` 必配结算，`finally` 兜底防泄漏——create 失败
@@ -326,10 +327,12 @@ settings 后调用）：
 
 ## 测试状态
 
-- `tests/unit/test_llm_service.py`（5 用例，直接覆盖）：fallback 传递 / `content=None`
-  估算 / 多模态 list 估算 / 解析错误 settle 结算 / settle 被取消兜底结算
+- `tests/unit/test_llm_service.py`（10 用例，直接覆盖）：fallback 传递 / `content=None`
+  估算 / 多模态 list 估算 / 解析错误 settle 结算 / settle 被取消兜底结算 / 异常归一决策
+  （401→`LLMAPIError`、响应校验归一、未知非 openai 原样上抛、可恢复→None）/ generate
+  reasoning_content / has_reasoning 回填（LLM-040）
 - 间接覆盖（经 Facade 全链路）：`test_stream_rectify.py`（22 用例，async_generate 整流 /
-  结算 / 事件 / 熔断 feeding）、`test_generate_structured.py`（49 用例，generate_structured
+  结算 / 事件 / 熔断 feeding）、`test_generate_structured.py`（50 用例，generate_structured
   三级降级）
 
 ---

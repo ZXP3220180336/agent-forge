@@ -1,7 +1,7 @@
 # StructuredOutput 结构化输出设计文档
 
 > **模块**：`app/integration/llm/structured.py`
-> **更新日期**：2026-08-16
+> **更新日期**：2026-09-02
 > **职责**：从 LLM 输出中提取结构化数据（三级降级：JSON Schema → JSON Mode → 正则提取）
 > **状态**：✅ 已实现
 > **定位**：内部实现载体，对外唯一入口为 `LLMService.generate_structured()`（接收完整 messages，委托 `extract` 三级降级）
@@ -236,7 +236,7 @@ def _build_json_mode_request() -> dict[str, str]:
 
 ```python
 @staticmethod
-async def extract(llm_service, messages, schema, model_key="fast", max_tokens=None):
+async def extract(llm_service, messages, schema, model_key="fast", max_tokens=None, usage=None):
     """三级降级：JSON Schema → JSON Mode → 正则提取。
     完整实现见 structured.py::StructuredOutput.extract。"""
     schema = _enforce_no_extra_fields(schema)   # 递归补 additionalProperties:false（LLM-018）
@@ -246,8 +246,9 @@ async def extract(llm_service, messages, schema, model_key="fast", max_tokens=No
     # 第一级：原生 JSON Schema（strict）→ 成功即返回
     try:
         result = await StructuredOutput._try_extract(
-            llm_service, messages, _build_json_schema_request(schema),
-            model_key, schema=schema, max_tokens=max_tokens,
+            llm_service=llm_service, messages=messages,
+            response_format=_build_json_schema_request(schema),
+            model_key=model_key, schema=schema, max_tokens=max_tokens, usage=usage,
         )
     except StructuredTruncationError:
         return None   # 截断短路，不降级
@@ -260,7 +261,8 @@ async def extract(llm_service, messages, schema, model_key="fast", max_tokens=No
     # 第三级：正则提取（无 response_format）
     try:
         return await StructuredOutput._fallback_extract(
-            llm_service, messages, model_key, schema=schema, max_tokens=max_tokens,
+            llm_service=llm_service, messages=messages, model_key=model_key,
+            schema=schema, max_tokens=max_tokens, usage=usage,
         )
     except StructuredTruncationError:
         return None   # 截断短路
@@ -279,10 +281,12 @@ async def extract(llm_service, messages, schema, model_key="fast", max_tokens=No
 
 ```python
 @staticmethod
-async def _try_extract(llm_service, messages, response_format, model_key, schema=None, max_tokens=None):
+async def _try_extract(*, llm_service, messages, response_format, model_key,
+                       schema=None, max_tokens=None, usage=None):
     """单级提取（response_format 形态）。完整实现见 structured.py::StructuredOutput._try_extract。"""
     result = await StructuredOutput._call_generate(   # 统一下游异常分类（NON_RETRYABLE raise / 可恢复返回 None）
-        llm_service, messages, model_key, max_tokens, response_format=response_format,
+        llm_service=llm_service, messages=messages, model_key=model_key,
+        max_tokens=max_tokens, response_format=response_format, usage=usage,
     )
     if result is None:
         return None   # 下游失败 → 降级
@@ -293,9 +297,10 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
 
     if failure == "truncated":
         retry = await StructuredOutput._call_generate(   # 截断：扩 max_tokens 重试 1 次
-            llm_service, messages, model_key,
-            max_tokens * 2 if max_tokens is not None else StructuredOutput._default_max_tokens * 2,
-            response_format=response_format, stage="结构化输出截断重试",
+            llm_service=llm_service, messages=messages, model_key=model_key,
+            max_tokens=(max_tokens * 2 if max_tokens is not None
+                        else StructuredOutput._default_max_tokens * 2),
+            response_format=response_format, stage="结构化输出截断重试", usage=usage,
         )
         if retry is None:
             return None
@@ -312,8 +317,10 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
         if parsed is not None:
             return parsed
         retry = await StructuredOutput._call_generate(
-            llm_service, _build_reask_messages(messages, content, "\n".join(errors)),
-            model_key, max_tokens, response_format=response_format, stage="结构化输出回喂",
+            llm_service=llm_service,
+            messages=_build_reask_messages(messages, content, "\n".join(errors)),
+            model_key=model_key, max_tokens=max_tokens,
+            response_format=response_format, stage="结构化输出回喂", usage=usage,
         )
         if retry is None:
             return None
@@ -341,11 +348,13 @@ async def _try_extract(llm_service, messages, response_format, model_key, schema
 
 ```python
 @staticmethod
-async def _fallback_extract(llm_service, messages, model_key, schema=None, max_tokens=None):
+async def _fallback_extract(*, llm_service, messages, model_key, schema=None,
+                            max_tokens=None, usage=None):
     """纯 prompt 约束降级方案（边界检查 + 正则定位 JSON 块）。
     完整实现见 structured.py::StructuredOutput._fallback_extract。"""
     result = await StructuredOutput._call_generate(
-        llm_service, messages, model_key, max_tokens, stage="结构化输出 fallback",
+        llm_service=llm_service, messages=messages, model_key=model_key,
+        max_tokens=max_tokens, stage="结构化输出 fallback", usage=usage,
     )
     if result is None:
         return None
@@ -416,7 +425,7 @@ generate_structured(messages, schema, model_key="fast")
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
 | `LLMService.generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None) -> dict \| None` | 异步方法 | 对外唯一入口，委托 `StructuredOutput.extract` 三级降级；拒答/工具调用抛异常（见 Raises）；`usage` 可变引用回填**全程累计** token 用量（含降级/截断重试/回喂的所有成功调用，供成本计量） |
-| `StructuredOutput.extract(llm_service, messages, schema, model_key="fast", max_tokens=None) -> dict \| None` | 静态异步 | 三级降级编排（JSON Schema strict → JSON Mode → 正则），返回 dict/None |
+| `StructuredOutput.extract(llm_service, messages, schema, model_key="fast", max_tokens=None, usage=None) -> dict \| None` | 静态异步 | 三级降级编排（JSON Schema strict → JSON Mode → 正则），返回 dict/None；`usage` 可变引用累计全程成功调用（与 `generate_structured` 同源） |
 | `StructuredOutput.register_config(max_tokens)` | 同步类方法 | 注入默认输出预算（Container 读 settings 后调用） |
 
 > 模块级私有函数（`_build_json_schema_request` / `_strict_compliant` / `_enforce_no_extra_fields` / `_parse_and_validate` / `_validate_schema` / `_build_reask_messages` 等）与类内私有方法（`_try_extract` / `_fallback_extract` / `_call_generate` / `_classify_result` / `_raise_boundary`）为内部实现载体，不构成对外接口，见「组件详解」。
@@ -466,7 +475,7 @@ structured.py 的调用参数（无独立配置节，max_tokens 由 `register_co
 
 ## 测试状态
 
-`tests/unit/test_generate_structured.py`（49 用例）：覆盖
+`tests/unit/test_generate_structured.py`（50 用例）：覆盖
 
 - **三级降级**：strict 成功短路 / 降级 JSON mode / 降级正则 / 三级全失败返回 None
 - **解析失败**：JSON 解析失败 / 非 dict / 空响应返回 None

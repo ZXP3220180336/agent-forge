@@ -53,7 +53,7 @@
 **集成层异常归一落地**（openai 4xx / 认证 → AppError 树）：
 
 - `app/shared/exceptions.py` 新增 `LLMAPIError(NonRetryableError)`（`code=LLM_API_ERROR`，携带 `status_code`）。
-- `app/integration/llm/retry.py` 新增 `normalize_transport_error(exc)`：包装 `APIStatusError`（带 status_code）+ 非 HTTP 永久性异常（status_code=None）；其余返回 None（429/5xx/超时/非 openai 原样）。
-- `app/integration/llm/llm_service.py` `generate` except 边界接入：NON_RETRYABLE → `raise LLMAPIError(...) from e`。
+- `app/integration/llm/errors.py`（传输错误处理单一归属）承载 `normalize_transport_error(exc)`：包装 `APIStatusError`（带 status_code）+ 非 HTTP 永久性异常（status_code=None）；其余返回 None（429/5xx/超时/非 openai 原样）。
+- `app/integration/llm/llm_service.py` `generate` except 边界经 `decide_downstream_error` 决策：NON_RETRYABLE openai 异常 → `raise LLMAPIError(...) from e`（归一）；非 openai 原样上抛；可恢复（RETRYABLE / RATE_LIMITED）重试耗尽 return None。
 - `ErrorCategory` 分类契约与实现同属 `app/integration/llm/errors.py`（单一消费方——仅集成层 LLM，契约不入 shared；上移 shared 的决策已修正，相关 ADR 已删除）。
 - **验证**：`tests/unit/test_reflection.py` 新增 `test_reflect_critique_llm_api_error_degrades_to_draft` / `test_reflect_refine_llm_api_error_degrades_to_draft`（fake 抛 `LLMAPIError(401/403)` → 降级采用最近稿）；`tests/unit/test_llm_service.py` 新增 4 例归一测试（401 → LLMAPIError + `__cause__`、APIResponseValidationError → status_code=None、ValueError 透传、APITimeoutError → return None）；`tests/unit/test_error_category.py` 锚定契约归属。全量 pytest 通过。

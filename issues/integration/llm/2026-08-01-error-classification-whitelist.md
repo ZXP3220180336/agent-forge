@@ -3,8 +3,9 @@
 > **状态**：✅ 已修复（2026-08-01）
 > **优先级**：P1（中）
 > **来源**：2026-08-01 工业级改造 · 2026-08-16 从 retry.md 提取归档
-> **涉及模块**：`app/integration/llm/retry.py`（`classify_error`）
-> **关联文档**：[retry.md](../../../docs/integration_doc/llm_doc/retry.md)
+> **涉及模块**：`app/integration/llm/retry.py`（`classify_error`，修复时归属）
+> **关联文档**：[retry.md](../../../docs/integration_doc/llm_doc/retry.md) · [error.md](../../../docs/integration_doc/llm_doc/error.md)
+> **演进注**：`classify_error` / `ErrorCategory` 于 2026-09-01 迁至 `app/integration/llm/errors.py`（传输错误处理单一归属，error-normalization），白名单机制不变（未知默认 NON_RETRYABLE）。
 
 ---
 

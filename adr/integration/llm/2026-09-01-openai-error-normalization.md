@@ -1,6 +1,11 @@
 # 集成层 openai 异常归一：LLMAPIError 入 AppError 树
 
-> 日期：2026-09-01 ｜ 层级：integration（llm）+ shared
+> **状态**：✅ 已采纳
+> **决策日期**：2026-09-01
+> **涉及模块**：`app/integration/llm/errors.py` · `app/integration/llm/llm_service.py` · `app/integration/llm/structured.py` · `app/shared/exceptions.py`
+> **关联文档**：[error.md](../../../docs/integration_doc/llm_doc/error.md) · [LLM 层说明](../../../docs/integration_doc/llm_doc/llm.md)（LLM-ADR-013）
+
+---
 
 ## Context
 
@@ -10,10 +15,10 @@
 ## Decision
 
 1. **新增 `LLMAPIError(NonRetryableError)`**（`app/shared/exceptions.py`，`code=AppErrorCode.LLM_API_ERROR`），携带 `status_code`；包装时 `raise LLMAPIError(...) from e` 保留原始 openai 异常。
-2. **归一位置 = `llm_service.generate` except 边界**（非 retry 层）：retry/classify/熔断继续操作原始 openai 异常，归一发生在其后。新增 `normalize_transport_error(exc)`（retry.py，复用 openai 类型知识）包装 `APIStatusError`（带 status_code）+ `_NON_RETRYABLE_EXC`（status_code=None）；其余返回 None（429/5xx/超时走 return None、非 openai 异常原样透传）。
+2. **归一位置 = `llm_service.generate` except 边界**（非 retry 层）：retry/classify/熔断继续操作原始 openai 异常，归一发生在其后。**落地载体 = `app/integration/llm/errors.py`**：新增 `normalize_transport_error(exc)`（复用 openai 类型知识）包装 `APIStatusError`（带 status_code）+ `_NON_RETRYABLE_EXC`（status_code=None）；其余返回 None（429/5xx/超时走 return None、非 openai 异常原样透传）。`generate` 下游统一决策由 `decide_downstream_error(exc) -> DownstreamDecision` 承担（归一上抛 / 原样上抛 / 降级三选一），llm_service / structured 只消费结果。
 3. **不复用 `UnauthorizedError/ForbiddenError/NotFoundError`**（BusinessError，承载 API 会话认证语义）——LLM provider 认证错误与用户会话授权语义不同，混用会误导领域 handler。
 4. **`async_generate` 流式路径不归一**：它已把异常转 `StreamResult.error` 字符串 + error 事件，无异常逃逸，不构成 AppError 覆盖缺口。
-5. **status_code 保留是硬约束**：`structured.py` 的 `_is_unsupported_response_format_error` 依赖 `status_code==400` + message 关键词判定「response_format 不支持」降级，不保留该降级链即断裂。
+5. **status_code 保留是硬约束**：`is_unsupported_response_format_error`（`errors.py`，structured 消费）依赖 `status_code==400` + message 关键词判定「response_format 不支持」降级，不保留该降级链即断裂。
 6. **API 边界映射**：`error_handler._CODE_TO_STATUS` 加 `LLM_API_ERROR → 502`（上游 provider 故障语义），**不映射 401/403**——避免误导客户端以为自身会话失效。
 
 ## Consequences

@@ -1,11 +1,11 @@
 # StreamingRectifier 设计文档
 
 > **模块**：`app/integration/llm/streaming_rectifier.py`
-> **更新日期**：2026-08-24
+> **更新日期**：2026-09-02
 > **职责**：流式整流重试策略——「首 token 前中断 → 重新 create + 重新迭代」，已产出 token 后中断则放弃
 > **状态**：✅ 已实现
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
-> **配套**：`StreamParser`（chunk 解析）、`LLMService.async_generate`（编排）、`RetryHandler`（create 阶段重试/熔断）
+> **配套**：`StreamParser`（chunk 解析）、`LLMService.async_generate`（编排）、`RetryHandler`（create 阶段重试/熔断）、`llm/errors.py`（`classify_error` 整流可恢复判定）
 
 ---
 

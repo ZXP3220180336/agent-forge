@@ -1,7 +1,7 @@
 # LLM 网关对外接口文档
 
 > **对应代码**：`app/integration/llm/`
-> **更新日期**：2026-08-24
+> **更新日期**：2026-09-02
 > **文档定位**：LLM 模块（`app/integration/llm/`）对外接口文档——`LLMService` Facade
 > 的接口契约 + 内部组件导航；服务对象为 LLM 网关的**外部调用方**（领域层 / 应用层 /
 > API 层）
@@ -174,7 +174,7 @@ cost = LLMService.calculate_cost(
 
 ## 内部实现组织
 
-> 内部 8 组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
+> 内部 9 组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
 > 本文展开——双处维护必然漂移，Rule 1「一个事实一个家」）。
 
 | 组件 | 文件 | 职责 | 设计文档 |
@@ -213,9 +213,9 @@ cost = LLMService.calculate_cost(
 ## 相关文档
 
 - [集成层说明](../README.md)（层总览：LLM 网关在集成层中的位置）
-- 组件子文档：client / retry / streaming / streaming_rectifier / structure / limiter /
-  cost_tracker / token_counter（见「内部实现组织」）
+- 组件子文档：client / retry / errors / streaming / streaming_rectifier / structure /
+  limiter / cost_tracker / token_counter（见「内部实现组织」）
 - [架构设计](../../architecture.md)（分层与演进路径）
 - [全局日志框架](../../platform_doc/observability/logging.md)（`llm_call` 业务事件）
-- 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~012）
-- 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~037）
+- 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~013）
+- 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~040）
