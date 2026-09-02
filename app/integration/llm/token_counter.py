@@ -7,18 +7,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.shared.types import Messages
+
+if TYPE_CHECKING:
+    import tiktoken  # 注解-only：tiktoken 运行期仍由 get_encoder 内 lazy import
+
 
 # =====================================================================
 # 编码器解析（进程内缓存）
 # =====================================================================
 
-_encoder_cache: dict[str, Any] = {}
+_encoder_cache: dict[str, tiktoken.Encoding] = {}
 
 
-def get_encoder(model: str) -> Any:
+def get_encoder(model: str) -> tiktoken.Encoding:
     """按模型名解析 tiktoken 编码器（进程内缓存，未知模型回退 cl100k_base）。
 
     与 llm_service 原有 `_get_encoder` 语义一致；此处为单一事实源。

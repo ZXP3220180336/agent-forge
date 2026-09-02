@@ -19,11 +19,14 @@ ClientManager — 连接池复用与多 client 管理
 from __future__ import annotations
 
 import asyncio
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from openai import AsyncOpenAI
 
 from app.platform.observability.logger import get_logger
+
+if TYPE_CHECKING:
+    import httpx  # 注解-only：httpx 延迟导入保留（运行期由 _build_proxied_client 内 lazy import）
 
 logger = get_logger("llm.client")
 
@@ -211,8 +214,11 @@ class ClientManager:
         cls._configs.pop(key, None)
 
 
-def _build_proxied_client(proxy_url: str) -> Any:
-    """构建带代理的 httpx.AsyncClient（延迟导入避免硬依赖）。"""
+def _build_proxied_client(proxy_url: str) -> httpx.AsyncClient:
+    """构建带代理的 httpx.AsyncClient（延迟导入避免硬依赖）。
+
+    返回的 client 作为 AsyncOpenAI(http_client=...) 注入（httpx.AsyncClient 形态）。
+    """
     try:
         import httpx
     except ImportError:

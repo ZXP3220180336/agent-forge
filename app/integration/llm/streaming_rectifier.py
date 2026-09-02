@@ -39,7 +39,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.integration.llm.streaming import StreamParser
+from app.integration.llm.streaming import StreamParser, ToolCallDelta
 from app.platform.observability.logger import fill_llm_event_fields
 from app.shared.events import (
     build_error_event,
@@ -206,7 +206,7 @@ class StreamingRectifier:
 
             # ----- 迭代阶段异常不受 retry 保护，自行判断整流 -----
             emitted_any = False
-            tool_deltas: list[Any] = []
+            tool_deltas: list[ToolCallDelta] = []
 
             try:
                 async for chunk in response:
@@ -311,7 +311,7 @@ class StreamingRectifier:
 
     @staticmethod
     def _apply_chunk(
-        chunk: Any, result: StreamResult, tool_deltas: list[Any]
+        chunk: Any, result: StreamResult, tool_deltas: list[ToolCallDelta]
     ) -> tuple[bool, list[str]]:
         """处理单个 chunk：累积到 result、产出事件列表；返回 (是否产出 token, 事件列表)。"""
         parsed = StreamParser.parse_chunk(chunk)
