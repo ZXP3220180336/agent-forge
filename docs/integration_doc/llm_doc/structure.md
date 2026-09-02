@@ -528,7 +528,7 @@ response_format 控制     RetryHandlerManager（重试/熔断，model_key 共�
 - [strict + additionalProperties:true 必然 400（LLM-009）](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)
 - [generate_structured 参数名契约（LLM-036）](../../../issues/integration/llm/2026-08-16-generate-structured-model-key-param.md)
 - [校验失败日志未脱敏（LLM-037）](../../../issues/integration/llm/2026-08-16-schema-validation-log-redaction.md)
-- [usage 回填不累计 + 变量错位，成本护栏低估（LLM-038）](../../../issues/integration/llm/2026-09-02-structured-usage-accumulate.md)
+- [usage 计量口径（LLM-038 回填不累计已修复 / LLM-039 传输层失败消耗不可计量·口径记录）](../../../issues/integration/llm/2026-09-02-usage-accounting.md)
 
 > **超出本模块范围**（属于 Agent 层与上层业务，structured 模块不负责）：语义/业务正确、工具执行权在后端、权限/幂等键、评测集闭环、SFT。这些由 Agent 循环与业务规则承载。
 

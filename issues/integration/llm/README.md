@@ -1,7 +1,7 @@
 # LLM 模块问题追踪
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/` 及其跨模块关联方）审查/审核发现的问题，追踪从发现 → 分析 → 修复 → 验证的完整生命周期。
-> **更新日期**：2026-08-16
+> **更新日期**：2026-09-02
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [领域端口契约](../../../docs/domain_doc/README.md)
 
 ## 状态图例
@@ -11,6 +11,7 @@
 | 🔴 待修复 | 已登记未修复 |
 | 🟡 修复中 | 修复实施中（代码/测试/文档） |
 | ✅ 已修复 | 代码 + 测试 + 文档全部完成，已验证 |
+| 🔵 口径记录 | 评估定案为不改（数据不可得 / 边界），记录口径与升级路径 |
 | ⬜ 已放弃 | 评估后不修（附理由） |
 
 ## 问题索引
@@ -54,6 +55,8 @@
 | [LLM-035](2026-08-10-rectify-emitted-any-marker-reset.md) | emitted_any 累积语义缺失（误整流重复输出） | P1 | ✅ 已修复 | streaming_rectifier | 2026-08-10 | 2026-08-10 |
 | [LLM-036](2026-08-16-generate-structured-model-key-param.md) | generate_structured 参数名契约（model_key） | P3 | ✅ 已修复 | llm_service / structured | 2026-08-16 | — |
 | [LLM-037](2026-08-16-schema-validation-log-redaction.md) | 校验失败日志未脱敏（jsonschema e.message 嵌入完整实例值） | P0 | ✅ 已修复 | structured（_validate_schema / _collect_schema_error_summaries） | 2026-08-16 | 2026-08-16 |
+| [LLM-038](2026-09-02-usage-accounting.md) | generate_structured usage 回填不累计 + 变量错位，成本护栏低估 | P1 | ✅ 已修复 | llm_service / structured + domain reflection | 2026-09-02 | 2026-09-02 |
+| [LLM-039](2026-09-02-usage-accounting.md) | 传输层失败调用 token 消耗不可计量（数据不可得） | P3 | 🔵 口径记录 | llm_service / streaming_rectifier / retry / structured | 2026-09-02 | — |
 
 ## 新问题登记规范
 
