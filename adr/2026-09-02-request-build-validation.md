@@ -43,5 +43,5 @@
 - ✅ 不引入集中校验层 → 无重复劳动、无新故障面；代码面最小（context 返回 + 路由 yield + 日志）。
 - ⚠️ 返回契约微调：`build_messages` 调用方解包从二元改三元（生产 1 处 + 测试 2 处），`total_tokens` 在 chat 路由仍弃用。
 - ⚠️ 残留边界：历史全丢后**单条超长 user 消息仍可能超出窗口**——本决策不解决（拒绝或单条级分段属后续问题），暂由服务端 400 NON_RETRYABLE 兜底（错误路径不雪崩）。
-- 📌 升级路径（按产品导向暂不实现）：集中强参数校验层；拒绝式校验（Option A）；上下文摘要压缩（`build_messages` docstring 策略第 4 条尚未实现，仍为硬丢）；`request_id`/TraceID 贯穿、分级超时等其他生产级异常链差距（各自独立决策，见流式异常链审计）。
+- 📌 升级路径（按产品导向暂不实现）：集中强参数校验层；拒绝式校验（Option A）；上下文摘要压缩（`build_messages` docstring 策略第 4 条尚未实现，仍为硬丢）；`request_id`/TraceID 贯穿等其余生产级异常链差距（各自独立决策，见流式异常链审计）——其中分级超时（[LLM-ADR-014](integration/llm/2026-09-03-connection-establishment-phase.md)）与半流续接（[LLM-ADR-015](integration/llm/2026-09-03-mid-stream-continuation.md)）已独立立项落地。
 - 📌 本 ADR 置于 `adr/` 根目录并自建 `adr/README.md` 索引——建立「根级横切 ADR」新约定（原约定为跨层决策归主决策模块子目录；根级目录专收不归属单一模块的横切决策，并强制登记索引防失联）。

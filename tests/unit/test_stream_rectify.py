@@ -734,3 +734,52 @@ async def test_cancel_event_not_feeds_breaker(monkeypatch):
 
     assert any("error" in e for e in events), "取消应产出 error 事件"
     assert _cb_failure_count() == 0, "用户取消（非下游故障）不应计入熔断窗口"
+
+
+# =====================================================================
+# 半流续接（LLM-ADR-015）：续接请求构造（经 async_generate 端到端）
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_continuation_request_appends_assistant_prefix(monkeypatch):
+    """已产出 content 中断 → 续接请求在原 messages 后追加 assistant 前缀（prefix:True）。
+
+    半流续接不是整流（从头重启），而是携带已产出 content 作 assistant 前缀续写——
+    断言续接请求的消息结构与「重新 reserve」的结算语义（LLM-ADR-015）。
+    """
+    script = [
+        # attempt0：产出部分 content 后流中断（RETRYABLE，已产出 → 不整流）
+        FakeStream([_content_chunk("部分")], fail_at=1, exc=httpx.ReadError("reset")),
+        # 续接请求：正常完成
+        FakeStream([_content_chunk("续写"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
+    ]
+    _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=1)
+    monkeypatch.setattr(LLMService, "_continuation_max_retries", 1)
+
+    seen: list[dict] = []
+    orig_create = completions.create
+
+    async def create_capture(**kwargs):
+        seen.append(kwargs)
+        return await orig_create(**kwargs)
+
+    completions.create = create_capture  # 覆盖实例方法，捕获每次请求 kwargs
+
+    sr, events = await run()
+
+    assert completions.calls == 2, "应发起 1 次原始 + 1 次续接请求"
+    assert len(seen) == 2, f"应捕获 2 次请求参数，实际 {len(seen)}"
+    assert seen[0]["messages"][-1] == {
+        "role": "user",
+        "content": "hi",
+    }, "原始请求不加前缀"
+    assert seen[1]["messages"][-1] == {
+        "role": "assistant",
+        "content": "部分",
+        "prefix": True,
+    }, "续接请求应追加 assistant 前缀消息（DeepSeek prefix 续写字段）"
+    assert sr.content == "部分续写", "半流无缝合并（部分 + 续写）"
+    assert sr.error is None, "续接成功不应置失败信号"
+    assert not any("error" in e for e in events), f"不应有 error 事件: {events}"
+    assert calls["reserve"] == 2, "续接是新的 reserve（每次真实请求单独结算语义）"

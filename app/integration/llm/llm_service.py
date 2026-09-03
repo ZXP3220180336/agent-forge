@@ -206,6 +206,8 @@ class LLMService:
     _fallback_model_id: ClassVar[str] = ""
     _adaptive_reserve: ClassVar[bool] = False
     _stream_max_retries: ClassVar[int] = 1
+    # 半流续接轮次上限（LLM-ADR-015）：已产出 content 中断时带前缀续写；0=禁用
+    _continuation_max_retries: ClassVar[int] = 0
 
     @classmethod
     def register_config(
@@ -214,11 +216,13 @@ class LLMService:
         fallback_model_id: str,
         adaptive_reserve: bool,
         stream_max_retries: int,
+        continuation_max_retries: int = 0,
     ) -> None:
         """注入运行期配置（由装配根调用，避免直接依赖 settings）。"""
         cls._fallback_model_id = fallback_model_id
         cls._adaptive_reserve = adaptive_reserve
         cls._stream_max_retries = stream_max_retries
+        cls._continuation_max_retries = continuation_max_retries
 
     def __init__(
         self,
@@ -302,10 +306,36 @@ class LLMService:
             estimated = _count_prompt_tokens(model_key, messages, max_tokens)
         limiter = ReservationLimiterManager.get(model_key)
 
-        # ----- 流式整流重试（独立策略 StreamingRectifier） -----
-        # 首 token 前中断可整流重试，已产出 token 后中断放弃。
+        # ----- 流式整流/续接（独立策略 StreamingRectifier） -----
+        # 首 token 前中断 → 整流重试；已产出 content 中断 → 续接（尽力而为）或放弃。
         # create 阶段由 retry.execute() 保护（重试/熔断/fallback），
-        # 迭代阶段异常由 rectifier 判断整流。产出 SSE 事件字符串。
+        # 迭代阶段异常由 rectifier 判断整流/续接。产出 SSE 事件字符串。
+
+        # 半流续接请求构造（LLM-ADR-015）：续接 = 原 messages 副本 + 已产出 content
+        # 作最后一条 assistant 消息（DeepSeek prefix 续写字段）重新请求——模型从断点
+        # 续写而非重启，客户端看到的是无缝一段。走 _rate_limited_call（重新 reserve，
+        # 新请求语义）；OpenAI 兼容端点不支持 prefix 时 create 失败，整流器尽力而为
+        # 语义降级到放弃，不影响原路径。仅在配置开启（>0）时构造。
+        continue_fn: Callable[[str], Awaitable[Any]] | None = None
+        if self._continuation_max_retries > 0:
+
+            async def _continue_fn(prefix: str) -> Any:
+                cont_kwargs = dict(kwargs)
+                cont_kwargs["messages"] = list(messages) + [
+                    {"role": "assistant", "content": prefix, "prefix": True}
+                ]
+                return await _rate_limited_call(
+                    adaptive,
+                    limiter,
+                    client,
+                    cont_kwargs,
+                    active,
+                    prompt_tokens=prompt_tokens,
+                    estimated=estimated,
+                    max_tokens=max_tokens,
+                )
+
+            continue_fn = _continue_fn
 
         if result is None:
             result = StreamResult()
@@ -333,6 +363,8 @@ class LLMService:
             stream_max_retries=self._stream_max_retries,
             context=rectifier_context,
             fallback_fn=fallback_fn,
+            continue_fn=continue_fn,
+            continuation_max_retries=self._continuation_max_retries,
         ):
             yield event
 

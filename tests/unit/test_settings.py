@@ -161,6 +161,12 @@ def test_agent_max_same_action_turns_default_three():
     assert _make().agent_max_same_action_turns == 3
 
 
+def test_llm_stream_max_continuations_default_one():
+    """llm_stream_max_continuations 默认 1（半流续接开启；0=禁用，LLM-ADR-015）。"""
+    assert _make().llm_stream_max_continuations == 1
+    assert _make(llm_stream_max_continuations=0).llm_stream_max_continuations == 0
+
+
 def test_llm_embedding_config():
     s = _make(
         llm_api_key="k",

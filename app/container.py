@@ -219,11 +219,12 @@ class Container:
             chunk_idle_timeout=settings.llm_timeout_chunk_idle,
         )
 
-        # LLM 运行期配置注入（fallback / 自适应预留 / 流式整流次数）
+        # LLM 运行期配置注入（fallback / 自适应预留 / 流式整流与续接次数）
         LLMService.register_config(
             fallback_model_id=settings.llm_fallback_model_id,
             adaptive_reserve=settings.llm_adaptive_reserve,
             stream_max_retries=settings.llm_stream_max_retries,
+            continuation_max_retries=settings.llm_stream_max_continuations,
         )
         self.llm_service = LLMService()  # 空构造，通过 ClientManager 获取 client
 

@@ -260,6 +260,7 @@ llm_service = LLMService(**settings.llm_config)
 | --- | --- | --- | --- |
 | `LLM_MAX_RETRIES` | int | 2 | 单次请求最大重试次数（指数退避） |
 | `LLM_STREAM_MAX_RETRIES` | int | 1 | 流式整流重试次数（首 token 前中断才整流；0=禁用） |
+| `LLM_STREAM_MAX_CONTINUATIONS` | int | 1 | 半流续接轮次上限（已产出 content 中断带前缀续写，LLM-ADR-015；0=禁用） |
 | `LLM_BASE_DELAY` | float | 1.0 | 重试退避基准延迟（秒） |
 | `LLM_MAX_DELAY` | float | 30.0 | 重试退避最大延迟（秒） |
 | `LLM_USE_JITTER` | bool | true | 退避是否加随机抖动 |

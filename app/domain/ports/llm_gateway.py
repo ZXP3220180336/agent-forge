@@ -24,11 +24,12 @@ class StreamResult:
         self.has_reasoning: bool = False
         self.finish_reason: str | None = None
         self.tool_calls: list[dict] = []
-        # token 用量（最终成功响应的 usage：成功整流取末次成功流的 usage chunk）。
+        # token 用量（最终成功响应的 usage：成功整流/续接取末次成功流的 usage chunk）。
         # 计量口径：语义层浪费调用（结构化多级降级/截断重试/回喂，数据可得）已累计
-        # （LLM-038）；不含传输层失败尝试（create 重试/流中断整流/fallback 主调用，
+        # （LLM-038）；不含传输层失败尝试（create 重试/流中断整流/断流 attempt，
         # 数据不可得）的消耗——失败估算如需计量放观测侧（LLM-039，见
-        # issues/integration/llm/2026-09-02-usage-accounting.md）。
+        # issues/integration/llm/2026-09-02-usage-accounting.md）。半流续接成功
+        # （LLM-ADR-015）同整流口径：只记末次完成流 usage，断流 attempt 不计。
         self.usage: dict | None = None
         self.refusal: str | None = None
         # LLM 调用失败原因（create 失败 / 流中断放弃 / 用户取消），None=成功。

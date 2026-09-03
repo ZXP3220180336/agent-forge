@@ -48,7 +48,7 @@ app/integration/llm/
 ├── errors.py                  ← 传输错误处理（分类/归一/降级判定/下游决策）
 ├── retry.py                   ← RetryHandler + CircuitBreaker
 ├── streaming.py               ← StreamParser 流式/非流式解析
-├── streaming_rectifier.py     ← StreamingRectifier 流式整流重试
+├── streaming_rectifier.py     ← StreamingRectifier 流式整流/续接重试
 ├── structured.py              ← StructuredOutput 结构化输出
 ├── reservation_limiter.py     ← ReservationLimiter 客户端限流
 ├── cost_tracker.py            ← CostTracker 成本计算
@@ -182,7 +182,7 @@ cost = LLMService.calculate_cost(
 | `ClientManager` | client.py | 全局共享 AsyncOpenAI 连接池（main / reasoning / fast 懒加载 + 热切换关闭追踪） | [client.md](client.md) |
 | `RetryHandler` + `CircuitBreaker` | retry.py | 指数退避 + 抖动 + 滑动窗口熔断 + 半开探针 + fallback 降级链 | [retry.md](retry.md) |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式 / 非流式响应（纯函数无状态） | [streaming.md](streaming.md) |
-| `StreamingRectifier` | streaming_rectifier.py | 流式整流重试（首 token 前中断重新 create + 迭代） | [streaming_rectifier.md](streaming_rectifier.md) |
+| `StreamingRectifier` | streaming_rectifier.py | 流式整流/半流续接（首 token 前中断整流重试；已产出 content 中断带前缀续写，LLM-ADR-015） | [streaming_rectifier.md](streaming_rectifier.md) |
 | `StructuredOutput` | structured.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则） | [structure.md](structure.md) |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流（RPM + TPM 双桶，reserve/settle + 自适应预留） | [limiter.md](limiter.md) |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配 + 会话级累计） | [cost_tracker.md](cost_tracker.md) |
@@ -190,7 +190,7 @@ cost = LLMService.calculate_cost(
 | `token_counter` | token_counter.py | tiktoken 计数实现（编码器解析 / content 归一化 / 消息计数，经 `LLMService.count_*` 对外） | [token_counter.md](token_counter.md) |
 
 **组件间协作**（可靠性链）：`ReservationLimiter`（事前限流）→ `RetryHandler`
-（重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流）→
+（重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流/续接）→
 `StreamParser`（解析）→ 全局日志框架 `fill_llm_event_fields("llm_call")`
 （事件记录，见 [logging.md](../../platform_doc/observability/logging.md)）。Facade 如何组织这些组件
 （可靠性链 / 配额结算闭环 / 整流协作）见 [llm_service.md](llm_service.md)。
@@ -204,7 +204,7 @@ cost = LLMService.calculate_cost(
 - 配置明细见各组件子文档「配置项清单」：
   - 重试 / 熔断 → [retry.md](retry.md)
   - 限流（RPM / TPM + 自适应预留）→ [limiter.md](limiter.md)
-  - 流式整流 → [streaming_rectifier.md](streaming_rectifier.md)
+  - 流式整流/续接 → [streaming_rectifier.md](streaming_rectifier.md)
   - 结构化输出 → [structure.md](structure.md)
 - 完整配置说明见 [config 文档](../../config_doc/config.md)
 

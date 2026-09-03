@@ -52,12 +52,12 @@
 
 1. **Facade 统一编排**：`async_generate` / `generate` / `generate_structured` 是唯一对外
    入口，调用方不直接触碰 9 组件；内部组织组件协作的细节对调用方透明
-2. **可靠性链闭环**：限流（事前排队）→ 重试/熔断/降级（保护 create 阶段）→ 整流
+2. **可靠性链闭环**：限流（事前排队）→ 重试/熔断/降级（保护 create 阶段）→ 整流/续接
    （流式）→ 解析 → 事件日志，一次调用走完整链路
 3. **配额结算闭环**：每个 `reserve` 必配结算，`finally` 兜底防泄漏——create 失败
    `cancel()` 全额退、create 成功后 `settle(actual)` 退差 / `settle(None)` 保留
-4. **流式整流与限流协作**：整流重试每轮重新进入 call_fn = 重新 `reserve` + `create`
-   （新请求语义，见 [LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)）
+4. **流式整流/续接与限流协作**：整流与半流续接的每轮 attempt 都重新进入 call_fn =
+   重新 `reserve` + `create`（新请求语义，见 [LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)；续接另见 [LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）
 
 ---
 
@@ -118,6 +118,9 @@ async def _rate_limited_call(adaptive, limiter, client, kwargs, active, ...):
 `async_generate` 的整流循环（`StreamingRectifier.rectified_stream`）每次 attempt 重新调用
 `create_fn`（即 `_rate_limited_call`）——重新 `reserve` + `create`。整流重试每轮都是
 **新请求**，重新扣配额（测试断言整流 2 轮 `calls["reserve"] == 2`）。
+半流续接（[LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）
+的续接 attempt 同样经 `_rate_limited_call` 重新 `reserve` + `create`——但为**尽力而为单链**
+（不经 `retry.execute`/fallback），续接失败退化放弃。
 
 fallback（备用模型）**不参与 reserve**：备用链路防突发无意义，独立于主模型配额。
 
@@ -238,11 +241,13 @@ async_generate(messages, tools, temperature, max_tokens, result, model_key, canc
   ├─ _build_chat_kwargs(stream=True) + _build_fallback_fn
   ├─ 估算：adaptive → prompt_tokens；否则 estimated = prompt + max_tokens
   ├─ limiter = ReservationLimiterManager.get(model_key)
-  └─ rectified_stream（整流循环，见 streaming_rectifier.md）：
+  └─ rectified_stream（整流/续接循环，见 streaming_rectifier.md）：
        每 attempt：_rate_limited_call（reserve + create，经 retry.execute 保护）
          ├─ create 失败/取消 → cancel() 全额退 → 可整流则重试，否则放弃
-         ├─ 迭代：_apply_chunk 累积 StreamResult + 产出 SSE 事件
-         ├─ 中断：_should_rectify？ 是 → 退避重试（重新 reserve）；否 → 熔断 feeding + 中断收尾
+         ├─ 迭代：_drain 逐 chunk 看门狗 + _apply_chunk 累积 StreamResult + 产出 SSE 事件
+         ├─ 中断：_should_rectify？ 是（首 token 前）→ 退避重试（重新 reserve）
+         │                    否（已产出 content）→ 续接？ 是 → continue_fn(prefix) 续写
+         │                                             否 / 续接失败 → 放弃（熔断 feeding + 部分保留）
          └─ 成功读完 / 硬取消 → settle(actual) / finally settle(None) 保留配额
 ```
 
@@ -319,6 +324,7 @@ settings 后调用）：
 | `fallback_model_id` | str | 降级备用模型（须同 provider；空 = 不启用） |
 | `adaptive_reserve` | bool | 自适应预留开关（高分位估算输出，减少占桶；默认关） |
 | `stream_max_retries` | int | 流式整流重试次数（首 token 前中断才整流） |
+| `continuation_max_retries` | int | 半流续接轮次上限（已产出 content 中断续写，LLM-ADR-015；默认 0=禁用，settings 默认 1） |
 
 > 其余配置（模型 / 重试 / 熔断 / 限流 / 整流 / 结构化）由各组件 `register_config`
 > 注入，见各组件子文档「配置项清单」。
@@ -331,9 +337,9 @@ settings 后调用）：
   估算 / 多模态 list 估算 / 解析错误 settle 结算 / settle 被取消兜底结算 / 异常归一决策
   （401→`LLMAPIError`、响应校验归一、未知非 openai 原样上抛、可恢复→None）/ generate
   reasoning_content / has_reasoning 回填（LLM-040）
-- 间接覆盖（经 Facade 全链路）：`test_stream_rectify.py`（22 用例，async_generate 整流 /
-  结算 / 事件 / 熔断 feeding）、`test_generate_structured.py`（50 用例，generate_structured
-  三级降级）
+- 间接覆盖（经 Facade 全链路）：`test_stream_rectify.py`（23 用例，async_generate 整流/续接 /
+  结算 / 事件 / 熔断 feeding，含续接请求追加 assistant 前缀消息 + 重新 reserve）、
+  `test_generate_structured.py`（50 用例，generate_structured 三级降级）
 
 ---
 
@@ -343,6 +349,7 @@ settings 后调用）：
 > 与本模块直接相关的决策链接：
 
 - 流式整流重试（整流循环与限流/结算协作）：[LLM-ADR-005](../../../adr/integration/llm/2026-08-01-streaming-rectification-retry.md)
+- 半流中断接续（已产出 content 带前缀续写，编排层构造 `continue_fn`）：[LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)
 - 限流算法与结算语义（reserve/settle）：[LLM-ADR-008](../../../adr/integration/llm/2026-08-01-rate-limit-token-bucket-waiting.md) · [LLM-ADR-009](../../../adr/integration/llm/2026-08-02-reserve-settle-semantics.md)
 - 连接池管理：[LLM-ADR-004](../../../adr/integration/llm/2026-08-01-client-pool-lazy-close-tracking.md)
 

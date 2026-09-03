@@ -621,3 +621,286 @@ def test_chunk_idle_timeout_abandons_after_first_token():
         assert reservation.settle_calls == 1, "放弃路径应 settle"
     finally:
         _restore_watchdog(saved)
+
+
+# =====================================================================
+# 半流续接（LLM-ADR-015）：已产出 content 中断 → 带前缀续写
+# =====================================================================
+
+
+def _reasoning_chunk(text: str):
+    """产出思考文本的 chunk（置 has_reasoning，算"首 token"，阻断续接）。"""
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    reasoning_content=text, content=None, tool_calls=None
+                ),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+    )
+
+
+def _tool_call_chunk():
+    """携带工具调用增量的 chunk（算"首 token"，阻断续接——partial JSON 无法跨请求）。"""
+    tc = SimpleNamespace(
+        index=0,
+        id="call_1",
+        function=SimpleNamespace(name="search", arguments='{"query":"x"'),
+    )
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    reasoning_content=None, content=None, tool_calls=[tc]
+                ),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+    )
+
+
+def _run_continue(streams, continue_streams, continuation_max_retries=1):
+    """驱动带续接的 rectified_stream，返回 (events, result, retry, reservation, prefixes)。
+
+    continue_streams：续接 attempt 依次取出的对象（FakeStream 或 Exception）。
+    退避配置依赖调用方用 _tiny_watchdog/_restore_watchdog 收窄。
+    """
+    result = StreamResult()
+    reservation = _FakeReservation()
+    active = {"res": reservation}
+    context = RectifierContext(result, active, {})
+    retry = _FakeRetry(list(streams))
+    cont_pool = list(continue_streams)
+    prefixes: list[str] = []
+
+    async def cont_fn(prefix):
+        prefixes.append(prefix)
+        if not cont_pool:
+            return _FakeStream([])
+        item = cont_pool.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    async def collect():
+        events = []
+        async for ev in StreamingRectifier.rectified_stream(
+            create_fn=lambda: _FakeStream([]),
+            retry=retry,
+            cancel_event=None,
+            stream_max_retries=1,
+            context=context,
+            continue_fn=cont_fn,
+            continuation_max_retries=continuation_max_retries,
+        ):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(collect())
+    return events, result, retry, reservation, prefixes
+
+
+def test_continuation_resumes_after_content_interrupt():
+    """已产出 content 中断（不整流）→ 带前缀续接成功：部分 + 续写无缝合并。"""
+    saved = _tiny_watchdog()
+    try:
+        events, result, retry, reservation, prefixes = _run_continue(
+            streams=[
+                _FakeStream(
+                    [_content_chunk("部分内容")], fail_at=1, exc=TimeoutError("reset")
+                )
+            ],
+            continue_streams=[
+                _FakeStream([_content_chunk("续写"), _usage_chunk(10, 3)])
+            ],
+        )
+        assert retry.calls == 1, "已产出 content 后不应整流（从头重启）"
+        assert prefixes == ["部分内容"], "续接应携带已产出 content 作前缀"
+        assert result.content == "部分内容续写", "成功 = 部分 + 续写无缝合并"
+        assert result.error is None, "续接成功不应置失败信号"
+        assert not any("error" in e for e in events), f"不应有 error 事件: {events}"
+        assert reservation.settle_calls == 1, "attempt0 中断（请求已发出）应 settle"
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_continuation_strips_seam_overlap():
+    """续接流首部与已产 content 尾部重叠 → 接缝剥离，客户端不看到重复拼接。
+
+    已产 "ABC"，续接首部 "BC"（重叠）→ 剥离不产出；"DEF" 才作为新内容产出。
+    """
+    saved = _tiny_watchdog()
+    try:
+        events, result, _, _, prefixes = _run_continue(
+            streams=[
+                _FakeStream(
+                    [_content_chunk("ABC")], fail_at=1, exc=TimeoutError("reset")
+                )
+            ],
+            continue_streams=[
+                _FakeStream(
+                    [
+                        _content_chunk("BC"),
+                        _content_chunk("DEF"),
+                        _usage_chunk(10, 3),
+                    ]
+                )
+            ],
+        )
+        assert prefixes == ["ABC"]
+        assert result.content == "ABCDEF", f"接缝重叠应剥离重复，实际 {result.content!r}"
+        assert result.error is None
+        # message 事件只有 attempt0 的 ABC 与续写剥离后的 DEF（BC 重叠被剥离）
+        import json
+
+        def _msg_texts(evs):
+            texts = []
+            for ev in evs:
+                obj = json.loads(ev[len("data: ") :].strip())
+                if obj.get("type") == "message":
+                    texts.append(obj.get("content", ""))
+            return texts
+
+        assert _msg_texts(events) == ["ABC", "DEF"]
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_continuation_create_failure_degrades_to_abandon():
+    """续接 create 失败（如 provider 不支持 prefix）→ 退化放弃：保留部分 + 原中断原因。"""
+    saved = _tiny_watchdog()
+    try:
+        events, result, retry, _, prefixes = _run_continue(
+            streams=[
+                _FakeStream(
+                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
+                )
+            ],
+            continue_streams=[RuntimeError("prefix not supported")],
+        )
+        assert prefixes == ["部分"], "应尝试续接一次（尽力而为）"
+        assert result.content == "部分", "退化放弃应保留已产出 content"
+        assert result.error == "reset", "失败信号用原中断原因（对用户更贴切）"
+        assert any("流式响应中断" in e for e in events), "应产出放弃 error 事件"
+        assert retry.circuit_breaker.failures == 1, (
+            "原中断为 RETRYABLE → 与未续接的放弃一致，喂熔断"
+        )
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_continuation_off_when_max_zero():
+    """continuation_max_retries=0 → 续接不触发，维持既有放弃路径。"""
+    saved = _tiny_watchdog()
+    try:
+        events, result, retry, _, prefixes = _run_continue(
+            streams=[
+                _FakeStream(
+                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
+                )
+            ],
+            continue_streams=[],
+            continuation_max_retries=0,
+        )
+        assert prefixes == [], "max=0 不应发起续接"
+        assert result.content == "部分"
+        assert result.error, "维持放弃：部分保留 + 失败信号"
+        assert retry.circuit_breaker.failures == 1
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_no_continuation_when_reasoning_only():
+    """reasoning 半段中断（content 空）→ 不续接（reasoning 续写语义未验证，保守排除）。"""
+    saved = _tiny_watchdog()
+    try:
+        events, result, retry, _, prefixes = _run_continue(
+            streams=[
+                _FakeStream(
+                    [_reasoning_chunk("思考中")], fail_at=1, exc=TimeoutError("reset")
+                )
+            ],
+            continue_streams=[_FakeStream([_content_chunk("不应被消费")])],
+        )
+        assert prefixes == [], "reasoning 流不应续接"
+        assert result.reasoning_content == "思考中", "已产出 reasoning 保留"
+        assert result.content == ""
+        assert result.error, "维持放弃（失败信号）"
+        assert any("error" in e for e in events)
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_no_continuation_when_tool_call_partial():
+    """tool_call 半成品中断 → 不续接（partial JSON 无法跨请求续接，维持放弃）。"""
+    saved = _tiny_watchdog()
+    try:
+        events, result, retry, _, prefixes = _run_continue(
+            streams=[
+                _FakeStream(
+                    [_tool_call_chunk()], fail_at=1, exc=TimeoutError("reset")
+                )
+            ],
+            continue_streams=[_FakeStream([_content_chunk("不应被消费")])],
+        )
+        assert prefixes == [], "tool 半成品不应续接"
+        assert result.tool_calls == [], "放弃分支不合并 tool_calls（partial 丢弃）"
+        assert result.error, "维持放弃（失败信号）"
+        assert retry.circuit_breaker.failures == 1
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_continuation_reinterrupt_budget_then_succeeds():
+    """续接再断（预算内）→ 带新前缀再续接成功；usage/成本同整流语义（末次成功流）。"""
+    saved = _tiny_watchdog()
+    try:
+        events, result, _, _, prefixes = _run_continue(
+            streams=[
+                _FakeStream([_content_chunk("A")], fail_at=1, exc=TimeoutError("reset"))
+            ],
+            continue_streams=[
+                # 续接 1：再产 B 后断（预算余 1）
+                _FakeStream([_content_chunk("B")], fail_at=1, exc=TimeoutError("reset")),
+                # 续接 2：产 C 成功
+                _FakeStream([_content_chunk("C"), _usage_chunk(10, 3)]),
+            ],
+            continuation_max_retries=2,
+        )
+        assert prefixes == ["A", "AB"], "续接链应逐次携带增长后的前缀"
+        assert result.content == "ABC"
+        assert result.error is None
+        assert result.usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 3,
+            "total_tokens": 13,
+        }, "续接成功取末次完成流 usage（断流 attempt 不计，LLM-039）"
+        assert not any("error" in e for e in events)
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_continuation_reinterrupt_budget_exhausted_abandons():
+    """续接再断且预算耗尽 → 放弃：保留两段内容 + 失败信号 + 喂熔断。"""
+    saved = _tiny_watchdog()
+    try:
+        events, result, retry, _, prefixes = _run_continue(
+            streams=[
+                _FakeStream([_content_chunk("A")], fail_at=1, exc=TimeoutError("reset"))
+            ],
+            continue_streams=[
+                _FakeStream([_content_chunk("B")], fail_at=1, exc=TimeoutError("reset"))
+            ],
+            continuation_max_retries=1,
+        )
+        assert prefixes == ["A"], "预算 1 → 仅一次续接"
+        assert result.content == "AB", "两段部分内容保留"
+        assert result.error, "预算耗尽应放弃（失败信号）"
+        assert retry.circuit_breaker.failures == 1, "最终 RETRYABLE 放弃应喂熔断"
+        assert any("error" in e for e in events)
+    finally:
+        _restore_watchdog(saved)
