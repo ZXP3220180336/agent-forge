@@ -58,6 +58,15 @@ if TYPE_CHECKING:
 _RESULT_ERROR_LIMIT = 500
 
 
+def _describe_exception(exc: Exception) -> str:
+    """异常的可读描述：message 为空（如看门狗 TimeoutError()）时回退类型名。
+
+    result.error 以非空为「失败信号」（react 短路判定），空串会把失败误当空回；
+    超时等框架异常的 str() 常为空串，必须兜底类型名。
+    """
+    return str(exc) or type(exc).__name__
+
+
 def _stream_backoff(attempt: int, retry_after: float | None = None) -> float:
     """流式整流重试的退避延迟（配置由 StreamingRectifier.register_config 注入）。
 
@@ -132,6 +141,10 @@ class StreamingRectifier:
     _base_delay: float = 1.0
     _max_delay: float = 30.0
     _use_jitter: bool = True
+    # 首包/空闲双阈值看门狗（LLM-ADR-014）：区分「模型思考慢（首包宽）」与「流已断
+    # （后续 chunk 空闲窄）」——httpx read 档只能给单一值，双阈值须应用层逐 chunk 计时。
+    _first_token_timeout: float = 60.0
+    _chunk_idle_timeout: float = 15.0
 
     @classmethod
     def register_config(
@@ -140,6 +153,8 @@ class StreamingRectifier:
         base_delay: float,
         max_delay: float,
         use_jitter: bool,
+        first_token_timeout: float,
+        chunk_idle_timeout: float,
     ) -> None:
         """注入流式整流退避配置（Container 读 settings 后调用）。
 
@@ -147,10 +162,14 @@ class StreamingRectifier:
             base_delay: 退避基数（秒）
             max_delay: 退避上限（秒）
             use_jitter: 是否启用随机抖动
+            first_token_timeout: 首 chunk（首字节）等待上限（宽，覆盖思考）
+            chunk_idle_timeout: 后续单 chunk 空闲上限（窄，判定断流）
         """
         cls._base_delay = base_delay
         cls._max_delay = max_delay
         cls._use_jitter = use_jitter
+        cls._first_token_timeout = first_token_timeout
+        cls._chunk_idle_timeout = chunk_idle_timeout
 
     @staticmethod
     async def rectified_stream(
@@ -198,8 +217,9 @@ class StreamingRectifier:
                 )
                 # 失败信号传给编排层（Agent 短路）：create 失败 → 本轮 LLM 调用
                 # 无结果，Agent 不应把「失败」当「空输出」继续空转重试。
-                context.result.error = str(e)[:_RESULT_ERROR_LIMIT]
-                yield build_error_event(f"LLM 调用失败: {e!s}")
+                exc_text = _describe_exception(e)
+                context.result.error = exc_text[:_RESULT_ERROR_LIMIT]
+                yield build_error_event(f"LLM 调用失败: {exc_text}")
                 return
 
             # ----- 迭代阶段异常不受 retry 保护，自行判断整流 -----
@@ -207,7 +227,24 @@ class StreamingRectifier:
             tool_deltas: list[ToolCallDelta] = []
 
             try:
-                async for chunk in response:
+                # 首包/空闲双阈值看门狗：首 chunk 等「首包宽」（覆盖模型思考），
+                # 其后每 chunk 等「空闲窄」（>阈值判定断流，不等 httpx read 整档）。
+                # wait_for 取消 anext → asyncio.TimeoutError 冒泡到下方 except，
+                # 首 chunk 超时（无产出）→ 可整流；已产出后空闲超时 → 放弃。
+                stream_iter = response.__aiter__()
+                first_chunk = True
+                while True:
+                    idle = (
+                        StreamingRectifier._first_token_timeout
+                        if first_chunk
+                        else StreamingRectifier._chunk_idle_timeout
+                    )
+                    try:
+                        chunk = await asyncio.wait_for(anext(stream_iter), idle)
+                    except StopAsyncIteration:
+                        break
+                    first_chunk = False
+
                     if cancel_event and cancel_event.is_set():
                         context.result.error = "用户取消"
                         await StreamingRectifier._finish_interrupted(
@@ -280,8 +317,9 @@ class StreamingRectifier:
                     retry.circuit_breaker.record_failure()
                 # 流中断放弃（不整流）→ 失败信号传编排层（Agent 短路）。已产出的
                 # 部分 content 保留在 result 中，Agent 短路时一并带回。
-                context.result.error = str(e)[:_RESULT_ERROR_LIMIT]
-                yield build_error_event(f"流式响应中断: {e!s}")
+                exc_text = _describe_exception(e)
+                context.result.error = exc_text[:_RESULT_ERROR_LIMIT]
+                yield build_error_event(f"流式响应中断: {exc_text}")
                 return
 
             finally:

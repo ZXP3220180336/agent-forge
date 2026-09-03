@@ -536,3 +536,88 @@ def test_rectify_retry_after_capped_by_max_delay(monkeypatch):
     assert sleeps[0] <= _TEST_MAX_DELAY, (
         f"Retry-After 超 max_delay 应封顶，实际 {sleeps[0]:.3f}s"
     )
+
+
+# =====================================================================
+# 首包/空闲双阈值看门狗（LLM-ADR-014）
+# =====================================================================
+
+
+class _DelayedChunkStream:
+    """按需在指定 anext 前 sleep（模拟慢首包 / 慢后续 chunk）。"""
+
+    def __init__(self, chunks, delay_at, delay):
+        self._chunks = list(chunks)
+        self._delay_at = delay_at
+        self._delay = delay
+        self._i = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._i >= len(self._chunks):
+            raise StopAsyncIteration
+        if self._i == self._delay_at:
+            await asyncio.sleep(self._delay)
+        chunk = self._chunks[self._i]
+        self._i += 1
+        return chunk
+
+
+def _tiny_watchdog():
+    """首包/空闲阈值与退避缩到亚秒（测完恢复），避免拖慢测试。"""
+    saved = (
+        StreamingRectifier._first_token_timeout,
+        StreamingRectifier._chunk_idle_timeout,
+        StreamingRectifier._base_delay,
+        StreamingRectifier._use_jitter,
+    )
+    StreamingRectifier._first_token_timeout = 0.05
+    StreamingRectifier._chunk_idle_timeout = 0.05
+    StreamingRectifier._base_delay = 0.0
+    StreamingRectifier._use_jitter = False
+    return saved
+
+
+def _restore_watchdog(saved):
+    (
+        StreamingRectifier._first_token_timeout,
+        StreamingRectifier._chunk_idle_timeout,
+        StreamingRectifier._base_delay,
+        StreamingRectifier._use_jitter,
+    ) = saved
+
+
+def test_first_token_timeout_rectifies_slow_first_chunk():
+    """首包宽阈值：首 chunk 迟到超阈值 → TimeoutError（首 token 前）→ 整流重试。"""
+    saved = _tiny_watchdog()
+    try:
+        streams = [
+            _DelayedChunkStream([_content_chunk("你好")], delay_at=0, delay=0.2),
+            _FakeStream([_content_chunk("好"), _usage_chunk(10, 2)]),
+        ]
+        events, result, retry, reservation = _run(streams)
+        assert retry.calls == 2, "首包超时应整流重试"
+        assert result.content == "好"
+        assert reservation.settle_calls == 1
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_chunk_idle_timeout_abandons_after_first_token():
+    """空闲窄阈值：已产出后下一 chunk 迟到超阈值 → 放弃（防死流挂起），error 非空。"""
+    saved = _tiny_watchdog()
+    try:
+        streams = [
+            _DelayedChunkStream(
+                [_content_chunk("你好"), _usage_chunk(10, 2)], delay_at=1, delay=0.2
+            )
+        ]
+        events, result, retry, reservation = _run(streams)
+        assert retry.calls == 1, "已产出后空闲超时不应整流（防重复输出）"
+        assert result.content == "你好", "部分产出保留在 result 中"
+        assert result.error, "放弃应置失败信号（看门狗 TimeoutError 空串回退类型名，非空）"
+        assert reservation.settle_calls == 1, "放弃路径应 settle"
+    finally:
+        _restore_watchdog(saved)
