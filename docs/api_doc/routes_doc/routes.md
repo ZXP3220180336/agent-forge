@@ -197,6 +197,8 @@ Authorization: Bearer <token>
 | `get_task_service` | 在任务级并发约束下运行 Agent |
 | `get_agent_params` | 提供 Agent 运行参数（max_iterations / temperature / max_tokens / max_execution_time / max_context_rounds / max_context_tokens） |
 
+> ✅ **客户端被动断连自动取消**：`send` 流式生成逐事件轮询 `request.is_disconnected()`——客户端关页 / 刷新 / 断网时自动置位会话取消事件（与 `/chat/stop` 同一优雅取消路径），停止向断连端推送、Agent 在轮次边界收尾（不再发起新 LLM 调用 / 工具），防空转烧钱；流结束照常清理注册表与结算。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
+
 #### `POST /api/chat/stop` — 停止生成
 
 `session_id` 为**查询参数**（函数参数未绑定 Pydantic 模型，FastAPI 默认按 query 解析）。

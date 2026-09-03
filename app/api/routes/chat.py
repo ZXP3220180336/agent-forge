@@ -2,7 +2,8 @@
 # routes/chat.py - 聊天相关 API 路由
 # ============================================
 
-from fastapi import APIRouter, Depends
+
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import (
@@ -33,6 +34,7 @@ router = APIRouter(prefix="/api", tags=["聊天"])
 @router.post("/chat/send")
 async def send_message(
     request: SendMessageRequest,
+    http_request: Request,  # FastAPI 注入原始 Request（被动断连检测）
     user_id: str = Depends(get_current_user),
     session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
     context_manager: ContextManager = Depends(get_context_manager),  # noqa: B008
@@ -109,6 +111,7 @@ async def send_message(
                 f"上下文超限，已裁剪最早 {truncated_history} 条历史消息以适配模型上下文窗口"
             )
 
+        disconnected = False
         try:
             # 4. ReAct 闭环：LLM 思考 → 工具调用 → LLM 总结
             # 经 TaskService 在任务级并发信号量（agent_max_concurrent_tasks）保护下运行
@@ -118,12 +121,23 @@ async def send_message(
                 context=ctx,
                 agent=agent,
             ):
+                # 客户端被动断连（关页/刷新/断网）：与 /chat/stop 同走优雅取消——置位
+                # 会话取消事件让 Agent 在轮次边界收尾（不再发起新 LLM 调用/工具），并停止
+                # 向已断客户端推送。仅在首次检测到断连时置位一次（后续排水轮次只消费不推送）。
+                if await http_request.is_disconnected():
+                    if not disconnected:
+                        disconnected = True
+                        task_service.cancel_session(request.session_id)
+                    continue  # 不再推送，仅继续消费让 Agent 优雅走完（资源闭环）
+
                 yield event
 
         except Exception as e:  # noqa: BLE001
-            yield build_error_event(f"Agent 运行异常: {e!s}")
+            if not disconnected:
+                yield build_error_event(f"Agent 运行异常: {e!s}")
         finally:
-            yield "data: [DONE]\n\n"
+            if not disconnected:
+                yield "data: [DONE]\n\n"
 
             # 清理取消事件（会话运行结束）
             task_service.clear_cancel_event(request.session_id)

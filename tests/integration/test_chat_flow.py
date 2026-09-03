@@ -11,8 +11,10 @@ chat_router → ReActAgent 桥接集成测试
 """
 
 import json
+from typing import cast
 
 import pytest
+from fastapi import Request
 
 from app.api.routes.chat import SendMessageRequest, send_message
 from app.integration.tools.tool_service import ToolService
@@ -21,6 +23,18 @@ from app.domain.ports.llm_gateway import StreamResult
 from app.application.task.task_service import TaskService
 from app.integration.tools.builtin import WriteFileTool
 from app.integration.llm.token_counter import TiktokenTokenCounter
+
+
+class _FakeRawRequest:
+    """send_message 直调用桩：is_disconnected 可控（disconnect_after 次检查后为 True）。"""
+
+    def __init__(self, disconnect_after: int = -1):
+        self._calls = 0
+        self._disconnect_after = disconnect_after
+
+    async def is_disconnected(self) -> bool:
+        self._calls += 1
+        return 0 <= self._disconnect_after < self._calls
 
 
 class FakeSessionManager:
@@ -153,6 +167,7 @@ async def test_chat_send_message_react_loop(tmp_path):
         task_service=TaskService(),
         agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_same_action_turns": 3},
         cost_limiter=None,  # 直接调用绕过 FastAPI DI，显式传 None（不启用成本上限）
+        http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持（不触发断连）
     )
 
     # 3. 消费 SSE 流
@@ -222,6 +237,7 @@ async def test_chat_send_message_no_tools_plain_answer():
         task_service=TaskService(),
         agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_same_action_turns": 3},
         cost_limiter=None,  # 直接调用绕过 FastAPI DI，显式传 None（不启用成本上限）
+        http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持（不触发断连）
     )
 
     chunks: list[str] = []
@@ -263,6 +279,7 @@ async def test_chat_stop_cancels_running_agent():
         task_service=ts,
         agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_same_action_turns": 3},
         cost_limiter=None,
+        http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持
     )
 
     # 模拟 /chat/stop 已调用：send_message 返回后取消事件已注册，置位它
@@ -284,3 +301,65 @@ async def test_chat_stop_cancels_running_agent():
     assert fake_llm.calls == 0
     # 注册表在流结束时清理
     assert ts.get_cancel_event("s3") is None
+
+
+@pytest.mark.asyncio
+async def test_chat_client_disconnect_auto_cancels(monkeypatch):
+    """客户端被动断连 → 自动置位会话取消（优雅停），不再发新 LLM 调用、停止向断连端推送。
+
+    场景：LLM 首轮声明调工具（registry 空 → 协议错误会 CONTINUE 触发第二轮 LLM），
+    首个事件推送后检测到断连 → 置位取消 → Agent 轮次边界收尾（calls 保持 1，不空转）。
+    """
+    fake_sm = FakeSessionManager(
+        {"id": "s4", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
+    )
+    context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
+    ts = TaskService()
+    fake_llm = FakeLLM(
+        [
+            {
+                "type": "tool_calls",
+                "tool": "writeFile",
+                "args": {"file_path": "/x", "content": "y"},
+            }
+        ]
+    )
+    registry = ToolService()  # 空服务：无工具 → 若无取消会继续调 LLM（第二轮）
+
+    cancelled: list[str] = []
+    orig_cancel = ts.cancel_session
+
+    def spy_cancel(sid):
+        cancelled.append(sid)
+        return orig_cancel(sid)
+
+    monkeypatch.setattr(ts, "cancel_session", spy_cancel)
+
+    request = SendMessageRequest(session_id="s4", message="写个文件", max_iterations=5)
+    response = await send_message(
+        request=request,
+        user_id="user_x",
+        session_manager=fake_sm,
+        context_manager=context_manager,
+        llm_service=fake_llm,
+        tool_service=registry,
+        task_service=ts,
+        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_same_action_turns": 3},
+        cost_limiter=None,
+        # 前 1 次检查正常、之后视为断连：模拟首个事件推送后连接断开
+        http_request=cast(Request, _FakeRawRequest(disconnect_after=1)),
+    )
+
+    chunks: list[str] = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk)
+
+    events = _parse_sse(chunks)
+    types = [e["type"] for e in events]
+
+    assert cancelled == ["s4"], "检测到断连应置位一次会话取消"
+    assert fake_llm.calls == 1, "断连取消后不应再发起第二轮 LLM 调用（防空转烧钱）"
+    assert "tool_call" not in types and "done" not in types, (
+        f"断连后应停止向断连客户端推送后续事件: {types}"
+    )
+    assert ts.get_cancel_event("s4") is None, "流结束应清理会话取消事件"
