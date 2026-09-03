@@ -11,26 +11,28 @@
 
 ## 📋 目录
 
-- [设计目标](#设计目标)
-- [核心概念解释](#核心概念解释)
-  - [整流条件](#整流条件_should_rectify)
-  - [结算闭环](#结算闭环reservation)
-  - [熔断 feeding](#熔断-feeding)
-  - [事件日志](#事件日志)
-  - [失败信号透传](#失败信号透传)
-- [架构总览](#架构总览)
-- [组件详解](#组件详解)
-  - [StreamingRectifier — 整流策略类](#streamingrectifier--整流策略类)
-  - [RectifierContext — 会话共享状态](#rectifiercontext--会话共享状态)
-  - [配置注入（register\_config）](#配置注入register_config)
-- [执行流程](#执行流程)
-- [对外接口](#对外接口)
-- [边界情况](#边界情况)
-- [配置项清单](#配置项清单)
-- [测试状态](#测试状态)
-- [设计决策](#设计决策)
-- [问题记录](#问题记录)
-- [相关文档](#相关文档)
+- [StreamingRectifier 设计文档](#streamingrectifier-设计文档)
+  - [📋 目录](#-目录)
+  - [设计目标](#设计目标)
+  - [核心概念解释](#核心概念解释)
+    - [整流条件（\_should\_rectify）](#整流条件_should_rectify)
+    - [结算闭环（reservation）](#结算闭环reservation)
+    - [熔断 feeding](#熔断-feeding)
+    - [事件日志](#事件日志)
+    - [失败信号透传](#失败信号透传)
+  - [架构总览](#架构总览)
+  - [组件详解](#组件详解)
+    - [StreamingRectifier — 整流策略类](#streamingrectifier--整流策略类)
+    - [RectifierContext — 会话共享状态](#rectifiercontext--会话共享状态)
+    - [配置注入（register\_config）](#配置注入register_config)
+  - [执行流程](#执行流程)
+  - [对外接口](#对外接口)
+  - [边界情况](#边界情况)
+  - [配置项清单](#配置项清单)
+  - [测试状态](#测试状态)
+  - [设计决策](#设计决策)
+  - [问题记录](#问题记录)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -162,13 +164,17 @@ class RectifierContext:
 ```python
 # 装配根（Container.initialize）读 settings 后调用，子模块零 settings 依赖
 StreamingRectifier.register_config(
-    base_delay=base_delay,   # 来自 settings.llm_base_delay
-    max_delay=max_delay,     # 来自 settings.llm_max_delay
-    use_jitter=use_jitter,   # 来自 settings.llm_use_jitter
+    base_delay=base_delay,              # 来自 settings.llm_base_delay
+    max_delay=max_delay,                # 来自 settings.llm_max_delay
+    use_jitter=use_jitter,              # 来自 settings.llm_use_jitter
+    first_token_timeout=first_token,    # 首包阈值（宽，覆盖模型思考）
+    chunk_idle_timeout=chunk_idle,      # 空闲阈值（窄，判定断流）
 )
 ```
 
-退避公式与 create 阶段一致：`base_delay × 2^attempt`，上限 `max_delay`，可选随机抖动。**不新增独立退避配置**。**Retry-After 叠加**：RATE_LIMITED（429）中断整流时，提取服务端 `Retry-After` 参与退避，且与 create 阶段同样封顶到 `max_delay`——合理区间 `0 < retry_after ≤ max_delay` 内尊重，超出忽略回退指数退避（防异常大值挂死，对齐 retry.py 的 `_calculate_delay` 语义）。
+退避公式与 create 阶段一致：`base_delay × 2^attempt`，上限 `max_delay`，可选随机抖动。**Retry-After 叠加**：RATE_LIMITED（429）中断整流时，提取服务端 `Retry-After` 参与退避，且与 create 阶段同样封顶到 `max_delay`——合理区间 `0 < retry_after ≤ max_delay` 内尊重，超出忽略回退指数退避（防异常大值挂死，对齐 retry.py 的 `_calculate_delay` 语义）。
+
+**首包/空闲双阈值看门狗**（LLM-ADR-014）：迭代改为逐 chunk `asyncio.wait_for(anext(stream), 阈值)`——首 chunk 用宽阈值 `first_token_timeout`（区分「模型思考慢」，不误杀），其后每 chunk 用窄阈值 `chunk_idle_timeout`（判「流已断」，不等 httpx read 整档）。超时 `TimeoutError` 走既有整流/放弃分支：首 token 前超时整流（不重复输出）、已产出后超时放弃（保留部分内容 + 失败信号）。看门狗超时的空串 `TimeoutError` 经 `_describe_exception` 回退类型名——`result.error` 以非空为失败信号（react 短路依赖），空串会把失败误当成功空回。
 
 ---
 
@@ -180,8 +186,8 @@ async_generate → rectified_stream（整流循环）
     while attempt <= stream_max_retries:
         ├─ 整流入口守卫：cancel_event 置位 → 不再发起 reserve + create（不发新副作用）
         ├─ create_fn()（重新 reserve + create，经 retry.execute 保护 create 阶段）
-        ├─ 迭代：_apply_chunk 累积 StreamResult + 产出事件
-        │    └─ 异常 → _should_rectify？
+        ├─ 迭代：逐 chunk wait_for 看门狗（首包宽/空闲窄）+ _apply_chunk 累积 + 产出事件
+        │    └─ 异常/看门狗超时 → _should_rectify？
         │         ├─ 是（首 token 前 + 可恢复 + 未取消）→ 退避（含 Retry-After）→ attempt+1 重试
         │         └─ 否 → 放弃分支：熔断 feeding（RETRYABLE）+ 中断收尾
         └─ 正常读完 / 硬取消 → 结算闭环（settle）

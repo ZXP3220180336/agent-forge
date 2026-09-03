@@ -81,7 +81,8 @@ app/config/
 | 属性 | 返回 | 说明 |
 | --- | --- | --- |
 | `is_production` | bool | 生产环境判断（`not debug`） |
-| `llm_config` | dict | 主模型参数字典（api_key / base_url / model / temperature / max_tokens / timeout） |
+| `llm_config` | dict | 主模型参数字典（api_key / base_url / model / temperature / max_tokens / timeout=httpx.Timeout 分级实例） |
+| `llm_client_timeout` | httpx.Timeout | 分级超时实例（connect/read/write/pool，装配根注入 `ClientManager.register_config(timeout=...)`；httpx `TimeoutTypes` 不接受 dict，故为实例） |
 | `llm_reasoning_config` | dict | 推理模型参数字典（model 为空时回退主模型） |
 | `llm_fast_config` | dict | 快速模型参数字典（model 为空时回退主模型） |
 | `llm_embedding_config` | dict | 嵌入模型参数字典（api_key / base_url / model / dimensions） |
@@ -193,7 +194,22 @@ llm_service = LLMService(**settings.llm_config)
 | `LLM_MODEL_ID` | str | "gpt-4" | 主模型标识符（用于主要对话） |
 | `LLM_TEMPERATURE` | float | 0.2 | 生成温度（验证边界 0-2） |
 | `LLM_MAX_TOKENS` | int | 4096 | 最大输出 Token 数 |
-| `LLM_TIMEOUT` | int | 60 | 请求超时时间（秒） |
+| `LLM_TIMEOUT_CONNECT` | float | 10 | 分级超时·连接（TCP+TLS 握手）上限（秒） |
+| `LLM_TIMEOUT_READ` | float | 60 | 分级超时·读（相邻数据块空闲上限，含首字节等待——流空闲检测） |
+| `LLM_TIMEOUT_WRITE` | float | 10 | 分级超时·写（请求体发送）上限 |
+| `LLM_TIMEOUT_POOL` | float | 10 | 分级超时·连接池取连接等待上限 |
+| `LLM_TIMEOUT_FIRST_TOKEN` | float | 60 | 首包阈值·首 chunk（首字节）等待上限（整流层看门狗，宽——覆盖模型思考） |
+| `LLM_TIMEOUT_CHUNK_IDLE` | float | 15 | 空闲阈值·后续单 chunk 空闲上限（整流层看门狗，窄——判定断流） |
+| `LLM_POOL_MAX_CONNECTIONS` | int | 100 | 连接池最大连接数（httpx.Limits） |
+| `LLM_POOL_MAX_KEEPALIVE_CONNECTIONS` | int | 20 | 连接池最大保活连接数（httpx.Limits） |
+
+> **连接期超时与池机制**（LLM-ADR-014）：
+>
+> - **分级超时**：connect/read/write/pool 四档组装为 `httpx.Timeout` 实例（`settings.llm_client_timeout`），经装配根注入 `ClientManager.register_config(timeout=...)` → openai `AsyncOpenAI`（httpx `TimeoutTypes` 不接受 dict，须实例）。read 档为传输层读兜底上限。
+> - **连接池上限**：pool 字段触发 `http_client`（httpx.AsyncClient + `httpx.Limits`）注入——pool limits 只能经 http_client 传给 openai；代理路径同享。
+> - **首包/空闲双阈值**：httpx read 档无法区分「首字节等待（思考慢）」与「chunk 空闲（断流）」，整流层逐 chunk `wait_for` 实现双看门狗（首包宽 `FIRST_TOKEN`、后续空闲窄 `CHUNK_IDLE`）；看门狗超时的空串 `TimeoutError` 回退类型名，保证 `result.error` 非空。
+>
+> 原单一 `LLM_TIMEOUT` 已拆分。
 
 **温度建议**：
 

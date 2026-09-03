@@ -1,7 +1,7 @@
 # LLM 模块决策记录（ADR）
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/`）的结构性/契约性设计决策，记录 Context → Decision → Consequences 完整前因后果，供追溯与复用。
-> **更新日期**：2026-09-02
+> **更新日期**：2026-09-03
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [问题追踪](../../../issues/integration/llm/README.md)
 
 ## 状态图例
@@ -29,6 +29,7 @@
 | [LLM-ADR-011](2026-08-04-llm-event-logging.md) | LLM 层日志：全局 JSON 结构化 + llm_call 业务事件 | ✅ 已采纳 | observability(logger) / llm | 2026-08-04 |
 | [LLM-ADR-012](2026-08-24-token-counter-port.md) | TokenCounter 端口：tiktoken 隔离到集成层（依赖倒置 + 单一事实源） | 🔶 已替代 | token_counter / context_manager / llm_service | 2026-08-24 |
 | [LLM-ADR-013](2026-09-01-openai-error-normalization.md) | openai 异常归一：LLMAPIError 入 AppError 树（generate 下游不可恢复统一决策） | ✅ 已采纳 | errors / llm_service / structured / shared | 2026-09-01 |
+| [LLM-ADR-014](2026-09-03-connection-establishment-phase.md) | 连接建立期异常全景与守护机制（分级超时 connect/read/write/pool + 连接池 limits + 首包/空闲双阈值看门狗实施） | ✅ 已采纳 | client / errors / retry / reservation_limiter / streaming_rectifier / settings / container | 2026-09-03 |
 
 ## 新决策登记规范
 

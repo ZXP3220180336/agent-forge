@@ -21,7 +21,7 @@
   - [组件详解](#组件详解)
     - [ClientManager — 连接池管理器](#clientmanager--连接池管理器)
     - [\_OPENAI\_CLIENT\_KWARGS — 参数白名单](#_openai_client_kwargs--参数白名单)
-    - [\_build\_proxied\_client — 代理客户端构建](#_build_proxied_client--代理客户端构建)
+    - [\_build\_http\_client — 传输客户端构建（代理 / 连接池上限 / 分级超时）](#_build_http_client--传输客户端构建代理--连接池上限--分级超时)
     - [关闭追踪机制（\_pending\_closes / \_closing\_tasks）](#关闭追踪机制_pending_closes--_closing_tasks)
   - [执行流程](#执行流程)
     - [获取 client（懒加载）](#获取-client懒加载)
@@ -173,9 +173,9 @@ class ClientManager:
 
 `get_client` 从配置中筛选交集的字段传给 `AsyncOpenAI`，白名单外的参数（`model`、`proxy_url`）只存 `_configs` 不透传。**设计意图**：`register_config` 接收业务语义配置（`model` 供 `get_model` 用、`proxy_url` 供代理构建），`AsyncOpenAI` 构造函数只认固定参数集——白名单隔离两套字段，避免非法参数透传给 SDK 抛 TypeError。
 
-### _build_proxied_client — 代理客户端构建
+### _build_http_client — 传输客户端构建（代理 / 连接池上限 / 分级超时）
 
-构建带代理的 `httpx.AsyncClient`，作为 `AsyncOpenAI(http_client=...)` 的自定义传输。**httpx 延迟导入**（`import httpx` 在函数内）——未安装 httpx 且未配置代理时，模块加载不受影响；配置了代理但未安装时抛 `ImportError("使用代理需要安装 httpx")`。
+构建 `httpx.AsyncClient`（代理 + `httpx.Limits` + 分级超时），作为 `AsyncOpenAI(http_client=...)` 的自定义传输。**触发条件**：配置了代理（`proxy_url`）或连接池上限（`pool_max_connections` / `pool_max_keepalive_connections`）——pool limits 只能经 http_client 传给 openai；均未配置时保持直连（不注入 http_client）。httpx 是 openai 硬依赖，模块顶层导入（不做延迟导入）。
 
 ### 关闭追踪机制（_pending_closes / _closing_tasks）
 
@@ -204,7 +204,8 @@ get_client("main")
   │            └─ 是 → 从 _configs 读取配置
   │                    ├─ 筛选 _OPENAI_CLIENT_KWARGS 交集字段
   │                    ├─ 默认值兜底：api_key=""、base_url="https://api.openai.com/v1"
-  │                    ├─ 有 proxy_url → _build_proxied_client(proxy_url)（转 http_client）
+  │                    ├─ 有 proxy_url 或 pool 字段 → _build_http_client(proxy, timeout, limits)
+  │                    │      （httpx.AsyncClient + Limits 注入 http_client，LLM-ADR-014）
   │                    └─ AsyncOpenAI(**client_kwargs) → 存入 _instances 并返回
 ```
 
@@ -269,7 +270,7 @@ close_all()
 2. **未注册 key**：`get_client` / `get_model` / `get_config` 抛出 `ValueError`
 3. **无事件循环时注册**：`asyncio.get_running_loop()` 判无运行循环 → 旧 client 放入 `_pending_closes` 由 `close_all()` 统一关闭（可追踪）。**注意**：`_pending_closes` 中的旧 client 不会自我关闭——若 `close_all()` 未被调用（应用未启动事件循环、或测试 tearDown/独立脚本未显式关闭），旧 httpx 连接池将泄漏，必须在这些场景显式 `await ClientManager.close_all()`（见「核心概念解释·优雅关闭与关闭追踪」）
 4. **并发 get_client**：Python GIL + dict 操作原子性，首次创建在锁外可能有重复创建，但 `AsyncOpenAI` 本身是线程安全的，覆盖旧实例即可
-5. **代理 client 的生命周期**：`_build_proxied_client` 创建的 `httpx.AsyncClient` 由 `AsyncOpenAI` 接管关闭，无需单独管理
+5. **http_client 的生命周期**：`_build_http_client` 创建的 `httpx.AsyncClient`（代理 / 连接池上限场景）由 `AsyncOpenAI` 接管关闭，无需单独管理
 6. **close_all 迭代期间并发修改**：先 `list()` 快照再逐个关闭，`await client.close()` 让出事件循环控制权时并发 `register_config()`/`close_client()` 修改字典不会抛 `RuntimeError`
 7. **单个 close 异常隔离**：`client.close()` 抛异常（连接池关闭失败）用 `try/except Exception` + `logger.warning` 隔离，不中断其余 client 与 `_pending_closes` 的关闭
 
@@ -286,23 +287,26 @@ close_all()
 | `base_url` | str | API 端点（如 DeepSeek 兼容端点） | 是 |
 | `model` | str | 模型名（供 `get_model` 使用） | 否 |
 | `organization` | str | 组织 ID | 是 |
-| `timeout` | float | 请求超时（秒） | 是 |
+| `timeout` | httpx.Timeout | 分级超时实例（connect/read/write/pool，`settings.llm_client_timeout`） | 是 |
 | `max_retries` | int | SDK 内部重试次数 | 是 |
 | `default_headers` | dict | 默认请求头 | 是 |
 | `default_query` | dict | 默认查询参数 | 是 |
-| `http_client` | httpx.AsyncClient | 自定义 HTTP 客户端（代理等） | 是 |
+| `http_client` | httpx.AsyncClient | 自定义传输（代理 / 连接池上限时注入，`_build_http_client` 构建） | 是 |
 | `websocket_client` | - | WebSocket 客户端 | 是 |
-| `proxy_url` | str | 代理地址（触发 `_build_proxied_client`） | 否（转 http_client） |
+| `proxy_url` | str | 代理地址（触发 `_build_http_client` 注入 http_client） | 否（转 http_client） |
+| `pool_max_connections` | int | 连接池最大连接数（httpx.Limits，仅存 `_configs` 触发 http_client 构建） | 否（转 http_client/Limits） |
+| `pool_max_keepalive_connections` | int | 连接池最大保活连接数（httpx.Limits） | 否（转 http_client/Limits） |
 
 ---
 
 ## 测试状态
 
-`tests/unit/test_client_manager.py`（10 用例）：覆盖
+`tests/unit/test_client_manager.py`（13 用例）：覆盖
 
 - **注册热切换关闭**：无 loop 入 `_pending_closes` / 有 loop 后台关闭 + `_closing_tasks` 追踪
 - **close_all**：等待后台 task / 快照迭代（并发修改不崩溃）/ 单个 close 异常隔离 / 待关闭列表统一关闭
 - **完成回调**：`_on_closing_task_done` 移除已完成 task / 后台关闭失败记日志
+- **分级超时/连接池**：`httpx.Timeout` 白名单直达 AsyncOpenAI / pool limits 触发 `_build_http_client` 注入 `httpx.Limits`（LLM-ADR-014）
 
 ---
 
