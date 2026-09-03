@@ -327,6 +327,46 @@ def test_rectify_clears_refusal_from_dead_stream():
     assert reservation.settle_calls == 1, "成功路径应 settle"
 
 
+def test_rectify_clears_usage_finish_from_dead_stream():
+    """整流清理应复位死流带出的 usage/finish_reason——成功流不被死流收尾元数据污染。
+
+    direct 补测：间接层 test_usage_only_interrupt_rectifies（经 LLMService）已证
+    「仅收尾元数据后中断整流、残留清空」，此处不经编排直接锚定整流器自身——死流中断
+    已置 finish_reason/usage，整流成功后若清理缺失，result 残留死流收尾标记
+    （下游误判已收尾）+ usage 记错计费。
+    """
+    # 尝试 1：带 finish_reason + usage 的死流（无 content，emitted_any=False）后中断
+    # → 可整流；若整流不清 usage/finish_reason，成功流会残留尝试 1 的死流元数据
+    finish_chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(
+                    reasoning_content=None, content=None, tool_calls=None
+                ),
+                finish_reason="stop",
+            )
+        ],
+        usage=_usage_chunk(10, 0).usage,
+    )
+    streams = [
+        _FakeStream([finish_chunk], fail_at=1, exc=TimeoutError("reset")),
+        _FakeStream([_content_chunk("你好"), _usage_chunk(1, 2)]),
+    ]
+    events, result, retry, reservation = _run(streams)
+
+    assert retry.calls == 2, "收尾元数据-only 死流首 token 前中断应整流"
+    assert result.content == "你好"
+    assert result.finish_reason is None, (
+        f"整流后不应残留死流 finish_reason，实际 {result.finish_reason!r}"
+    )
+    assert result.usage == {
+        "prompt_tokens": 1,
+        "completion_tokens": 2,
+        "total_tokens": 3,
+    }, f"死流 usage 残留应被清空，取尝试 2 的值，实际 {result.usage!r}"
+    assert reservation.settle_calls == 1, "成功路径应 settle"
+
+
 # =====================================================================
 # 结算闭环
 # =====================================================================
@@ -504,8 +544,8 @@ async def _collect_events(cls, retry, context):
 def test_rectify_respects_retry_after_normal(monkeypatch):
     """429 中断整流时尊重合理 Retry-After（≤ max_delay 区间内）。
 
-    修复前：整流退避 `_stream_backoff(attempt)` 只用指数退避，不提取
-    Retry-After——服务端建议被忽略（429 中断不等待服务端退避时间）。
+    修复前：整流退避不提取 Retry-After，只用指数退避——服务端建议被忽略
+    （429 中断不等待服务端退避时间）。
     """
     class _Rl(_RateLimited429):
         headers = {"retry-after": "0.03"}  # 合理值（≤ max_delay=0.05）

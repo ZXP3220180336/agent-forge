@@ -5,6 +5,7 @@ StreamingRectifier — 流式整流重试策略
 「已产出 content 中断 → 半流续接」的独立策略。职责（与 Facade 编排正交）：
     - create 阶段（retry.execute + 限流闭环 call_fn）
     - 整流重试循环（首 token 前才整流 / 整流上限 / cancel 不整流）
+    - 非整流收尾路径（已产出中断：取消守卫 → 半流续接 → 放弃，_abandon_path）
     - 半流续接链（已产出 content 带前缀续写，尽力而为，LLM-ADR-015）
     - chunk 解析分发（StreamParser → StreamResult 累积 + 事件产出）
     - settle/cancel 结算（reservation 闭环）
@@ -68,6 +69,26 @@ if TYPE_CHECKING:
 _RESULT_ERROR_LIMIT = 500
 
 
+@dataclass
+class RectifierContext:
+    """整流会话共享的可变状态（跨 attempt 传递）。
+
+    由调用方（LLMService.async_generate）构造并持有，整流循环内读写：
+    - result: StreamResult 累积输出
+    - active: 活跃 reservation dict（成功 settle / 失败 cancel）
+    - event_fields: 日志字段（整流循环内填充记录）
+    """
+
+    result: StreamResult
+    active: dict[str, Reservation]
+    event_fields: dict[str, Any]
+
+
+# =====================================================================
+# 通用小工具（整流与续接共用）
+# =====================================================================
+
+
 def _describe_exception(exc: Exception) -> str:
     """异常的可读描述：message 为空（如看门狗 TimeoutError()）时回退类型名。
 
@@ -77,17 +98,20 @@ def _describe_exception(exc: Exception) -> str:
     return str(exc) or type(exc).__name__
 
 
-def _stream_backoff(attempt: int, retry_after: float | None = None) -> float:
-    """流式整流重试的退避延迟（配置由 StreamingRectifier.register_config 注入）。
+async def _backoff_sleep(attempt: int, exc: Exception) -> None:
+    """中断后等待退避（整流与续接共用）。
 
-    与 create 阶段的指数退避公式一致：base_delay × 2^attempt，
-    上限 max_delay，可选随机抖动打散羊群效应。
-
-    Retry-After 封顶语义（与 retry.py 的 _calculate_delay 对齐）：
-        合理区间 `0 < retry_after <= max_delay` 内 → 尊重服务端建议；
-        超出 max_delay（异常/恶意大值）→ 忽略并回退指数退避（本身已封顶），
-        单次最长等待有界。
+    退避公式与 create 阶段一致：base_delay × 2^attempt，上限 max_delay，可选
+    随机抖动打散羊群效应。RATE_LIMITED（429）时提取服务端 Retry-After 参与退避，
+    封顶语义（与 retry.py 的 _calculate_delay 对齐）：合理区间
+    `0 < retry_after <= max_delay` 内尊重服务端建议，超出 max_delay（异常/恶意
+    大值）忽略并回退指数退避（本身已封顶），单次最长等待有界。
     """
+    retry_after = (
+        RetryHandler._extract_retry_after(exc)
+        if classify_error(exc) == ErrorCategory.RATE_LIMITED
+        else None
+    )
     delay = min(
         StreamingRectifier._base_delay * (2**attempt),
         StreamingRectifier._max_delay,
@@ -96,7 +120,24 @@ def _stream_backoff(attempt: int, retry_after: float | None = None) -> float:
         delay = random.uniform(0, delay)
     if retry_after is not None and 0 < retry_after <= StreamingRectifier._max_delay:
         delay = max(delay, retry_after)
-    return delay
+    await asyncio.sleep(delay)
+
+
+def _reset_dead_meta(result: StreamResult) -> None:
+    """清死流元数据残留（finish_reason/usage/refusal）：整流/续接下一尝试前调用。
+
+    死流中断可能带出收尾元数据，成功尝试若残留会被下游误判已收尾/拒答；
+    content/reasoning/tool_calls 不入此列（各自受 emitted_any / tool_deltas
+    清点语义约束）。
+    """
+    result.finish_reason = None
+    result.usage = None
+    result.refusal = None
+
+
+# =====================================================================
+# 整流判定 + 中断信号 + 会话上下文
+# =====================================================================
 
 
 def _should_rectify(
@@ -122,34 +163,21 @@ def _should_rectify(
     return category in (ErrorCategory.RETRYABLE, ErrorCategory.RATE_LIMITED)
 
 
-@dataclass
-class RectifierContext:
-    """整流会话共享的可变状态（跨 attempt 传递）。
-
-    由调用方（LLMService.async_generate）构造并持有，整流循环内读写：
-    - result: StreamResult 累积输出
-    - active: 活跃 reservation dict（成功 settle / 失败 cancel）
-    - event_fields: 日志字段（整流循环内填充记录）
-    """
-
-    result: StreamResult
-    active: dict[str, Reservation]
-    event_fields: dict[str, Any]
-
-
-# 半流续接（LLM-ADR-015）辅助 =============================================
-
-# 接缝重叠剥离上限：续接流首部与已产 content 尾部重叠检测的窗口（字符数）。
-# 只缓冲该长度内的首部即可判定重叠，超过仍无法判明时按新内容产出（重复有界）。
-_SEAM_OVERLAP_LIMIT = 64
-
-
 class _StreamCancel(Exception):
     """内部信号：迭代中用户取消置位 → 优雅终止。
 
     与 asyncio.CancelledError（硬取消）区分——取消置位是业务信号，须走结算 +
     取消事件出口；硬取消仍由各 attempt 的 finally 兜底 settle(None)。
     """
+
+
+# =====================================================================
+# 半流续接（LLM-ADR-015）辅助
+# =====================================================================
+
+# 接缝重叠剥离上限：续接流首部与已产 content 尾部重叠检测的窗口（字符数）。
+# 只缓冲该长度内的首部即可判定重叠，超过仍无法判明时按新内容产出（重复有界）。
+_SEAM_OVERLAP_LIMIT = 64
 
 
 @dataclass
@@ -290,6 +318,10 @@ class StreamingRectifier:
         cls._first_token_timeout = first_token_timeout
         cls._chunk_idle_timeout = chunk_idle_timeout
 
+    # ------------------------------------------------------------------
+    # 主编排：整流/续接流（SSE 事件 async-gen 主入口）
+    # ------------------------------------------------------------------
+
     @staticmethod
     async def rectified_stream(
         create_fn: Callable[[], Awaitable[Any]],
@@ -317,7 +349,8 @@ class StreamingRectifier:
         """
         result = context.result
         active = context.active
-        # ----- create 阶段由 retry.execute() 保护，失败直接 raise -----
+
+        # ----- 逐 attempt：整流重试由 for + continue 回边驱动 -----
         for attempt in range(stream_max_retries + 1):
             # LLM-006：进入整流尝试前先检查取消——取消置位后不再发起真实
             # reserve + API 请求（create_fn 内），覆盖首次尝试（cancel 已置位
@@ -330,6 +363,7 @@ class StreamingRectifier:
 
             attempt_start = time.monotonic()
 
+            # ----- create 阶段由 retry.execute() 保护（重试/熔断/fallback）-----
             try:
                 response = await retry.execute(
                     call_fn=create_fn,
@@ -364,7 +398,7 @@ class StreamingRectifier:
                 await StreamingRectifier._settle_active(context)
 
             except _StreamCancel:
-                # 迭代正常中用户取消：请求在途 → 结算退差 + 记失败日志，再标记信号
+                # 正常迭代中用户取消：请求在途 → 结算退差 + 记失败日志，再标记信号
                 await StreamingRectifier._finish_interrupted(
                     context,
                     error="用户取消",
@@ -388,72 +422,33 @@ class StreamingRectifier:
                     result.content or result.reasoning_content or tool_deltas
                 )
 
-                # 整流条件：首 token 前 + 可恢复异常 + 未超上限 + 未取消
+                # 整流：首 token 前 + 可恢复异常 + 未超上限 + 未取消 → 退避后
+                # 重试原请求（continue 回边到 for 下一轮，是最短的恢复路径）。
                 if _should_rectify(
                     emitted_any, attempt, stream_max_retries, e, cancel_event
                 ):
-                    # RATE_LIMITED（429）中断：提取服务端 Retry-After 参与退避
-                    # （封顶到 max_delay，与 retry.py 的 _calculate_delay 语义一致），
-                    # 其余类别走纯指数退避。
-                    retry_after = (
-                        RetryHandler._extract_retry_after(e)
-                        if classify_error(e) == ErrorCategory.RATE_LIMITED
-                        else None
-                    )
-                    await asyncio.sleep(_stream_backoff(attempt, retry_after))
+                    await _backoff_sleep(attempt, e)
                     if cancel_event and cancel_event.is_set():
                         context.result.error = "用户取消"
                         yield build_error_event("用户取消了请求")
                         return
-                    # 清掉死流的元数据残留（usage/finish_reason/refusal 不算
-                    # "首 token"，但整流后不能带入下一尝试；content/reasoning/
-                    # tool_calls 因 emitted_any=False 本就为空，整流幂等安全）。
-                    # refusal 不置 emitted_any（纯拒绝流可整流），不清理则成功
-                    # 尝试残留死流拒答元数据 → 下游误判为拒答。
-                    result.finish_reason = None
-                    result.usage = None
-                    result.refusal = None
+                    # tool_deltas 恒空（整流要求首 token 前），clear 为文档化防御
+                    _reset_dead_meta(result)
                     tool_deltas.clear()
                     continue
 
-                # LLM-011：放弃分支先判取消——_should_rectify 可能因用户取消返回
-                # False（且取消后异常仍是 RETRYABLE），用户取消非下游故障，不喂
-                # 熔断器（与 test_cancel_event_not_feeds_breaker 契约一致）。
-                if cancel_event and cancel_event.is_set():
-                    context.result.error = "用户取消"
-                    yield build_error_event("用户取消了请求")
-                    return
-
-                # ----- 半流续接（LLM-ADR-015）：已产出 content 且满足边界则尽力而为
-                # 续写（带前缀重发，不整轮重启）。续接链内已处理终态（completed）→
-                # 直接结束；否则退化到下方放弃分支——部分 content 保留 + 失败信号，
-                # 行为不劣化于现状。
-                final_error: Exception = e
-                if continue_fn is not None and continuation_max_retries > 0:
-                    outcome = _ContinuationOutcome()
-                    async for event in StreamingRectifier._try_continuations(
-                        context,
-                        continue_fn=continue_fn,
-                        cancel_event=cancel_event,
-                        continuation_max_retries=continuation_max_retries,
-                        first_category=classify_error(e),
-                        first_error=e,
-                        first_tool_emitted=bool(tool_deltas),
-                        outcome=outcome,
-                    ):
-                        yield event
-                    if outcome.completed:
-                        return
-                    if outcome.error is not None:
-                        final_error = outcome.error
-
-                # 流中断放弃（不整流/不续接）→ 失败信号传编排层（Agent 短路）。
-                # 已产出的部分 content 保留在 result 中，Agent 短路时一并带回。
-                if classify_error(final_error) == ErrorCategory.RETRYABLE:
-                    retry.circuit_breaker.record_failure()
-                exc_text = _describe_exception(final_error)
-                context.result.error = exc_text[:_RESULT_ERROR_LIMIT]
-                yield build_error_event(f"流式响应中断: {exc_text}")
+                # 不整流 → 收尾路径（LLM-011 取消守卫 → 半流续接 → 放弃），
+                # 由 _abandon_path 产出其全部事件，结束即整流流结束。
+                async for event in StreamingRectifier._abandon_path(
+                    context,
+                    retry=retry,
+                    cancel_event=cancel_event,
+                    exc=e,
+                    tool_emitted=bool(tool_deltas),
+                    continue_fn=continue_fn,
+                    continuation_max_retries=continuation_max_retries,
+                ):
+                    yield event
                 return
 
             finally:
@@ -471,6 +466,10 @@ class StreamingRectifier:
             # 成功：清掉整流/续接失败尝试残留的 error（同一 record 复用）
             await StreamingRectifier._log_success(context, attempt_start)
             return
+
+    # ------------------------------------------------------------------
+    # 流迭代与解析
+    # ------------------------------------------------------------------
 
     @staticmethod
     async def _drain(
@@ -516,16 +515,114 @@ class StreamingRectifier:
             seam.flush()
 
     @staticmethod
-    async def _log_success(context: RectifierContext, attempt_start: float) -> None:
-        """记录成功事件日志（正常读完 / 续接成功共用；清 error 供同一 record 复用）。"""
-        await fill_llm_event_fields(
-            context.event_fields,
-            success=True,
-            error=None,
-            duration=time.monotonic() - attempt_start,
-            usage=context.result.usage,
-            finish_reason=context.result.finish_reason,
-        )
+    def _apply_chunk(
+        chunk: Any,
+        result: StreamResult,
+        tool_deltas: list[ToolCallDelta],
+        *,
+        seam: _SeamStripper | None = None,
+    ) -> tuple[bool, list[str]]:
+        """处理单个 chunk：累积到 result、产出事件列表；返回 (是否产出 token, 事件列表)。
+
+        seam 非空（续接 attempt）时，content token 经接缝剥离器处理——与已产 content
+        尾部重叠的首部剥离后再累积/产出，避免客户端看到重复拼接（LLM-ADR-015）。
+        """
+        parsed = StreamParser.parse_chunk(chunk)
+        events: list[str] = []
+        emitted_any = False
+
+        if parsed.reasoning_token:
+            emitted_any = True
+            result.reasoning_content += parsed.reasoning_token
+            events.append(build_reasoning_event(parsed.reasoning_token))
+
+        if parsed.has_reasoning:
+            result.has_reasoning = True
+
+        if parsed.message_token:
+            text = parsed.message_token
+            if seam is not None:
+                text = seam.push(text)
+            if text:
+                emitted_any = True
+                result.content += text
+                events.append(build_message_event(text))
+
+        if parsed.finish_reason:
+            result.finish_reason = parsed.finish_reason
+
+        if parsed.refusal:
+            result.refusal = parsed.refusal
+
+        if parsed.tool_call_deltas:
+            emitted_any = True
+            tool_deltas.extend(parsed.tool_call_deltas)
+
+        if parsed.usage:
+            result.usage = parsed.usage
+
+        return emitted_any, events
+
+    # ------------------------------------------------------------------
+    # 中断恢复策略（整流不适用时的收尾 / 半流续接链）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _abandon_path(
+        context: RectifierContext,
+        *,
+        retry: RetryHandler,
+        cancel_event: asyncio.Event | None,
+        exc: Exception,
+        tool_emitted: bool,
+        continue_fn: Callable[[str], Awaitable[Any]] | None,
+        continuation_max_retries: int,
+    ) -> AsyncGenerator[str]:
+        """整流不适用时的收尾路径：取消守卫 → 半流续接（尽力而为）→ 放弃。
+
+        整流条件被 _should_rectify 判否（已产出 / 超上限 / 不可恢复 / 已取消）后进入：
+        - 取消守卫（LLM-011）：取消非下游故障，不喂熔断器
+        - 半流续接（LLM-ADR-015）：已产出 content 且边界满足则带前缀续写；链内已处理
+          终态（completed）即结束，不再走放弃分支
+        - 放弃：RETRYABLE 喂熔断 + 失败信号传编排层（Agent 短路）；已产出的部分
+          content 保留在 result 中，Agent 短路时一并带回
+        本子方法产出其应产的 SSE 事件，结束即整流流结束（无 continue 回边）。
+        """
+        # LLM-011：放弃分支先判取消——_should_rectify 可能因用户取消返回 False
+        # （且取消后异常仍是 RETRYABLE），用户取消非下游故障，不喂熔断器
+        # （与 test_cancel_event_not_feeds_breaker 契约一致）。
+        if cancel_event and cancel_event.is_set():
+            context.result.error = "用户取消"
+            yield build_error_event("用户取消了请求")
+            return
+
+        final_error: Exception = exc
+        if continue_fn is not None and continuation_max_retries > 0:
+            # 半流续接链：带前缀重发，不整轮重启。链内已处理终态（completed）→
+            # 直接结束；否则退化到下方放弃分支——部分 content 保留 + 失败信号。
+            outcome = _ContinuationOutcome()
+            async for event in StreamingRectifier._try_continuations(
+                context,
+                continue_fn=continue_fn,
+                cancel_event=cancel_event,
+                continuation_max_retries=continuation_max_retries,
+                first_category=classify_error(exc),
+                first_error=exc,
+                first_tool_emitted=tool_emitted,
+                outcome=outcome,
+            ):
+                yield event
+            if outcome.completed:
+                return
+            if outcome.error is not None:
+                final_error = outcome.error
+
+        # 放弃（不整流/不续接）→ 失败信号传编排层（Agent 短路）；部分 content 保留。
+        if classify_error(final_error) == ErrorCategory.RETRYABLE:
+            retry.circuit_breaker.record_failure()
+        exc_text = _describe_exception(final_error)
+        context.result.error = exc_text[:_RESULT_ERROR_LIMIT]
+        yield build_error_event(f"流式响应中断: {exc_text}")
 
     @staticmethod
     async def _try_continuations(
@@ -563,13 +660,7 @@ class StreamingRectifier:
             ):
                 return
 
-            # RATE_LIMITED（429）：提取服务端 Retry-After 参与退避（封顶 max_delay）
-            retry_after = (
-                RetryHandler._extract_retry_after(error)
-                if category == ErrorCategory.RATE_LIMITED
-                else None
-            )
-            await asyncio.sleep(_stream_backoff(cont_attempt, retry_after))
+            await _backoff_sleep(cont_attempt, error)
             if cancel_event and cancel_event.is_set():
                 context.result.error = "用户取消"
                 yield build_error_event("用户取消了请求")
@@ -577,11 +668,7 @@ class StreamingRectifier:
                 return
 
             cont_start = time.monotonic()
-            # 死流元数据不残留（content 保留为续写前缀；finish/usage/refusal 由上一
-            # 次中断可能带出，须清，与整流清理语义一致）
-            result.finish_reason = None
-            result.usage = None
-            result.refusal = None
+            _reset_dead_meta(result)  # content 保留为续写前缀，仅清死流收尾元数据
             cont_tool_deltas: list[ToolCallDelta] = []
 
             try:
@@ -640,54 +727,22 @@ class StreamingRectifier:
                 # 预算内带新前缀继续续接；否则 while 顶部 _should_continue 放行到调用方放弃
                 continue
 
+    # ------------------------------------------------------------------
+    # 结算闭环 + 事件日志
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def _apply_chunk(
-        chunk: Any,
-        result: StreamResult,
-        tool_deltas: list[ToolCallDelta],
+    async def _finish_interrupted(
+        context: RectifierContext,
         *,
-        seam: _SeamStripper | None = None,
-    ) -> tuple[bool, list[str]]:
-        """处理单个 chunk：累积到 result、产出事件列表；返回 (是否产出 token, 事件列表)。
-
-        seam 非空（续接 attempt）时，content token 经接缝剥离器处理——与已产 content
-        尾部重叠的首部剥离后再累积/产出，避免客户端看到重复拼接（LLM-ADR-015）。
-        """
-        parsed = StreamParser.parse_chunk(chunk)
-        events: list[str] = []
-        emitted_any = False
-
-        if parsed.reasoning_token:
-            emitted_any = True
-            result.reasoning_content += parsed.reasoning_token
-            events.append(build_reasoning_event(parsed.reasoning_token))
-
-        if parsed.has_reasoning:
-            result.has_reasoning = True
-
-        if parsed.message_token:
-            text = parsed.message_token
-            if seam is not None:
-                text = seam.push(text)
-            if text:
-                emitted_any = True
-                result.content += text
-                events.append(build_message_event(text))
-
-        if parsed.finish_reason:
-            result.finish_reason = parsed.finish_reason
-
-        if parsed.refusal:
-            result.refusal = parsed.refusal
-
-        if parsed.tool_call_deltas:
-            emitted_any = True
-            tool_deltas.extend(parsed.tool_call_deltas)
-
-        if parsed.usage:
-            result.usage = parsed.usage
-
-        return emitted_any, events
+        error: str,
+        attempt_start: float,
+    ) -> None:
+        """中断收尾：结算退差 + 记录失败日志（用户取消/流中断共用）。"""
+        await StreamingRectifier._settle_active(context)
+        await StreamingRectifier._log_failure(
+            context, error=error, attempt_start=attempt_start
+        )
 
     @staticmethod
     async def _settle_active(context: RectifierContext) -> None:
@@ -708,16 +763,15 @@ class StreamingRectifier:
                 raise
 
     @staticmethod
-    async def _finish_interrupted(
-        context: RectifierContext,
-        *,
-        error: str,
-        attempt_start: float,
-    ) -> None:
-        """中断收尾：结算退差 + 记录失败日志（用户取消/流中断共用）。"""
-        await StreamingRectifier._settle_active(context)
-        await StreamingRectifier._log_failure(
-            context, error=error, attempt_start=attempt_start
+    async def _log_success(context: RectifierContext, attempt_start: float) -> None:
+        """记录成功事件日志（正常读完 / 续接成功共用；清 error 供同一 record 复用）。"""
+        await fill_llm_event_fields(
+            context.event_fields,
+            success=True,
+            error=None,
+            duration=time.monotonic() - attempt_start,
+            usage=context.result.usage,
+            finish_reason=context.result.finish_reason,
         )
 
     @staticmethod

@@ -130,6 +130,7 @@ create_fn（限流闭环 reserve + create）
     → rectified_stream 整流/续接循环
         ├─ _drain：逐 chunk 看门狗（首包宽/空闲窄）→ 累积 + 产出事件（整流/续接共用）
         ├─ _should_rectify：判断是否整流（首 token 前）
+        ├─ _abandon_path：整流不适用时的收尾（LLM-011 取消守卫 → 半流续接 → 放弃）
         ├─ _try_continuations：半流续接链（已产出 content 带前缀续写，LLM-ADR-015）
         ├─ _SeamStripper：续接流首部接缝重叠剥离
         ├─ _apply_chunk：解析 chunk → 累积 StreamResult + 产出事件
@@ -171,6 +172,7 @@ async for event in StreamingRectifier.rectified_stream(
 - `_drain`：迭代单个流式响应——逐 chunk 看门狗（首包宽/空闲窄，LLM-ADR-014）+ `_apply_chunk` 累积 + 事件产出；迭代中用户取消置位抛内部 `_StreamCancel` 信号（与硬取消 CancelledError 区分）。整流 attempt 与续接 attempt 共用
 - `_apply_chunk`：解析 chunk → 累积 `StreamResult` + 产出事件；`emitted_any` **累积语义**（`emitted_any or chunk_emitted`）——已产出标记单调递增，元数据 chunk 不冲掉历史产出（[LLM-035](../../../issues/integration/llm/2026-08-10-rectify-emitted-any-marker-reset.md)）；整流 `continue` 前清空 `tool_deltas`（[LLM-030](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）；续接 attempt 时 content token 经 `seam` 接缝剥离
 - `_should_rectify`：整流判定（见「核心概念解释·整流条件」）
+- `_abandon_path`：整流不适用时的收尾路径——LLM-011 取消守卫（取消非下游故障，不喂熔断）→ 半流续接链（尽力而为，completed 即结束）→ 放弃（RETRYABLE 喂熔断 + 失败信号，部分 content 保留）；产出其 SSE 事件即整流流结束
 - `_should_continue` / `_try_continuations`：半流续接判定与尽力而为续接链（见「核心概念解释·半流续接」）；`_SeamStripper` 接缝重叠剥离
 - `_finish_interrupted`：中断收尾（settle + 日志）
 
@@ -217,12 +219,14 @@ async_generate → rectified_stream（整流/续接循环）
         ├─ 迭代：_drain 逐 chunk wait_for 看门狗（首包宽/空闲窄）+ 累积 + 产出事件
         │    └─ 异常/看门狗超时 → _should_rectify？
         │         ├─ 是（首 token 前 + 可恢复 + 未取消）→ 退避（含 Retry-After）→ 下一 attempt 整流
-        │         └─ 否（已产出）→ 半流续接（_should_continue，LLM-ADR-015）？
-        │              ├─ 是（content 已产 + 无 reasoning/tool + 可恢复 + 预算未超 + 未取消）
-        │              │    → 退避 → continue_fn(prefix=result.content) 续写（尽力而为，接缝去重）
-        │              │        ├─ 成功 → 结算 + 成功日志 + 结束
-        │              │        └─ 再断（预算内带新前缀再续）/ 预算尽 / create 失败 → 退化到放弃分支
-        │              └─ 否 → 放弃分支：熔断 feeding（RETRYABLE）+ 失败信号 + 部分 content 保留
+        │         └─ 否（不整流）→ _abandon_path（整流不适用收尾）
+        │              ├─ 取消守卫（LLM-011）：取消 → 取消事件结束（不喂熔断）
+        │              └─ 半流续接（_should_continue，LLM-ADR-015）？
+        │                   ├─ 是（content 已产 + 无 reasoning/tool + 可恢复 + 预算未超 + 未取消）
+        │                   │    → 退避 → continue_fn(prefix=result.content) 续写（尽力而为，接缝去重）
+        │                   │        ├─ 成功 → 结算 + 成功日志 + 结束
+        │                   │        └─ 再断（预算内带新前缀再续）/ 预算尽 / create 失败 → 退化到放弃
+        │                   └─ 否 → 放弃：熔断 feeding（RETRYABLE）+ 失败信号 + 部分 content 保留
         └─ 正常读完 / 硬取消 → 结算闭环（settle）
 ```
 
