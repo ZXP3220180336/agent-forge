@@ -30,6 +30,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+import httpx
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -72,7 +73,22 @@ class Settings(BaseSettings):
     llm_model_id: str = "gpt-4"
     llm_temperature: float = 0.2
     llm_max_tokens: int = 4096
-    llm_timeout: int = 60
+
+    # LLM 分级超时（httpx.Timeout 四档，见 LLM-ADR-014 连接期决策）：
+    #   connect — TCP+TLS 握手上限（连接悬挂防护）
+    #   read    — 相邻数据块空闲上限（流空闲检测；含首字节等待，思维模型前置沉默受此约束）
+    #   write   — 请求体发送上限
+    #   pool    — 连接池取连接等待上限
+    llm_timeout_connect: float = 10.0
+    llm_timeout_read: float = 60.0
+    llm_timeout_write: float = 10.0
+    llm_timeout_pool: float = 10.0
+    # 首包/空闲双阈值看门狗（整流层逐 chunk 计时；httpx read 档无法区分二者）
+    llm_timeout_first_token: float = 60.0  # 首 chunk（首字节）等待上限（宽，覆盖模型思考）
+    llm_timeout_chunk_idle: float = 15.0  # 后续单 chunk 空闲上限（窄，判定断流）
+    # 连接池上限（httpx.Limits，经 http_client 注入 AsyncOpenAI）
+    llm_pool_max_connections: int = 100
+    llm_pool_max_keepalive_connections: int = 20
 
     # 推理模型（用于深度思考，如 DeepSeek-R1）
     llm_reasoning_model_id: str = ""  # 空则使用主模型
@@ -325,6 +341,22 @@ class Settings(BaseSettings):
         return not self.debug
 
     @property
+    def llm_client_timeout(self) -> httpx.Timeout:
+        """LLM 客户端分级超时（httpx.Timeout：connect/read/write/pool）。
+
+        装配根直接注入 ClientManager（register_config timeout=...）→ openai
+        AsyncOpenAI 接受该实例构建分级超时（LLM-ADR-014：连接期防悬挂 /
+        池等待 / 流空闲读兜底）。返回 Timeout 实例而非 dict——httpx.TimeoutTypes
+        不接受 dict，dict 会在 httpx.AsyncClient 构造期抛 TypeError。
+        """
+        return httpx.Timeout(
+            connect=self.llm_timeout_connect,
+            read=self.llm_timeout_read,
+            write=self.llm_timeout_write,
+            pool=self.llm_timeout_pool,
+        )
+
+    @property
     def llm_config(self) -> dict:
         """获取主模型配置字典"""
         return {
@@ -333,7 +365,7 @@ class Settings(BaseSettings):
             "model": self.llm_model_id,
             "temperature": self.llm_temperature,
             "max_tokens": self.llm_max_tokens,
-            "timeout": self.llm_timeout,
+            "timeout": self.llm_client_timeout,
         }
 
     @property
@@ -346,7 +378,7 @@ class Settings(BaseSettings):
             "model": model_id,
             "temperature": self.llm_reasoning_temperature,
             "max_tokens": self.llm_reasoning_max_tokens,
-            "timeout": self.llm_timeout,
+            "timeout": self.llm_client_timeout,
         }
 
     @property
@@ -359,7 +391,7 @@ class Settings(BaseSettings):
             "model": model_id,
             "temperature": self.llm_fast_temperature,
             "max_tokens": self.llm_fast_max_tokens,
-            "timeout": self.llm_timeout,
+            "timeout": self.llm_client_timeout,
         }
 
     @property

@@ -9,6 +9,7 @@ ClientManager 单元测试
 
 import asyncio
 
+import httpx
 import pytest
 
 from app.integration.llm.client import ClientManager
@@ -289,3 +290,65 @@ def test_get_client_passes_only_whitelisted_kwargs(monkeypatch):
     # 白名单之外不传给 AsyncOpenAI：model 是管理字段（供 get_model），bogus_extra 是未知 extra
     assert "model" not in captured
     assert "bogus_extra" not in captured
+
+
+def test_register_config_timeout_dict_flows_to_client(monkeypatch):
+    """分级超时 httpx.Timeout 经 register_config 白名单直达 AsyncOpenAI（LLM-ADR-014 接线）。
+
+    装配根传 settings.llm_client_timeout（httpx.Timeout 实例——httpx.TimeoutTypes 不接受
+    dict，dict 会在 httpx.AsyncClient 构造期抛 TypeError），openai AsyncOpenAI 接受该实例。
+    """
+    captured: dict = {}
+
+    class _RecordingClient:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("app.integration.llm.client.AsyncOpenAI", _RecordingClient)
+    timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+    ClientManager.register_config(
+        "main", api_key="k", base_url="http://x", model="m", timeout=timeout
+    )
+    ClientManager.get_client("main")
+    got = captured["timeout"]
+    assert isinstance(got, httpx.Timeout)
+    assert (got.connect, got.read, got.write, got.pool) == (10.0, 60.0, 10.0, 10.0)
+
+
+def test_register_config_pool_limits_builds_http_client(monkeypatch):
+    """连接池上限触发 http_client 构建（httpx.Limits 注入），未配置则不注入（LLM-ADR-014）。"""
+    captured: dict = {}
+    recorded: dict = {}
+
+    class _RecordingClient:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    class _FakeHTTPClient:
+        pass
+
+    def _fake_build(proxy_url, *, timeout, limits):
+        recorded["proxy_url"] = proxy_url
+        recorded["timeout"] = timeout
+        recorded["limits"] = limits
+        return _FakeHTTPClient()
+
+    monkeypatch.setattr("app.integration.llm.client.AsyncOpenAI", _RecordingClient)
+    monkeypatch.setattr(
+        "app.integration.llm.client._build_http_client", _fake_build
+    )
+    ClientManager.register_config(
+        "main",
+        api_key="k",
+        base_url="http://x",
+        model="m",
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
+        pool_max_connections=50,
+        pool_max_keepalive_connections=10,
+    )
+    ClientManager.get_client("main")
+    assert isinstance(captured["http_client"], _FakeHTTPClient), "pool 配置应注入 http_client"
+    assert isinstance(recorded["limits"], httpx.Limits)
+    assert recorded["limits"].max_connections == 50
+    assert recorded["limits"].max_keepalive_connections == 10
+    assert recorded["timeout"] is not None, "http_client 应同享分级超时"

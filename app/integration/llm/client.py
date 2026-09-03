@@ -19,14 +19,12 @@ ClientManager — 连接池复用与多 client 管理
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
+import httpx
 from openai import AsyncOpenAI
 
 from app.platform.observability.logger import get_logger
-
-if TYPE_CHECKING:
-    import httpx  # 注解-only：httpx 延迟导入保留（运行期由 _build_proxied_client 内 lazy import）
 
 logger = get_logger("llm.client")
 
@@ -146,10 +144,25 @@ class ClientManager:
             # 默认值兜底
             client_kwargs.setdefault("api_key", "")
             client_kwargs.setdefault("base_url", "https://api.openai.com/v1")
-            # 可选代理
+
+            # 代理 / 连接池上限（LLM-ADR-014）：pool limits 只能经 http_client
+            # （httpx.AsyncClient）传给 openai——任一配置触发即走统一 http_client 构建，
+            # 代理路径同样纳入（同享分级超时）。未配置时保持直连（不注入 http_client）。
             proxy_url = cfg.get("proxy_url")
-            if proxy_url:
-                client_kwargs["http_client"] = _build_proxied_client(proxy_url)
+            max_conn = cfg.get("pool_max_connections")
+            max_keepalive = cfg.get("pool_max_keepalive_connections")
+            if proxy_url or max_conn is not None or max_keepalive is not None:
+                limits = httpx.Limits(
+                    max_connections=max_conn if max_conn is not None else 100,
+                    max_keepalive_connections=(
+                        max_keepalive if max_keepalive is not None else 20
+                    ),
+                )
+                client_kwargs["http_client"] = _build_http_client(
+                    proxy_url=proxy_url,
+                    timeout=client_kwargs.get("timeout"),
+                    limits=limits,
+                )
             cls._instances[key] = AsyncOpenAI(**client_kwargs)
         return cls._instances[key]
 
@@ -214,13 +227,19 @@ class ClientManager:
         cls._configs.pop(key, None)
 
 
-def _build_proxied_client(proxy_url: str) -> httpx.AsyncClient:
-    """构建带代理的 httpx.AsyncClient（延迟导入避免硬依赖）。
+def _build_http_client(
+    proxy_url: str | None,
+    *,
+    timeout: httpx.Timeout | None = None,
+    limits: httpx.Limits | None = None,
+) -> httpx.AsyncClient:
+    """构建带代理 / 连接池上限 / 分级超时的 httpx.AsyncClient（openai http_client 注入）。
 
-    返回的 client 作为 AsyncOpenAI(http_client=...) 注入（httpx.AsyncClient 形态）。
+    触发条件：配置了代理或连接池上限——pool limits 只能经 http_client 传入 openai；
+    同享分级超时（httpx.Timeout 实例，见 LLM-ADR-014）。httpx 是 openai 硬依赖，不做延迟导入。
     """
-    try:
-        import httpx
-    except ImportError:
-        raise ImportError("使用代理需要安装 httpx: pip install httpx")
-    return httpx.AsyncClient(proxy=proxy_url)
+    return httpx.AsyncClient(
+        proxy=proxy_url,
+        timeout=timeout,
+        limits=limits if limits is not None else httpx.Limits(),
+    )

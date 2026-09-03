@@ -4,6 +4,7 @@
 跳过 .env 读取，只断言显式 kwargs 的确定性结果，避免环境耦合。
 """
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -87,16 +88,40 @@ def test_llm_config():
         llm_model_id="m",
         llm_temperature=0.3,
         llm_max_tokens=10,
-        llm_timeout=5,
+        llm_timeout_connect=2.0,
+        llm_timeout_read=3.0,
+        llm_timeout_write=4.0,
+        llm_timeout_pool=5.0,
     )
-    assert s.llm_config == {
+    cfg = dict(s.llm_config)
+    timeout = cfg.pop("timeout")
+    assert cfg == {
         "api_key": "k",
         "base_url": "u",
         "model": "m",
         "temperature": 0.3,
         "max_tokens": 10,
-        "timeout": 5,
     }
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.as_dict() == {
+        "connect": 2.0,
+        "read": 3.0,
+        "write": 4.0,
+        "pool": 5.0,
+    }
+
+
+def test_llm_client_timeout_defaults_and_override():
+    """分级超时默认四档（LLM-ADR-014：connect/read/write/pool）；字段可 .env 覆盖。"""
+    assert _make().llm_client_timeout.as_dict() == {
+        "connect": 10.0,
+        "read": 60.0,
+        "write": 10.0,
+        "pool": 10.0,
+    }
+    s = _make(llm_timeout_read=120.0)
+    assert s.llm_client_timeout.read == 120.0
+    assert s.llm_client_timeout.connect == 10.0  # 其余默认不变
 
 
 def test_llm_reasoning_config_falls_back_to_main():

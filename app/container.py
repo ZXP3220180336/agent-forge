@@ -139,6 +139,9 @@ class Container:
             base_url=settings.llm_base_url,
             model=settings.llm_model_id,
             proxy_url=settings.llm_proxy_url or None,
+            timeout=settings.llm_client_timeout,
+            pool_max_connections=settings.llm_pool_max_connections,
+            pool_max_keepalive_connections=settings.llm_pool_max_keepalive_connections,
         )
 
         reasoning_model = settings.llm_reasoning_model_id or settings.llm_model_id
@@ -147,6 +150,9 @@ class Container:
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
             model=reasoning_model,
+            timeout=settings.llm_client_timeout,
+            pool_max_connections=settings.llm_pool_max_connections,
+            pool_max_keepalive_connections=settings.llm_pool_max_keepalive_connections,
         )
 
         fast_model = settings.llm_fast_model_id or settings.llm_model_id
@@ -155,6 +161,9 @@ class Container:
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
             model=fast_model,
+            timeout=settings.llm_client_timeout,
+            pool_max_connections=settings.llm_pool_max_connections,
+            pool_max_keepalive_connections=settings.llm_pool_max_keepalive_connections,
         )
 
         # 3.5 注入 LLM 可靠性配置（重试/熔断/限流）——子模块不直接依赖 settings
@@ -206,6 +215,8 @@ class Container:
             base_delay=settings.llm_base_delay,
             max_delay=settings.llm_max_delay,
             use_jitter=settings.llm_use_jitter,
+            first_token_timeout=settings.llm_timeout_first_token,
+            chunk_idle_timeout=settings.llm_timeout_chunk_idle,
         )
 
         # LLM 运行期配置注入（fallback / 自适应预留 / 流式整流次数）
