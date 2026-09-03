@@ -8,7 +8,10 @@
 
 from app.application.session.session_manager import SessionManager
 from app.domain.ports.llm_gateway import LLMGateway
+from app.platform.observability.logger import get_logger
 from app.shared.types import SessionId
+
+logger = get_logger("app.application.context")
 
 
 class ContextManager:
@@ -45,7 +48,7 @@ class ContextManager:
         session_id: SessionId,
         user_message: str,
         max_rounds: int = 20,
-    ) -> tuple[list[dict], int]:
+    ) -> tuple[list[dict], int, int]:
         """
         构建发送给 LLM 的 messages
 
@@ -61,7 +64,9 @@ class ContextManager:
             max_rounds: 保留的最大对话轮数
 
         Returns:
-            (messages, total_tokens): 组装好的消息列表和Token总数
+            (messages, total_tokens, truncated_history): 组装好的消息列表、Token 总数、
+            本次因超限丢弃的历史消息条数（0=未裁剪）。truncated_history 供调用方显式
+            告警（日志 / SSE），ContextManager 为共享单例，不存请求级状态。
         """
         # 1. 获取会话信息（含 system prompt）
         session = await self.session_manager.get_session(session_id)
@@ -82,12 +87,23 @@ class ContextManager:
         # 4. 计算 Token 并截断
         total_tokens = self.count_messages_tokens(messages)
         available_tokens = self.max_context_tokens - self.max_output_tokens
+        truncated_history = 0
 
         if total_tokens > available_tokens:
+            before = len(messages)
             messages = self._truncate_messages(messages, available_tokens)
             total_tokens = self.count_messages_tokens(messages)
+            # 裁剪只丢历史消息（system/user 恒保留），差值即丢弃条数
+            truncated_history = before - len(messages)
+            logger.warning(
+                "上下文超限裁剪: session=%s 丢弃 %d 条历史（预算 %d tokens，裁剪后 %d tokens）",
+                session_id,
+                truncated_history,
+                available_tokens,
+                total_tokens,
+            )
 
-        return messages, total_tokens
+        return messages, total_tokens, truncated_history
 
     # 当前策略：从最早的消息开始丢弃
     # 问题：如果早期消息包含关键信息，被丢弃后模型无法理解上下文

@@ -23,7 +23,7 @@ from app.domain.agent import AgentContext, ReActAgent
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
-from app.shared.events import build_error_event
+from app.shared.events import build_error_event, build_info_event
 from app.shared.exceptions import ForbiddenError, NotFoundError
 from app.shared.types import SessionId, UserId
 
@@ -71,7 +71,7 @@ async def send_message(
     )
 
     # 3. 构建上下文
-    messages, _ = await context_manager.build_messages(
+    messages, _total, truncated_history = await context_manager.build_messages(
         session_id=sid,
         user_message=request.message,
     )
@@ -102,6 +102,12 @@ async def send_message(
             cost_limiter=cost_limiter,
             cancel_event=cancel_event,
         )
+
+        # 上下文超限裁剪告警（流首显式提示，避免历史被静默丢弃无感知）
+        if truncated_history:
+            yield build_info_event(
+                f"上下文超限，已裁剪最早 {truncated_history} 条历史消息以适配模型上下文窗口"
+            )
 
         try:
             # 4. ReAct 闭环：LLM 思考 → 工具调用 → LLM 总结

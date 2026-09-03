@@ -1,6 +1,6 @@
 # ContextManager 上下文管理说明文档
 
-> **更新日期**：2026-08-29
+> **更新日期**：2026-09-03
 > **模块**：`app/application/context/context_manager.py`
 > **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、经 `LLMGateway` 端口精确计数、超限截断；并结构实现 `ContextBudgetPort`，承担 Agent 运行中的上下文预算管理。
 
@@ -61,7 +61,7 @@ ReActAgent（领域层，经 ContextBudgetPort 复用 trim_messages）→ LLMSer
 | --- | --- | --- |
 | `count_tokens` | `(text: str) -> int` | 经 `LLMGateway.count_tokens` 精确计算文本 token 数 |
 | `count_messages_tokens` | `(messages: list[dict]) -> int` | 经 `LLMGateway.count_messages_tokens` 计算 messages 总 token（计数规则见 [token_counter](../../integration_doc/llm_doc/token_counter.md)） |
-| `build_messages` | `(session_id, user_message, max_rounds=20) -> tuple[list[dict], int]` | 组装完整 messages，超限自动截断，返回 `(messages, total_tokens)`；`session_id` 不存在抛 `ValueError` |
+| `build_messages` | `(session_id, user_message, max_rounds=20) -> tuple[list[dict], int, int]` | 组装完整 messages，超限自动截断，返回 `(messages, total_tokens, truncated_history)`；`truncated_history`=本次丢弃的历史条数（0=未裁剪，供调用方显式告警，见 [ADR-001](../../../adr/2026-09-02-request-build-validation.md)）；`session_id` 不存在抛 `ValueError` |
 | `trim_messages` | `(messages, *, max_rounds, max_tokens) -> None` | 就地裁剪 messages 到预算内（`ContextBudgetPort` 实现，Agent 循环中模型调用前调用） |
 
 > `session_id` 为 `SessionId`（`app/shared/types.py` NewType）。
@@ -87,14 +87,19 @@ build_messages(session_id, user_message, max_rounds=20)
   3. messages = [system] + history + [user]
   4. total_tokens = count_messages_tokens(messages)
      available_tokens = max_context_tokens - max_output_tokens
+     truncated_history = 0
      if total_tokens > available_tokens:
+         before = len(messages)
          messages = _truncate_messages(messages, available_tokens)
          total_tokens = count_messages_tokens(messages)
-  5. 返回 (messages, total_tokens)
+         truncated_history = before - len(messages)   # system/user 恒保留，差值=丢的历史条数
+         logger.warning("上下文超限裁剪: session=... 丢弃 N 条历史（预算/裁剪后 tokens）")
+  5. 返回 (messages, total_tokens, truncated_history)
 ```
 
 - **保留策略**：system prompt 始终保留在 `messages[0]`，用户最新输入始终追加在末尾
 - **截断窗口**：`available_tokens = max_context_tokens - max_output_tokens`，为输出预留预算
+- **显式告警（非静默）**：裁剪不再无感知——返回的 `truncated_history` 供 chat 路由在流首 `yield` SSE `agent_info`「上下文超限已裁剪 N 条历史」，同时记 WARNING 日志（session_id / 条数 / 预算）；ContextManager 为共享单例，请求级截断信息一律走返回值，不落实例状态（决策见 [ADR-001](../../../adr/2026-09-02-request-build-validation.md)）
 
 ### `_truncate_messages` 截断逻辑
 
@@ -166,13 +171,14 @@ CostLimiter(ceiling=agent_max_cost, llm=llm_service, model=llm_model_id)
 
 ```python
 # 构建上下文（Chat 路由核心用法，见 app/api/routes/chat.py）
-messages, total_tokens = await container.context_manager.build_messages(
+messages, total_tokens, truncated_history = await container.context_manager.build_messages(
     session_id=session_id,
     user_message="继续分析不良数据",
     max_rounds=20,
 )
 # messages → [{"role": "system", "content": ...}, {"role": "user", "content": ...}, ...]
 # total_tokens → 本次请求的预估 token 数
+# truncated_history → 超限丢弃的历史条数（>0 时路由在流首 yield agent_info 裁剪告警）
 
 # 运行中上下文护栏（经 ContextBudgetPort 由 Agent 循环调用）
 context_manager.trim_messages(messages, max_rounds=10, max_tokens=80000)

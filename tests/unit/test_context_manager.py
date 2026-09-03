@@ -4,6 +4,8 @@
 （经 TiktokenTokenCounter 注入，与实现层一致）。
 """
 
+import logging
+
 import pytest
 
 from app.application.context.context_manager import ContextManager
@@ -63,7 +65,7 @@ async def test_build_messages_assembles_system_history_user():
         ],
     )
     cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"))
-    messages, total = await cm.build_messages("s1", "hello", max_rounds=20)
+    messages, total, truncated = await cm.build_messages("s1", "hello", max_rounds=20)
 
     assert messages == [
         {"role": "system", "content": "sys"},
@@ -72,6 +74,7 @@ async def test_build_messages_assembles_system_history_user():
         {"role": "user", "content": "hello"},
     ]
     assert total == cm.count_messages_tokens(messages)
+    assert truncated == 0  # 未超限 → 不裁剪
     assert fake.calls == [("s1", 40)]
 
 
@@ -84,8 +87,12 @@ async def test_build_messages_passes_custom_max_rounds():
 
 
 @pytest.mark.asyncio
-async def test_build_messages_truncates_when_over_budget():
-    """超预算时截断：保留 system 与 user，总 token 不超可用预算"""
+async def test_build_messages_truncates_when_over_budget(caplog):
+    """超预算时截断：保留 system 与 user，总 token 不超可用预算，并显式告警。
+
+    回归护栏（请求构建期裁剪告警决策 Option B）：truncated_history 携带丢弃条数，
+    warning 日志含 session 与条数——修复前截断完全静默（无信号，用户无感知）。
+    """
     fake = _FakeSessionManager(
         session={"system_prompt": "sys"},
         messages=[
@@ -94,12 +101,17 @@ async def test_build_messages_truncates_when_over_budget():
         ],
     )
     cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"), max_context_tokens=40, max_output_tokens=4)
-    messages, total = await cm.build_messages("s1", "hello")
+    with caplog.at_level(logging.WARNING, logger="app.application.context"):
+        messages, total, truncated = await cm.build_messages("s1", "hello")
 
     assert total <= 36  # available = 40 - 4
     assert messages[0]["role"] == "system"
     assert messages[-1]["role"] == "user"
     assert len(messages) < 8  # 历史被截断
+    assert truncated == 8 - len(messages)  # 丢弃条数 = 截断前后消息数差（system/user 恒保留）
+    assert truncated > 0
+    assert "s1" in caplog.text
+    assert f"{truncated} 条历史" in caplog.text
 
 
 def test_truncate_messages_keeps_system_and_user():
