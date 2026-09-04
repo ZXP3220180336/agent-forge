@@ -298,21 +298,21 @@ class ReflectionStrategy:
 
         # react 失败 → 降级（error 透传，证据链保留）
         if react_outcome.error:
-            async for event in self._finalize(
+            for e in self._finalize(
                 react_outcome, error=react_outcome.error, success=False, degraded=True
             ):
-                yield event
+                yield e
             return
 
         # 模型未调用 final_answer（stop 自由文本结束）→ 降级
         if react_outcome.structured is None:
-            async for event in self._finalize(
+            for e in self._finalize(
                 react_outcome,
                 success=bool(react_outcome.content.strip()),
                 degraded=True,
                 error="模型未产出结构化初稿（未调用 final_answer），降级为自由文本",
             ):
-                yield event
+                yield e
             return
 
         draft = react_outcome.structured
@@ -331,7 +331,7 @@ class ReflectionStrategy:
                 cancel_event, start_time, max_execution_time
             )
             if aborted:
-                async for event in self._finalize(
+                for e in self._finalize(
                     react_outcome,
                     draft=draft,
                     structured=current,
@@ -342,7 +342,7 @@ class ReflectionStrategy:
                     error=f"{abort_reason}，采用最近稿（降级）",
                     info=f"{abort_reason}，采用最近稿（降级）",
                 ):
-                    yield event
+                    yield e
                 return
             # 成本护栏：发起新付费调用前 check（react + 自查/修正累计，超限停机降级）
             if self._cost_limiter is not None:
@@ -350,7 +350,7 @@ class ReflectionStrategy:
                     _merge_usage(react_outcome.usage, self._structured_usage)
                 )
                 if exceeded:
-                    async for event in self._finalize(
+                    for e in self._finalize(
                         react_outcome,
                         draft=draft,
                         structured=current,
@@ -361,7 +361,7 @@ class ReflectionStrategy:
                         error=f"成本超限（累计 ${cost}），采用最近稿（降级）",
                         info="成本超限，采用最近稿（降级）",
                     ):
-                        yield event
+                        yield e
                     return
 
             # ── 自查当前稿 ──
@@ -375,7 +375,7 @@ class ReflectionStrategy:
             if critique is None:
                 # 自查失败 → 降级采用当前稿（best-effort，不抛错）
                 suffix = "（STOP）" if crit_action == AgentErrorAction.STOP else ""
-                async for event in self._finalize(
+                for e in self._finalize(
                     react_outcome,
                     draft=draft,
                     structured=current,
@@ -386,12 +386,12 @@ class ReflectionStrategy:
                     error=f"自查失败{suffix}，采用最近稿（降级）",
                     info="自查失败，采用最近稿（降级）",
                 ):
-                    yield event
+                    yield e
                 return
 
             if critique.get("ok"):
                 # 自查通过 → 采用当前稿（degraded=False）
-                async for event in self._finalize(
+                for e in self._finalize(
                     react_outcome,
                     draft=draft,
                     structured=current,
@@ -400,13 +400,13 @@ class ReflectionStrategy:
                     success=True,
                     info="自查通过，采用当前稿",
                 ):
-                    yield event
+                    yield e
                 return
 
             # 有 issues 且已达修正上限 → best-effort 采用当前稿（未通过自查）
             # max_refine_rounds = 报告生成尝试总次数（初稿 + 至多 max_refine_rounds-1 次修正）
             if refine_round >= max_refine_rounds - 1:
-                async for event in self._finalize(
+                for e in self._finalize(
                     react_outcome,
                     draft=draft,
                     structured=current,
@@ -417,7 +417,7 @@ class ReflectionStrategy:
                     error=f"达到修正上限({max_refine_rounds})，采用最近稿（未通过自查）",
                     info=f"达到修正上限({max_refine_rounds})，采用最近稿",
                 ):
-                    yield event
+                    yield e
                 return
 
             # 有 issues 且未达上限 → 修正（issues 回喂 + 完整上下文重写，ground-truth 兜底）
@@ -436,7 +436,7 @@ class ReflectionStrategy:
             if refined is None:
                 # 修正失败 → 降级采用当前稿（best-effort）
                 suffix = "（STOP）" if ref_action == AgentErrorAction.STOP else ""
-                async for event in self._finalize(
+                for e in self._finalize(
                     react_outcome,
                     draft=draft,
                     structured=current,
@@ -447,7 +447,7 @@ class ReflectionStrategy:
                     error=f"修正失败{suffix}，采用最近稿（降级）",
                     info="修正失败，采用最近稿（降级）",
                 ):
-                    yield event
+                    yield e
                 return
             current = refined
             # 回到循环顶部 → 重新自查修正稿（真迭代的关键：新反馈驱动下一轮）
@@ -474,7 +474,7 @@ class ReflectionStrategy:
 
     # ── 内部辅助 ──
 
-    async def _finalize(
+    def _finalize(
         self,
         react_outcome: ReActOutcome,
         *,
@@ -486,19 +486,16 @@ class ReflectionStrategy:
         error: str | None = None,
         success: bool = False,
         info: str = "",
-    ) -> AsyncGenerator[str]:
-        """组装 ReflectionOutcome 并产出收尾事件（info + done）——各终止分支统一收尾。
+    ) -> list[str]:
+        """组装 ReflectionOutcome 并返回收尾事件（可选 info + 必选 done）。
 
         Args:
             react_outcome: ReAct 收集阶段产出（共享字段透传）
             info: 阶段信息事件内容（空串则不产出 info 事件）
             （其余字段为 ReflectionOutcome 分支覆盖字段）
 
-        Yields:
-            SSE 事件：可选 info + 必选 done
-
-        用法：每个终止分支只需
-            ``async for event in self._finalize(...): yield event``
+        非 async：无 await，直接组事件列表。每个终止分支只需
+        ``for e in self._finalize(...): yield e``。
         """
         self.outcome = ReflectionOutcome(
             content=react_outcome.content,
@@ -516,16 +513,20 @@ class ReflectionStrategy:
             error=error,
             success=success,
         )
+        events: list[str] = []
         if info:
-            yield build_info_event(info)
+            events.append(build_info_event(info))
         # done 事件 token 口径与 outcome 一致（P2）：react 收集 + 自查/修正全阶段
         # 累计——避免 SSE 事件只报收集阶段、漏计 critique/refine 成本（事件流与
         # 结果对象两个事实源对齐）
-        yield build_done_event(
-            iterations=react_outcome.iterations,
-            total_tokens=react_outcome.total_tokens
-            + self._structured_usage.get("total_tokens", 0),
+        events.append(
+            build_done_event(
+                iterations=react_outcome.iterations,
+                total_tokens=react_outcome.total_tokens
+                + self._structured_usage.get("total_tokens", 0),
+            )
         )
+        return events
 
     async def _critique(
         self,
