@@ -43,7 +43,7 @@
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `__init__` | `(llm: LLMGateway, tools: ToolGateway, context_budget: ContextBudgetPort \| None = None, error_handlers: ErrorHandlerRegistry \| None = None, cost_limiter: CostLimiterPort \| None = None, cancel_event: asyncio.Event \| None = None)` | 构造 `ReActStrategy(llm, tools, context_budget, error_handlers, cost_limiter)`；`context_budget` 为上下文预算端口（ContextManager 注入），`error_handlers` 为错误处理横切入口，`cost_limiter` 为成本护栏端口（CostLimiter 注入），`cancel_event` 为优雅取消信号（/chat/stop 经 TaskService 置位，None=不启用） |
-| `_strategy_cycle` | `(user_input, messages) -> AsyncGenerator[str]` | 委托 `strategy.execute(...)`，结束后 `_map_outcome` 组装 `AgentResult` |
+| `_strategy_cycle` | `(user_input, messages) -> AsyncGenerator[str]` | 委托 `strategy.execute(...)`（透传 `ctx.stream_mode`——流式/非流式 LLM 通道开关，默认 True 流式），结束后 `_map_outcome` 组装 `AgentResult` |
 | `_execute_tool_calls` | `(tool_calls, messages, iteration) -> AsyncGenerator[str]` | 转发到 `strategy.execute_tool_calls`（工具并行执行原语） |
 | `_map_outcome` | `(outcome: ReActOutcome \| None) -> AgentResult` | 策略产出 → AgentResult 契约转换 |
 
@@ -60,6 +60,7 @@
 | `AgentContext` 未设置 | `_strategy_cycle` 抛 `RuntimeError` |
 | 策略未产出结果（`outcome is None`） | `_map_outcome` 返回失败 `AgentResult`（`success=False` + `error`） |
 | LLM 调用失败 | 经策略短路返回失败结果（LLM-001，见 react.md 行为边界） |
+| `ctx.stream_mode=False`（非流式通道） | 经 `_strategy_cycle` 透传策略走非流式 `generate()` 通道（一次拿完整结果，reasoning/message 整条事件），面向后台子 Agent（Phase C）；默认 `True` 流式行为不变 |
 | 用户取消（优雅） | `cancel_event` 置位 → 策略层主循环顶部 / LLM error 分支识别 → `CANCELLED` 分发（不重试，保留部分进度）→ `state=CANCELLED`（REASON-003） |
 | 用户取消（硬） | `BaseAgent.run()` 捕获 `asyncio.CancelledError` → `state=CANCELLED`（独立路径，与优雅取消并存） |
 
@@ -89,7 +90,7 @@ result = agent.result  # AgentResult
 
 ## 测试
 
-`tests/unit/test_agent.py`（8 用例）：
+`tests/unit/test_agent.py`（9 用例）：
 
 - `test_execute_tool_calls_parallel_preserves_order` — 工具消息顺序 = 输入顺序（gather 保序）
 - `test_execute_tool_calls_parallel_actually_concurrent` — 并行执行耗时 < 串行和
@@ -99,6 +100,7 @@ result = agent.result  # AgentResult
 - `test_react_agent_passes_cost_limiter_to_strategy` — cost_limiter 构造透传策略
 - `test_react_agent_passes_max_empty_retries_to_strategy` — max_empty_retries 经 AgentContext 透传
 - `test_react_agent_passes_max_same_action_turns_to_strategy` — max_same_action_turns 经 AgentContext 透传
+- `test_react_agent_passes_stream_mode_to_strategy` — stream_mode 经 AgentContext 透传策略：哨兵假 LLM 仅实现 generate（无 async_generate），证明 `ctx.stream_mode=False` 走非流式通道
 
 策略算法本身由 `tests/unit/test_react_strategy.py`（75 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
 

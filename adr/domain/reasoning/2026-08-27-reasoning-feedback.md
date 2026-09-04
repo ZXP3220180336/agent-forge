@@ -12,7 +12,7 @@
 
 1. **回喂语义**：DeepSeek V4 thinking + tools 下，assistant 消息必须原样回喂 `reasoning_content`。
 2. **`has_reasoning` 信号**：`StreamResult` / `ParsedChunk` 新增 `has_reasoning` 标记——`reasoning_content` 字段被填充（`is not None`，含空串）即置位，区分「未发送（None）」与「空 thinking 块（空串）」；react.py 回喂条件改为 `if full_reasoning or has_reasoning`（空串也回喂，字段始终存在）。
-3. **非流式路径不处理**：ReAct 主循环只走流式 `async_generate`；`parse_non_stream` / `generate()` 不涉及。
+3. **非流式回喂同构**（2026-09-04 更新）：ReAct 增加 `stream_mode=False` 非流式通道后，`generate()` 的 `parse_non_stream` 同样产出 `reasoning_content` / `has_reasoning`（字段与流式整流合并结果同构），回喂语义**两通道一致**——原「非流式路径不处理」已随 [react-stream-channel](2026-09-04-react-stream-channel.md) 落地而失效。
 
 ## Consequences
 

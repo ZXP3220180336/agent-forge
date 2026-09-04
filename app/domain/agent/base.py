@@ -78,6 +78,10 @@ class AgentContext:
     max_llm_fail_retries: int = 2  # LLM 失败重试上限：连续失败超过上限硬终止（0=首次失败即终止；防 handler CONTINUE 无限重试）
     max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）上限
     max_refine_rounds: int = 2  # Reflection 报告生成最大尝试轮数（初稿 1 + 修正上限 max_refine_rounds-1）
+    stream_mode: bool = True  # LLM 通道：True=流式 async_generate（默认，chat SSE 订阅者）；
+    # False=非流式 generate()（后台子 Agent 无人逐 token 订阅，Phase C 编排按需置 False）。
+    # 注：勿与 settings.agent_streaming 混淆——该字段仅是 agent_config 元数据出口，
+    # 无行为接线；本字段是 ReAct 策略实际 LLM 通道开关。
 
     # 扩展字段
     metadata: dict[str, Any] = field(default_factory=dict)

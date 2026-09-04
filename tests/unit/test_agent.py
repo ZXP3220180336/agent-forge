@@ -15,6 +15,7 @@ import pytest
 
 from app.config import settings
 from app.domain.agent import AgentContext, ReActAgent
+from app.domain.ports.llm_gateway import StreamResult
 from app.integration.tools.tool_service import ToolService
 from app.integration.tools.base import BaseTool, ToolResult
 from app.shared.error_handling import (
@@ -332,3 +333,38 @@ async def test_agent_error_reraisd_not_swallowed():
             pass
 
     assert exc_info.value.kind == AgentErrorKind.LLM_FAILED
+
+
+class _GenerateOnlyLLM:
+    """只实现 generate()（非流式通道）、不实现 async_generate——stream_mode 透传哨兵：
+
+    ReActAgent 若未把 ctx.stream_mode=False 透传给策略，run() 会调 async_generate
+    而本替身无此方法 → AttributeError，测试即失败。
+    """
+
+    async def generate(
+        self,
+        messages=None,
+        tools=None,
+        temperature=None,
+        max_tokens=None,
+        model_key=None,
+        response_format=None,
+    ) -> StreamResult:
+        sr = StreamResult()
+        sr.finish_reason = "stop"
+        sr.content = "答案"
+        return sr
+
+
+async def test_react_agent_passes_stream_mode_to_strategy():
+    """ctx.stream_mode=False → ReActAgent 透传 → 非流式通道生效（哨兵假 LLM 证明）。"""
+    agent = ReActAgent(llm=_GenerateOnlyLLM(), tools=None)
+    ctx = AgentContext(session_id="s", user_id="u", max_iterations=3, stream_mode=False)
+
+    async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
+        pass
+
+    assert agent.result is not None
+    assert agent.result.success is True
+    assert agent.result.content == "答案"

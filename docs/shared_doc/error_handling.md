@@ -88,6 +88,8 @@
 
 **注意 ⑧ 与 ⑨ 的差异**：同样是 `except Exception`，流式转成 SSE 错误事件（错误信息进事件流、调用方可见）；非流式按 B3 契约分流——可恢复错误转 None（调用方降级）、不可恢复错误 re-raise（调用方感知）。两种契约刻意不同，见下节。
 
+**ReAct 非流式桥接（Agent 层失败折算与流式同构）**：⑧/⑨ 的契约差异在领域层被 ReAct `stream_mode=False` 桥接弥合——后台子 Agent（Phase C）每轮走 `generate()` 一次拿完整结果，失败与流式整流「错误转事件」同一套折算（**不走 UNKNOWN**）：`generate()` 返回 None（可恢复错误可靠性层已重试耗尽）与抛 `AppError`（共享异常树不可恢复归一，如 `LLMAPIError`）均由 ReAct 置 `stream_result.error` + 产 error 事件 → `LLM_FAILED` 分发；仅 `AppError` 树之外的异常（领域层无法识别/import 的集成层透出类型、编程错误）才冒泡领域层外层 → `UNKNOWN`。两通道差异仅存于事件粒度（非流式整条一次性、错误轮末补 error 事件），`LLM_FAILED` 分发键一致。
+
 ---
 
 ## 传播链路（generate / async_generate / structured）

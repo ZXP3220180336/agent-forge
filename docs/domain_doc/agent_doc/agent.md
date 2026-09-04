@@ -102,6 +102,7 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | `max_empty_retries` | `int = 2` | 连续空输出重试上限（0=首次空输出即终止，生产值 `agent_max_empty_retries`） |
 | `max_llm_fail_retries` | `int = 2` | LLM 失败重试上限：连续失败超过上限硬终止（0=首次失败即终止；防 handler CONTINUE 无限重试，生产值 `agent_max_llm_fail_retries`） |
 | `max_same_action_turns` | `int = 3` | 循环停滞检测：连续相同工具调用（工具+参数）上限（生产值 `agent_max_same_action_turns`） |
+| `stream_mode` | `bool = True` | LLM 通道开关：True=流式 `async_generate`（默认，chat SSE 订阅者）；False=非流式 `generate()`（后台子 Agent 无人逐 token 订阅，Phase C 编排按需置 False）。当前无对应 settings 项（YAGNI；勿与仅作元数据出口的 `agent_streaming` 混淆，后者无行为接线） |
 | `metadata` | `dict = {}` | 扩展字段（如 `model_key`） |
 
 传递原则：值对象，每次 `run()` 传入，运行期间不变。`iteration_limit` 属性为 `max_iterations` 的语义别名。

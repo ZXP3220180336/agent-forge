@@ -21,6 +21,10 @@ ReAct 推理策略（ReActStrategy）
     执行工具       → type=tool_result
     LLM 下一轮原始流 → type=reasoning / message
     完成           → type=done
+LLM 通道双形态（execute stream_mode 参数）：
+    True（默认）→ async_generate 流式，reasoning/message 逐 token 事件
+    False        → generate() 非流式一次拿 StreamResult，reasoning/message 整条一次性
+                   （SSE 协议同构；后台子 Agent 无人订阅场景，Phase C）
 
 每次 execute() 是独立的：结果写入 self.outcome，调用方（ReActAgent）读取后组装 AgentResult。
 """
@@ -48,10 +52,14 @@ from app.shared.error_handling import (
 )
 from app.shared.events import (
     build_done_event,
+    build_error_event,
     build_info_event,
+    build_message_event,
+    build_reasoning_event,
     build_tool_call_event,
     build_tool_result_event,
 )
+from app.shared.exceptions import AppError
 
 # 策略层标准库日志（对齐「只依赖 ports + shared + 标准库」依赖方向，不用 platform 的
 # get_logger）；logger 名对齐 app.* 命名空间，可被 setup_logging 的 handler 捕获。
@@ -188,6 +196,7 @@ class ReActStrategy:
         tool_timeout: int | None = None,
         tool_max_retries: int | None = None,
         output_schema: dict | None = None,
+        stream_mode: bool = True,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncGenerator[str]:
         """
@@ -241,12 +250,19 @@ class ReActStrategy:
                 走执行器全局（settings.tool_max_retries；语义=执行次数，重试=次数-1）
             output_schema: 最终答案结构化 JSON Schema（None=不启用）。启用时注入
                 final_answer 工具，模型最后调用提交结构化结果并终止循环
+            stream_mode: LLM 通道——True=流式 async_generate（默认，逐 token 事件，
+                面向 chat SSE 订阅者）；False=非流式 generate()（一次拿完整 StreamResult，
+                后台子 Agent 无人订阅场景，Phase C）。主循环护栏语义（成本/失败/拒答/
+                工具/停滞/空输出）两通道一致；差异：False 下 reasoning/message 事件为
+                整条一次性、LLM 失败补 error 事件、cancel 仅轮次边界（generate 无中断）
             cancel_event: 优雅取消信号（asyncio.Event，None=不启用）——置位时在轮次
                 边界停止（对齐 OpenAI after_turn）；主循环顶部 + LLM error 分支识别
                 → CANCELLED 分发（不重试），保留部分进度；同时传给 LLM 层中断调用
+                （仅流式通道；非流式轮末补查一次）
 
         Yields:
-            SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）
+            SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）；
+            流式下 reasoning/message 逐 token，非流式下为整条一次性（协议同构）
         """
         tool_defs = self._tools.get_openai_tools() if self._tools else None
         # 结构化最终答案：注入 final_answer 工具（模型最后调用提交结构化结果并终止）
@@ -296,17 +312,40 @@ class ReActStrategy:
                         )
 
                     # ----- 3. LLM 推理 -----
+                    # 双通道（stream_mode）：流式 async_generate 逐 token 事件（默认，
+                    # chat SSE 订阅者）；非流式 generate() 一次拿完整 StreamResult（后台
+                    # 子 Agent 无人订阅，Phase C）。两者最终填同一 stream_result → 下游
+                    # 分支逻辑全复用（对齐 OpenAI run()/run_streamed() 同一 agent loop）。
                     stream_result = StreamResult()
-
-                    async for event in self._llm.async_generate(
-                        messages=messages,
-                        tools=tool_defs,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        result=stream_result,
-                        cancel_event=cancel_event,
-                    ):
-                        yield event
+                    if stream_mode:
+                        async for event in self._llm.async_generate(
+                            messages=messages,
+                            tools=tool_defs,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            result=stream_result,
+                            cancel_event=cancel_event,
+                        ):
+                            yield event
+                    else:
+                        async for event in self._llm_round_non_streaming(
+                            stream_result,
+                            messages,
+                            tool_defs,
+                            temperature,
+                            max_tokens,
+                        ):
+                            yield event
+                        # 非流式轮末 cancel 补查：generate() 无法在调用中观察 cancel
+                        # （无 chunk 级中断）→ 返回后补查一次，对齐 OpenAI after_turn 轮次
+                        # 边界语义。置于 usage 累计前：被取消的轮不累计 usage——与流式取消
+                        # 一致（流式中断发生在完成前，整流器亦未产出完整 usage）。
+                        if cancel_event is not None and cancel_event.is_set():
+                            async for event in self._finalize_cancelled(
+                                stream_result, iteration, total_usage
+                            ):
+                                yield event
+                            return
 
                     last_result = stream_result
                     # 累计 token 用量
@@ -545,6 +584,62 @@ class ReActStrategy:
                 yield event
 
             return
+
+    async def _llm_round_non_streaming(
+        self,
+        stream_result: StreamResult,
+        messages: list[dict],
+        tool_defs: list[dict] | None,
+        temperature: float,
+        max_tokens: int,
+    ) -> AsyncGenerator[str]:
+        """非流式单轮 LLM：generate() 一次拿完整 StreamResult，合成整条 SSE 事件。
+
+        契约映射（对齐流式整流器的可观测语义，工业实证见 ADR stream-channel）：
+        - generate() 返回 None（可恢复错误重试耗尽）→ 等价整流器「放弃」：置
+          stream_result.error + error 事件 → 主循环 LLM_FAILED 分发（不误判空输出）。
+        - generate() 抛 AppError（共享 AppError 树：LLMAPIError 4xx/认证/校验 与熔断
+          CircuitBreakerOpenError 均在内）→ 等价整流器 create 失败：同样折算
+          LLM_FAILED（流式路径此情形从不走 UNKNOWN；熔断被本分支捕获 → 两通道一致归 LLM_FAILED）。
+        - AppError 树外异常（编程错误）不在此吞 → 冒泡外层 except → UNKNOWN。
+        - 成功 → 字段就地填回 stream_result + 整条 reasoning（先）→ message（后）
+          事件（协议与 async_generate 逐 chunk 一致；空串不产事件对齐整流）。
+        """
+        try:
+            result = await self._llm.generate(
+                messages=messages,
+                tools=tool_defs,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                model_key="main",  # 显式 main 对齐 async_generate 默认，勿用 generate 默认 "fast"
+            )
+        except AppError as e:
+            exc_text = str(e)[:500]  # 对齐整流器错误截断上限
+            stream_result.error = exc_text
+            yield build_error_event(f"LLM 调用失败: {exc_text}")
+            return
+        if result is None:
+            msg = "非流式调用可恢复错误重试耗尽（详见 LLM 日志）"
+            stream_result.error = msg
+            yield build_error_event(f"LLM 调用失败: {msg}")
+            return
+        # 成功：generate() 返回独立 StreamResult（字段与流式整流合并后同构——
+        # content/reasoning_content/has_reasoning/finish_reason/tool_calls/usage/refusal）
+        for key in (
+            "content",
+            "reasoning_content",
+            "has_reasoning",
+            "finish_reason",
+            "tool_calls",
+            "usage",
+            "refusal",
+        ):
+            setattr(stream_result, key, getattr(result, key))
+        # 事件合成：reasoning 先 message（对齐 thinking 模型产出序）；空串不产事件
+        if result.reasoning_content:
+            yield build_reasoning_event(result.reasoning_content)
+        if result.content:
+            yield build_message_event(result.content)
 
     async def execute_tool_calls(
         self,

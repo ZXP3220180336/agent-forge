@@ -103,6 +103,19 @@
 
 ---
 
+# 2026-09-04 ReAct 流式/非流式 LLM 通道切换（stream_mode）
+
+> Phase C 后台子 Agent 前置：ReAct 支持非流式通道（generate() 一次拿结果）——单循环换 LLM 调用点，非另一套循环（工业实证：OpenAI run/run_streamed 同 agent loop、Claude include_partial_messages 选项式同构）。
+
+- [x] `react.py`：execute 加 `stream_mode: bool = True` + 主循环第 3 步双通道分叉 + `_llm_round_non_streaming` helper（generate None/AppError→LLM_FAILED、非 AppError→UNKNOWN；整条 reasoning/message 合成）+ 非流式轮末 cancel 补查（仅 False 生效）
+- [x] `base.py` AgentContext.stream_mode + `executor.py` _strategy_cycle 透传
+- [x] 测试：test_react_strategy_nonstream.py（11 用例：合成事件+model_key/工具循环/None→LLM_FAILED/cancel 补查/AppError→LLM_FAILED/RuntimeError→UNKNOWN/usage/空输出/reasoning-only/final_answer/双通道参数化）+ test_agent 透传哨兵；全量 799 passed
+- [x] 文档：react.md（签名/流程第 3 步/架构图/边界 #20 非流式通道契约/测试状态/决策表）/ executor.md / agent.md / error_handling.md
+- [x] ADR：`adr/domain/reasoning/2026-09-04-react-stream-channel.md`（新增）+ reasoning-feedback Decision #3 更新（非流式回喂同构，原「非流式不处理」失效）
+- [x] 验证：全量 pytest + verify_alignment
+
+---
+
 # 2026-09-01 Reflection 自查/修正 token 统计 + cost 护栏（benchmark #11 去 ⚠️）
 
 > generate_structured 回传 usage（仿 async_generate result 模式），critique/refine 纳入 token/成本统计 + cost_limiter。
