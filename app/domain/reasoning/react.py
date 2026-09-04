@@ -292,10 +292,10 @@ class ReActStrategy:
                     # 置于每轮 LLM 调用前：快速响应（即使不在 LLM 调用中，如工具执行后）；
                     # 不开始新轮。对齐 OpenAI after_turn 优雅取消语义。
                     if cancel_event is not None and cancel_event.is_set():
-                        async for event in self._finalize_cancelled(
+                        for e in await self._finalize_cancelled(
                             last_result, iteration, total_usage
                         ):
-                            yield event
+                            yield e
                         return
 
                     yield build_info_event(f"第 {iteration} 轮推理")
@@ -341,10 +341,10 @@ class ReActStrategy:
                         # 边界语义。置于 usage 累计前：被取消的轮不累计 usage——与流式取消
                         # 一致（流式中断发生在完成前，整流器亦未产出完整 usage）。
                         if cancel_event is not None and cancel_event.is_set():
-                            async for event in self._finalize_cancelled(
+                            for e in await self._finalize_cancelled(
                                 stream_result, iteration, total_usage
                             ):
-                                yield event
+                                yield e
                             return
 
                     last_result = stream_result
@@ -361,10 +361,10 @@ class ReActStrategy:
                     if self._cost_limiter is not None:
                         exceeded, cost = self._cost_limiter.check(total_usage)
                         if exceeded:
-                            async for event in self._finalize_cost_exceeded(
+                            for e in await self._finalize_cost_exceeded(
                                 stream_result, iteration, total_usage, cost
                             ):
-                                yield event
+                                yield e
                             return
 
                     # ----- 5. LLM 失败（stream_result.error 非空）→ 取消判定 / LLM_FAILED 分发 -----
@@ -374,20 +374,20 @@ class ReActStrategy:
                         # 用户取消（cancel_event 置位，LLM 调用被中断）→ CANCELLED 分发
                         # （不重试——取消是用户意图，重试无意义；取消不参与失败重试计数）
                         if cancel_event is not None and cancel_event.is_set():
-                            async for event in self._finalize_cancelled(
+                            for e in await self._finalize_cancelled(
                                 last_result, iteration, total_usage
                             ):
-                                yield event
+                                yield e
                             return
                         # 连续 LLM 失败重试计数（对齐空输出护栏）：失败轮 +1，
                         # 成功轮清零（见下方）。取消不计数（上方已 return）。
                         self._llm_fail_retries += 1
                         # LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛，
                         # 重试受 max_llm_fail_retries 上限硬终止）
-                        async for event in self._finalize_llm_failed(
+                        for e in await self._finalize_llm_failed(
                             stream_result, iteration, total_usage, max_llm_fail_retries
                         ):
-                            yield event
+                            yield e
                         if self.outcome is not None:
                             return
                         continue  # CONTINUE：重试
@@ -402,10 +402,10 @@ class ReActStrategy:
                         stream_result.refusal
                         or stream_result.finish_reason == "content_filter"
                     ):
-                        async for event in self._finalize_refused(
+                        for e in await self._finalize_refused(
                             stream_result, iteration, total_usage
                         ):
-                            yield event
+                            yield e
                         return
 
                     full_reasoning = stream_result.reasoning_content
@@ -453,10 +453,10 @@ class ReActStrategy:
                             #   避免 tool_calls 为真清零计数后无上限空转）
                             # - 不进 execute_tool_calls 空转。
                             # - 默认 CONTINUE 重试，handler 可 STOP/RAISE。
-                            async for event in self._finalize_protocol_error(
+                            for e in await self._finalize_protocol_error(
                                 full_reasoning, iteration, total_usage
                             ):
-                                yield event
+                                yield e
                             if self.outcome is not None:
                                 return
                             continue  # CONTINUE（默认）：重试下一轮
@@ -475,7 +475,7 @@ class ReActStrategy:
                                 tc["function"]["name"] == _FINAL_ANSWER_TOOL
                                 for tc in stream_result.tool_calls
                             ):
-                                async for event in self._handle_final_answer(
+                                for e in await self._handle_final_answer(
                                     stream_result.tool_calls,
                                     messages,
                                     iteration,
@@ -483,7 +483,7 @@ class ReActStrategy:
                                     total_usage,
                                     full_reasoning,
                                 ):
-                                    yield event
+                                    yield e
                                 if self.outcome is not None:
                                     return
                                 continue  # final_answer CONTINUE：回喂后继续
@@ -499,14 +499,14 @@ class ReActStrategy:
                                 self._stall_count = 1
                                 self._last_action_fp = fp
                             if self._stall_count > max_same_action_turns:
-                                async for event in self._finalize_stalled(
+                                for e in await self._finalize_stalled(
                                     stream_result.tool_calls,
                                     iteration,
                                     total_usage,
                                     full_reasoning,
                                     self._stall_count,
                                 ):
-                                    yield event
+                                    yield e
                                 return
 
                             async for event in self._handle_tool_calls(
@@ -524,28 +524,28 @@ class ReActStrategy:
                             continue
                     elif finish_reason in ("stop", "length") or full_content.strip():
                         # ----- （2）stop / length / 有内容 → 正常结束
-                        self._empty_retries = 0  # 本轮有产出（stop / length / 有内容）→ 空输出连续计数清零；
-                        async for event in self._finalize_stop(
+                        self._empty_retries = 0  # 本轮有产出（stop / length / 有内容）→ 空输出连续计数清零
+                        for e in self._finalize_stop(
                             full_reasoning, full_content, iteration, total_usage
                         ):
-                            yield event
+                            yield e
                         return
                     else:
                         # ----- （3）空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）
-                        self._empty_retries += 1  # 本轮空输出 → 空输出连续计数+1；
-                        async for event in self._handle_empty_output(
+                        self._empty_retries += 1  # 本轮空输出 → 空输出连续计数 +1
+                        for e in await self._handle_empty_output(
                             full_reasoning, iteration, total_usage, max_empty_retries
                         ):
-                            yield event
+                            yield e
                         if self.outcome is not None:
                             return
-                        # CONTINUE（默认）：重试（_handle_empty_output 已 yield 重试信息）
+                        # CONTINUE（默认）：重试（_handle_empty_output 已产出重试信息）
 
                 # ----- 9. 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
-                async for event in self._finalize_max_turns(
+                for e in await self._finalize_max_turns(
                     last_result, max_iterations, total_usage
                 ):
-                    yield event
+                    yield e
 
         except AgentRunError:
             # RAISE 决策的领域错误：不吞，传播到 BaseAgent.run（统一 re-raise），
@@ -560,10 +560,10 @@ class ReActStrategy:
                 return
 
             # 真超时 → 错误分发 + 降级
-            async for event in self._finalize_timeout(
+            for e in await self._finalize_timeout(
                 last_result, iteration, total_usage, max_execution_time
             ):
-                yield event
+                yield e
 
             return
 
@@ -578,10 +578,10 @@ class ReActStrategy:
             # 真异常 → UNKNOWN 分发（默认 STOP，保留 last_result 部分进度 + 证据链）。
             # asyncio.CancelledError / GeneratorExit 是 BaseException，不被本分支捕获
             # → 保持 CANCELLED / 生成器关闭语义不变。
-            async for event in self._finalize_unknown(
+            for ev in await self._finalize_unknown(
                 last_result, iteration, total_usage, e
             ):
-                yield event
+                yield ev
 
             return
 
@@ -761,7 +761,7 @@ class ReActStrategy:
             raise AgentRunError(kind, message, iteration)
         return action
 
-    async def _finalize_outcome(
+    def _finalize_outcome(
         self,
         *,
         success: bool,
@@ -772,12 +772,12 @@ class ReActStrategy:
         error: str | None = None,
         info_message: str | None = None,
         structured: dict | None = None,
-    ) -> AsyncGenerator[str]:
-        """统一收尾：组装 outcome + 产出事件（可选 info + done 恰一次）。
+    ) -> list[str]:
+        """统一收尾：组装 outcome + 返回收尾事件（可选 info + done 恰一次）。
 
         覆盖各终结 / STOP 分支的公共尾段（dispatch 由调用方负责——CONTINUE 语义
         各异：重试 / 回喂 / 忽略）。done 的 iterations / total_tokens 从 outcome 取。
-        原 _build_outcome（统一组装结果载体）已并入本方法——无独立消费方。
+        非 async：无 await，直接组事件列表。
         """
         self.outcome = ReActOutcome(
             success=success,
@@ -790,12 +790,16 @@ class ReActStrategy:
             usage=total_usage or None,
             error=error,
         )
+        events: list[str] = []
         if info_message:
-            yield build_info_event(info_message)
-        yield build_done_event(
-            iterations=self.outcome.iterations,
-            total_tokens=self.outcome.total_tokens,
+            events.append(build_info_event(info_message))
+        events.append(
+            build_done_event(
+                iterations=self.outcome.iterations,
+                total_tokens=self.outcome.total_tokens,
+            )
         )
+        return events
 
     async def _finalize_llm_failed(
         self,
@@ -803,18 +807,19 @@ class ReActStrategy:
         iteration: int,
         total_usage: dict,
         max_llm_fail_retries: int,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛）。
 
-        CONTINUE 重试受 max_llm_fail_retries 上限护栏（对齐空输出）：连续失败超上限
-        后硬终止——即使 handler 返回 CONTINUE 也不继续（终结护栏，防 handler 配置
-        失误 / LLM 持续失败时无限重试烧钱）。
+        返回收尾事件列表；终止与否由主循环据 self.outcome 判定。
+        CONTINUE 重试受 max_llm_fail_retries 上限护栏：连续失败超上限后硬终止——
+        即使 handler 返回 CONTINUE 也不继续（防 handler 配置失误 / LLM 持续失败
+        时无限重试烧钱）。
         """
         # 硬终止分支：先 dispatch（handler 可 RAISE 上抛），STOP/CONTINUE 均终止
         if self._llm_fail_retries > max_llm_fail_retries:
             error = f"连续 LLM 调用失败（{self._llm_fail_retries} 轮），已终止"
             await self._dispatch(AgentErrorKind.LLM_FAILED, error, iteration)
-            async for event in self._finalize_outcome(
+            return self._finalize_outcome(
                 success=False,
                 content=stream_result.content,
                 reasoning=stream_result.reasoning_content,
@@ -822,28 +827,26 @@ class ReActStrategy:
                 total_usage=total_usage,
                 error=error,
                 info_message=error,
-            ):
-                yield event
-            return
+            )
 
         action = await self._dispatch(
             AgentErrorKind.LLM_FAILED, stream_result.error or "", iteration
         )
         if action == AgentErrorAction.CONTINUE:
-            yield build_info_event(
-                f"LLM 失败，按错误处理策略重试: {stream_result.error}"
-            )
-            return
+            return [
+                build_info_event(
+                    f"LLM 失败，按错误处理策略重试: {stream_result.error}"
+                )
+            ]
         # STOP（默认）：短路失败
-        async for event in self._finalize_outcome(
+        return self._finalize_outcome(
             success=False,
             content=stream_result.content,
             reasoning=stream_result.reasoning_content,
             iteration=iteration,
             total_usage=total_usage,
             error=stream_result.error,
-        ):
-            yield event
+        )
 
     async def _handle_final_answer(
         self,
@@ -853,10 +856,11 @@ class ReActStrategy:
         output_schema: dict,
         total_usage: dict,
         full_reasoning: str,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """final_answer 工具：成功提取终止 / 校验失败分发（CONTINUE 回喂）。
 
-        主循环仅在检测到 final_answer 调用时才调用本方法。
+        返回收尾事件列表；主循环仅在检测到 final_answer 调用时调用本方法，
+        终止与否据 self.outcome 判定（成功置位；校验失败 CONTINUE 不置位继续）。
         """
         final_tcs = [
             tc for tc in tool_calls if tc["function"]["name"] == _FINAL_ANSWER_TOOL
@@ -864,7 +868,7 @@ class ReActStrategy:
         structured, err = _extract_final_answer(final_tcs[0], output_schema)
         if structured is not None:
             # 成功：终止循环，结构化进 outcome
-            async for event in self._finalize_outcome(
+            return self._finalize_outcome(
                 success=True,
                 content="",
                 reasoning=full_reasoning.strip(),
@@ -872,9 +876,7 @@ class ReActStrategy:
                 total_usage=total_usage,
                 structured=structured,
                 info_message="已收到结构化最终答案",
-            ):
-                yield event
-            return
+            )
 
         # 校验失败 → 错误分发（默认 CONTINUE 回喂；handler 可终止/上抛）
         fa_msg = f"final_answer 参数{err}"
@@ -883,16 +885,14 @@ class ReActStrategy:
         )
 
         if action == AgentErrorAction.STOP:
-            async for event in self._finalize_outcome(
+            return self._finalize_outcome(
                 success=False,
                 content="",
                 reasoning=full_reasoning.strip(),
                 iteration=iteration,
                 total_usage=total_usage,
                 error="final_answer 参数校验失败（按错误处理策略终止）",
-            ):
-                yield event
-            return
+            )
 
         # CONTINUE（默认）：回喂错误文本，模型下轮自纠
         messages.append(
@@ -913,7 +913,7 @@ class ReActStrategy:
                 "duration": 0.0,
             }
         )
-        yield build_info_event(f"final_answer 校验失败，已回喂: {err}")
+        return [build_info_event(f"final_answer 校验失败，已回喂: {err}")]
 
     async def _handle_tool_calls(
         self,
@@ -969,7 +969,7 @@ class ReActStrategy:
                     raise AgentRunError(kind, fail_msg, iteration)
             for kind, fail_msg, action in decisions:
                 if action == AgentErrorAction.STOP:
-                    async for event in self._finalize_outcome(
+                    for e in self._finalize_outcome(
                         success=False,
                         content="",
                         reasoning=full_reasoning.strip(),
@@ -977,33 +977,32 @@ class ReActStrategy:
                         total_usage=total_usage,
                         error=f"{kind.value}（按错误处理策略终止）: {fail_msg}",
                     ):
-                        yield event
+                        yield e
                     return
             # 全 CONTINUE：工具结果已回喂，继续循环
 
-    async def _finalize_stop(
+    def _finalize_stop(
         self,
         full_reasoning: str,
         full_content: str,
         iteration: int,
         total_usage: dict,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """正常结束（stop/length/有内容）。"""
-        async for event in self._finalize_outcome(
+        return self._finalize_outcome(
             success=bool(full_content.strip()),
             content=full_content.strip(),
             reasoning=full_reasoning.strip(),
             iteration=iteration,
             total_usage=total_usage,
-        ):
-            yield event
+        )
 
     async def _finalize_protocol_error(
         self,
         full_reasoning: str,
         iteration: int,
         total_usage: dict,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """协议异常（finish_reason=tool_calls 但未返回工具调用）→ PARSE_FAILED 分发。
 
         模型声明要调工具却没给出 tool_calls——协议信号不一致（服务端异常/被截断），
@@ -1013,18 +1012,16 @@ class ReActStrategy:
         msg = "finish_reason=tool_calls 但未返回工具调用（协议异常）"
         action = await self._dispatch(AgentErrorKind.PARSE_FAILED, msg, iteration)
         if action == AgentErrorAction.CONTINUE:
-            yield build_info_event(f"{msg}，按错误处理策略重试")
-            return
+            return [build_info_event(f"{msg}，按错误处理策略重试")]
         # STOP（默认）：终止（error 记录协议异常）
-        async for event in self._finalize_outcome(
+        return self._finalize_outcome(
             success=False,
             content="",
             reasoning=full_reasoning.strip(),
             iteration=iteration,
             total_usage=total_usage,
             error=msg,
-        ):
-            yield event
+        )
 
     async def _handle_empty_output(
         self,
@@ -1032,17 +1029,18 @@ class ReActStrategy:
         iteration: int,
         total_usage: dict,
         max_empty_retries: int,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）。
 
-        连续空输出重试上限：计数超过 max_empty_retries 后硬终止——即使 handler 返回
-        CONTINUE 也不继续（终结护栏，对齐 TIMEOUT / COST_EXCEEDED），防模型空转烧钱。
+        返回收尾事件列表；终止与否由主循环据 self.outcome 判定。
+        连续空输出重试上限：计数超过 max_empty_retries 后硬终止——即使 handler
+        返回 CONTINUE 也不继续（防模型空转烧钱）。
         """
         # 硬终止分支：先 dispatch（handler 可 RAISE 上抛），STOP/CONTINUE 均终止
         if self._empty_retries > max_empty_retries:
             error = f"连续空输出（{self._empty_retries} 轮），已终止"
             await self._dispatch(AgentErrorKind.EMPTY_OUTPUT, error, iteration)
-            async for event in self._finalize_outcome(
+            return self._finalize_outcome(
                 success=False,
                 content="",
                 reasoning=full_reasoning.strip(),
@@ -1050,15 +1048,13 @@ class ReActStrategy:
                 total_usage=total_usage,
                 error=error,
                 info_message=error,
-            ):
-                yield event
-            return
+            )
 
         action = await self._dispatch(
             AgentErrorKind.EMPTY_OUTPUT, "LLM 未生成有效输出", iteration
         )
         if action == AgentErrorAction.STOP:
-            async for event in self._finalize_outcome(
+            return self._finalize_outcome(
                 success=False,
                 content="",
                 reasoning=full_reasoning.strip(),
@@ -1066,12 +1062,10 @@ class ReActStrategy:
                 total_usage=total_usage,
                 error="LLM 未生成有效输出（按错误处理策略终止）",
                 info_message="LLM 未生成有效输出（按错误处理策略终止）",
-            ):
-                yield event
-            return
+            )
 
         # CONTINUE（默认）：重试
-        yield build_info_event("LLM 未生成有效输出，重试")
+        return [build_info_event("LLM 未生成有效输出，重试")]
 
     async def _finalize_terminal(
         self,
@@ -1086,15 +1080,15 @@ class ReActStrategy:
         error: str | None = None,
         info_message: str | None = None,
         structured: dict | None = None,
-    ) -> AsyncGenerator[str]:
-        """终结性护栏统一收尾：dispatch（RAISE 上抛，CONTINUE 忽略）→ 收尾。
+    ) -> list[str]:
+        """终结性护栏统一收尾：dispatch（RAISE 上抛，CONTINUE 忽略）→ 收尾事件列表。
 
         供「CONTINUE 无重试语义」的终结分支（TIMEOUT / COST_EXCEEDED / STALLED /
         MAX_TURNS）复用；可恢复分支（CONTINUE 有重试 / 回喂语义，需先拿 action
         分派）用 _finalize_outcome。
         """
         await self._dispatch(kind, message, iteration)
-        async for event in self._finalize_outcome(
+        return self._finalize_outcome(
             success=success,
             content=content,
             reasoning=reasoning,
@@ -1103,19 +1097,18 @@ class ReActStrategy:
             error=error,
             info_message=info_message,
             structured=structured,
-        ):
-            yield event
+        )
 
     async def _finalize_max_turns(
         self,
         last_result: StreamResult | None,
         max_iterations: int,
         total_usage: dict,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛）。"""
         error = f"已达到最大迭代次数({max_iterations})"
         # STOP（默认）：现有兜底（CONTINUE 循环已耗尽，按 STOP 处理）
-        async for event in self._finalize_terminal(
+        return await self._finalize_terminal(
             AgentErrorKind.MAX_TURNS,
             error,
             max_iterations,
@@ -1125,8 +1118,7 @@ class ReActStrategy:
             total_usage=total_usage,
             error=error,
             info_message=error,
-        ):
-            yield event
+        )
 
     async def _finalize_timeout(
         self,
@@ -1134,11 +1126,11 @@ class ReActStrategy:
         iteration: int,
         total_usage: dict,
         max_execution_time: float | None,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """总时长超时 → 错误分发（默认 STOP 降级；handler 可上抛）。"""
         error = f"ReAct 执行超时（超过 {max_execution_time} 秒）"
         # STOP（默认）：对齐 max_iterations 兜底，用 last_result 组装降级 outcome
-        async for event in self._finalize_terminal(
+        return await self._finalize_terminal(
             AgentErrorKind.TIMEOUT,
             error,
             iteration,
@@ -1148,8 +1140,7 @@ class ReActStrategy:
             total_usage=total_usage,
             error=error,
             info_message=error,
-        ):
-            yield event
+        )
 
     async def _finalize_cost_exceeded(
         self,
@@ -1157,17 +1148,16 @@ class ReActStrategy:
         iteration: int,
         total_usage: dict,
         cost: float,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """累计成本超限 → 错误分发（默认 STOP 停机；handler 可上抛）。
 
-        终结护栏统一经 _finalize_terminal 收尾（dispatch → outcome + info + done）；
         CONTINUE 被忽略（同 TIMEOUT / STALLED），RAISE 由 _dispatch 抛出。
         cost_limiter 为 None 时主循环不进入本方法。
         """
         error = f"ReAct 执行成本超限（累计 ${cost:.4f}）"
         # 用 last_result 组装降级 outcome（有 content 算部分成功）。
         # last_result 在主循环该检查点必非 None（累加在赋值后），None 分支防御性对齐。
-        async for event in self._finalize_terminal(
+        return await self._finalize_terminal(
             AgentErrorKind.COST_EXCEEDED,
             error,
             iteration,
@@ -1177,8 +1167,7 @@ class ReActStrategy:
             total_usage=total_usage,
             error=error,
             info_message=error,
-        ):
-            yield event
+        )
 
     async def _finalize_stalled(
         self,
@@ -1187,10 +1176,9 @@ class ReActStrategy:
         total_usage: dict,
         full_reasoning: str,
         count: int,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """连续相同工具调用超限 → 错误分发（默认 STOP 停机；handler 可上抛）。
 
-        终结护栏统一经 _finalize_terminal 收尾（dispatch → outcome + info + done）；
         CONTINUE 被忽略（同 TIMEOUT / COST_EXCEEDED），RAISE 由 _dispatch 抛出。
         检测点在工具执行前：本方法返回即终止，本轮工具不执行。
         """
@@ -1201,7 +1189,7 @@ class ReActStrategy:
         )
         error = f"连续 {count} 轮相同工具调用（{names}），已终止"
         # 停机组装 outcome（本轮无工具执行，content 空，保留 reasoning）
-        async for event in self._finalize_terminal(
+        return await self._finalize_terminal(
             AgentErrorKind.STALLED,
             error,
             iteration,
@@ -1211,24 +1199,22 @@ class ReActStrategy:
             total_usage=total_usage,
             error=error,
             info_message=error,
-        ):
-            yield event
+        )
 
     async def _finalize_refused(
         self,
         stream_result: StreamResult,
         iteration: int,
         total_usage: dict,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """模型拒答 → 错误分发（默认 STOP；不误判为成功答案、不空转重试）。
 
         显式拒答信号（refusal 字段 / content_filter，LLM-004 原则）。拒答文本
-        截断（LLM-008 基线：拒答常引用触发内容，完整文本不落盘）。复用
-        _finalize_terminal 终结护栏（CONTINUE 忽略，RAISE 由 _dispatch 抛出）。
+        截断（LLM-008 基线：拒答常引用触发内容，完整文本不落盘）。
         """
         reason = stream_result.refusal or "内容安全策略触发（content_filter）"
         error = f"模型拒答: {reason[:200]}"
-        async for event in self._finalize_terminal(
+        return await self._finalize_terminal(
             AgentErrorKind.REFUSED,
             error,
             iteration,
@@ -1238,8 +1224,7 @@ class ReActStrategy:
             total_usage=total_usage,
             error=error,
             info_message=error,
-        ):
-            yield event
+        )
 
     async def _finalize_unknown(
         self,
@@ -1247,14 +1232,13 @@ class ReActStrategy:
         iteration: int,
         total_usage: dict,
         exc: Exception,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """未捕获异常 → 错误分发（默认 STOP；保留部分进度）。
 
         对齐 _finalize_timeout 降级：用 last_result 组装 outcome（保留已执行工具
         证据链 + 部分内容），与 TIMEOUT / COST_EXCEEDED / STALLED 的「部分进度保留」
-        模式一致。复用 _finalize_terminal 终结护栏（CONTINUE 忽略，RAISE 由 _dispatch
-        抛出）。asyncio.CancelledError / GeneratorExit 是 BaseException，不被主循环
-        except Exception 捕获（保持 CANCELLED / 生成器关闭语义）。
+        模式一致。asyncio.CancelledError / GeneratorExit 是 BaseException，不被主
+        循环 except Exception 捕获（保持 CANCELLED / 生成器关闭语义）。
 
         error 脱敏：只保留异常类型名（分类），不拼接异常 message——异常文本可能含
         内部路径 / 参数 / 敏感值 / 堆栈提示，产品可见文本（outcome.error / SSE /
@@ -1262,7 +1246,7 @@ class ReActStrategy:
         """
         _logger.error("Agent 运行异常: %s", exc, exc_info=exc)
         error = f"Agent 运行异常: {type(exc).__name__}"
-        async for event in self._finalize_terminal(
+        return await self._finalize_terminal(
             AgentErrorKind.UNKNOWN,
             error,
             iteration,
@@ -1272,23 +1256,21 @@ class ReActStrategy:
             total_usage=total_usage,
             error=error,
             info_message=error,
-        ):
-            yield event
+        )
 
     async def _finalize_cancelled(
         self,
         last_result: StreamResult | None,
         iteration: int,
         total_usage: dict,
-    ) -> AsyncGenerator[str]:
+    ) -> list[str]:
         """用户取消（cancel_event 置位）→ 错误分发（默认 STOP；保留部分进度）。
 
         优雅取消（对齐 OpenAI after_turn）：轮次边界停止，保留已执行工具证据链 +
-        部分内容（对齐 UNKNOWN / TIMEOUT 部分进度保留模式）。复用 _finalize_terminal
-        终结护栏（CONTINUE 忽略，RAISE 由 _dispatch 抛出）。
+        部分内容（对齐 UNKNOWN / TIMEOUT 部分进度保留模式）。
         """
         error = "Agent 已被取消"
-        async for event in self._finalize_terminal(
+        return await self._finalize_terminal(
             AgentErrorKind.CANCELLED,
             error,
             iteration,
@@ -1298,5 +1280,4 @@ class ReActStrategy:
             total_usage=total_usage,
             error=error,
             info_message=error,
-        ):
-            yield event
+        )

@@ -187,9 +187,11 @@ ReActStrategy.execute()（ReAct 主循环）
 
 ### 支撑方法（_finalize_outcome / _finalize_terminal / _dispatch）
 
-- `_finalize_outcome(*, success, content, reasoning, iteration, total_usage, error, info_message, structured) -> AsyncGenerator[str]`：统一收尾——组装 outcome + 产出事件（可选 info + done 恰一次），供各终结 / STOP 分支复用（dispatch 由调用方负责——CONTINUE 语义各异：重试 / 回喂 / 忽略）
-- `_finalize_terminal(kind, message, iteration, *, success, content, reasoning, total_usage, error, info_message, structured) -> AsyncGenerator[str]`：终结性护栏统一收尾——dispatch（RAISE 上抛，CONTINUE 忽略）→ 复用 `_finalize_outcome`；供 TIMEOUT / COST_EXCEEDED / STALLED / MAX_TURNS / REFUSED / CANCELLED / UNKNOWN 复用
+- `_finalize_outcome(*, success, content, reasoning, iteration, total_usage, error, info_message, structured) -> list[str]`：统一收尾——组装 outcome + 返回收尾事件列表（可选 info + done 恰一次），供各终结 / STOP 分支复用（dispatch 由调用方负责——CONTINUE 语义各异：重试 / 回喂 / 忽略）；普通 def（无 await）
+- `_finalize_terminal(kind, message, iteration, *, success, content, reasoning, total_usage, error, info_message, structured) -> list[str]`：终结性护栏统一收尾——dispatch（RAISE 上抛，CONTINUE 忽略）→ 复用 `_finalize_outcome`；供 TIMEOUT / COST_EXCEEDED / STALLED / MAX_TURNS / REFUSED / CANCELLED / UNKNOWN 复用
 - `_dispatch(kind, message, iteration) -> AgentErrorAction`：错误分发唯一入口——`RAISE` 决策抛 `AgentRunError`，否则返回 action（统一 13 处分发点）
+
+契约约定：收尾/处理分支方法（`_finalize_*` / `_handle_final_answer` / `_handle_empty_output`）为普通或 async 方法，**返回 `list[str]` 收尾事件**（info/done/error，一次性）；主循环 `for e in await X(...): yield e` 转发。仅以下保持 async-generator（逐 token / 逐条实时事件流）：`execute()`（公共入口）、`execute_tool_calls()`（逐工具事件）、`_handle_tool_calls()` / `_llm_round_non_streaming()`（内部转发流式调用）。
 
 ### 工具并行原语（execute_tool_calls）
 
