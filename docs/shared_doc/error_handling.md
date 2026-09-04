@@ -8,19 +8,27 @@
 
 ## 📋 目录
 
-- [核心原则](#核心原则)
-- [异常分类](#异常分类)
-- [分层处理哲学](#分层处理哲学)
-- [LLM 模块异常全景](#llm-模块异常全景)
-- [传播链路（generate / async_generate / structured）](#传播链路generate--async_generate--structured)
-- [关键边界](#关键边界)
-- [async generator 的异常语义](#async-generator-的异常语义)
-- [CancelledError 的约定](#cancellederror-的约定)
-- [配置错误的快速失败](#配置错误的快速失败)
-- [异常自然传播 vs 显式 raise](#异常自然传播-vs-显式-raise)
-- [项目级统一异常体系](#项目级统一异常体系)
-- [检查清单](#检查清单)
-- [相关文档](#相关文档)
+- [异常处理与传播约定](#异常处理与传播约定)
+  - [📋 目录](#-目录)
+  - [核心原则](#核心原则)
+  - [异常分类](#异常分类)
+    - [按「是否可恢复」分三类](#按是否可恢复分三类)
+    - [关键：不可恢复错误必须能穿透到调用方](#关键不可恢复错误必须能穿透到调用方)
+  - [分层处理哲学](#分层处理哲学)
+  - [LLM 模块异常全景](#llm-模块异常全景)
+  - [传播链路（generate / async\_generate / structured）](#传播链路generate--async_generate--structured)
+    - [`generate()` —— 非流式，「可恢复失败返回 None，不可恢复抛异常」契约](#generate--非流式可恢复失败返回-none不可恢复抛异常契约)
+    - [`async_generate()` —— 流式，「错误转事件」契约](#async_generate--流式错误转事件契约)
+    - [`structured.py` —— 业务边界短路](#structuredpy--业务边界短路)
+  - [关键边界](#关键边界)
+  - [async generator 的异常语义](#async-generator-的异常语义)
+  - [CancelledError 的约定](#cancellederror-的约定)
+  - [配置错误的快速失败](#配置错误的快速失败)
+  - [异常自然传播 vs 显式 raise](#异常自然传播-vs-显式-raise)
+  - [项目级统一异常体系](#项目级统一异常体系)
+    - [异常清单](#异常清单)
+  - [检查清单](#检查清单)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -116,6 +124,7 @@
   ├─ 迭代中断（阶段2）     → except Exception → 可整流则重试，不可整流 yield build_error_event(f"流式响应中断: {e!s}") + return
   └─ 硬取消（CancelledError）→ finally 兜底 cancel reservation，异常向上传播
 ```
+
 > 整流/错误事件/finally 兜底逻辑封装在 `StreamingRectifier`（见 [streaming_rectifier.md](../integration_doc/llm_doc/streaming_rectifier.md)），`async_generate` 只做编排。
 
 **关键**：async_generate 是 **async generator**，异常被捕获后**不是静默吞掉**，而是转成 SSE 错误事件产出。错误通过事件流（`build_error_event`）传达给调用方，错误文案携带异常信息。调用方（Agent 层）收到错误事件即可感知失败。
