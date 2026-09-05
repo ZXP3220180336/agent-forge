@@ -295,6 +295,31 @@ class PlannerStrategy:
         completed: set[int] = set()  # 成功步骤 id（depends_on 守卫）
         tool_catalog = self._tool_catalog()
 
+        # 每步/兜底的 ReAct 子跑：护栏参数透传本 execute，仅输入（任务文本 + 消息）不同。
+        # 收敛为局部闭包，避免两处 19 行参数重复（改护栏只需改一处）。
+        def _run_react(text: str, sub_messages: list[dict]) -> AsyncGenerator[str]:
+            """跑一次 ReAct 子跑：返回未迭代的 async-generator（抑制中间 done 由调用方
+            _passthrough 处理）；剩余预算每次调用现算（_remaining_time）。"""
+            return self._react.execute(
+                text,
+                sub_messages,
+                max_iterations=max_iterations,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                max_execution_time=self._remaining_time(
+                    start_time, max_execution_time
+                ),
+                max_context_rounds=max_context_rounds,
+                max_context_tokens=max_context_tokens,
+                max_empty_retries=max_empty_retries,
+                max_llm_fail_retries=max_llm_fail_retries,
+                max_same_action_turns=max_same_action_turns,
+                tool_timeout=tool_timeout,
+                tool_max_retries=tool_max_retries,
+                stream_mode=stream_mode,
+                cancel_event=cancel_event,
+            )
+
         # ── 阶段 A：规划（发起付费调用前统一终止/成本护栏）──
         aborted, abort_reason = self._should_abort(
             cancel_event, start_time, max_execution_time
@@ -334,25 +359,7 @@ class PlannerStrategy:
             suffix = "（STOP）" if plan_action == AgentErrorAction.STOP else ""
             yield build_info_event(f"规划失败{suffix}，降级为直接 ReAct")
             async for event in self._passthrough(
-                self._react.execute(
-                    user_input,
-                    list(messages),
-                    max_iterations=max_iterations,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    max_execution_time=self._remaining_time(
-                        start_time, max_execution_time
-                    ),
-                    max_context_rounds=max_context_rounds,
-                    max_context_tokens=max_context_tokens,
-                    max_empty_retries=max_empty_retries,
-                    max_llm_fail_retries=max_llm_fail_retries,
-                    max_same_action_turns=max_same_action_turns,
-                    tool_timeout=tool_timeout,
-                    tool_max_retries=tool_max_retries,
-                    stream_mode=stream_mode,
-                    cancel_event=cancel_event,
-                )
+                _run_react(user_input, list(messages))
             ):
                 yield event
             rb = self._react.outcome
@@ -435,25 +442,7 @@ class PlannerStrategy:
             yield build_info_event(f"执行步骤 {step['id']}: {step['description'][:60]}")
             sub_messages = self._step_messages(goal, step, executed, messages)
             async for event in self._passthrough(
-                self._react.execute(
-                    step["description"],
-                    sub_messages,
-                    max_iterations=max_iterations,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    max_execution_time=self._remaining_time(
-                        start_time, max_execution_time
-                    ),
-                    max_context_rounds=max_context_rounds,
-                    max_context_tokens=max_context_tokens,
-                    max_empty_retries=max_empty_retries,
-                    max_llm_fail_retries=max_llm_fail_retries,
-                    max_same_action_turns=max_same_action_turns,
-                    tool_timeout=tool_timeout,
-                    tool_max_retries=tool_max_retries,
-                    stream_mode=stream_mode,
-                    cancel_event=cancel_event,
-                )
+                _run_react(step["description"], sub_messages)
             ):
                 yield event
             sub = self._react.outcome
@@ -739,10 +728,11 @@ class PlannerStrategy:
         error: str = "",
         info: str = "",
     ) -> list[str]:
-        """部分汇总降级：有成功步尝试结构化汇总，None → 纯文本；无成功步 → 纯失败。
+        """部分汇总降级收尾：组装纯文本拼装（_plain_summary）的最终 outcome。
 
-        同步方法内无法 await _summarize —— 实际部分汇总在 execute 调用点处理，
-        本方法仅组装最终 outcome（用于无成功步 / 无需再付费的场景）。
+        供调用方已判定「不发起新付费调用」的收尾（取消 / 成本超限 / 无成功步等）：
+        纯文本拼装保留已完成步骤可见产出；有成功步算部分成功，否则失败。
+        需先尝试结构化汇总的路径由调用方 await _summarize 后自行决定。
         """
         plain = self._plain_summary(executed)
         return self._finalize(
