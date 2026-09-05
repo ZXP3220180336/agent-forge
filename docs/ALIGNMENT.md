@@ -1,6 +1,6 @@
 # 代码模块 ↔ 文档 ↔ 测试 对齐表
 
-> 更新日期：2026-09-04
+> 更新日期：2026-09-05
 > 原则：**代码树是唯一事实来源**。每个代码模块在此登记状态、对应文档与测试；新增/移动/删除模块时三处同步。
 > 状态徽标：✅ 代码 + 文档 + 测试齐全 ｜ 🔶 已实现但文档或测试不全 ｜ ⬜ 空壳待实现。
 > 本表由 `scripts/verify_alignment.py` 校验，所有路径相对仓库根。
@@ -28,7 +28,7 @@
 | app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | 并发闸门 |
 | app/domain/agent/base.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | Agent 基类与数据定义 |
 | app/domain/agent/executor.py | ✅ | docs/domain_doc/agent_doc/executor.md | tests/unit/test_agent.py | ReActAgent 桥接（ReActStrategy 到 BaseAgent 生命周期） |
-| app/domain/agent/planner.py | ⬜ | docs/domain_doc/agent_doc/agent.md | (无) | 空文件，PlannerAgent 待实现 |
+| app/domain/agent/planner.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_planner_agent.py | PlannerAgent 桥接（PlannerStrategy 到 BaseAgent 生命周期，plan/steps_executed/replan_rounds/degraded 进 metadata） |
 | app/domain/agent/reflection.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_reflection_agent.py | ReflectionAgent 桥接（ReflectionStrategy 到 BaseAgent 生命周期） |
 | app/domain/memory/base.py | ⬜ | docs/domain_doc/memory_doc/memory.md | tests/unit/test_memory.py | 空壳；test_memory.py 空文件 |
 | app/domain/memory/long_term.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
@@ -41,12 +41,13 @@
 | app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议（含 calculate_cost / count_*）；随 Agent/LLM/成本测试覆盖 |
 | app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
 | app/domain/prompts/base.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
-| app/domain/prompts/manager.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 已实现零引用；待接线/测试 |
-| app/domain/prompts/templates/planning.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
-| app/domain/prompts/templates/system.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
-| app/domain/prompts/templates/tools.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
+| app/domain/prompts/manager.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | PromptManager 组装入口（system/reflection/planning builder + 证据/步骤序列化） |
+| app/domain/prompts/templates/planning.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Planner 规划/重规划/汇总提示词模板 |
+| app/domain/prompts/templates/system.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | SYSTEM_PROMPT 系统提示词 |
+| app/domain/prompts/templates/tools.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | TOOL_FORMAT_PROMPT 工具格式提示词 |
 | app/domain/prompts/templates/reflection.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_reflection.py | Reflection 自查/修正提示词模板 |
 | app/domain/reasoning/chain_of_thought.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
+| app/domain/reasoning/planner.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 策略实现（PlannerStrategy + PlannerOutcome，Plan-then-Execute 三阶段：规划→逐步骤执行→汇总，每步复用 ReAct） |
 | app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现（ReActStrategy + ReActOutcome，含流式/非流式双通道 stream_mode；非流式另见 test_react_strategy_nonstream.py） |
 | app/domain/reasoning/reflection.py | ✅ | docs/domain_doc/reasoning_doc/reflection.md | tests/unit/test_reflection.py | Reflection 策略实现（ReflectionStrategy + ReflectionOutcome） |
 | app/infrastructure/database.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，DB 由 container 直管 |

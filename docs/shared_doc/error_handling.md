@@ -262,7 +262,7 @@ AppError（根，code 默认 INTERNAL）
 
 > **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。`LLMAPIError` 由集成层 `llm_service.generate` 边界经 `normalize_transport_error`（retry.py）包装 openai 不可恢复异常产生（`raise ... from e` 保留原始异常）。
 > **对外边界**：`app/api/middleware/error_handler.py` 把 `AppError` 翻译为 HTTP 状态 + 统一 `{code, message, details}` 信封（业务码与 HTTP 状态解耦，映射表见该模块）——API 层不抛 `HTTPException`，全走统一树。
-> **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类，契约与实现同属 `app/integration/llm/errors.py`）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，ErrorHandlerRegistry 消费）。
+> **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类，契约与实现同属 `app/integration/llm/errors.py`）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，14 类：终结性默认 STOP / 可恢复默认 CONTINUE，ErrorHandlerRegistry 消费；含 Reflection `CRITIQUE_FAILED` 与 Planner `PLAN_FAILED` 两个策略专属 kind）。
 
 ---
 

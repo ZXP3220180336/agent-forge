@@ -1,3 +1,15 @@
+# 2026-09-05 Planner Strategy（Plan-then-Execute 单 Agent 编排）+ PlannerAgent 桥接落地
+
+> 产品主链路第一步「主 Agent 拆分」原语落地：PlannerStrategy（规划 → 逐步骤执行 → 证据链汇总）两层结构 + PlannerAgent 桥接 + planning 提示词完整化。
+
+- [x] 实现：`reasoning/planner.py`（PlannerStrategy + PlannerOutcome + PLAN_SCHEMA/PLAN_STEP_SCHEMA/REPLAN_SCHEMA/RESULT_SCHEMA + execute 三阶段 + replan 循环 + best-effort 降级 + PLAN_FAILED 分发）+ `agent/planner.py`（PlannerAgent 桥接，plan/steps_executed/replan_rounds/degraded 进 metadata；replan 预算复用 ctx.max_refine_rounds）+ planning 三模板（PLANNING/REPLAN/SUMMARIZE）+ manager 三 builder（_serialize_step_results）+ AgentErrorKind.PLAN_FAILED（13→14 类，默认 CONTINUE）
+- [x] 测试：test_planner 13 + test_planner_agent 3 + test_prompts 5 通过
+- [x] 文档：planner.md / planner_benchmark.md 新建；reasoning.md / agent.md / prompts.md / error_handling.md 增量；ALIGNMENT / domain-layer-plan-tmp 登记更新
+- [x] ADR：`adr/domain/reasoning/2026-09-05-planner-strategy.md`（两层结构「生命周期依赖」分界 / 每步复用 ReAct execute 取代 execute_tool_calls / replan 取舍与 max_refine_rounds 复用 / PLAN_FAILED / 每步上下文隔离 / 规划器工具定稿）
+- [x] 验证：verify_alignment + 全量 pytest
+
+---
+
 # 2026-09-01 Reflection P4 次要项：explicit_abstention 必填 + 单次使用声明 + max_tokens 评估
 
 > 评审遗留 P4 三项：required 缺 explicit_abstention（产品「显式放弃」软契约）、实例非协程安全未声明、critique/refine 未传 max_tokens。

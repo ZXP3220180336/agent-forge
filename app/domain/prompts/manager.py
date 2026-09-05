@@ -4,6 +4,7 @@
 
 import json
 
+from .templates.planning import PLANNING_PROMPT, REPLAN_PROMPT, SUMMARIZE_PROMPT
 from .templates.reflection import CRITIQUE_PROMPT, REFINE_PROMPT
 from .templates.system import SYSTEM_PROMPT
 from .templates.tools import TOOL_FORMAT_PROMPT
@@ -28,6 +29,28 @@ def _serialize_evidence(evidence: list[dict]) -> str:
         lines.append(
             f"[{rec.get('tool')}] params={params} result={result} "
             f"success={rec.get('success')}"
+        )
+    return "\n".join(lines)[:_EVIDENCE_MAX_CHARS]
+
+
+def _serialize_step_results(executed: list[dict]) -> str:
+    """步骤执行记录序列化为 replan/summarize 可见文本。
+
+    每条 = 编号 + 成败 + 产出摘要 + 工具记录引用；单条截断 + 总量截断防膨胀。
+    """
+    lines: list[str] = []
+    for rec in executed:
+        summary = str(rec.get("summary") or rec.get("content") or "")[
+            :_EVIDENCE_RESULT_MAX_CHARS
+        ]
+        status = "成功" if rec.get("success") else f"失败({rec.get('error', '')})"
+        tools = ",".join(
+            str(tc.get("function", {}).get("name", ""))
+            for tc in rec.get("tool_calls", [])
+        )
+        lines.append(
+            f"[步骤 {rec.get('id')}] {str(rec.get('description', ''))[:120]}"
+            f" → {status} 产出={summary} 工具={tools or '无'}"
         )
     return "\n".join(lines)[:_EVIDENCE_MAX_CHARS]
 
@@ -65,4 +88,37 @@ class PromptManager:
             evidence=_serialize_evidence(evidence),
             draft=json.dumps(draft, ensure_ascii=False),
             issues=json.dumps(issues, ensure_ascii=False),
+        )
+
+    @staticmethod
+    def build_planning_prompt(user_input: str, tool_descriptions: str) -> str:
+        """构建 Planner 规划指令：用户目标 + 工具目录（introspection 文本，不入 tools）。"""
+        return PLANNING_PROMPT.format(
+            goal=user_input,
+            tool_descriptions=tool_descriptions,
+        )
+
+    @staticmethod
+    def build_planning_replan_prompt(
+        goal: str,
+        tool_descriptions: str,
+        executed: list[dict],
+        failed_step: dict,
+        error: str,
+    ) -> str:
+        """构建 Planner 重规划指令：已完成步骤 + 失败步骤 + 原因。"""
+        return REPLAN_PROMPT.format(
+            goal=goal,
+            tool_descriptions=tool_descriptions,
+            executed=_serialize_step_results(executed),
+            failed_step=json.dumps(failed_step, ensure_ascii=False),
+            error=error,
+        )
+
+    @staticmethod
+    def build_planning_summarize_prompt(goal: str, executed: list[dict]) -> str:
+        """构建 Planner 汇总指令：各步骤结果 → 证据链报告。"""
+        return SUMMARIZE_PROMPT.format(
+            goal=goal,
+            step_results=_serialize_step_results(executed),
         )

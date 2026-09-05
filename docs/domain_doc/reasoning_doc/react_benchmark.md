@@ -129,7 +129,7 @@
 按第一硬性要求「服务主链路（拆分 → 并行排查 → 证据链报告）」检验：
 
 - **P0（工具失败回喂）直接踩证据链**：良率工程师需要在根因报告里看到「哪个工具调用失败、为什么失败」；工具失败空串回喂使主 Agent 在分支排查中无法自愈——P0 优先级成立。
-- **架构层（策略抽离、原语复用）间接推进主链路**：`execute_tool_calls` 供 PlannerAgent / ReflectionAgent 复用，为多 Agent 编排铺路。
+- **架构层（策略抽离、原语复用）间接推进主链路**：`ReActStrategy.execute` 抽离供 ReActAgent / ReflectionAgent / PlannerAgent 复用（Reflection 收集 / Planner 每步执行均复用完整 execute），为多 Agent 编排铺路。
 - **增强项（guardrail / compaction / 断点续跑）不服务当前单用户本地场景，当前不做是对的**——符合项目「不做或预留」的降级原则。
 
 ---

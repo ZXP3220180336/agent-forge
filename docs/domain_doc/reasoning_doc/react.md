@@ -46,7 +46,7 @@
 ## 设计目标
 
 1. **原子推理算法**：`execute()` 承载完整 ReAct 主循环，被 agent/ 层编排调用——编排职责（生命周期 / 状态 / 结果组装）在 agent/，算法在本模块
-2. **可复用工具原语**：`execute_tool_calls()` 独立成原语（并行执行 + 保序），供 ReAct 循环自身与 PlannerAgent 执行阶段 / ReflectionAgent 收集阶段复用
+2. **可复用工具原语**：`execute_tool_calls()` 独立成原语（并行执行 + 保序），供 ReAct 循环自身执行工具、并经 `ReActAgent._execute_tool_calls` 转发保持既有测试兼容；Reflection / Planner 的收集 / 执行阶段复用完整 `ReActStrategy.execute`（而非裸原语，见 [reflection.md](reflection.md) / [planner.md](planner.md)）
 3. **错误处理横切**：各终止 / 可恢复错误经 `ErrorHandlerRegistry` 按 kind 分发（CONTINUE / STOP / RAISE），默认行为 = 现有逻辑，调用方可注册覆盖
 4. **结构化最终答案**：`output_schema` 启用时注入 final_answer 工具，模型最后调用提交 schema 约束结果并终止循环（兼作终止机制，无额外 LLM 调用）
 5. **上下文预算护栏**：模型下次调用前经 `ContextBudgetPort` 裁剪（轮次 + token 双层），防上下文膨胀
@@ -266,7 +266,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 | --- | --- | --- |
 | `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
 | `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, output_schema=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome`。`stream_mode`：True=流式 async_generate（默认，逐 token）；False=非流式 generate()（整条 reasoning/message 事件，后台子 Agent 无人订阅场景，Phase C） |
-| `execute_tool_calls(tool_calls, messages, iteration, tool_timeout=None, tool_max_retries=None) -> AsyncGenerator[str]` | 异步生成器 | 工具并行执行原语（gather 保序 + 事件产出 + 记录；`tool_timeout`/`tool_max_retries` 透传 ToolGateway，None=走执行器全局）；独立使用场景：PlannerAgent 执行阶段 / ReflectionAgent 收集阶段 |
+| `execute_tool_calls(tool_calls, messages, iteration, tool_timeout=None, tool_max_retries=None) -> AsyncGenerator[str]` | 异步生成器 | 工具并行执行原语（gather 保序 + 事件产出 + 记录；`tool_timeout`/`tool_max_retries` 透传 ToolGateway，None=走执行器全局）；现独立入口：`ReActAgent._execute_tool_calls` 转发（既有测试兼容）。Reflection / Planner 的收集 / 执行阶段复用完整 `execute`（[reflection.md](reflection.md) / [planner.md](planner.md)） |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
 
 **最小调用示例**：

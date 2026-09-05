@@ -40,6 +40,7 @@ class AgentErrorKind(StrEnum):
         PARSE_FAILED         参数 JSON 解析失败 → 回喂模型自纠
         STRUCTURED_INVALID   final_answer 参数校验失败 → 回喂模型自纠
         CRITIQUE_FAILED      Reflection 自查/修正失败 → 降级采用最近稿（Reflection 专属）
+        PLAN_FAILED          Planner 规划阶段失败 → 降级 ReAct 兜底（Planner 专属）
     """
 
     LLM_FAILED = "LLM_FAILED"
@@ -55,6 +56,7 @@ class AgentErrorKind(StrEnum):
     PARSE_FAILED = "PARSE_FAILED"
     STRUCTURED_INVALID = "STRUCTURED_INVALID"
     CRITIQUE_FAILED = "CRITIQUE_FAILED"
+    PLAN_FAILED = "PLAN_FAILED"
 
 
 class AgentErrorAction(StrEnum):
@@ -120,6 +122,7 @@ _DEFAULT_ACTIONS: dict[AgentErrorKind, AgentErrorAction] = {
     AgentErrorKind.PARSE_FAILED: AgentErrorAction.CONTINUE,
     AgentErrorKind.STRUCTURED_INVALID: AgentErrorAction.CONTINUE,
     AgentErrorKind.CRITIQUE_FAILED: AgentErrorAction.CONTINUE,
+    AgentErrorKind.PLAN_FAILED: AgentErrorAction.CONTINUE,
 }
 
 

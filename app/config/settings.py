@@ -155,7 +155,7 @@ class Settings(BaseSettings):
     agent_max_iterations: int = 10
     agent_timeout: int = 300  # 5分钟
     agent_streaming: bool = True
-    agent_max_refine_rounds: int = 2  # Reflection 报告生成最大尝试轮数（初稿 1 + 修正上限 max_refine_rounds-1）
+    agent_max_refine_rounds: int = 2  # 修复尝试上限：Reflection 修正（初稿 1 + 修正上限 max_refine_rounds-1）与 Planner replan（步骤失败重规划预算）共用
     agent_max_context_rounds: int = 8  # 上下文预算：Agent 循环保留最近轮数（0/None 走 AgentContext 默认）
     agent_max_empty_retries: int = 2  # 连续空输出重试上限：空输出最多重试 N 次，第 N+1 次仍空输出则终止（0=首次空输出即终止）
     agent_max_llm_fail_retries: int = 2  # LLM 失败重试上限：LLM 调用失败最多重试 N 次，第 N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏，防 handler CONTINUE 无限重试烧钱）

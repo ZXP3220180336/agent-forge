@@ -48,7 +48,7 @@ app/domain/
 ├── agent/                     ← Agent 编排层（策略编排 + 生命周期）
 │   ├── base.py                ← AgentState / AgentContext / AgentResult / BaseAgent
 │   ├── executor.py            ← ReActAgent（桥接 reasoning/react.py 的 ReActStrategy）
-│   ├── planner.py             ← PlannerAgent（Plan-then-Execute，预留）
+│   ├── planner.py             ← PlannerAgent（桥接 reasoning/planner.py 的 PlannerStrategy，Plan-then-Execute）
 │   └── reflection.py       ← ReflectionAgent（桥接 reasoning/reflection.py 的 ReflectionStrategy）
 ├── memory/                    ← 记忆系统（预留）
 │   ├── base.py / working.py / short_term.py / long_term.py / memory_service.py
@@ -64,7 +64,8 @@ app/domain/
 │   └── templates/             ← system.py / tools.py / planning.py 模板
 └── reasoning/                 ← 原子推理策略库
     ├── react.py               ← ReActStrategy（✅）
-    ├── reflection.py          ← Reflection 策略（预留）
+    ├── reflection.py          ← ReflectionStrategy（✅）
+    ├── planner.py             ← PlannerStrategy（✅）
     └── chain_of_thought.py    ← CoT 策略（预留）
 ```
 
@@ -99,12 +100,13 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | --- | --- | --- | --- |
 | Agent | base.py | ✅ | BaseAgent / AgentContext / AgentResult / AgentState |
 | Agent | executor.py | ✅ | ReActAgent（桥接 ReActStrategy，见 [executor.md](agent_doc/executor.md)） |
-| Agent | planner.py | ⬜ | PlannerAgent（预留） |
+| Agent | planner.py | ✅ | PlannerAgent（桥接 PlannerStrategy，见 [agent.md](agent_doc/agent.md)） |
 | Agent | reflection.py | ✅ | ReflectionAgent（桥接 ReflectionStrategy，见 [executor.md](agent_doc/executor.md) 同范式） |
-| Prompts | base.py / manager.py / templates/ | 🔶 | 提示词模板 + 管理器（待补测试） |
+| Prompts | manager.py + templates/system·tools·reflection·planning | ✅ | 提示词模板 + 管理器 builder（test_prompts；见 [prompts.md](prompts_doc/prompts.md)） |
 | Memory | base / working / short_term / long_term / memory_service | ⬜ | 三层记忆（预留） |
 | Reasoning | react.py | ✅ | ReActStrategy（见 [react.md](reasoning_doc/react.md)） |
 | Reasoning | reflection.py | ✅ | ReflectionStrategy（见 [reflection.md](reasoning_doc/reflection.md)） |
+| Reasoning | planner.py | ✅ | PlannerStrategy（见 [planner.md](reasoning_doc/planner.md)） |
 | Reasoning | chain_of_thought | ⬜ | CoT 策略（预留） |
 | Ports | llm_gateway / tool_gateway / context_budget / cost_limiter / embedding_port | ✅ | 领域端口契约（依赖倒置，见 [ports.md](ports_doc/ports.md)） |
 
@@ -120,7 +122,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | --- | --- | --- | --- |
 | `BaseAgent` | base.py | 生命周期骨架（run/状态/事件路由/结果）+ 数据契约 | ✅ |
 | `ReActAgent` | executor.py | 桥接 ReActStrategy 到 BaseAgent 生命周期 | ✅ |
-| `PlannerAgent` | planner.py | Plan-then-Execute 编排（规划→执行→汇总） | ⬜ 预留 |
+| `PlannerAgent` | planner.py | Plan-then-Execute 编排（规划→执行→汇总，桥接 PlannerStrategy） | ✅ |
 | `ReflectionAgent` | reflection.py | Reflection 编排（生成→自查→修正） | ✅ |
 
 ---

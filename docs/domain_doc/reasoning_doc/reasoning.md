@@ -1,9 +1,9 @@
 # 推理策略模块对外接口文档
 
 > **对应代码**：`app/domain/reasoning/`
-> **更新日期**：2026-08-27
+> **更新日期**：2026-09-05
 > **文档定位**：推理策略模块对外接口文档——策略类契约 + 内部组件导航；服务对象为 agent/ 层编排（ReActAgent / PlannerAgent / ReflectionAgent）
-> **实现状态**：🔶 部分实现（react.py ✅；reflection.py ✅；chain_of_thought 预留）
+> **实现状态**：✅ 已实现（react.py ✅；reflection.py ✅；planner.py ✅；chain_of_thought 预留）
 
 ---
 
@@ -32,15 +32,17 @@
 
 - **ReAct**：推理 ↔ 工具循环（已实现）
 - **Reflection**：生成 → 自查 → 修正（已实现，证据链语义自查）
+- **Planner**：Plan-then-Execute 单 Agent 编排（已实现：规划 → 逐步骤执行 → 证据链汇总）
 - **CoT**：纯推理引导（预留）
 
 ### 模块结构
 
 ```text
 app/domain/reasoning/
-├── __init__.py          # 子包导出（ReActStrategy / ReActOutcome）
+├── __init__.py          # 子包导出（ReAct / Reflection / Planner 策略 + Outcome）
 ├── react.py             # ReAct 推理（ReActStrategy + ReActOutcome，✅）
 ├── reflection.py        # Reflection 推理（ReflectionStrategy + ReflectionOutcome，✅）
+├── planner.py           # Planner 推理（PlannerStrategy + PlannerOutcome，✅）
 └── chain_of_thought.py  # CoT 推理（预留）
 ```
 
@@ -54,8 +56,9 @@ app/domain/reasoning/
 
 ```text
 BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
-    ├── ReActStrategy（✅ 本模块 react.py；executor.py 桥接）
-    ├── Reflection（预留，本模块）
+    ├── ReActStrategy（✅ react.py；executor.py 桥接）
+    ├── ReflectionStrategy（✅ reflection.py；agent/reflection.py 桥接）
+    ├── PlannerStrategy（✅ planner.py；agent/planner.py 桥接）
     ├── Chain-of-Thought（预留，本模块）
     └── ...
 ```
@@ -72,9 +75,10 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 | --- | --- | --- | --- |
 | `ReActStrategy` | `execute(...)` / `execute_tool_calls(...)` + `outcome` | ✅ | 完整契约见 [react.md](react.md) |
 | `ReflectionStrategy` | `execute(...)` + `outcome` | ✅ | 完整契约见 [reflection.md](reflection.md) |
+| `PlannerStrategy` | `execute(...)` + `outcome` | ✅ | 完整契约见 [planner.md](planner.md) |
 | CoT | 预留 | ⬜ | — |
 
-被编排方式：`ReActAgent._strategy_cycle()` 委托 `ReActStrategy.execute()`；`execute_tool_calls()` 供 PlannerAgent 执行阶段 / ReflectionAgent 收集阶段复用；`ReflectionAgent._strategy_cycle()` 委托 `ReflectionStrategy.execute()`。
+被编排方式：`ReActAgent._strategy_cycle()` 委托 `ReActStrategy.execute()`；`ReflectionAgent._strategy_cycle()` 委托 `ReflectionStrategy.execute()`；`PlannerAgent._strategy_cycle()` 委托 `PlannerStrategy.execute()`（其每步执行再复用内部 `ReActStrategy.execute` 做被步骤约束的 agent 循环，见 [planner.md](planner.md)）。`execute_tool_calls()` 是无护栏的裸工具并行原语，保留作 ReActAgent 转发入口（向后兼容），不再是 Planner 执行阶段入口。
 
 ---
 
@@ -84,6 +88,7 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 | --- | --- | --- | --- |
 | [react.md](react.md) | `react.py` | ReAct 推理（ReActStrategy + ReActOutcome） | ✅ |
 | [reflection.md](reflection.md) | `reflection.py` | Reflection 推理（生成 → 自查 → 修正） | ✅ |
+| [planner.md](planner.md) | `planner.py` | Planner 推理（规划 → 逐步骤执行 → 汇总，Plan-then-Execute） | ✅ |
 | chain_of_thought.py | `chain_of_thought.py` | CoT 推理（纯推理引导） | ⬜ 预留 |
 
 ---
@@ -106,8 +111,9 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 
 ## 相关文档
 
-- [ReActStrategy 策略组件](react.md)
-- [ReAct 工业级对标基准](react_benchmark.md)（能力基准与差距清单）
+- [ReActStrategy 策略组件](react.md) + [ReAct 工业级对标基准](react_benchmark.md)
+- [ReflectionStrategy 策略组件](reflection.md) + [Reflection 工业级对标基准](reflection_benchmark.md)
+- [PlannerStrategy 策略组件](planner.md) + [Planner 工业级对标基准](planner_benchmark.md)
 - [领域层说明](../README.md)
 - [Agent 模块对外接口文档](../agent_doc/agent.md)（含 [ReActAgent 桥接组件](../agent_doc/executor.md)）
 - [架构设计](../../architecture.md)

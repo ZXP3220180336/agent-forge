@@ -1,10 +1,10 @@
 # Agent 模块对外接口文档
 
 > **对应代码**：`app/domain/agent/`
-> **更新日期**：2026-08-30
+> **更新日期**：2026-09-05
 > **文档定位**：Agent 模块对外接口文档——`BaseAgent` 统一入口的接口契约 + 内部组件导航；
 > 服务对象为 Agent 模块的**外部调用方**（应用层 / API 层）
-> **实现状态**：✅ 已实现（BaseAgent + ReActAgent + ReflectionAgent；PlannerAgent 预留）
+> **实现状态**：✅ 已实现（BaseAgent + ReActAgent + ReflectionAgent + PlannerAgent）
 > **配套**：实现依赖领域端口 `LLMGateway` / `ToolGateway`（可选 `ContextBudgetPort`）；推理策略实现见
 > [reasoning 模块](../reasoning_doc/reasoning.md)（ReAct 策略在 `reasoning/react.py`）
 
@@ -23,6 +23,7 @@
     - [数据契约](#数据契约)
     - [BaseAgent 方法表](#baseagent-方法表)
     - [ReActAgent](#reactagent)
+    - [PlannerAgent](#planneragent)
     - [对外异常契约](#对外异常契约)
     - [最小调用示例](#最小调用示例)
   - [内部实现组织](#内部实现组织)
@@ -47,10 +48,10 @@ Agent 模块是系统的**决策与行动核心**，负责编排 LLM 推理与�
 
 ```text
 app/domain/agent/
-├── __init__.py          # 模块导出（AgentState / AgentContext / AgentResult / BaseAgent / ReActAgent）
+├── __init__.py          # 模块导出（AgentState / AgentContext / AgentResult / BaseAgent / ReActAgent / ReflectionAgent / PlannerAgent）
 ├── base.py              # 基类与数据定义（AgentState, AgentContext, AgentResult, BaseAgent）
 ├── executor.py          # ReActAgent（桥接 reasoning/react.py 的 ReActStrategy）
-├── planner.py           # PlannerAgent（Plan-then-Execute，预留）
+├── planner.py           # PlannerAgent（桥接 reasoning/planner.py 的 PlannerStrategy，Plan-then-Execute）
 └── reflection.py       # ReflectionAgent（桥接 reasoning/reflection.py 的 ReflectionStrategy）
 ```
 
@@ -102,6 +103,7 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | `max_empty_retries` | `int = 2` | 连续空输出重试上限（0=首次空输出即终止，生产值 `agent_max_empty_retries`） |
 | `max_llm_fail_retries` | `int = 2` | LLM 失败重试上限：连续失败超过上限硬终止（0=首次失败即终止；防 handler CONTINUE 无限重试，生产值 `agent_max_llm_fail_retries`） |
 | `max_same_action_turns` | `int = 3` | 循环停滞检测：连续相同工具调用（工具+参数）上限（生产值 `agent_max_same_action_turns`） |
+| `max_refine_rounds` | `int = 2` | 修复尝试上限：Reflection 修正（初稿 1 + 至多 N-1 次修正）与 Planner replan（步骤失败重规划）共用，经 `max_replan_rounds` 语义注入（生产值 `agent_max_refine_rounds`） |
 | `stream_mode` | `bool = True` | LLM 通道开关：True=流式 `async_generate`（默认，chat SSE 订阅者）；False=非流式 `generate()`（后台子 Agent 无人逐 token 订阅，Phase C 编排按需置 False）。当前无对应 settings 项（YAGNI；勿与仅作元数据出口的 `agent_streaming` 混淆，后者无行为接线） |
 | `metadata` | `dict = {}` | 扩展字段（如 `model_key`） |
 
@@ -133,7 +135,7 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 
 ### ReActAgent
 
-当前唯一实现的 Agent 类型，ReAct 策略的编排载体：
+ReAct 策略的编排载体：
 
 ```python
 agent = ReActAgent(llm=llm_service, tools=tool_service)
@@ -151,9 +153,23 @@ agent = ReActAgent(llm=llm_service, tools=tool_service)
 3. 行为契约（ReAct 循环）：推理 → finish_reason 分支 → 工具调用 / 正常结束 / 空输出重试 → 迭代兜底
 4. 实现细节见 [executor.md](executor.md)（编排）与 [react.md](../reasoning_doc/react.md)（算法）
 
+### PlannerAgent
+
+Plan-then-Execute 策略（规划 → 逐步骤执行 → 证据链汇总）的编排载体，桥接 `reasoning/planner.py` 的 `PlannerStrategy`：
+
+```python
+agent = PlannerAgent(llm=llm_service, tools=tool_service)
+# 可选横切能力注入：context_budget, error_handlers, cost_limiter, cancel_event（同 ReActAgent）
+```
+
+1. 构造：`PlannerAgent(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, cancel_event=None)`——内部构造 `PlannerStrategy`（构造参数同构 ReActAgent / ReflectionAgent）
+2. `_strategy_cycle` 委托 `PlannerStrategy.execute()`（三阶段主流程），`AgentContext` 全护栏透传；replan 预算复用 `ctx.max_refine_rounds`（Reflection 修正 / Planner replan 共用语义）
+3. `_map_outcome`：`PlannerOutcome` → `AgentResult`——`plan` / `steps_executed` / `replan_rounds` / `degraded` 进 `metadata`（供 Phase C Orchestrator 与证据链报告消费），`structured` 为 `RESULT_SCHEMA` 证据链报告
+4. 算法实现细节见 [planner.md](../reasoning_doc/planner.md)（PlannerStrategy）与 [planner_benchmark.md](../reasoning_doc/planner_benchmark.md)（工业对标）
+
 ### 对外异常契约
 
-Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy / ReflectionStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。13 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
+Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy / ReflectionStrategy / PlannerStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。14 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
 
 | `AgentErrorKind` | 默认 action | 场景 → 默认处理 |
 | --- | --- | --- |
@@ -169,6 +185,8 @@ Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（�
 | `TOOL_FAILED` | CONTINUE | 工具执行失败 → 回喂模型自纠 |
 | `PARSE_FAILED` | CONTINUE | 工具参数 JSON 解析失败 / 协议异常（tool_calls 空）→ 回喂/重试自纠 |
 | `STRUCTURED_INVALID` | CONTINUE | final_answer 参数校验失败 → 回喂自纠 |
+| `CRITIQUE_FAILED` | CONTINUE | Reflection 自查 / 修正失败 → 降级采用最近稿（Reflection 专属） |
+| `PLAN_FAILED` | CONTINUE | Planner 规划 / 重规划 / 汇总失败 → 降级（规划失败 ReAct 兜底 / 汇总失败纯文本，Planner 专属） |
 
 调用方视角：默认行为下 `run()` 不抛异常（取消 / 失败均收敛为对应状态 + 结果）；仅当调用方注册 handler 决策 `RAISE` 时，上抛 `AgentRunError`（定义于 `app.shared.error_handling`）——这是 Agent 模块被外部捕获的唯一领域异常类型。
 
@@ -196,7 +214,7 @@ print(result.content, result.tool_calls, result.usage)
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
 | [executor.md](executor.md) | `executor.py` | ReActAgent：桥接 ReActStrategy 到 BaseAgent 生命周期 | ✅ |
-| planner.py | `planner.py` | PlannerAgent：Plan-then-Execute 编排（规划→执行→汇总） | ⬜ 预留 |
+| planner.py | `planner.py` | PlannerAgent：Plan-then-Execute 编排（规划→执行→汇总，桥接 reasoning/planner.py 的 PlannerStrategy） | ✅ |
 | reflection.py | `reflection.py` | ReflectionAgent：Reflection 编排（生成→自查→修正，桥接 reflection.py） | ✅ |
 
 **配套策略库**（[reasoning 模块](../reasoning_doc/reasoning.md)）：
@@ -205,6 +223,7 @@ print(result.content, result.tool_calls, result.usage)
 | --- | --- | --- | --- |
 | [react.md](../reasoning_doc/react.md) | `reasoning/react.py` | ReActStrategy：推理 ↔ 工具循环原子算法 | ✅ |
 | reflection | `reasoning/reflection.py` | Reflection 策略（见 [reflection.md](../reasoning_doc/reflection.md)） | ✅ |
+| planner | `reasoning/planner.py` | Planner 策略（见 [planner.md](../reasoning_doc/planner.md)） | ✅ |
 | chain_of_thought | `reasoning/chain_of_thought.py` | CoT 策略 | ⬜ 预留 |
 
 ---
@@ -239,6 +258,7 @@ Agent 模块与 `settings.py` 配置项关联（完整表见 [config 文档](../
 | `agent_max_empty_retries` | 2 | `AgentContext.max_empty_retries` 生产值（连续空输出重试上限） |
 | `agent_max_llm_fail_retries` | 2 | `AgentContext.max_llm_fail_retries` 生产值（LLM 失败重试上限） |
 | `agent_max_same_action_turns` | 3 | `AgentContext.max_same_action_turns` 生产值（循环停滞检测上限） |
+| `agent_max_refine_rounds` | 2 | `AgentContext.max_refine_rounds` 生产值（Reflection 修正 / Planner replan 共用修复尝试上限） |
 | `agent_max_concurrent_tools` | 3 | 单任务工具级并发（ToolGateway） |
 
 ---
