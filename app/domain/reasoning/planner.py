@@ -47,7 +47,7 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError
 
-from ._common import dispatch_error, merge_usage, should_abort
+from ._common import dispatch_error, guard_exceeded, merge_usage
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -316,9 +316,18 @@ class PlannerStrategy:
                     continue
                 yield event
 
-        # ── 阶段 A：规划（发起付费调用前统一终止/成本护栏）──
-        abort_reason, cost_msg = self._guard_exceeded(
-            cancel_event, start_time, max_execution_time
+        # ── 阶段 A：规划（进度事件前置，发起付费调用前统一终止/成本护栏）──
+        yield build_info_event("进入规划阶段")
+
+        running_usage = merge_usage(
+            getattr(self, "_react_total_usage", None), self._structured_usage
+        )
+        abort_reason, cost_msg = guard_exceeded(
+            cancel_event,
+            start_time,
+            max_execution_time,
+            self._cost_limiter,
+            running_usage,
         )
         if abort_reason or cost_msg:
             msg = f"{abort_reason or cost_msg}，未开始规划"
@@ -333,14 +342,35 @@ class PlannerStrategy:
                 yield e
             return
 
-        yield build_info_event("进入规划阶段")
-        plan, plan_action, plan_usage = await self._plan(
-            user_input, tool_catalog, start_time, max_execution_time, cancel_event
-        )
+        plan, plan_action, plan_usage = await self._plan(user_input, tool_catalog)
         if plan_usage:
             self._structured_usage = merge_usage(self._structured_usage, plan_usage)
         if plan is None:
-            # 规划失败（None=结构化降级耗尽；AppError 已分发 PLAN_FAILED）→ 降级全量 ReAct 兜底
+            # 规划失败（None=结构化降级耗尽；AppError 已分发 PLAN_FAILED）→ 降级全量 ReAct 兜底。
+            # 兜底也是付费调用：发起前终止/成本护栏——取消/超成本不再兜底，直接失败收尾。
+            running_usage = merge_usage(
+                getattr(self, "_react_total_usage", None), self._structured_usage
+            )
+            abort_reason, cost_msg = guard_exceeded(
+                cancel_event,
+                start_time,
+                max_execution_time,
+                self._cost_limiter,
+                running_usage,
+            )
+            if abort_reason or cost_msg:
+                msg = f"{abort_reason or cost_msg}，规划失败后中止，未降级兜底"
+                for e in self._finalize(
+                    plan=None,
+                    steps_executed=[],
+                    success=False,
+                    degraded=True,
+                    error=msg,
+                    info=msg,
+                ):
+                    yield e
+                return
+
             suffix = "（STOP）" if plan_action == AgentErrorAction.STOP else ""
             yield build_info_event(f"规划失败{suffix}，降级为直接 ReAct")
             async for event in _run_react(user_input, list(messages)):
@@ -391,8 +421,15 @@ class PlannerStrategy:
 
         # ── 阶段 B：执行（串行；ready 守卫 depends_on ⊆ completed）──
         while pending:
-            abort_reason, cost_msg = self._guard_exceeded(
-                cancel_event, start_time, max_execution_time
+            running_usage = merge_usage(
+                getattr(self, "_react_total_usage", None), self._structured_usage
+            )
+            abort_reason, cost_msg = guard_exceeded(
+                cancel_event,
+                start_time,
+                max_execution_time,
+                self._cost_limiter,
+                running_usage,
             )
             if abort_reason or cost_msg:
                 msg = f"{abort_reason or cost_msg}，采用已完成步骤（部分进度）"
@@ -413,10 +450,9 @@ class PlannerStrategy:
             sub_messages = self._step_messages(goal, step, executed, messages)
             async for event in _run_react(step["description"], sub_messages):
                 yield event
-            sub = self._react.outcome
-            self._absorb_react(sub)
 
-            # cancel 在步骤 react 调用中置位 → 立即终止（防被误判步骤失败而 replan）
+            # cancel 在步骤 react 调用中置位 → 立即终止（防被误判步骤失败而 replan）；
+            # 置于 sub/absorb 前：被中断步不入 executed/累计，对齐 react「取消轮不累计 usage」。
             if cancel_event is not None and cancel_event.is_set():
                 for e in self._finalize_partial(
                     plan_result,
@@ -427,6 +463,9 @@ class PlannerStrategy:
                 ):
                     yield e
                 return
+
+            sub = self._react.outcome
+            self._absorb_react(sub)
 
             # 步骤判成功 = react success 且产出非空（无产出工件视为失败）
             if sub is None:
@@ -467,9 +506,28 @@ class PlannerStrategy:
             if pending is None:
                 # replan 耗尽/失败：有成功步尝试结构化汇总产部分报告；否则纯失败
                 if any(r["success"] for r in executed):
-                    sub_result, sub_action, sub_usage = await self._summarize(
-                        goal, executed, start_time, max_execution_time, cancel_event
+                    # 发起汇总前终止/成本护栏：取消/成本超限 → 直接降级采用已完成步骤
+                    running_usage = merge_usage(
+                        getattr(self, "_react_total_usage", None),
+                        self._structured_usage,
                     )
+                    abort_reason, cost_msg = guard_exceeded(
+                        cancel_event,
+                        start_time,
+                        max_execution_time,
+                        self._cost_limiter,
+                        running_usage,
+                    )
+                    if abort_reason or cost_msg:
+                        for e in self._finalize_partial(
+                            plan_result,
+                            executed,
+                            degraded=True,
+                            error=f"{abort_reason or cost_msg}，采用已完成步骤（部分进度）",
+                        ):
+                            yield e
+                        return
+                    sub_result, _, sub_usage = await self._summarize(goal, executed)
                     if sub_usage:
                         self._structured_usage = merge_usage(
                             self._structured_usage, sub_usage
@@ -497,9 +555,17 @@ class PlannerStrategy:
                 return
             # 重规划得到新尾 → 回到 while 顶部执行（继续任务未中断）
 
-        # ── 阶段 C：汇总 ──
-        abort_reason, cost_msg = self._guard_exceeded(
-            cancel_event, start_time, max_execution_time
+        # ── 阶段 C：汇总（进度事件前置，发起付费调用前统一终止/成本护栏）──
+        yield build_info_event("执行完成，进入汇总")
+        running_usage = merge_usage(
+            getattr(self, "_react_total_usage", None), self._structured_usage
+        )
+        abort_reason, cost_msg = guard_exceeded(
+            cancel_event,
+            start_time,
+            max_execution_time,
+            self._cost_limiter,
+            running_usage,
         )
         if abort_reason or cost_msg:
             for e in self._finalize_partial(
@@ -511,10 +577,7 @@ class PlannerStrategy:
                 yield e
             return
 
-        yield build_info_event("执行完成，进入汇总")
-        result, action, result_usage = await self._summarize(
-            goal, executed, start_time, max_execution_time, cancel_event
-        )
+        result, action, result_usage = await self._summarize(goal, executed)
         if result_usage:
             self._structured_usage = merge_usage(self._structured_usage, result_usage)
         if result is None:
@@ -563,15 +626,23 @@ class PlannerStrategy:
             归一化后的新尾步骤列表（继续执行）；None = replan 耗尽/失败 → 调用方降级。
         """
         while self._replan_used < max_replan_rounds:
-            self._replan_used += 1
-            new_tail, _action, _usage = await self._replan(
-                goal,
-                tool_catalog,
-                executed,
-                failed_step,
+            # 每轮 replan 也是付费结构化调用：发起前终止/成本护栏（对齐每步 react）——
+            # 超限 → 返回 None 由调用方降级，不再发起付费 replan（不消耗 replan 预算）
+            running_usage = merge_usage(
+                getattr(self, "_react_total_usage", None), self._structured_usage
+            )
+            abort_reason, cost_msg = guard_exceeded(
+                cancel_event,
                 start_time,
                 max_execution_time,
-                cancel_event,
+                self._cost_limiter,
+                running_usage,
+            )
+            if abort_reason or cost_msg:
+                return None
+            self._replan_used += 1
+            new_tail, _action, _usage = await self._replan(
+                goal, tool_catalog, executed, failed_step
             )
             if _usage:
                 self._structured_usage = merge_usage(self._structured_usage, _usage)
@@ -589,34 +660,129 @@ class PlannerStrategy:
         return None
 
     # ==================================================================
-    # 内部辅助
+    # 结构化调用（plan / replan / summarize）+ 失败分发
     # ==================================================================
 
-    def _guard_exceeded(
+    async def _plan(
         self,
-        cancel_event: asyncio.Event | None,
-        start_time: float,
-        max_execution_time: float | None,
-    ) -> tuple[str, str]:
-        """阶段/付费调用前护栏检查：返回 (终止原因, 成本超限原因)，均空串 = 可继续。
+        user_input: str,
+        tool_catalog: str,
+    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
+        """规划：generate_structured 产出 PLAN_SCHEMA。返回 (计划, 分发动作, 用量)。
 
-        终止（取消/超时，should_abort）优先于成本检查；成本仅 cost_limiter 注入时
-        判定。规划/执行/汇总三阶段开头共用——把「终止 + 成本」两个同构入口归一处，
-        调用方只需处理「任一触发则降级收尾」。
+        失败走 PLAN_FAILED 分发（默认 CONTINUE=降级 ReAct 兜底；STOP=硬失败；
+        RAISE 抛 AgentRunError）；非 AppError 编程错误冒泡 fail fast。
         """
-        aborted, reason = should_abort(cancel_event, start_time, max_execution_time)
-        if aborted:
-            return reason, ""
-        if self._cost_limiter is not None:
-            # 当前跨轮累计 usage（react 各步 + 结构化全阶段）。
-            exceeded, cost = self._cost_limiter.check(
-                merge_usage(
-                    getattr(self, "_react_total_usage", None), self._structured_usage
-                )
+        messages = [
+            {
+                "role": "user",
+                "content": PromptManager.build_planning_prompt(
+                    user_input, tool_catalog
+                ),
+            }
+        ]
+        usage: dict = {}
+        try:
+            result = await self._llm.generate_structured(
+                messages,
+                self._plan_schema,
+                model_key=self._plan_model_key,
+                usage=usage,
             )
-            if exceeded:
-                return "", f"成本超限（累计 ${cost}）"
-        return "", ""
+            if result is None:
+                self._last_structured_error = "规划（结构化降级耗尽）"
+            return result, None, usage or None
+        except AppError as e:
+            self._last_structured_error = str(e)
+            action = await dispatch_error(
+                self._error_handlers,
+                AgentErrorKind.PLAN_FAILED,
+                f"规划失败: {e}",
+                iteration=0,
+            )
+            return None, action, None
+
+    async def _replan(
+        self,
+        goal: str,
+        tool_catalog: str,
+        executed: list[dict],
+        failed_step: dict,
+    ) -> tuple[list[dict] | None, AgentErrorAction | None, dict | None]:
+        """重规划：基于已完成步骤 + 失败步骤产出新尾（REPLAN_SCHEMA.steps）。
+
+        返回 (新尾步骤列表, 分发动作, 用量)；失败 → (None, action, None)。
+        """
+        messages = [
+            {
+                "role": "user",
+                "content": PromptManager.build_planning_replan_prompt(
+                    goal,
+                    tool_catalog,
+                    executed,
+                    failed_step,
+                    failed_step.get("error") or "",
+                ),
+            }
+        ]
+        usage: dict = {}
+        try:
+            result = await self._llm.generate_structured(
+                messages,
+                self._replan_schema,
+                model_key=self._plan_model_key,
+                usage=usage,
+            )
+            if result is None:
+                return None, None, usage or None
+            return result.get("steps"), None, usage or None
+        except AppError as e:
+            action = await dispatch_error(
+                self._error_handlers,
+                AgentErrorKind.PLAN_FAILED,
+                f"重规划失败: {e}",
+                iteration=0,
+            )
+            return None, action, None
+
+    async def _summarize(
+        self,
+        goal: str,
+        executed: list[dict],
+    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
+        """汇总：基于各步骤结果产出 RESULT_SCHEMA（证据链报告）。
+
+        返回 (报告, 分发动作, 用量)；失败 → (None, action, None)。
+        """
+        messages = [
+            {
+                "role": "user",
+                "content": PromptManager.build_planning_summarize_prompt(
+                    goal, executed
+                ),
+            }
+        ]
+        usage: dict = {}
+        try:
+            result = await self._llm.generate_structured(
+                messages,
+                self._result_schema,
+                model_key=self._summarize_model_key,
+                usage=usage,
+            )
+            return result, None, usage or None
+        except AppError as e:
+            action = await dispatch_error(
+                self._error_handlers,
+                AgentErrorKind.PLAN_FAILED,
+                f"汇总失败: {e}",
+                iteration=0,
+            )
+            return None, action, None
+
+    # ==================================================================
+    # 内部辅助
+    # ==================================================================
 
     def _absorb_react(self, outcome: ReActOutcome | None) -> None:
         """一次 react 子跑归并进累计态（usage / iterations）。"""
@@ -733,145 +899,6 @@ class PlannerStrategy:
             )
         # 过滤空 description 步骤（规范化失败防御）
         return [s for s in pending if s["description"]]
-
-    # ==================================================================
-    # 结构化调用（plan / replan / summarize）+ 失败分发
-    # ==================================================================
-
-    async def _plan(
-        self,
-        user_input: str,
-        tool_catalog: str,
-        start_time: float,
-        max_execution_time: float | None,
-        cancel_event: asyncio.Event | None,
-    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
-        """规划：generate_structured 产出 PLAN_SCHEMA。返回 (计划, 分发动作, 用量)。
-
-        失败走 PLAN_FAILED 分发（默认 CONTINUE=降级 ReAct 兜底；STOP=硬失败；
-        RAISE 抛 AgentRunError）；非 AppError 编程错误冒泡 fail fast。
-        """
-        aborted, reason = should_abort(cancel_event, start_time, max_execution_time)
-        if aborted:
-            return None, AgentErrorAction.STOP, None
-        messages = [
-            {
-                "role": "user",
-                "content": PromptManager.build_planning_prompt(
-                    user_input, tool_catalog
-                ),
-            }
-        ]
-        usage: dict = {}
-        try:
-            result = await self._llm.generate_structured(
-                messages,
-                self._plan_schema,
-                model_key=self._plan_model_key,
-                usage=usage,
-            )
-            if result is None:
-                self._last_structured_error = "规划（结构化降级耗尽）"
-            return result, None, usage or None
-        except AppError as e:
-            self._last_structured_error = str(e)
-            action = await dispatch_error(
-                self._error_handlers,
-                AgentErrorKind.PLAN_FAILED,
-                f"规划失败: {e}",
-                iteration=0,
-            )
-            return None, action, None
-
-    async def _replan(
-        self,
-        goal: str,
-        tool_catalog: str,
-        executed: list[dict],
-        failed_step: dict,
-        start_time: float,
-        max_execution_time: float | None,
-        cancel_event: asyncio.Event | None,
-    ) -> tuple[list[dict] | None, AgentErrorAction | None, dict | None]:
-        """重规划：基于已完成步骤 + 失败步骤产出新尾（REPLAN_SCHEMA.steps）。
-
-        返回 (新尾步骤列表, 分发动作, 用量)；失败 → (None, action, None)。
-        """
-        aborted, reason = should_abort(cancel_event, start_time, max_execution_time)
-        if aborted:
-            return None, AgentErrorAction.STOP, None
-        messages = [
-            {
-                "role": "user",
-                "content": PromptManager.build_planning_replan_prompt(
-                    goal,
-                    tool_catalog,
-                    executed,
-                    failed_step,
-                    failed_step.get("error") or "",
-                ),
-            }
-        ]
-        usage: dict = {}
-        try:
-            result = await self._llm.generate_structured(
-                messages,
-                self._replan_schema,
-                model_key=self._plan_model_key,
-                usage=usage,
-            )
-            if result is None:
-                return None, None, usage or None
-            return result.get("steps"), None, usage or None
-        except AppError as e:
-            action = await dispatch_error(
-                self._error_handlers,
-                AgentErrorKind.PLAN_FAILED,
-                f"重规划失败: {e}",
-                iteration=0,
-            )
-            return None, action, None
-
-    async def _summarize(
-        self,
-        goal: str,
-        executed: list[dict],
-        start_time: float,
-        max_execution_time: float | None,
-        cancel_event: asyncio.Event | None,
-    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
-        """汇总：基于各步骤结果产出 RESULT_SCHEMA（证据链报告）。
-
-        返回 (报告, 分发动作, 用量)；失败 → (None, action, None)。
-        """
-        aborted, reason = should_abort(cancel_event, start_time, max_execution_time)
-        if aborted:
-            return None, AgentErrorAction.STOP, None
-        messages = [
-            {
-                "role": "user",
-                "content": PromptManager.build_planning_summarize_prompt(
-                    goal, executed
-                ),
-            }
-        ]
-        usage: dict = {}
-        try:
-            result = await self._llm.generate_structured(
-                messages,
-                self._result_schema,
-                model_key=self._summarize_model_key,
-                usage=usage,
-            )
-            return result, None, usage or None
-        except AppError as e:
-            action = await dispatch_error(
-                self._error_handlers,
-                AgentErrorKind.PLAN_FAILED,
-                f"汇总失败: {e}",
-                iteration=0,
-            )
-            return None, action, None
 
     # ==================================================================
     # _finalize 收尾（同步 list[str]）

@@ -7,6 +7,7 @@
 import asyncio
 import time
 
+from app.domain.ports.cost_limiter import CostLimiterPort
 from app.shared.error_handling import (
     AgentErrorAction,
     AgentErrorContext,
@@ -32,23 +33,32 @@ def merge_usage(*usages: dict | None) -> dict:
     return merged
 
 
-def should_abort(
+def guard_exceeded(
     cancel_event: asyncio.Event | None,
     start_time: float,
     max_execution_time: float | None,
-) -> tuple[bool, str]:
-    """循环终止检查：用户取消 / 总时长超限。返回 (是否终止, 原因)。
+    cost_limiter: CostLimiterPort | None,
+    running_usage: dict,
+) -> tuple[str, str]:
+    """阶段/付费调用前护栏：返回 (终止原因, 成本超限原因)，均空串 = 可继续。
 
-    reflection 自查/修正循环与 planner 规划/执行/汇总各阶段入口共用。
+    终止（取消 / 总时长超限）优先于成本检查；成本 = cost_limiter.check(running_usage)
+    超限（cost_limiter 注入时）。running_usage 由调用方按策略累计口径现算（如 planner 的
+    react 各步 + 结构化全阶段；reflection 的 react 收集 + 自查/修正累计）。planner
+    三阶段入口与 reflection 自查循环共用。
     """
     if cancel_event is not None and cancel_event.is_set():
-        return True, "用户取消"
+        return "用户取消", ""
     if (
         max_execution_time is not None
         and time.monotonic() - start_time > max_execution_time
     ):
-        return True, "执行超时"
-    return False, ""
+        return "执行超时", ""
+    if cost_limiter is not None:
+        exceeded, cost = cost_limiter.check(running_usage)
+        if exceeded:
+            return "", f"成本超限（累计 ${cost}）"
+    return "", ""
 
 
 async def dispatch_error(

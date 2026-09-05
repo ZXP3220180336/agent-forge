@@ -9,10 +9,11 @@ react / reflection / planner 三策略共用、不 import 任何策略的无状�
   reflection 证据链剔除共用
 - `merge_usage(*usages)`：usage dict 累加合并（prompt/completion/total；空入参跳过）——
   reflection 自查/修正阶段与 planner 全阶段共用
-- `should_abort(cancel_event, start_time, max_execution_time) -> (bool, str)`：循环终止检查
-  （用户取消 / 总时长超限）——reflection 自查循环与 planner 各阶段入口共用
+- `guard_exceeded(cancel_event, start_time, max_execution_time, cost_limiter, running_usage) -> (str, str)`：
+  阶段/付费调用前护栏——终止（取消/超时）或成本超限（cost_limiter.check(running_usage)）检查合一，
+  返回双空原因；running_usage 由调用方按策略累计口径现算（planner / reflection 各传各自累计 usage）
 
-使用方式：`from ._common import _FINAL_ANSWER_TOOL, merge_usage, should_abort, dispatch_error`。
+使用方式：`from ._common import _FINAL_ANSWER_TOOL, guard_exceeded, merge_usage, dispatch_error`。
 策略不再各持本地定义；error_handlers 等生命周期仍由各策略自行管理。
 
 ## 错误分发统一入口（dispatch_error）

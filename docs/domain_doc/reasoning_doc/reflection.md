@@ -129,7 +129,7 @@ ReflectionStrategy.execute()（三阶段）
 阶段二+三 自查 → 修正 → 复查 循环（真迭代，每次修正后重新自查）：
   current = draft
   while True:
-    ├─ 成本护栏：发起新付费调用前 check（react + 自查/修正累计），超限 → 停机降级
+    ├─ _common.guard_exceeded：终止（取消/超时）或成本超限（react + 自查/修正累计）→ 停机降级采用最近稿
     ├─ 自查 current（CRITIQUE_SCHEMA）→ 失败 → 降级采用 current（degraded）
     ├─ critique.ok → 采用 current（degraded=False，early exit）
     ├─ refine_round >= max_refine_rounds-1 → 达上限，采用 current（degraded）
@@ -180,7 +180,7 @@ ReflectionStrategy.execute()（三阶段）
 - 降级路径：自查失败 / 拒答 / **不可恢复 AppError（熔断 / LLMAPIError 401/403）** / 修正失败 / ReAct 无 structured / ReAct 失败
 - 非 AppError 编程错误不吞、向上冒泡（fail fast）
 - done 事件 total_tokens 与 outcome 一致 + 抑制 ReAct 中间 done（P2 / REASON-011，事件流仅收尾 1 个 done）
-- 反思循环终止护栏（P3）：`_common.should_abort` 单元（取消 / 超时 / 正常）+ 循环中取消降级采用最近稿
+- 反思循环终止护栏（P3）：循环每轮前 `_common.guard_exceeded`（终止 + 成本超限合一检查，超限 → 停机降级采用最近稿）
 - max_refine_rounds 上限（max=1 不修正）、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
 - Scope 盲区清单维度穷举（9 dimension）、护栏透传
 - 桥接：_map_outcome 映射 / ctx 透传 / 端到端 / 默认向后兼容

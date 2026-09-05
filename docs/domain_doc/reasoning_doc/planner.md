@@ -114,7 +114,7 @@ PlannerStrategy.execute()（三阶段）
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, plan_schema=None, replan_schema=None, result_schema=None, plan_model_key="fast", summarize_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema / 结构化模型键可注入覆盖 |
 | `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, max_replan_rounds=2, tool_timeout=None, tool_max_retries=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 三阶段主流程（见「执行流程」）；yield SSE 事件，结果写入 `outcome` |
 
-私有辅助：`_guard_exceeded`（终止 `_common.should_abort` + 成本超限检查合一，三阶段入口共用护栏；跨轮 usage 累计在 cost check 内联）· `_absorb_react`（react 子跑 usage/iterations 归并）· `_tool_catalog` / `_step_messages`（工具目录 / 每步隔离上下文，已完成步骤摘要已并入）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_normalize_steps`（id 单调赋值 + 依赖清洗）· `_plan` / `_replan` / `_summarize`（结构化调用；PLAN_FAILED 分发经共享 `_common.dispatch_error`）· `_finalize`（收尾 outcome + done 事件）。
+私有辅助：`_absorb_react`（react 子跑 usage/iterations 归并）· `_tool_catalog` / `_step_messages`（工具目录 / 每步隔离上下文，已完成步骤摘要已并入）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_normalize_steps`（id 单调赋值 + 依赖清洗）· `_plan` / `_replan` / `_summarize`（结构化调用；每次付费调用前（规划/每步 react/兜底 react/每轮 replan/汇总）经共享 `_common.guard_exceeded` 做终止+成本护栏，进度事件前置消除 guard 后挂起窗口；PLAN_FAILED 分发经 `_common.dispatch_error`）· `_finalize`（收尾 outcome + done 事件）。
 
 ### PlannerOutcome（结果载体）
 

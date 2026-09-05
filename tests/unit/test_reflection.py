@@ -14,7 +14,7 @@ import json
 import pytest
 
 from app.domain.reasoning import ReflectionOutcome, ReflectionStrategy
-from app.domain.reasoning._common import should_abort
+from app.domain.reasoning._common import guard_exceeded
 from app.domain.reasoning.reflection import CRITIQUE_SCHEMA, REFLECTION_SCHEMA
 from app.domain.prompts.templates.reflection import CRITIQUE_PROMPT
 from app.integration.tools.base import BaseTool, ToolResult
@@ -609,31 +609,35 @@ async def test_reflect_cost_limit_stops():
 # ── P3：反思循环终止护栏（用户取消 / 总时长超限 → 停机降级采用最近稿）──
 
 
-def test_should_abort_cancel_event():
-    """用户取消 → 终止（原因含「用户取消」）。"""
+def test_guard_exceeded_cancel_event():
+    """用户取消 → 终止（终止原因「用户取消」，成本未超限）。"""
     cancel = asyncio.Event()
     cancel.set()
-    aborted, reason = should_abort(cancel, 0.0, None)
-    assert aborted is True
-    assert "用户取消" in reason
+    abort_reason, cost_msg = guard_exceeded(cancel, 0.0, None, None, {})
+    assert abort_reason == "用户取消"
+    assert cost_msg == ""
 
 
-def test_should_abort_timeout():
-    """总时长超限（start 在过去）→ 终止（原因含「执行超时」）。"""
+def test_guard_exceeded_timeout():
+    """总时长超限（start 在过去）→ 终止（终止原因「执行超时」）。"""
     import time as _time
 
-    aborted, reason = should_abort(
-        None, start_time=_time.monotonic() - 100, max_execution_time=5
+    abort_reason, cost_msg = guard_exceeded(
+        None,
+        start_time=_time.monotonic() - 100,
+        max_execution_time=5,
+        cost_limiter=None,
+        running_usage={},
     )
-    assert aborted is True
-    assert "执行超时" in reason
+    assert abort_reason == "执行超时"
+    assert cost_msg == ""
 
 
-def test_should_abort_ok():
-    """无取消 + 未超时 → 不终止。"""
-    aborted, reason = should_abort(None, 0.0, None)
-    assert aborted is False
-    assert reason == ""
+def test_guard_exceeded_ok():
+    """无取消 + 未超时 + 无 cost_limiter → 双空原因（可继续）。"""
+    abort_reason, cost_msg = guard_exceeded(None, 0.0, None, None, {})
+    assert abort_reason == ""
+    assert cost_msg == ""
 
 
 @pytest.mark.asyncio

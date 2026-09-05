@@ -42,7 +42,7 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError
 
-from ._common import dispatch_error, merge_usage, should_abort
+from ._common import dispatch_error, guard_exceeded, merge_usage
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -310,11 +310,16 @@ class ReflectionStrategy:
         current = draft  # 当前候选稿（初稿 → 各轮修正稿）
         refine_round = 0
         while True:
-            # 终止护栏（P3）：用户取消 / 总时长超限 → 停机降级采用最近稿（保留进度）
-            aborted, abort_reason = should_abort(
-                cancel_event, start_time, max_execution_time
+            # 终止/成本护栏（P3）：发起新付费调用前检查——取消/超时/成本超限
+            # → 停机降级采用最近稿（保留进度）
+            abort_reason, cost_msg = guard_exceeded(
+                cancel_event,
+                start_time,
+                max_execution_time,
+                self._cost_limiter,
+                merge_usage(react_outcome.usage, self._structured_usage),
             )
-            if aborted:
+            if abort_reason or cost_msg:
                 for e in self._finalize(
                     react_outcome,
                     draft=draft,
@@ -323,30 +328,11 @@ class ReflectionStrategy:
                     refine_rounds=refine_round,
                     success=bool(current),
                     degraded=True,
-                    error=f"{abort_reason}，采用最近稿（降级）",
-                    info=f"{abort_reason}，采用最近稿（降级）",
+                    error=f"{abort_reason or cost_msg}，采用最近稿（降级）",
+                    info=f"{abort_reason or cost_msg}，采用最近稿（降级）",
                 ):
                     yield e
                 return
-            # 成本护栏：发起新付费调用前 check（react + 自查/修正累计，超限停机降级）
-            if self._cost_limiter is not None:
-                exceeded, cost = self._cost_limiter.check(
-                    merge_usage(react_outcome.usage, self._structured_usage)
-                )
-                if exceeded:
-                    for e in self._finalize(
-                        react_outcome,
-                        draft=draft,
-                        structured=current,
-                        critique=None,
-                        refine_rounds=refine_round,
-                        success=bool(current),
-                        degraded=True,
-                        error=f"成本超限（累计 ${cost}），采用最近稿（降级）",
-                        info="成本超限，采用最近稿（降级）",
-                    ):
-                        yield e
-                    return
 
             # ── 自查当前稿 ──
             critique, crit_action, crit_usage = await self._critique(
