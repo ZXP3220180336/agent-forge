@@ -32,9 +32,7 @@ from app.domain.ports.tool_gateway import ToolGateway
 from app.domain.prompts.manager import PromptManager
 from app.shared.error_handling import (
     AgentErrorAction,
-    AgentErrorContext,
     AgentErrorKind,
-    AgentRunError,
     ErrorHandlerRegistry,
 )
 from app.shared.events import (
@@ -44,11 +42,8 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError
 
+from ._common import dispatch_error, merge_usage, should_abort
 from .react import ReActOutcome, ReActStrategy
-
-# 证据链记录中的 final_answer 条目（终止工具，非真实证据）在序列化时剔除
-_FINAL_ANSWER_TOOL = "final_answer"
-
 
 # ─────────────────────────────────────────────────────────────
 # Schema 契约（模块常量 + 构造注入覆盖，不进 AgentContext）
@@ -153,17 +148,6 @@ CRITIQUE_SCHEMA: dict[str, Any] = {
     "required": ["ok"],
     "additionalProperties": False,
 }
-
-
-def _merge_usage(*usages: dict | None) -> dict:
-    """合并多个 usage dict（prompt/completion/total 累加）；全空返回空 dict。"""
-    merged: dict = {}
-    for usage in usages:
-        if not usage:
-            continue
-        for key, value in usage.items():
-            merged[key] = merged.get(key, 0) + value
-    return merged
 
 
 @dataclass
@@ -327,7 +311,7 @@ class ReflectionStrategy:
         refine_round = 0
         while True:
             # 终止护栏（P3）：用户取消 / 总时长超限 → 停机降级采用最近稿（保留进度）
-            aborted, abort_reason = self._should_abort(
+            aborted, abort_reason = should_abort(
                 cancel_event, start_time, max_execution_time
             )
             if aborted:
@@ -347,7 +331,7 @@ class ReflectionStrategy:
             # 成本护栏：发起新付费调用前 check（react + 自查/修正累计，超限停机降级）
             if self._cost_limiter is not None:
                 exceeded, cost = self._cost_limiter.check(
-                    _merge_usage(react_outcome.usage, self._structured_usage)
+                    merge_usage(react_outcome.usage, self._structured_usage)
                 )
                 if exceeded:
                     for e in self._finalize(
@@ -369,9 +353,7 @@ class ReflectionStrategy:
                 evidence, current, react_outcome.iterations
             )
             if crit_usage:
-                self._structured_usage = _merge_usage(
-                    self._structured_usage, crit_usage
-                )
+                self._structured_usage = merge_usage(self._structured_usage, crit_usage)
             if critique is None:
                 # 自查失败 → 降级采用当前稿（best-effort，不抛错）
                 suffix = "（STOP）" if crit_action == AgentErrorAction.STOP else ""
@@ -430,9 +412,7 @@ class ReflectionStrategy:
                 evidence, current, issues, react_outcome.iterations
             )
             if ref_usage:
-                self._structured_usage = _merge_usage(
-                    self._structured_usage, ref_usage
-                )
+                self._structured_usage = merge_usage(self._structured_usage, ref_usage)
             if refined is None:
                 # 修正失败 → 降级采用当前稿（best-effort）
                 suffix = "（STOP）" if ref_action == AgentErrorAction.STOP else ""
@@ -452,27 +432,82 @@ class ReflectionStrategy:
             current = refined
             # 回到循环顶部 → 重新自查修正稿（真迭代的关键：新反馈驱动下一轮）
 
-    def _should_abort(
-        self,
-        cancel_event: asyncio.Event | None,
-        start_time: float,
-        max_execution_time: float | None,
-    ) -> tuple[bool, str]:
-        """反思循环终止检查：用户取消 / 总时长超限。返回 (是否终止, 原因)。
-
-        P3 护栏：与 ReAct 收集阶段对称——自查/修正循环除 cost_limiter 外补
-        cancel（用户取消保留进度）与 max_execution_time（总预算）两重护栏。
-        """
-        if cancel_event is not None and cancel_event.is_set():
-            return True, "用户取消"
-        if (
-            max_execution_time is not None
-            and time.monotonic() - start_time > max_execution_time
-        ):
-            return True, "执行超时"
-        return False, ""
-
     # ── 内部辅助 ──
+
+    async def _critique(
+        self,
+        evidence: list[dict[str, Any]],
+        draft: dict[str, Any],
+        iteration: int,
+    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
+        """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
+
+        捕获 AppError 全家族（拒答 / 工具调用 / 截断 / 认证熔断等不可恢复错误）
+        统一分发降级（REASON-010）；非 AppError 编程错误不吞，向上冒泡（fail fast）。
+        """
+        try:
+            messages = [
+                {
+                    "role": "user",
+                    "content": PromptManager.build_reflection_critique_prompt(
+                        evidence, draft
+                    ),
+                }
+            ]
+            usage: dict = {}
+            result = await self._llm.generate_structured(
+                messages,
+                self._critique_schema,
+                model_key=self._critique_model_key,
+                usage=usage,
+            )
+            return result, None, usage
+        except AppError as e:
+            action = await dispatch_error(
+                self._error_handlers,
+                AgentErrorKind.CRITIQUE_FAILED,
+                f"自查生成失败: {e}",
+                iteration,
+            )
+            return None, action, None
+
+    async def _refine(
+        self,
+        evidence: list[dict[str, Any]],
+        draft: dict[str, Any],
+        issues: list[dict[str, Any]],
+        iteration: int,
+    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
+        """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
+
+        捕获 AppError 全家族（拒答 / 工具调用 / 截断 / 认证熔断等不可恢复错误）
+        统一分发降级（REASON-010）；非 AppError 编程错误不吞，向上冒泡（fail fast）。
+        """
+        try:
+            messages = [
+                {
+                    "role": "user",
+                    "content": PromptManager.build_reflection_refine_prompt(
+                        evidence, draft, issues
+                    ),
+                }
+            ]
+            usage: dict = {}
+            result = await self._llm.generate_structured(
+                messages,
+                self._output_schema,
+                model_key=self._critique_model_key,
+                usage=usage,
+            )
+            return result, None, usage
+        except AppError as e:
+            action = await dispatch_error(
+                self._error_handlers,
+                AgentErrorKind.CRITIQUE_FAILED,
+                f"修正失败: {e}",
+                iteration,
+            )
+            return None, action, None
 
     def _finalize(
         self,
@@ -504,7 +539,7 @@ class ReflectionStrategy:
             iterations=react_outcome.iterations,
             total_tokens=react_outcome.total_tokens
             + self._structured_usage.get("total_tokens", 0),
-            usage=_merge_usage(react_outcome.usage, self._structured_usage) or None,
+            usage=merge_usage(react_outcome.usage, self._structured_usage) or None,
             structured=structured,
             draft=draft,
             critique=critique,
@@ -527,117 +562,3 @@ class ReflectionStrategy:
             )
         )
         return events
-
-    async def _critique(
-        self,
-        evidence: list[dict[str, Any]],
-        draft: dict[str, Any],
-        iteration: int,
-    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
-        """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
-
-        捕获 AppError 全家族（拒答 / 工具调用 / 截断 / 认证熔断等不可恢复错误）
-        统一分发降级（REASON-010）；非 AppError 编程错误不吞，向上冒泡（fail fast）。
-        """
-        try:
-            result, usage = await self._generate_critique(evidence, draft)
-            return result, None, usage
-        except AppError as e:
-            result, action = await self._dispatch_critique_failed_result(
-                f"自查生成失败: {e}", iteration
-            )
-            return result, action, None
-
-    async def _refine(
-        self,
-        evidence: list[dict[str, Any]],
-        draft: dict[str, Any],
-        issues: list[dict[str, Any]],
-        iteration: int,
-    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
-        """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
-
-        捕获 AppError 全家族（拒答 / 工具调用 / 截断 / 认证熔断等不可恢复错误）
-        统一分发降级（REASON-010）；非 AppError 编程错误不吞，向上冒泡（fail fast）。
-        """
-        try:
-            result, usage = await self._generate_refine(evidence, draft, issues)
-            return result, None, usage
-        except AppError as e:
-            result, action = await self._dispatch_critique_failed_result(
-                f"修正失败: {e}", iteration
-            )
-            return result, action, None
-
-    async def _generate_critique(
-        self,
-        evidence: list[dict[str, Any]],
-        draft: dict[str, Any],
-    ) -> tuple[dict | None, dict | None]:
-        """自查：对照证据链审查初稿，产出结构化自查报告（CRITIQUE_SCHEMA）。
-
-        Returns:
-            (自查结果, 本次调用 token 用量)——用量经 usage 可变参数回填（成本计量）。
-        """
-        messages = [
-            {
-                "role": "user",
-                "content": PromptManager.build_reflection_critique_prompt(
-                    evidence, draft
-                ),
-            }
-        ]
-        usage: dict = {}
-        result = await self._llm.generate_structured(
-            messages,
-            self._critique_schema,
-            model_key=self._critique_model_key,
-            usage=usage,
-        )
-        return result, usage or None
-
-    async def _generate_refine(
-        self,
-        evidence: list[dict[str, Any]],
-        draft: dict[str, Any],
-        issues: list[dict[str, Any]],
-    ) -> tuple[dict | None, dict | None]:
-        """修正：基于证据链 + 审查意见完整重写（REFLECTION_SCHEMA）。
-
-        Returns:
-            (修正结果, 本次调用 token 用量)——用量经 usage 可变参数回填（成本计量）。
-        """
-        messages = [
-            {
-                "role": "user",
-                "content": PromptManager.build_reflection_refine_prompt(
-                    evidence, draft, issues
-                ),
-            }
-        ]
-        usage: dict = {}
-        result = await self._llm.generate_structured(
-            messages,
-            self._output_schema,
-            model_key=self._critique_model_key,
-            usage=usage,
-        )
-        return result, usage or None
-
-    async def _dispatch_critique_failed_result(
-        self,
-        message: str,
-        iteration: int,
-    ) -> tuple[None, AgentErrorAction]:
-        """CRITIQUE_FAILED 分发：RAISE 抛 AgentRunError；否则返回 (None, action) 供调用方降级。"""
-        action = await self._error_handlers.dispatch(
-            AgentErrorKind.CRITIQUE_FAILED,
-            AgentErrorContext(
-                kind=AgentErrorKind.CRITIQUE_FAILED,
-                message=message,
-                iteration=iteration,
-            ),
-        )
-        if action == AgentErrorAction.RAISE:
-            raise AgentRunError(AgentErrorKind.CRITIQUE_FAILED, message, iteration)
-        return None, action

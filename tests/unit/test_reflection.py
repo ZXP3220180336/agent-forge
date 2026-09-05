@@ -14,6 +14,7 @@ import json
 import pytest
 
 from app.domain.reasoning import ReflectionOutcome, ReflectionStrategy
+from app.domain.reasoning._common import should_abort
 from app.domain.reasoning.reflection import CRITIQUE_SCHEMA, REFLECTION_SCHEMA
 from app.domain.prompts.templates.reflection import CRITIQUE_PROMPT
 from app.integration.tools.base import BaseTool, ToolResult
@@ -610,10 +611,9 @@ async def test_reflect_cost_limit_stops():
 
 def test_should_abort_cancel_event():
     """用户取消 → 终止（原因含「用户取消」）。"""
-    strategy = _make_strategy(_ReflectionLLM([], []))
     cancel = asyncio.Event()
     cancel.set()
-    aborted, reason = strategy._should_abort(cancel, 0.0, None)
+    aborted, reason = should_abort(cancel, 0.0, None)
     assert aborted is True
     assert "用户取消" in reason
 
@@ -622,8 +622,7 @@ def test_should_abort_timeout():
     """总时长超限（start 在过去）→ 终止（原因含「执行超时」）。"""
     import time as _time
 
-    strategy = _make_strategy(_ReflectionLLM([], []))
-    aborted, reason = strategy._should_abort(
+    aborted, reason = should_abort(
         None, start_time=_time.monotonic() - 100, max_execution_time=5
     )
     assert aborted is True
@@ -632,8 +631,7 @@ def test_should_abort_timeout():
 
 def test_should_abort_ok():
     """无取消 + 未超时 → 不终止。"""
-    strategy = _make_strategy(_ReflectionLLM([], []))
-    aborted, reason = strategy._should_abort(None, 0.0, None)
+    aborted, reason = should_abort(None, 0.0, None)
     assert aborted is False
     assert reason == ""
 

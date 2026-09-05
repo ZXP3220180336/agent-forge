@@ -45,7 +45,6 @@ from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
 from app.shared.error_handling import (
     AgentErrorAction,
-    AgentErrorContext,
     AgentErrorKind,
     AgentRunError,
     ErrorHandlerRegistry,
@@ -61,6 +60,8 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError
 
+from ._common import _FINAL_ANSWER_TOOL, dispatch_error
+
 # 策略层标准库日志（对齐「只依赖 ports + shared + 标准库」依赖方向，不用 platform 的
 # get_logger）；logger 名对齐 app.* 命名空间，可被 setup_logging 的 handler 捕获。
 _logger = logging.getLogger("app.domain.reasoning.react")
@@ -74,11 +75,6 @@ def _truncate_with_marker(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - len(_TRUNCATED_MARKER)] + _TRUNCATED_MARKER
-
-
-# 结构化最终答案工具（Final Answer 模式，SMOL / OpenAI 官方）：模型最后调用提交
-# schema 约束的结构化结果并终止循环。注入工具（非注册工具，识别在 execute 主循环）。
-_FINAL_ANSWER_TOOL = "final_answer"
 
 
 def _build_final_answer_tool(schema: dict) -> dict:
@@ -127,7 +123,7 @@ def _action_fingerprint(tool_calls: list[dict]) -> str:
             continue
         try:
             args = json.loads(tc["function"]["arguments"])
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             args = tc.get("function", {}).get("arguments", "")
         sig.append((name, args))
     return json.dumps(sig, sort_keys=True, ensure_ascii=False, default=str)
@@ -753,13 +749,9 @@ class ReActStrategy:
     async def _dispatch(
         self, kind: AgentErrorKind, message: str, iteration: int
     ) -> AgentErrorAction:
-        """错误分发：RAISE 抛 AgentRunError，否则返回 action（react.py 内 13 处分发唯一入口）。"""
-        action = await self._error_handlers.dispatch(
-            kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
-        )
-        if action == AgentErrorAction.RAISE:
-            raise AgentRunError(kind, message, iteration)
-        return action
+        """错误分发（react 内唯一入口）：RAISE 决策抛 AgentRunError，否则返回 action——
+        委托共享 _common.dispatch_error。"""
+        return await dispatch_error(self._error_handlers, kind, message, iteration)
 
     def _finalize_outcome(
         self,
@@ -834,9 +826,7 @@ class ReActStrategy:
         )
         if action == AgentErrorAction.CONTINUE:
             return [
-                build_info_event(
-                    f"LLM 失败，按错误处理策略重试: {stream_result.error}"
-                )
+                build_info_event(f"LLM 失败，按错误处理策略重试: {stream_result.error}")
             ]
         # STOP（默认）：短路失败
         return self._finalize_outcome(

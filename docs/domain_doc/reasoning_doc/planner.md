@@ -57,7 +57,7 @@
 
 ### 每步隔离上下文
 
-`_step_messages` 为每步组装独立上下文：system 前缀 + 已完成步骤摘要（`_executed_summary`，只带结果摘要不带原始工具 transcript）+ 当前步骤指令——**不累积原始工具 transcript**，防跨步 token 线性膨胀、保步骤独立。前提：步骤自包含（需要上一步数值就在摘要里带，未覆盖则应合并成一步）。
+`_step_messages` 为每步组装独立上下文：system 前缀 + 已完成步骤摘要（每步只带结果摘要 [:500]，不带原始工具 transcript，整体 [:4000] 限长）+ 当前步骤指令——**不累积原始工具 transcript**，防跨步 token 线性膨胀、保步骤独立。前提：步骤自包含（需要上一步数值就在摘要里带，未覆盖则应合并成一步）。
 
 ### depends_on 顺序纪律断言（串行单 Agent）
 
@@ -114,7 +114,7 @@ PlannerStrategy.execute()（三阶段）
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, plan_schema=None, replan_schema=None, result_schema=None, plan_model_key="fast", summarize_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema / 结构化模型键可注入覆盖 |
 | `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, max_replan_rounds=2, tool_timeout=None, tool_max_retries=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 三阶段主流程（见「执行流程」）；yield SSE 事件，结果写入 `outcome` |
 
-私有辅助：`_should_abort`（取消 / 超时终止检查）· `_remaining_time`（全局墙钟 → 每步剩余预算）· `_running_usage` / `_absorb_react`（跨轮 usage 累计）· `_passthrough`（透传 react 事件并抑制中间 done）· `_tool_catalog` / `_step_messages` / `_executed_summary`（上下文组装）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_normalize_steps`（id 单调赋值 + 依赖清洗）· `_plan` / `_replan` / `_summarize` / `_dispatch_plan_failed`（结构化调用 + PLAN_FAILED 分发）· `_finalize`（收尾 outcome + done 事件）。
+私有辅助：`_guard_exceeded`（终止 `_common.should_abort` + 成本超限检查合一，三阶段入口共用护栏；跨轮 usage 累计在 cost check 内联）· `_absorb_react`（react 子跑 usage/iterations 归并）· `_tool_catalog` / `_step_messages`（工具目录 / 每步隔离上下文，已完成步骤摘要已并入）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_normalize_steps`（id 单调赋值 + 依赖清洗）· `_plan` / `_replan` / `_summarize`（结构化调用；PLAN_FAILED 分发经共享 `_common.dispatch_error`）· `_finalize`（收尾 outcome + done 事件）。
 
 ### PlannerOutcome（结果载体）
 
@@ -170,7 +170,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
    └─ 成功 → _finalize：PlannerOutcome + info + done（total_tokens = react 各步 + 结构化累计）
 ```
 
-> done 抑制与口径一致（REASON-011 模式）：每步 ReAct 中间 done 被 `_passthrough` 过滤，事件流仅保留收尾 1 个 done；done 的 total_tokens 与 outcome 对齐（react 各步 + plan/replan/summarize 结构化累计）。
+> done 抑制与口径一致（REASON-011 模式）：每步 ReAct 中间 done 在子跑事件透传时被抑制（execute 内 `_run_react`），事件流仅保留收尾 1 个 done；done 的 total_tokens 与 outcome 对齐（react 各步 + plan/replan/summarize 结构化累计）。
 
 ## 对外接口
 
@@ -194,7 +194,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 | 结构化输出截断 | 集成层短路返回 None → 走 None 降级路径（本层无感知） |
 | 步骤执行抛非 AppError 编程错误 | 不吞，向上冒泡（fail fast） |
 | cancel 在步骤 react 中置位 | 立即终止并部分汇总（防被误判步骤失败而 replan）；阶段顶部终止 → 未开始 / 部分进度降级 |
-| 总时长超限（全局墙钟） | 每步 ReAct 转剩余预算（`_remaining_time`，下界 0.05s）；阶段顶部超限 → 采用已完成步骤 |
+| 总时长超限（全局墙钟） | 每步 ReAct 转剩余预算（全局墙钟差额，下界 0.05s）；阶段顶部超限 → 采用已完成步骤 |
 | 成本超限（cost_limiter） | 每阶段发起付费调用前 check；超限 → 停机降级（未开始 / 部分进度） |
 | 每步隔离前提被破坏（需上一步数值未带进摘要） | 步骤自包含约束要求；未覆盖应合并成一步（提示层纪律） |
 | 同一实例并发 / 多次 execute | 不并发复用——outcome 与累计态在每次 execute 覆盖，每次运行新建或串行读取 |

@@ -78,7 +78,7 @@
 
 | # | 特性 | 状态 | 本项目实现 |
 | --- | --- | --- | --- |
-| 1 | 三阶段显式分离 | ✅ | `execute()` 分阶段（收集+初稿 → 自查 → 修正），独立私有方法（`_generate_critique` / `_generate_refine`），非单一 prompt（[reflection.py](../../../app/domain/reasoning/reflection.py)） |
+| 1 | 三阶段显式分离 | ✅ | `execute()` 分阶段（收集+初稿 → 自查 → 修正），自查/修正各自独立方法（`_critique` / `_refine`，内联结构化调用），非单一 prompt（[reflection.py](../../../app/domain/reasoning/reflection.py)） |
 | 2 | Critic 上下文隔离 | ✅ | 自查消息 = 独立 LLM 调用（证据链记录 + 初稿），与生成循环中间推理隔离；`critique_model_key` 可注入异模型（增强 #14 入口） |
 | 3 | Grounding（证据锚定） | ✅ | `CRITIQUE_PROMPT` 注入证据链记录，grounding 为自查第 1 维度——每条 claim 的 supporting_evidence 必须引用真实工具记录 |
 | 4 | 结构化 Critique 输出 | ✅ | `CRITIQUE_SCHEMA`：ok + issues[]（severity / dimension 9 枚举 / claim / description） |
@@ -144,7 +144,7 @@
 | --- | --- | --- | --- |
 | **P1** | 自查/修正异常捕获只覆盖 `StructuredRefusalError`/`ToolCallError`，熔断等不可恢复 AppError 冒泡崩溃（降级保证不完整） | `_critique`/`_refine` 改 `except AppError` 统一捕获 + 集成层 openai 不可恢复异常归一 `LLMAPIError`（AppError 树）→ 领域层统一兜底 | ✅ [REASON-010](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md) |
 | **P2** | done 事件 total_tokens 只报 react 收集阶段，漏计 critique/refine 用量（SSE 事件与 outcome 事实源漂移，成本审计失真） | `_finalize` done 事件口径与 outcome 一致（react + 结构化累计）+ 抑制 ReAct 中间 done（事件流仅保留收尾 1 个） | ✅ [REASON-011](../../../issues/domain/reasoning/2026-09-01-reflect-done-token-caliber.md) |
-| **P3** | 反思循环只有 cost_limiter 一重护栏，cancel / 总时长超限未检查（与 ReAct 收集阶段三重护栏不对称，取消/超时后仍发付费调用） | `_should_abort` 循环顶部检查（用户取消 / `max_execution_time` 超限 → 停机降级采用最近稿） | ✅ 见 [reflection.md](reflection.md) 边界情况 |
+| **P3** | 反思循环只有 cost_limiter 一重护栏，cancel / 总时长超限未检查（与 ReAct 收集阶段三重护栏不对称，取消/超时后仍发付费调用） | `should_abort` 循环顶部检查（用户取消 / `max_execution_time` 超限 → 停机降级采用最近稿） | ✅ 见 [reflection.md](reflection.md) 边界情况 |
 | **P4** | 次要项：`explicit_abstention` 可选（产品「显式放弃」软契约）· 实例非协程安全未声明 · critique/refine 未显式传 max_tokens | P4-2 `required` 加 `explicit_abstention`（程序化强制）· P4-3 docstring 声明实例单次执行 · P4-1 评估非缺口（默认预算 `llm_structured_max_tokens` + 截断降级兜底），文档说明 | ✅ 见 [reflection.md](reflection.md) 边界情况 |
 
 ---
