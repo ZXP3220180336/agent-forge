@@ -1,7 +1,7 @@
 # 推理策略模块对外接口文档
 
 > **对应代码**：`app/domain/reasoning/`
-> **更新日期**：2026-09-05
+> **更新日期**：2026-09-06
 > **文档定位**：推理策略模块对外接口文档——策略类契约 + 内部组件导航；服务对象为 agent/ 层编排（ReActAgent / PlannerAgent / ReflectionAgent）
 > **实现状态**：✅ 已实现（react.py ✅；reflection.py ✅；planner.py ✅；chain_of_thought 预留）
 
@@ -40,6 +40,7 @@
 ```text
 app/domain/reasoning/
 ├── __init__.py          # 子包导出（ReAct / Reflection / Planner 策略 + Outcome）
+├── _common.py           # 策略共享小工具（dispatch_error / guard_exceeded / merge_usage / 常量）
 ├── react.py             # ReAct 推理（ReActStrategy + ReActOutcome，✅）
 ├── reflection.py        # Reflection 推理（ReflectionStrategy + ReflectionOutcome，✅）
 ├── planner.py           # Planner 推理（PlannerStrategy + PlannerOutcome，✅）
@@ -63,7 +64,7 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
     └── ...
 ```
 
-**依赖方向**：`reasoning/` 只依赖 ports + shared（不 import `agent/`，策略收标量参数而非 AgentContext），被 agent/ 层编排调用。
+**依赖方向**：`reasoning/` 只依赖 ports + shared + prompts（提示词组装；不 import `agent/`，策略收标量参数而非 AgentContext），被 agent/ 层编排调用。
 
 ---
 
@@ -78,7 +79,7 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 | `PlannerStrategy` | `execute(...)` + `outcome` | ✅ | 完整契约见 [planner.md](planner.md) |
 | CoT | 预留 | ⬜ | — |
 
-被编排方式：`ReActAgent._strategy_cycle()` 委托 `ReActStrategy.execute()`；`ReflectionAgent._strategy_cycle()` 委托 `ReflectionStrategy.execute()`；`PlannerAgent._strategy_cycle()` 委托 `PlannerStrategy.execute()`（其每步执行再复用内部 `ReActStrategy.execute` 做被步骤约束的 agent 循环，见 [planner.md](planner.md)）。`execute_tool_calls()` 是无护栏的裸工具并行原语，保留作 ReActAgent 转发入口（向后兼容），不再是 Planner 执行阶段入口。
+被编排方式：`ReActAgent._strategy_cycle()` 委托 `ReActStrategy.execute()`；`ReflectionAgent._strategy_cycle()` 委托 `ReflectionStrategy.execute()`；`PlannerAgent._strategy_cycle()` 委托 `PlannerStrategy.execute()`（其每步执行再复用内部 `ReActStrategy.execute` 做被步骤约束的 agent 循环，见 [planner.md](planner.md)）。`execute_tool_calls()` 是无护栏的裸工具并行原语，保留作 ReActAgent 转发入口。
 
 ---
 
@@ -89,19 +90,14 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 | [react.md](react.md) | `react.py` | ReAct 推理（ReActStrategy + ReActOutcome） | ✅ |
 | [reflection.md](reflection.md) | `reflection.py` | Reflection 推理（生成 → 自查 → 修正） | ✅ |
 | [planner.md](planner.md) | `planner.py` | Planner 推理（规划 → 逐步骤执行 → 汇总，Plan-then-Execute） | ✅ |
+| [_common.md](_common.md) | `_common.py` | 策略共享小工具（dispatch_error / guard_exceeded / merge_usage / 常量） | 🔶 |
 | chain_of_thought.py | `chain_of_thought.py` | CoT 推理（纯推理引导） | ⬜ 预留 |
 
 ---
 
 ## Reflection 设计启示（已落地）
 
-> 依据：learning-agent 项目的 Reflection 实验（批量转换任务 × 注入语义错误 × 对照），验证"程序校验查形状 vs 模型自查查语义"的分工与边界。启示已全部落地到 [reflection.md](reflection.md)（grounding 证据锚定 / 自查清单穷举 / 地面真值兜底）与 [reflection_benchmark.md](reflection_benchmark.md)（工业级对标）。
-
-1. **程序校验与模型自查分工互补**：程序校验（jsonschema）查形状，模型自查查语义——`REFLECTION_SCHEMA` / `CRITIQUE_SCHEMA` 程序校验形状，自查清单补语义。
-2. **自查范围 = 提示词清单（Scope 盲区）**：`CRITIQUE_PROMPT` 穷举 9 个核对维度（grounding / consistency / fabrication / attribution / confidence / evidence_gap / completeness / internal_consistency / next_steps），清单为唯一自查范围。
-3. **自查多报无害、漏报危险**：critic 输出结构化 issues，修正环节兜底（不盲目采纳）。
-4. **能规则化的交给规则**：形状 / 值域交给 jsonschema，语义交给自查。
-5. **修正用地面真值兜底**：`REFINE_PROMPT` 基于证据链重写，与证据链矛盾的 issues 不采纳。
+> 依据：learning-agent 项目的 Reflection 实验（批量转换任务 × 注入语义错误 × 对照）。启示已全部落地——程序校验查形状、模型自查查语义的分工与边界、自查清单穷举、地面真值兜底等设计要点逐条见 [reflection.md](reflection.md)（grounding / 自查清单 / 修正兜底）；工业级对标见 [reflection_benchmark.md](reflection_benchmark.md)。
 
 ## CoT 预留
 
@@ -114,6 +110,7 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 - [ReActStrategy 策略组件](react.md) + [ReAct 工业级对标基准](react_benchmark.md)
 - [ReflectionStrategy 策略组件](reflection.md) + [Reflection 工业级对标基准](reflection_benchmark.md)
 - [PlannerStrategy 策略组件](planner.md) + [Planner 工业级对标基准](planner_benchmark.md)
+- [共享小工具 _common](_common.md)
 - [领域层说明](../README.md)
 - [Agent 模块对外接口文档](../agent_doc/agent.md)（含 [ReActAgent 桥接组件](../agent_doc/executor.md)）
 - [架构设计](../../architecture.md)

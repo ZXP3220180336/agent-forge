@@ -16,11 +16,6 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 
-# 结构化最终答案工具名（Final Answer 模式，SMOL / OpenAI 官方）：模型最后调用提交
-# schema 约束的结构化结果并终止循环。注入工具（非注册工具），react 识别 / reflection
-# 从证据链剔除均引用此常量。
-_FINAL_ANSWER_TOOL = "final_answer"
-
 
 def merge_usage(*usages: dict | None) -> dict:
     """合并多个 usage dict（prompt/completion/total 累加）；全空返回空 dict。"""

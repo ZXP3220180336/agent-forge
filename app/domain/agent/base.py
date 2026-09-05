@@ -11,10 +11,10 @@ Agent 基类定义
 - 流式友好：通过 _emit_event() 生成 SSE 事件，内层逻辑与外层输出解耦
 - 可扩展：钩子方法 on_tool_call / on_thought / on_complete 供子类覆盖
 
-支持策略（逐步实现）：
-- ReAct（当前）：推理 → 工具 → 推理 → 工具 → ...
-- Plan-then-Execute（预留）：先规划再批量执行
-- Reflection（预留）：输出后自我反思修正
+支持策略：
+- ReAct：推理 → 工具 → 推理 → 工具 → ...（ReActAgent，见 executor.py）
+- Plan-then-Execute：先规划再批量执行（PlannerAgent，见 planner.py）
+- Reflection：生成 → 自查 → 修正（ReflectionAgent，见 reflection.py）
 """
 
 import asyncio
@@ -234,9 +234,9 @@ class BaseAgent(ABC):
         """
         策略循环——子类在此实现具体的推理策略。
 
-        - ReAct（当前）：推理 → 工具 → 推理 → ...
-        - Plan-then-Execute（预留）：先规划再执行
-        - Reflection（预留）：生成 → 反思 → 修正
+        - ReAct：推理 → 工具 → 推理 → ...（ReActAgent，executor.py）
+        - Plan-then-Execute：先规划再执行（PlannerAgent，planner.py）
+        - Reflection：生成 → 反思 → 修正（ReflectionAgent，reflection.py）
 
         Args:
             user_input: 用户原始输入

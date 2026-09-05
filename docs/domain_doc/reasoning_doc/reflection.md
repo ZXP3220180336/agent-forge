@@ -1,7 +1,7 @@
 # ReflectionStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/reflection.py`
-> **更新日期**：2026-08-31
+> **更新日期**：2026-09-06
 > **职责**：Reflection 原子推理策略——生成 → 自查 → 修正三阶段，模型自我评估输出质量并改进
 > **状态**：✅ 已实现
 > **配套**：桥接见 [agent/reflection.py](../agent_doc/agent.md)；工业级对标见 [reflection_benchmark.md](reflection_benchmark.md)
@@ -30,6 +30,7 @@
   - [配置项清单](#配置项清单)
   - [测试状态](#测试状态)
   - [设计决策](#设计决策)
+  - [问题记录](#问题记录)
   - [相关文档](#相关文档)
 
 ---
@@ -125,7 +126,7 @@ ReflectionStrategy.execute()（三阶段）
 阶段一 收集+初稿：ReAct.execute(output_schema=REFLECTION_SCHEMA)
   ├─ react 失败 → 降级 outcome（error 透传）
   ├─ react 无 structured → 降级（content 保留）
-  └─ draft = outcome.structured；evidence = outcome.tool_calls（序列化剔除 final_answer）
+  └─ draft = outcome.structured；evidence = outcome.tool_calls（critique 序列化时剔除 final_answer 终止条目）
 阶段二+三 自查 → 修正 → 复查 循环（真迭代，每次修正后重新自查）：
   current = draft
   while True:
@@ -161,7 +162,7 @@ ReflectionStrategy.execute()（三阶段）
 | 总时长超限（elapsed > max_execution_time） | 停机降级采用最近稿（degraded=True，error 标注执行超时） |
 | critique/refine 结构化输出超预算 | 走 generate_structured 默认预算（settings.llm_structured_max_tokens）；截断由集成层短路返回 None → 走 None 降级（不崩溃，P4） |
 | 同一实例并发 / 多次 execute | 不并发复用——outcome/_structured_usage 被覆盖，每次运行新建或串行读取（P4） |
-| 证据链含 final_answer 条目 | 序列化时剔除（终止工具非真实证据） |
+| 证据链含 final_answer 条目（校验失败留痕，非真实证据） | critique 序列化时经 `prompts/manager._serialize_evidence` 剔除（以字面量实现——prompts 不依赖 reasoning，规避环） |
 | 证据链为空 + draft 引用不存在证据 | 自查 grounding 维度抓出（Grounding 价值） |
 
 ## 配置项清单
@@ -188,6 +189,12 @@ ReflectionStrategy.execute()（三阶段）
 ## 设计决策
 
 - 三阶段显式分离动机、grounding 反内在自查（Huang et al.）、schema 常量+注入取舍、新增 CRITIQUE_FAILED 理由、降级路由、cost 缺口取舍——见 [ADR reflection-strategy](../../../adr/domain/reasoning/2026-08-31-reflection-strategy.md)
+
+## 问题记录
+
+- [REASON-009 修正循环复用同批 issues](../../../issues/domain/reasoning/2026-09-01-reflect-refine-loop.md)：复用同一批 issues 反复修正是反模式——修正后必重新自查（真迭代）
+- [REASON-010 自查/修正失败降级缺口](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md)：不可恢复 AppError / 结构化截断未覆盖降级——统一 CRITIQUE_FAILED 分发 + 集成层短路返回 None
+- [REASON-011 done 事件 token 口径](../../../issues/domain/reasoning/2026-09-01-reflect-done-token-caliber.md)：ReAct 中间 done 泄漏 / total_tokens 口径不一致——抑制中间 done，收尾 1 个 done 与 outcome 一致
 
 ## 相关文档
 

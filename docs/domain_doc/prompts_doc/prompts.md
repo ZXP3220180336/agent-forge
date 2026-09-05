@@ -1,7 +1,7 @@
 # 提示词模块对外接口文档
 
 > **对应代码**：`app/domain/prompts/`
-> **更新日期**：2026-09-05
+> **更新日期**：2026-09-06
 > **文档定位**：提示词模块对外接口文档——`PromptManager` 接口契约 + 内部模板导航；服务对象为领域层 Agent 编排（ReActAgent / PlannerAgent / ReflectionAgent）
 > **实现状态**：✅ 已实现（system / tools / reflection / planning 模板 + manager builder 全覆盖；planning 三模板随 Planner 落地）
 
@@ -46,7 +46,7 @@ app/domain/prompts/
 └── templates/           # 提示词模板
     ├── system.py        # SYSTEM_PROMPT 系统提示词
     ├── tools.py         # TOOL_FORMAT_PROMPT 工具格式提示词
-    ├── reflection.py    # CRITIQUE_PROMPT / REFINE_PROMPT 自查与修正提示词
+    ├── reflection.py    # CRITIQUE_PROMPT / REFINE_PROMPT 自查与修正提示词 + REFLECTION_SYSTEM_PROMPT（可选注入）
     └── planning.py      # PLANNING_PROMPT / REPLAN_PROMPT / SUMMARIZE_PROMPT 规划提示词
 ```
 
@@ -105,8 +105,11 @@ pm = PromptManager()
 # 不带工具描述（简单问答）
 system_prompt = pm.build_system_prompt()
 
-# 带工具描述（Agent 需要调用工具）
-tools_desc = "\n".join(f"- {t.name}: {t.description}" for t in tool_service.list_tools())
+# 带工具描述（Agent 需要调用工具）：经 ToolService.get_openai_tools() 导出工具描述
+tools = tool_service.get_openai_tools()  # list[dict]（OpenAI function schema）
+tools_desc = "\n".join(
+    f"- {t['function']['name']}: {t['function']['description']}" for t in tools
+)
 system_prompt = pm.build_system_prompt(tools_desc)
 
 messages = [{"role": "system", "content": system_prompt}]
@@ -120,7 +123,7 @@ messages = [{"role": "system", "content": system_prompt}]
 | --- | --- | --- | --- |
 | `SYSTEM_PROMPT` | templates/system.py | 系统提示词：核心能力 / 工作方式 / 原则 | ✅ |
 | `TOOL_FORMAT_PROMPT` | templates/tools.py | 工具格式说明（`format(tools=...)` 注入工具列表 + 截断提示） | ✅ |
-| `CRITIQUE_PROMPT` / `REFINE_PROMPT` | templates/reflection.py | Reflection 自查 / 修正提示词（见 [reflection.md](../reasoning_doc/reflection.md)） | ✅ |
+| `CRITIQUE_PROMPT` / `REFINE_PROMPT` / `REFLECTION_SYSTEM_PROMPT` | templates/reflection.py | Reflection 自查 / 修正提示词 + 生成阶段 system 约束（`REFLECTION_SYSTEM_PROMPT` 可选注入，非 PromptManager 消费，见 [reflection.md](../reasoning_doc/reflection.md)） | ✅ |
 | `PLANNING_PROMPT` / `REPLAN_PROMPT` / `SUMMARIZE_PROMPT` | templates/planning.py | Planner 规划 / 重规划 / 汇总提示词（见 [planner.md](../reasoning_doc/planner.md)） | ✅ |
 | `PromptManager`（builder + 序列化） | manager.py | 组装入口 + 证据/步骤序列化（方法见「PromptManager 方法表」） | ✅ |
 

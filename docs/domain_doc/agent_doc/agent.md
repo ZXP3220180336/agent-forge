@@ -1,7 +1,7 @@
 # Agent 模块对外接口文档
 
 > **对应代码**：`app/domain/agent/`
-> **更新日期**：2026-09-05
+> **更新日期**：2026-09-06
 > **文档定位**：Agent 模块对外接口文档——`BaseAgent` 统一入口的接口契约 + 内部组件导航；
 > 服务对象为 Agent 模块的**外部调用方**（应用层 / API 层）
 > **实现状态**：✅ 已实现（BaseAgent + ReActAgent + ReflectionAgent + PlannerAgent）
@@ -24,6 +24,7 @@
     - [BaseAgent 方法表](#baseagent-方法表)
     - [ReActAgent](#reactagent)
     - [PlannerAgent](#planneragent)
+    - [ReflectionAgent](#reflectionagent)
     - [对外异常契约](#对外异常契约)
     - [最小调用示例](#最小调用示例)
   - [内部实现组织](#内部实现组织)
@@ -111,16 +112,17 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 
 #### `AgentResult`（执行结果，经 `agent.result` 读取）
 
-| 字段 | 说明 |
-| --- | --- |
-| `success` | 是否成功 |
-| `content` / `reasoning` | 最终回答 / 完整推理过程（累计） |
-| `structured` | 结构化最终答案（final_answer 工具产出，`output_schema` 启用时） |
-| `tool_calls` | 工具调用记录（`{tool, params, result, success, error, error_code, duration}` 列表） |
-| `iterations` | 实际执行轮数 |
-| `total_tokens` / `usage` | Token 总数 / 明细（prompt/completion/total，累计） |
-| `error` | 失败原因 |
-| `metadata` | 扩展字段 |
+| 字段 | 类型 / 默认 | 说明 |
+| --- | --- | --- |
+| `success` | `bool`（必填） | 是否成功 |
+| `content` | `str`（必填） | 最终回答 |
+| `reasoning` | `str = ""` | 推理过程 |
+| `structured` | `dict \| None = None` | 结构化最终答案（final_answer / Reflection 终稿产出） |
+| `tool_calls` | `list[dict] = []` | 工具调用记录（`{tool, params, result, success, error, error_code, duration}` 列表） |
+| `iterations` | `int = 0` | 实际执行轮数 |
+| `total_tokens` / `usage` | `int = 0` / `dict \| None = None` | Token 总数 / 明细（prompt/completion/total，累计） |
+| `error` | `str \| None = None` | 失败原因 |
+| `metadata` | `dict = {}` | 扩展字段 |
 
 ### BaseAgent 方法表
 
@@ -143,12 +145,7 @@ agent = ReActAgent(llm=llm_service, tools=tool_service)
 #                   cost_limiter=cost_limiter, cancel_event=task_service.create_cancel_event(sid)
 ```
 
-1. 构造：`ReActAgent(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, cancel_event=None)`
-   - `context_budget` 为上下文预算端口（应用层 ContextManager 注入，见 [ports.md](../ports_doc/ports.md)）
-   - `error_handlers` 为错误处理注册表（共享内核横切入口，见「对外异常契约」）
-   - `cost_limiter` 为成本护栏端口（应用层 CostLimiter 注入，见 [ports.md](../ports_doc/ports.md)）
-   - `cancel_event` 为优雅取消信号（/chat/stop 经 TaskService 置位，None=不启用）。
-   - `BaseAgent(llm, tools, error_handlers=None)` 同构。
+1. 构造：`ReActAgent(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, cancel_event=None)`——横切能力可选注入（上下文预算 / 错误处理 / 成本护栏 / 优雅取消，None=不启用），完整类型化签名与参数语义见 [executor.md](executor.md)；`BaseAgent(llm, tools, error_handlers=None)` 同构。
 2. `_strategy_cycle` 委托 `ReActStrategy.execute()`（ReAct 主循环），产出事件 + 组装 `AgentResult`
 3. 行为契约（ReAct 循环）：推理 → finish_reason 分支 → 工具调用 / 正常结束 / 空输出重试 → 迭代兜底
 4. 实现细节见 [executor.md](executor.md)（编排）与 [react.md](../reasoning_doc/react.md)（算法）
@@ -166,6 +163,21 @@ agent = PlannerAgent(llm=llm_service, tools=tool_service)
 2. `_strategy_cycle` 委托 `PlannerStrategy.execute()`（三阶段主流程），`AgentContext` 全护栏透传；replan 预算复用 `ctx.max_refine_rounds`（Reflection 修正 / Planner replan 共用语义）
 3. `_map_outcome`：`PlannerOutcome` → `AgentResult`——`plan` / `steps_executed` / `replan_rounds` / `degraded` 进 `metadata`（供 Phase C Orchestrator 与证据链报告消费），`structured` 为 `RESULT_SCHEMA` 证据链报告
 4. 算法实现细节见 [planner.md](../reasoning_doc/planner.md)（PlannerStrategy）与 [planner_benchmark.md](../reasoning_doc/planner_benchmark.md)（工业对标）
+
+### ReflectionAgent
+
+Reflection 策略（生成 → 自查 → 修正）的编排载体，桥接 `reasoning/reflection.py` 的 `ReflectionStrategy`：
+
+```python
+agent = ReflectionAgent(llm=llm_service, tools=tool_service)
+# 可选注入：context_budget, error_handlers, cost_limiter, cancel_event（同 ReActAgent）；
+#            output_schema, critique_schema（覆盖策略默认 REFLECTION_SCHEMA / CRITIQUE_SCHEMA）
+```
+
+1. 构造：`ReflectionAgent(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, cancel_event=None, output_schema=None, critique_schema=None)`——内部构造 `ReflectionStrategy`；`output_schema` / `critique_schema` 为 None 时策略回退模块常量 `REFLECTION_SCHEMA` / `CRITIQUE_SCHEMA`
+2. `_strategy_cycle` 委托 `ReflectionStrategy.execute()`（生成结构化初稿 → 证据链自查 → 修正终稿，修正至 `ctx.max_refine_rounds` 上限），`AgentContext` 全护栏透传
+3. `_map_outcome`：`ReflectionOutcome` → `AgentResult`——`draft` / `critique` / `refine_rounds` / `degraded` 进 `metadata`（供证据链报告消费），`structured` 为修正后终稿
+4. 算法实现细节见 [reflection.md](../reasoning_doc/reflection.md)（ReflectionStrategy）与 [reflection_benchmark.md](../reasoning_doc/reflection_benchmark.md)（工业对标）
 
 ### 对外异常契约
 
@@ -215,7 +227,7 @@ print(result.content, result.tool_calls, result.usage)
 | --- | --- | --- | --- |
 | [executor.md](executor.md) | `executor.py` | ReActAgent：桥接 ReActStrategy 到 BaseAgent 生命周期 | ✅ |
 | planner.py | `planner.py` | PlannerAgent：Plan-then-Execute 编排（规划→执行→汇总，桥接 reasoning/planner.py 的 PlannerStrategy） | ✅ |
-| reflection.py | `reflection.py` | ReflectionAgent：Reflection 编排（生成→自查→修正，桥接 reflection.py） | ✅ |
+| reflection.py | `reflection.py` | ReflectionAgent：Reflection 编排（生成→自查→修正，桥接 reasoning/reflection.py 的 ReflectionStrategy） | ✅ |
 
 **配套策略库**（[reasoning 模块](../reasoning_doc/reasoning.md)）：
 

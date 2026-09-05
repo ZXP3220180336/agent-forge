@@ -1,19 +1,17 @@
 # _common — reasoning 策略共享小工具
 
-react / reflection / planner 三策略共用、不 import 任何策略的无状态纯函数与常量（策略间零环依赖）。
+react / reflection / planner 三策略共用、不 import 任何策略的无状态纯函数（策略间零环依赖）。
 文件名带 `_` 前缀 = 层内私有共享（非对外导出）。
 
-## 共享常量与小工具
+## 共享小工具
 
-- `_FINAL_ANSWER_TOOL = "final_answer"`：结构化最终答案工具名（层内私有常量）——react 主循环识别 /
-  reflection 证据链剔除共用
 - `merge_usage(*usages)`：usage dict 累加合并（prompt/completion/total；空入参跳过）——
   reflection 自查/修正阶段与 planner 全阶段共用
 - `guard_exceeded(cancel_event, start_time, max_execution_time, cost_limiter, running_usage) -> (str, str)`：
   阶段/付费调用前护栏——终止（取消/超时）或成本超限（cost_limiter.check(running_usage)）检查合一，
   返回双空原因；running_usage 由调用方按策略累计口径现算（planner / reflection 各传各自累计 usage）
 
-使用方式：`from ._common import _FINAL_ANSWER_TOOL, guard_exceeded, merge_usage, dispatch_error`。
+使用方式：`from ._common import dispatch_error, guard_exceeded, merge_usage`。
 策略不再各持本地定义；error_handlers 等生命周期仍由各策略自行管理。
 
 ## 错误分发统一入口（dispatch_error）

@@ -1,7 +1,7 @@
 # ReAct 策略工业级对标（完成度基准）
 
 > **对象**：`app/domain/reasoning/react.py`（ReActStrategy）
-> **更新日期**：2026-08-30
+> **更新日期**：2026-09-06
 > **定位**：ReAct 推理策略的工业级能力基准与差距清单——供策略增强、Reflection / CoT 实现参考
 > **依据**：LangChain / LangGraph / OpenAI Agents SDK / SMOLagents / Claude Agent SDK 源码级调研（2026-08-27）
 
@@ -30,7 +30,7 @@
 - **核心必备 13 项全部完备**（工业级核心模式 13/13 落地）。
 - **增强项进展**：结构化输出约束（#15）、错误处理策略可扩展（#23）、成本上限（#20）均已落地；guardrail / compaction / 断点续跑按「不做或预留」原则（见产品导向视角，断点续跑升级路径见 ADR）。
 - **无遗留观察点**：#24（循环停滞检测）/ #25（空输出重试上限）/ #26（refusal 显式处理）全部落地（见「发现的问题」）。
-- **架构加分**：策略模式解耦（`reasoning → ports + shared`）、端口抽象、独立测试，模块划分优于多数工业级框架。
+- **架构加分**：策略模式解耦（`reasoning → ports + shared + prompts`）、端口抽象、独立测试，模块划分优于多数工业级框架。
 
 ---
 
@@ -84,25 +84,25 @@
 
 | # | 特性 | 状态 | 本项目实现 |
 | --- | --- | --- | --- |
-| 1 | 迭代上限 | ✅ | `max_iterations`（默认 10），`for` 循环 + 超限兜底（[react.py:274](../../../app/domain/reasoning/react.py#L274)），量级与工业级一致 |
-| 2 | 时间上限 | ✅ | `asyncio.timeout` 包整个循环实现总时长上限（[react.py:273](../../../app/domain/reasoning/react.py#L273)），超时对齐 `max_iterations` 兜底降级（[react.py:1014](../../../app/domain/reasoning/react.py#L1014)）；生产值由 `agent_timeout=300` 注入 |
-| 3 | 正常终止判定 | ✅ | `finish_reason` 分支（tool_calls / stop / length），OpenAI 协议直接判定，比 LangChain 正则解析 `Finish[...]` 更稳（[react.py:402](../../../app/domain/reasoning/react.py#L402)） |
-| 4 | 超限降级 | ✅ | 迭代超限用 `last_result` 兜底，error 记录「已达到最大迭代次数(N)」——等价 LangChain `force` 语义，不抛裸异常（[react.py:1014-L1030](../../../app/domain/reasoning/react.py#L1014-L1030)） |
-| 5 | 工具异常回喂 | ✅ | 失败回喂 `str(result)`（"错误: <error>"），模型可感知失败自愈（[react.py:620](../../../app/domain/reasoning/react.py#L620)）；`error`/`error_code` 进证据链记录（[react.py:622](../../../app/domain/reasoning/react.py#L622)） |
+| 1 | 迭代上限 | ✅ | `max_iterations`（默认 10），`for` 循环 + 超限兜底（`execute` 主循环），量级与工业级一致 |
+| 2 | 时间上限 | ✅ | `asyncio.timeout` 包 `execute` 整个循环实现总时长上限，超时对齐 `max_iterations` 兜底降级（`_finalize_timeout`）；生产值由 `agent_timeout=300` 注入 |
+| 3 | 正常终止判定 | ✅ | `finish_reason` 分支（tool_calls / stop / length），OpenAI 协议直接判定，比 LangChain 正则解析 `Finish[...]` 更稳（`execute` 主循环） |
+| 4 | 超限降级 | ✅ | 迭代超限用 `last_result` 兜底，error 记录「已达到最大迭代次数(N)」——等价 LangChain `force` 语义，不抛裸异常（`_finalize_max_turns`） |
+| 5 | 工具异常回喂 | ✅ | 失败回喂 `str(result)`（`"错误: <error>"`），模型可感知失败自愈；`error`/`error_code` 进证据链记录（`execute_tool_calls`） |
 | 6 | 无效工具名处理 | ✅ | NOT_REGISTERED 失败走同一失败回喂分支，模型可见「工具未注册」；证据链记录 `error_code`（同 #5） |
-| 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（[react.py:585-L595](../../../app/domain/reasoning/react.py#L585-L595)） |
-| 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（[react.py:334](../../../app/domain/reasoning/react.py#L334)） |
-| 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（[react.py:638-L647](../../../app/domain/reasoning/react.py#L638-L647)），模型可知结果不完整 |
+| 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（`execute_tool_calls` 参数解析分支） |
+| 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（`execute` LLM error 分支） |
+| 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（`execute_tool_calls`），模型可知结果不完整 |
 | 10 | 上下文预算管理 | ✅ | context_manager 统一提供（经 ContextBudgetPort 注入 Agent）：轮次滑动窗口（保 assistant/tool 配对）+ token 预算硬上限（经 LLMGateway.count_* 计数），模型调用前作为 gatekeeper |
 | 11 | 事件 / 回调体系 | ✅ | SSE 事件（reasoning/message/tool_call/tool_result/info/done）+ BaseAgent 钩子（on_thought/on_tool_call/on_tool_result/on_complete），与工业级 `on_tool_start/end` 同构 |
 | 12 | 步数 / token 统计 | ✅ | outcome 含 iterations/total_tokens/usage/tool_calls（duration/success）+ ToolStats + Auditor |
-| 13 | 流式输出 | ✅ | reasoning_content 与 content 分事件流式输出（[react.py:301](../../../app/domain/reasoning/react.py#L301)） |
+| 13 | 流式输出 | ✅ | reasoning_content 与 content 分事件流式输出（`execute` 流式事件产出）；并支持非流式通道（`stream_mode=False` 走 `generate`，整条事件，见 [react.md](react.md)） |
 
 ### 增强项对照
 
 | # | 特性 | 状态 | 备注 |
 | --- | --- | --- | --- |
-| 14 | 并行工具执行 | ✅ | `asyncio.gather` 保序 + 信号量 + per-tool 锁（[react.py:611](../../../app/domain/reasoning/react.py#L611)），比 LangChain 默认串行更先进 |
+| 14 | 并行工具执行 | ✅ | `asyncio.gather` 保序 + 信号量 + per-tool 锁（`execute_tool_calls`），比 LangChain 默认串行更先进 |
 | 15 | 结构化输出约束 | ✅ | Final Answer 工具模式：`output_schema` 注入 final_answer 工具，模型最后调用提交结构化结果并终止循环（模型原生、无额外调用）；参数校验失败回喂（VALIDATION）自纠 |
 | 16 | guardrail | ❌ | 无输入 / 输出 guardrail（增强项，当前单用户本地场景不强制） |
 | 17 | 权限 / 审批 | ✅ | ApprovalGate / RiskLevel L0-L3 / 审计——工具层工程护栏完整（`app/integration/tools/security.py`） |

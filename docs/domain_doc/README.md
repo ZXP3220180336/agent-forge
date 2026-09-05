@@ -1,9 +1,9 @@
 # 领域层说明文档
 
 > **对应代码**：`app/domain/`
-> **更新日期**：2026-08-29
+> **更新日期**：2026-09-06
 > **文档定位**：领域层（`app/domain/`）—— Agent 内核、提示词、记忆与推理策略；是系统的**决策与行动核心**，只依赖领域端口与共享内核，零外部框架依赖。
-> **实现状态**：Agent（✅）· Prompts（🔶 待补测试）· Reasoning（🔶 react ✅）· Memory（⬜ 预留）· Ports（✅）
+> **实现状态**：Agent（✅）· Prompts（✅ manager + 模板；base 待补测试）· Reasoning（✅ react / reflection / planner；CoT 预留）· Memory（⬜ 预留）· Ports（✅）
 > **配套**：事件系统位于共享层 `app/shared/events.py`（见 [events.md](../shared_doc/events.md)）
 
 ---
@@ -36,7 +36,7 @@
 领域层是系统的**决策与行动核心**，位于应用层（用例/调度）之下、集成层（LLM/工具/嵌入）之上，负责：
 
 - **Agent 推理编排**：`BaseAgent.run()` 统一入口，编排 LLM 推理与工具调用的循环流程（策略模式）
-- **推理策略实现**：`reasoning/` 提供原子推理算法（ReAct ✅ / Reflection、CoT 预留），被 agent/ 编排调用
+- **推理策略实现**：`reasoning/` 提供原子推理算法（ReAct / Reflection / Planner ✅，CoT 预留），被 agent/ 编排调用
 - **提示词管理**：`prompts/` 提供系统/工具/规划等场景的提示词模板（指令层）
 - **记忆能力**：`memory/` 规划短期/长期/工作三层记忆（预留）
 - **端口契约**：`ports/` 定义领域层对能力层的抽象（依赖倒置，集成层实现）
@@ -61,8 +61,9 @@ app/domain/
 ├── prompts/                   ← 提示词管理（指令层）
 │   ├── base.py                ← PromptTemplate 模板基类
 │   ├── manager.py             ← PromptManager 管理器
-│   └── templates/             ← system.py / tools.py / planning.py 模板
+│   └── templates/             ← system.py / tools.py / planning.py / reflection.py 模板
 └── reasoning/                 ← 原子推理策略库
+    ├── _common.py             ← 共享小工具（dispatch_error / guard_exceeded / merge_usage / 常量）
     ├── react.py               ← ReActStrategy（✅）
     ├── reflection.py          ← ReflectionStrategy（✅）
     ├── planner.py             ← PlannerStrategy（✅）
@@ -101,7 +102,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | Agent | base.py | ✅ | BaseAgent / AgentContext / AgentResult / AgentState |
 | Agent | executor.py | ✅ | ReActAgent（桥接 ReActStrategy，见 [executor.md](agent_doc/executor.md)） |
 | Agent | planner.py | ✅ | PlannerAgent（桥接 PlannerStrategy，见 [agent.md](agent_doc/agent.md)） |
-| Agent | reflection.py | ✅ | ReflectionAgent（桥接 ReflectionStrategy，见 [executor.md](agent_doc/executor.md) 同范式） |
+| Agent | reflection.py | ✅ | ReflectionAgent（桥接 ReflectionStrategy，见 [agent.md](agent_doc/agent.md)） |
 | Prompts | manager.py + templates/system·tools·reflection·planning | ✅ | 提示词模板 + 管理器 builder（test_prompts；见 [prompts.md](prompts_doc/prompts.md)） |
 | Memory | base / working / short_term / long_term / memory_service | ⬜ | 三层记忆（预留） |
 | Reasoning | react.py | ✅ | ReActStrategy（见 [react.md](reasoning_doc/react.md)） |
@@ -135,11 +136,12 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| `PromptManager` | manager.py | 提示词组装入口（build_system_prompt） | 🔶 |
-| `PromptTemplate` | base.py | 模板基类（format / raw） | 🔶 |
-| 模板 | templates/system.py | `SYSTEM_PROMPT` 系统提示词 | 🔶 |
-| 模板 | templates/tools.py | `TOOL_FORMAT_PROMPT` 工具格式提示词 | 🔶 |
-| 模板 | templates/planning.py | `PLANNING_PROMPT` 规划提示词 | 🔶 draft |
+| `PromptManager` | manager.py | 提示词组装入口（system/reflection/planning builder + 证据/步骤序列化） | ✅ |
+| `PromptTemplate` | base.py | 模板基类（format / raw） | 🔶 待补测试 |
+| 模板 | templates/system.py | `SYSTEM_PROMPT` 系统提示词 | ✅ |
+| 模板 | templates/tools.py | `TOOL_FORMAT_PROMPT` 工具格式提示词 | ✅ |
+| 模板 | templates/planning.py | `PLANNING_PROMPT` / `REPLAN_PROMPT` / `SUMMARIZE_PROMPT` 规划提示词 | ✅ |
+| 模板 | templates/reflection.py | `CRITIQUE_PROMPT` / `REFINE_PROMPT` / `REFLECTION_SYSTEM_PROMPT` 自查提示词 | ✅ |
 
 ---
 
@@ -153,7 +155,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 ## Reasoning 推理策略
 
-**代码**：`app/domain/reasoning/` · **文档**：[推理策略](reasoning_doc/reasoning.md) · [ReActStrategy 组件](reasoning_doc/react.md)
+**代码**：`app/domain/reasoning/` · **文档**：[推理策略](reasoning_doc/reasoning.md) · [ReActStrategy](reasoning_doc/react.md) · [ReflectionStrategy](reasoning_doc/reflection.md) · [PlannerStrategy](reasoning_doc/planner.md) · [共享小工具](reasoning_doc/_common.md)
 
 领域层的**原子推理策略库**，为 Agent 提供推理方式实现（被 agent/ 层编排调用）：
 
@@ -161,6 +163,8 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | --- | --- | --- | --- |
 | `ReActStrategy` | react.py | 推理 ↔ 工具循环算法（含工具并行原语） | ✅ |
 | `ReflectionStrategy` | reflection.py | 生成 → 自查 → 修正（证据链语义自查） | ✅ |
+| `PlannerStrategy` | planner.py | Plan-then-Execute 三阶段（规划 → 逐步骤执行 → 汇总，每步复用 ReAct） | ✅ |
+| 共享小工具 | _common.py | dispatch_error / guard_exceeded / merge_usage / 常量 | 🔶 |
 | CoT | chain_of_thought.py | 纯推理引导 | ⬜ 预留 |
 
 ---
@@ -211,7 +215,8 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 - [Agent 模块对外接口文档](agent_doc/agent.md) · [ReActAgent 桥接组件](agent_doc/executor.md)
 - [提示词模块](prompts_doc/prompts.md)
 - [记忆系统（预留）](memory_doc/memory.md)
-- [推理策略](reasoning_doc/reasoning.md) · [ReActStrategy 策略组件](reasoning_doc/react.md) · [ReflectionStrategy 策略组件](reasoning_doc/reflection.md)
+- [推理策略](reasoning_doc/reasoning.md) · [ReActStrategy](reasoning_doc/react.md) · [ReflectionStrategy](reasoning_doc/reflection.md) · [PlannerStrategy](reasoning_doc/planner.md) · [共享小工具](reasoning_doc/_common.md)
+- [对标基准](reasoning_doc/react_benchmark.md) · [Planner 对标](reasoning_doc/planner_benchmark.md) · [Reflection 对标](reasoning_doc/reflection_benchmark.md)
 - [领域端口契约](ports_doc/ports.md)
 - [事件系统（共享层）](../shared_doc/events.md)
 - [应用层说明](../application_doc/README.md)

@@ -60,7 +60,7 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError
 
-from ._common import _FINAL_ANSWER_TOOL, dispatch_error
+from ._common import dispatch_error
 
 # 策略层标准库日志（对齐「只依赖 ports + shared + 标准库」依赖方向，不用 platform 的
 # get_logger）；logger 名对齐 app.* 命名空间，可被 setup_logging 的 handler 捕获。
@@ -68,6 +68,13 @@ _logger = logging.getLogger("app.domain.reasoning.react")
 
 # 工具结果回喂截断标记：截断时追加，模型可知结果不完整（而非误以为完整）
 _TRUNCATED_MARKER = "\n[结果已截断]"
+
+# 结构化最终答案工具名（Final Answer 模式，SMOL / OpenAI 官方）：模型最后调用提交
+# schema 约束的结构化结果并终止循环。注入工具（非注册工具），react 主循环识别调用。
+# 注：reflection 证据链剔除 final_answer 条目（校验失败记录非真实证据）在
+# prompts/manager._serialize_evidence 以字面量实现（prompts 不 import reasoning，规避环），
+# 不引用本常量。
+_FINAL_ANSWER_TOOL = "final_answer"
 
 
 def _truncate_with_marker(text: str, limit: int) -> str:
@@ -123,7 +130,7 @@ def _action_fingerprint(tool_calls: list[dict]) -> str:
             continue
         try:
             args = json.loads(tc["function"]["arguments"])
-        except json.JSONDecodeError, KeyError:
+        except (json.JSONDecodeError, KeyError):
             args = tc.get("function", {}).get("arguments", "")
         sig.append((name, args))
     return json.dumps(sig, sort_keys=True, ensure_ascii=False, default=str)

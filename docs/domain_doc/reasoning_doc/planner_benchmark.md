@@ -1,7 +1,7 @@
 # Planner 策略工业级对标（完成度基准）
 
 > **对象**：`app/domain/reasoning/planner.py`（PlannerStrategy）
-> **更新日期**：2026-09-05
+> **更新日期**：2026-09-06
 > **定位**：Planner 推理策略（Plan-then-Execute 单 Agent 编排）的工业级能力基准与差距清单——供策略增强、实现评价参考
 > **依据**：Plan-and-Execute 论文 / LLMCompiler（DAG 并行编排）/ MetaGPT（SOP 角色流水线）/ 结构化规划优先与最小权限工具原则的工业级实践（详见 [ADR planner-strategy](../../../adr/domain/reasoning/2026-09-05-planner-strategy.md)「工业级参照」节）
 
@@ -57,7 +57,7 @@
 | 10 | token/成本统计 + 预算护栏 | ✅ | react 各步 + plan/replan/summarize 结构化全阶段累计到 outcome；cost_limiter 每阶段发起付费调用前 check（超限停机）；`max_execution_time` 全局墙钟每步转剩余 |
 | 11 | 事件 / 可观测性 | ✅ | 阶段 info + 步骤 tool 事件透传 + 收尾 done（抑制每步 ReAct 中间 done，口径对齐 outcome） |
 | 12 | 终止护栏（cancel / 超时 / 成本） | ✅ | 每阶段顶部 + 每步前检查；cancel 在步骤 react 中置位 → 立即终止（防误判步骤失败而 replan） |
-| 13 | 上下文隔离（跨步不膨胀） | ✅ | `_step_messages` 只带已完成步骤摘要（`_executed_summary` 截断 500/4000），不累积原始工具 transcript |
+| 13 | 上下文隔离（跨步不膨胀） | ✅ | `_step_messages` 只带已完成步骤摘要（内联截断 500/4000），不累积原始工具 transcript |
 
 ## 取舍表（刻意不做）
 

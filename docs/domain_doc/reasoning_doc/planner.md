@@ -1,7 +1,7 @@
 # PlannerStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/planner.py`
-> **更新日期**：2026-09-05
+> **更新日期**：2026-09-06
 > **职责**：Planner 原子推理策略——Plan-then-Execute 单 Agent 编排（规划 → 执行 → 汇总）
 > **状态**：✅ 已实现
 > **配套**：桥接见 [agent/planner.py](../agent_doc/agent.md)；工业级对标见 [planner_benchmark.md](planner_benchmark.md)
@@ -32,6 +32,7 @@
   - [配置项清单](#配置项清单)
   - [测试状态](#测试状态)
   - [设计决策](#设计决策)
+  - [问题记录](#问题记录)
   - [相关文档](#相关文档)
 
 ---
@@ -225,7 +226,18 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 
 ## 设计决策
 
-- 两层结构（`reasoning/planner.py` 策略 + `agent/planner.py` 桥接）与「生命周期依赖」分界、每步复用 `ReActStrategy.execute` 取代裸 `execute_tool_calls`、replan 取舍与 `max_refine_rounds` 语义复用、新增 `PLAN_FAILED`、每步上下文隔离、规划器工具处理定稿（tools=None + introspection 目录）——见 [ADR planner-strategy](../../../adr/domain/reasoning/2026-09-05-planner-strategy.md)
+决策要点均归档 [ADR planner-strategy](../../../adr/domain/reasoning/2026-09-05-planner-strategy.md)（Context → Decision → Consequences）：
+
+- **两层结构分界**：`reasoning/planner.py`（原子策略）+ `agent/planner.py`（编排桥接，生命周期依赖归 agent/）
+- **每步复用 `ReActStrategy.execute`** 取代裸 `execute_tool_calls`：步骤级护栏 / 上下文隔离随策略
+- **replan 预算复用 `max_refine_rounds` 语义**（与 Reflection 修正共用）
+- **新增 `PLAN_FAILED`**（规划 / 重规划 / 汇总失败降级）
+- **每步上下文隔离**：`_step_messages` 只带已完成步骤摘要（截断 500/4000）
+- **规划器工具定稿**：tools=None + introspection 工具目录（最小权限）
+
+## 问题记录
+
+无独立 issue——Planner 的决策取舍与已知边界见 [ADR planner-strategy](../../../adr/domain/reasoning/2026-09-05-planner-strategy.md) 与 [planner_benchmark.md](planner_benchmark.md)；每步复用的 ReAct 层护栏 / 问题见 [react.md](react.md)。
 
 ## 相关文档
 
