@@ -425,3 +425,53 @@ async def test_cost_limit_stops_before_plan():
     assert strategy.outcome.success is False
     assert "成本超限" in strategy.outcome.error
     assert llm.structured_calls == 0  # 未发起任何付费调用
+
+
+class _CostCalcLLM:
+    """结构实现 LLMGateway.calculate_cost（镜像 LLMService 静态代理 CostTracker）。"""
+
+    @staticmethod
+    def calculate_cost(usage, model=""):
+        from app.integration.llm.cost_tracker import CostTracker
+
+        return CostTracker.calculate(usage, model)
+
+
+def _cost_limiter(ceiling: float) -> "object":
+    from app.application.context.cost_limiter import CostLimiter
+
+    return CostLimiter(ceiling=ceiling, llm=_CostCalcLLM(), model="gpt-4")
+
+
+async def test_step_react_stops_on_accumulated_cost():
+    """步骤 react 子跑带 planner 累计基线：子跑中途累计越界即在越界轮停，不空转 replan/summarize。
+
+    数值（gpt-4）：plan 结构化 usage {400,100}=0.018；step1 react {100,100}=0.009
+    → 0.027；step2 round1 {200,150}=0.015 → 基线+局部 0.042 > ceiling 0.04 → 子跑
+    内部 COST_EXCEEDED（无 baseline 时子跑局部 0.015 不触发，会正常完成）→ 步骤失败
+    → replan 被累计 guard 拦 → 部分降级收尾，仅 plan 一笔付费调用。
+    """
+    llm = _PlannerLLM(
+        react_scripts=[
+            {"finish_reason": "stop", "content": "步骤 1 结果",
+             "usage": {"prompt_tokens": 100, "completion_tokens": 100}},
+            # step2 子跑首轮即越界（成本检查先于空输出/stop 分支）→ 空 content 故步骤判失败
+            {"finish_reason": "stop", "content": "",
+             "usage": {"prompt_tokens": 200, "completion_tokens": 150}},
+        ],
+        structured_scripts=[PLAN, SUMMARY],
+        usage={"prompt_tokens": 400, "completion_tokens": 100},
+    )
+    strategy = PlannerStrategy(llm=llm, tools=None, cost_limiter=_cost_limiter(0.04))
+    messages = [{"role": "user", "content": "hi"}]
+
+    await _run(strategy, messages)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.degraded is True
+    assert "成本超限" in (strategy.outcome.error or "")
+    assert strategy.outcome.success is True  # 有已完成步骤（部分进度）
+    # 越界停：只发起 plan 一笔付费调用，未空转 replan / summarize
+    assert llm.structured_calls == 1
+    # 部分进度：step1 完成进入 executed
+    assert [s["success"] for s in strategy.outcome.steps_executed] == [True, False]

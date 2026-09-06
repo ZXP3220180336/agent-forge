@@ -103,7 +103,7 @@ result = agent.result  # AgentResult
 - `test_react_agent_passes_max_same_action_turns_to_strategy` — max_same_action_turns 经 AgentContext 透传
 - `test_react_agent_passes_stream_mode_to_strategy` — stream_mode 经 AgentContext 透传策略：哨兵假 LLM 仅实现 generate（无 async_generate），证明 `ctx.stream_mode=False` 走非流式通道
 
-策略算法本身由 `tests/unit/test_react_strategy.py`（78 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
+策略算法本身由 `tests/unit/test_react_strategy.py`（80 用例）覆盖，见 [react.md](../reasoning_doc/react.md)。
 
 ---
 

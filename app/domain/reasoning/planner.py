@@ -290,7 +290,12 @@ class PlannerStrategy:
             text: str, sub_messages: list[dict]
         ) -> AsyncGenerator[str]:
             """跑一次 ReAct 子跑并透传其事件（抑制中间 done）；剩余预算每次调用现算
-            （全局墙钟差额，下界 0.05s）。"""
+            （全局墙钟差额，下界 0.05s）。
+
+            cost 护栏跨阶段贯通：透传当前累计（已完成步骤 react + 结构化用量）作
+            baseline_usage——子跑内每轮即按累计成本检查（对齐 cost-limit ADR「调用后
+            立即检查」），子跑中途累计越界在越界轮停，报告口径仍局部（_absorb_react
+            各归并一次，防双计）。"""
             async for event in self._react.execute(
                 text,
                 sub_messages,
@@ -311,6 +316,9 @@ class PlannerStrategy:
                 tool_max_retries=tool_max_retries,
                 stream_mode=stream_mode,
                 cancel_event=cancel_event,
+                baseline_usage=merge_usage(
+                    self._react_total_usage, self._structured_usage
+                ),
             ):
                 if f'"type": "{AgentEventType.DONE.value}"' in event:
                     continue

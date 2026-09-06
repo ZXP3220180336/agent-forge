@@ -40,7 +40,7 @@
 ## 设计目标
 
 1. **Plan-then-Execute 三阶段显式分离**：规划（结构化产出依赖步骤）→ 执行（逐「步」小跑）→ 汇总（结构化证据链报告）独立方法——规划与执行是不同认知任务，规划器只产计划不执行（工业 Plan-and-Execute）
-2. **每步复用 `ReActStrategy.execute`**：执行器逐「步」= 被当前步骤约束的 ReAct 小循环，而非重造工具循环——错误分发 / 停滞检测 / cancel / 超时 / 上下文预算 / cost_limiter 全套护栏免费，`ReActOutcome` 产出统一归并
+2. **每步复用 `ReActStrategy.execute`**：执行器逐「步」= 被当前步骤约束的 ReAct 小循环，而非重造工具循环——错误分发 / 停滞检测 / cancel / 超时 / 上下文预算 / cost_limiter 全套护栏免费，`ReActOutcome` 产出统一归并。cost 护栏跨阶段贯通：`_run_react` 透传 planner 累计（已完成步骤 + 结构化用量）作 `execute(baseline_usage)`——子跑内每轮即按**累计**成本检查（子跑中途累计越界即在越界轮停），报告口径仍为子跑局部（各归并一次防双计）
 3. **结构化规划优先**：计划经 JSON Schema（`PLAN_SCHEMA` / `REPLAN_SCHEMA`）产出，弃文本解析——步骤形状 / depends_on / 上限程序化强制
 4. **串行单 Agent**：`depends_on` 是顺序纪律断言（列表序即合法拓扑序），执行按列表序出队；并行 DAG 调度留 Phase C Orchestrator
 5. **Replan 仅步骤失败触发**：不做每步 replan；重规划预算复用 `AgentContext.max_refine_rounds`（Reflection 修正 / Planner replan 共用「修复尝试上限」语义）
@@ -115,7 +115,7 @@ PlannerStrategy.execute()（三阶段）
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, plan_schema=None, replan_schema=None, result_schema=None, plan_model_key="fast", summarize_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema / 结构化模型键可注入覆盖 |
 | `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, max_replan_rounds=2, tool_timeout=None, tool_max_retries=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 三阶段主流程（见「执行流程」）；yield SSE 事件，结果写入 `outcome` |
 
-私有辅助：`_absorb_react`（react 子跑 usage/iterations 归并）· `_tool_catalog` / `_step_messages`（工具目录 / 每步隔离上下文，已完成步骤摘要已并入）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_normalize_steps`（id 单调赋值 + 依赖清洗）· `_plan` / `_replan` / `_summarize`（结构化调用；每次付费调用前（规划/每步 react/兜底 react/每轮 replan/汇总）经共享 `_common.guard_exceeded` 做终止+成本护栏，进度事件前置消除 guard 后挂起窗口；PLAN_FAILED 分发经 `_common.dispatch_error`）· `_finalize`（收尾 outcome + done 事件）。
+私有辅助：`_absorb_react`（react 子跑 usage/iterations 归并）· `_tool_catalog` / `_step_messages`（工具目录 / 每步隔离上下文，已完成步骤摘要已并入）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_normalize_steps`（id 单调赋值 + 依赖清洗）· `_plan` / `_replan` / `_summarize`（结构化调用；各付费调用护栏先行，进度事件前置消除 guard 后挂起窗口：每步 / 兜底 react 子跑经 `_run_react` 透传 planner 累计作 `baseline_usage` → react 内每轮即按累计成本检查；规划 / 每轮 replan / 汇总等结构化调用发起前经共享 `_common.guard_exceeded` 做终止+成本护栏；PLAN_FAILED 分发经 `_common.dispatch_error`）· `_finalize`（收尾 outcome + done 事件）。
 
 ### PlannerOutcome（结果载体）
 
@@ -196,7 +196,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 | 步骤执行抛非 AppError 编程错误 | 不吞，向上冒泡（fail fast） |
 | cancel 在步骤 react 中置位 | 立即终止并部分汇总（防被误判步骤失败而 replan）；阶段顶部终止 → 未开始 / 部分进度降级 |
 | 总时长超限（全局墙钟） | 每步 ReAct 转剩余预算（全局墙钟差额，下界 0.05s）；阶段顶部超限 → 采用已完成步骤 |
-| 成本超限（cost_limiter） | 每阶段发起付费调用前 check；超限 → 停机降级（未开始 / 部分进度） |
+| 成本超限（cost_limiter） | 每步 react 子跑带 planner 累计 `baseline_usage`（react 内每轮即按累计成本检查，子跑中途累计越界在越界轮停）；结构化调用发起前经 `guard_exceeded` check；超限 → 停机降级（未开始 / 部分进度），不空转 replan / summarize |
 | 每步隔离前提被破坏（需上一步数值未带进摘要） | 步骤自包含约束要求；未覆盖应合并成一步（提示层纪律） |
 | 同一实例并发 / 多次 execute | 不并发复用——outcome 与累计态在每次 execute 覆盖，每次运行新建或串行读取 |
 | 步骤产出为空 / react 子跑无结果 | 判步骤失败（无产出工件视为失败），走 replan |
@@ -214,14 +214,14 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 
 ## 测试状态
 
-`tests/unit/test_planner.py`（13 用例）+ `tests/unit/test_planner_agent.py`（3 用例）+ `tests/unit/test_prompts.py`（5 用例，planning 三 builder + reflection/system 冒烟）：
+`tests/unit/test_planner.py`（14 用例）+ `tests/unit/test_planner_agent.py`（3 用例）+ `tests/unit/test_prompts.py`（5 用例，planning 三 builder + reflection/system 冒烟）：
 
 - 三阶段全路径：规划 → 2 步执行（第 2 步依赖第 1 步）→ 汇总 structured，`plan` 快照 id/description、usage（react + structured）累计、done 抑制与口径一致
 - 降级路径：规划 None → 全量 ReAct 兜底 / AppError → PLAN_FAILED 默认 CONTINUE 兜底 / PLAN_FAILED RAISE 抛 AgentRunError / STOP 硬失败
 - 步骤失败 → replan 产修订尾继续执行 + 失败步留审计 + `replan_rounds=1` + 新步 id 续接 max+1 单调重编号
 - replan 耗尽（无成功步）→ 纯失败 partial；汇总 None → 纯文本拼装（有步骤产出部分成功）
 - Schema 严格性（四个 schema required + additionalProperties:False，fixture 过 jsonschema）
-- 护栏：cancel（规划后执行中取消 → 部分进度）、成本超限（未开始规划即停机，零付费调用）
+- 护栏：cancel（规划后执行中取消 → 部分进度）、成本超限（未开始规划即停机零付费 / 步骤 react 子跑累计越界在越界轮停，仅 plan 一笔付费调用、不空转 replan/summarize）
 - 桥接：PlannerAgent 端到端 metadata 映射（plan / steps_executed / replan_rounds / degraded）/ outcome None 兜底 / `ctx.max_refine_rounds` → replan 预算透传
 
 ## 设计决策

@@ -97,7 +97,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 ### 成本上限（CostLimiterPort）
 
-成本上限是横切护栏，由应用层 `CostLimiter` 结构实现（经 `CostLimiterPort` 注入；成本估算经 `LLMGateway.calculate_cost` 取——成本估算是 LLM 能力，应用层不直接依赖集成层），ReAct 不实现算法。每轮 usage 累加后 `check(累计 usage)` 折算成本（USD），超限即 `_finalize_cost_exceeded` 走 `COST_EXCEEDED` 分发（默认 STOP 降级，error 记录「成本超限（累计 $X）」）。置于 error 判断前：预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用。`cost_limiter=None`（未配置 `agent_max_cost`）整段零开销。与上下文预算互补：trim 在 LLM 调用前（减少发送 token），cost check 在调用后（审计花费）。
+成本上限是横切护栏，由应用层 `CostLimiter` 结构实现（经 `CostLimiterPort` 注入；成本估算经 `LLMGateway.calculate_cost` 取——成本估算是 LLM 能力，应用层不直接依赖集成层），ReAct 不实现算法。每轮 usage 累加后 `check(累计 usage)` 折算成本（USD），超限即 `_finalize_cost_exceeded` 走 `COST_EXCEEDED` 分发（默认 STOP 降级，error 记录「成本超限（累计 $X）」）。置于 error 判断前：预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用。`cost_limiter=None`（未配置 `agent_max_cost`）整段零开销。**判定口径 = 调用方累计基线 + 本轮局部**：`baseline_usage`（execute 入参，跨阶段复用方如 planner 步骤子跑注入已完成阶段用量）使嵌套复用层的成本检查同样「每轮按累计」——报告口径（`outcome.usage` / `total_tokens`）仍为局部，调用方各归并一次防双计。与上下文预算互补：trim 在 LLM 调用前（减少发送 token），cost check 在调用后（审计花费）。
 
 ### 循环停滞检测（动作指纹 + STALLED）
 
@@ -230,9 +230,10 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
   │     └─ False → generate() 非流式一次拿 StreamResult（model_key="main"），合成整条 reasoning/message 事件；
   │           失败契约：None（可恢复耗尽）/ AppError（共享树：LLMAPIError + 熔断）→ LLM_FAILED；
   │           AppError 树外异常 → 外层 UNKNOWN；轮末 cancel 补查一次（generate 无 chunk 级中断）
-  ├─ 4. 成本护栏：CostLimiterPort.check(累计 usage) 超限？→ _finalize_cost_exceeded
+  ├─ 4. 成本护栏：CostLimiterPort.check(基线 + 累计 usage) 超限？→ _finalize_cost_exceeded
   │       （默认 STOP 降级：error 记录「成本超限（累计 $X）」；置 error 判断前——
-  │         预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用）
+  │         预算超限时不允许失败重试 / 工具执行再产生付费调用或副作用；
+  │         基线 = execute 的 baseline_usage，跨阶段复用方注入，报告口径仍局部）
   ├─ 5. stream_result.error 非空？
   │       ├─ cancel_event 置位 → _finalize_cancelled（CANCELLED，不重试）
   │       └─ LLM 失败 → _finalize_llm_failed（STOP 短路 / CONTINUE 重试，重试受 max_llm_fail_retries 上限硬终止）
@@ -266,7 +267,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
 | `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
-| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, output_schema=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome`。`stream_mode`：True=流式 async_generate（默认，逐 token）；False=非流式 generate()（整条 reasoning/message 事件，后台子 Agent 无人订阅场景，Phase C） |
+| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, output_schema=None, stream_mode=True, cancel_event=None, baseline_usage=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome`。`stream_mode`：True=流式 async_generate（默认，逐 token）；False=非流式 generate()（整条 reasoning/message 事件，后台子 Agent 无人订阅场景，Phase C）。`baseline_usage`：跨阶段复用方（planner 步骤子跑）注入调用方累计用量，仅参与成本判定、不进报告口径 |
 | `execute_tool_calls(tool_calls, messages, iteration, tool_timeout=None, tool_max_retries=None) -> AsyncGenerator[str]` | 异步生成器 | 工具并行执行原语（gather 保序 + 事件产出 + 记录；`tool_timeout`/`tool_max_retries` 透传 ToolGateway，None=走执行器全局）；现独立入口：`ReActAgent._execute_tool_calls` 转发（既有测试兼容）。Reflection / Planner 的收集 / 执行阶段复用完整 `execute`（[reflection.md](reflection.md) / [planner.md](planner.md)） |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
 
@@ -293,7 +294,7 @@ result = strategy.outcome  # ReActOutcome
 2. **空输出**（finish_reason 空 + content 空）→ `_handle_empty_output`，默认 CONTINUE 重试下一轮
 3. **达到 `max_iterations`** → `_finalize_max_turns`，用 `last_result` 兜底强制结束，error 记录「已达到最大迭代次数(N)」（无 `last_result` 时 `success=False`）
 4. **达到 `max_execution_time`**（None=不设限）→ `_finalize_timeout`，用 `last_result` 降级（有 content 算部分成功），error 记录超时；慢消费者关闭生成器时干净停止、不 yield 降级事件
-5. **累计成本超限**（`agent_max_cost`，None=不启用）→ usage 累加后经注入的 CostLimiterPort 折算成本，超限走 `COST_EXCEEDED` 分发（默认 STOP 降级：error 记录「成本超限（累计 $X）」）；`cost_limiter=None` 零开销
+5. **累计成本超限**（`agent_max_cost`，None=不启用）→ usage 累加后经注入的 CostLimiterPort 折算成本，超限走 `COST_EXCEEDED` 分发（默认 STOP 降级：error 记录「成本超限（累计 $X）」）；`cost_limiter=None` 零开销；`baseline_usage`（跨阶段复用方如 planner 步骤子跑注入已完成阶段用量）使判定含调用方累计（子跑中途累计越界即在越界轮停），报告口径 `outcome.usage`/`total_tokens` 仍为局部（防双计）
 6. **工具参数 JSON 解析失败** → 不执行工具：构造失败 ToolResult（JSON_PARSE）回喂模型自纠，`error`/`error_code` 进证据链
 7. **工具执行失败 / 无效工具名** → 回喂 `str(result)`（`"错误: <error>"`，无效工具含「未注册」），模型可感知失败自愈；`error` / `error_code` 进证据链
 8. **工具结果超长** → 截断（tool 消息 2000 字符 / 事件 200 字符）并追加 `[结果已截断]` 标记（预留标记长度，总长不超限）
@@ -332,12 +333,12 @@ result = strategy.outcome  # ReActOutcome
 
 ## 测试状态
 
-`tests/unit/test_react_strategy.py`（78 用例）覆盖分类：
+`tests/unit/test_react_strategy.py`（80 用例）覆盖分类：
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）/ timeout/max_retries 透传 ToolGateway（默认 None 走执行器全局）
 - **时间上限**：首轮超时降级 / 中途超时保留部分进度 / 宽松上限不影响完成 / `None` 显式不设限
-- **成本上限**：首轮超限 STOP 降级 / 中途超限保留部分进度 / 宽松上限不触发 / `cost_limiter=None` 不启用 / COST_EXCEEDED→RAISE 上抛 / CONTINUE 忽略
+- **成本上限**：首轮超限 STOP 降级 / 中途超限保留部分进度 / 宽松上限不触发 / `cost_limiter=None` 不启用 / COST_EXCEEDED→RAISE 上抛 / CONTINUE 忽略 / `baseline_usage` 计入判定（局部未超 + 基线越界在越界轮停）/ `baseline_usage` 不进报告口径（total_tokens 仍局部）
 - **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛 / 重试轮不追加空 assistant 消息
 - **循环停滞检测**：同工具同参数达上限终止 / 未达上限正常 / 参数变化重置 / 换工具重置 / 上限可配置 / final_answer 不参与 / STALLED handler RAISE / 参数 key 顺序规范化指纹相同
 - **模型拒答**：refusal 非空终止（content 保留）/ content_filter 终止 / REFUSED handler RAISE / CONTINUE 忽略

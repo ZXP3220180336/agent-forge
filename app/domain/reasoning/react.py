@@ -60,7 +60,7 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError
 
-from ._common import dispatch_error
+from ._common import dispatch_error, merge_usage
 
 # 策略层标准库日志（对齐「只依赖 ports + shared + 标准库」依赖方向，不用 platform 的
 # get_logger）；logger 名对齐 app.* 命名空间，可被 setup_logging 的 handler 捕获。
@@ -201,6 +201,7 @@ class ReActStrategy:
         output_schema: dict | None = None,
         stream_mode: bool = True,
         cancel_event: asyncio.Event | None = None,
+        baseline_usage: dict | None = None,
     ) -> AsyncGenerator[str]:
         """
         ReAct 主循环。
@@ -262,6 +263,12 @@ class ReActStrategy:
                 边界停止（对齐 OpenAI after_turn）；主循环顶部 + LLM error 分支识别
                 → CANCELLED 分发（不重试），保留部分进度；同时传给 LLM 层中断调用
                 （仅流式通道；非流式轮末补查一次）
+            baseline_usage: 跨阶段复用方注入的累计用量基线（dict，None/空=不启用）——
+                本 execute 开始前已累计的 token 用量（如 planner 步骤子跑：已完成步骤
+                react + plan/replan 结构化用量）。仅参与成本判定（成本检查 = 基线 +
+                本轮局部累计），**不进本 execute 报告口径**（outcome.usage / total_tokens
+                恒为本次子跑局部——调用方各归并一次，防双计）。None / 空 = 单跑
+                （ReActAgent / reflection 首次收集）等价现状零开销。
 
         Yields:
             SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）；
@@ -361,8 +368,14 @@ class ReActStrategy:
                     # ----- 4. 成本护栏：累计成本超限 → 错误分发（默认 STOP 降级）-----
                     # 置于 error 判断前：成本是全局资源护栏，预算超限时不允许
                     # LLM 失败重试 / 工具执行再产生付费调用或副作用；超限即停机。
+                    # 成本判定按「调用方累计基线 + 本轮局部」口径——baseline_usage 由跨
+                    # 阶段复用方注入（planner 步骤子跑带已完成阶段累计），使嵌套层也做到
+                    # 每轮累计检查（对齐 cost-limit ADR「调用后立即检查」）；报告口径
+                    # total_usage 仍为局部（不混基线，调用方各归并一次防双计）。
                     if self._cost_limiter is not None:
-                        exceeded, cost = self._cost_limiter.check(total_usage)
+                        exceeded, cost = self._cost_limiter.check(
+                            merge_usage(baseline_usage, total_usage)
+                        )
                         if exceeded:
                             for e in await self._finalize_cost_exceeded(
                                 stream_result, iteration, total_usage, cost

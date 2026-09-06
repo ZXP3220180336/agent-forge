@@ -1256,6 +1256,125 @@ async def test_react_cost_exceeded_handler_continue_ignored():
 
 
 @pytest.mark.asyncio
+async def test_react_cost_baseline_usage_participates_in_check():
+    """baseline_usage（跨阶段累计基线）计入成本判定：局部未超、基线+局部越界即在越界轮停。
+
+    对照（无 baseline）3 轮累计 0.027 < ceiling 0.05 → 正常完成；带 baseline
+    {600,200}=0.03 → 第 3 轮累计 0.057 > 0.05 → 停在第 3 轮（COST_EXCEEDED）。
+    """
+    scripts = [
+        {
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": json.dumps({"text": "hi"})},
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 100},  # 0.009
+        },
+        {
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": json.dumps({"text": "hi"})},
+                }
+            ],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 100},  # 0.009
+        },
+        {
+            "finish_reason": "stop",
+            "content": "答案",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 100},  # 0.009
+        },
+    ]
+    tools = _make_registry(tools=[_EchoTool()])
+
+    # 对照：无 baseline → 3 轮累计 0.027 < 0.05，正常完成
+    ctrl = ReActStrategy(
+        llm=_ScriptedLLM(list(scripts)), tools=tools, cost_limiter=_cost_limiter()
+    )
+    async for _ in ctrl.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        pass
+    assert ctrl.outcome is not None and ctrl.outcome.success is True
+    assert ctrl.outcome.error is None
+
+    # 带 baseline 0.03 → 第 3 轮累计 0.057 越界 → 停在越界轮（iterations=3）
+    base = ReActStrategy(
+        llm=_ScriptedLLM(list(scripts)), tools=tools, cost_limiter=_cost_limiter()
+    )
+    async for _ in base.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        baseline_usage={"prompt_tokens": 600, "completion_tokens": 200},
+    ):
+        pass
+    assert base.outcome is not None
+    assert base.outcome.iterations == 3
+    assert "成本超限" in (base.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_cost_baseline_usage_not_in_reported_usage():
+    """报告口径保持局部：baseline 只参与成本判定，不进 outcome.total_tokens（防双计）。"""
+    usage_each = {
+        "prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200,
+    }
+    scripts = [
+        {
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": json.dumps({"text": "hi"})},
+                }
+            ],
+            "usage": dict(usage_each),
+        },
+        {
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": json.dumps({"text": "hi"})},
+                }
+            ],
+            "usage": dict(usage_each),
+        },
+        {
+            "finish_reason": "stop",
+            "content": "答案",
+            "usage": dict(usage_each),
+        },
+    ]
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(
+        llm=_ScriptedLLM(scripts), tools=tools, cost_limiter=_cost_limiter()
+    )
+    async for _ in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+        # baseline token 800 不计入报告；成本 0.03 + 局部 0.027 = 0.057 → 第 3 轮停
+        baseline_usage={
+            "prompt_tokens": 600, "completion_tokens": 200, "total_tokens": 800,
+        },
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert "成本超限" in (strategy.outcome.error or "")  # baseline 参与了判定
+    assert strategy.outcome.total_tokens == 600  # 3×200 局部，不含 baseline 800
+
+
+@pytest.mark.asyncio
 async def test_react_tool_failure_feedback_to_model():
     """工具失败 → tool 消息回喂错误文本，模型可感知失败原因并自愈。"""
     llm = _ScriptedLLM(
