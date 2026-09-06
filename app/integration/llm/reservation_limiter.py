@@ -307,8 +307,16 @@ class ReservationLimiter:
             # TPM 预留（按 estimated，防 0 造成桶不扣）→ 追加按量条目
             await self._token_bucket.acquire(est)
         except BaseException:
-            # 防 R5：TPM 预留前被硬取消 → 回退已扣的 RPM
-            await res.cancel()
+            # 防 R5：TPM 预留前被硬取消 → 回退已扣的 RPM。
+            # 回退本身也可能被再次取消（refund await 被打断、cancel 保持未终态）。
+            # 与 settle/cancel 的「未终态供外层续退」不同：reserve 的 res **不传出
+            # 本函数**、没有外层兜底——须就地循环补齐退款到终态再传播原取消
+            # （cancel 幂等 + refund 容量封顶，重复退款安全）。
+            while not res.settled:
+                try:
+                    await res.cancel()
+                except asyncio.CancelledError:
+                    continue  # 退款途中再被取消 → 下一轮继续补齐
             raise
         res.add(self._token_bucket, est)
         return res

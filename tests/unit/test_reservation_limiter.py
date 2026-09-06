@@ -573,6 +573,46 @@ async def test_cancel_cancelled_midway_keeps_unsettled():
     assert await b2.acquire(1000) == 0.0, "桶2应已全额退还"
 
 
+async def test_reserve_r5_refund_interrupted_by_cancel_leaks_rpm():
+    """探针：R5 兜底（TPM 预留被取消）退 RPM 期间再被二次取消 → RPM 配额不得泄漏。
+
+    既有取消设计（test_cancel_cancelled_midway_keeps_unsettled）依赖「取消中断时保持
+    未终态、由外层续退」，但 reserve 的 res **不传出 _acquire**、没有外层兜底：若 R5
+    的 ``res.cancel()`` 退款中途再次被取消，桶可能永久不回满。本用例用「refund 挂起期间
+    task.cancel()」复现该时序，断言 RPM 桶最终回满（配额不泄漏）。
+    """
+    refund_entered = asyncio.Event()
+    release_refund = asyncio.Event()
+
+    class _GatedRefundRpm(TokenBucket):
+        """RPM 桶：refund 挂起（模拟退款 await 点）直到 release，暴露二次取消窗口。"""
+
+        async def refund(self, tokens: float = 1.0) -> None:
+            refund_entered.set()
+            await release_refund.wait()
+            await super().refund(tokens)
+
+    class _CancelOnAcquireTpm(TokenBucket):
+        """TPM 桶：acquire 直接抛取消（模拟预留排队等待中被取消 → 触发 R5）。"""
+
+        async def acquire(self, tokens: float = 1.0) -> float:
+            raise asyncio.CancelledError()
+
+    limiter = ReservationLimiter(rpm=5, tpm=100_000)
+    rpm = _GatedRefundRpm(capacity=5, refill_rate=5)
+    limiter._req_bucket = rpm
+    limiter._token_bucket = _CancelOnAcquireTpm(capacity=100_000, refill_rate=100_000)
+
+    task = asyncio.create_task(limiter.reserve(estimated_tokens=10))
+    await asyncio.wait_for(refund_entered.wait(), timeout=1)  # R5 已进入退 RPM 并挂起
+    task.cancel()  # 二次取消：命中 R5 退款 await 点
+    release_refund.set()  # 放行退款（若实现会在取消后继续退）
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert rpm._tokens == rpm.capacity, "R5 退款被二次取消时 RPM 配额不得泄漏"
+
+
 @pytest.mark.asyncio
 async def test_concurrent_settle_cancel_mutex_no_double_refund():
     """并发 settle/cancel → 互斥，不重复退款（LLM-010）。
