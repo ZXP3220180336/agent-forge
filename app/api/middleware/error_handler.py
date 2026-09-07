@@ -22,6 +22,7 @@ _CODE_TO_STATUS: dict[AppErrorCode, int] = {
     AppErrorCode.LLM_TRUNCATED: 502,
     AppErrorCode.LLM_API_ERROR: 502,  # LLM 下游不可恢复（4xx/认证）→ 上游故障语义
     AppErrorCode.CIRCUIT_OPEN: 503,
+    AppErrorCode.CONTEXT_WINDOW_EXCEEDED: 422,  # 请求超出模型窗口（本地预检拒绝）→ 客户端请求超容
     AppErrorCode.INTERNAL: 500,
 }
 

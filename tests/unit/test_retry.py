@@ -1153,3 +1153,42 @@ async def test_concurrent_probe_release_then_followup():
     cb.release_probe()  # 探针 4xx 释放一个槽位
     assert cb.allow_request() is True, "释放槽位后应能补位"
     assert cb._half_open_requests == 2, f"补位后槽位计数应恢复 2，实际 {cb._half_open_requests}"
+
+
+async def test_fallback_business_cancel_is_not_packaged_as_main_exc():
+    """CLOSED fallback 阶段业务取消（_StreamCancel）→ 直抛，不包成主网络异常。
+
+    修复前：fallback_fn 抛的 _StreamCancel 落入 except Exception，非 CWEE 分支被
+    `raise last_exc from fallback_exc` 包成主超时——用户取消语义丢失，下游整流器/
+    领域层会把它当可恢复 LLM 失败（甚至 CONTINUE 付费重试）。
+    """
+    from app.integration.llm.streaming_rectifier import _StreamCancel
+
+    handler = RetryHandler(config=RetryConfig(max_retries=0))
+
+    async def call_fn():
+        raise TimeoutError("main transport timeout")  # RETRYABLE → 重试耗尽
+
+    async def fallback_fn():
+        raise _StreamCancel()  # fallback reserve 后业务取消复查命中
+
+    with pytest.raises(_StreamCancel):
+        await handler.execute(call_fn, fallback_fn=fallback_fn)
+
+
+async def test_half_open_probe_fallback_business_cancel_is_not_packaged():
+    """HALF_OPEN 探针 fallback 阶段业务取消同样直抛（与 CLOSED 分支一致）。"""
+    from app.integration.llm.streaming_rectifier import _StreamCancel
+
+    cb = _quick_cb(half_open_max_requests=3)
+    _force_half_open_fresh(cb)
+    handler = RetryHandler(config=RetryConfig(max_retries=3), circuit_breaker=cb)
+
+    async def call_fn():
+        raise TimeoutError("probe failed")  # 探针 RETRYABLE → 回 OPEN
+
+    async def fallback_fn():
+        raise _StreamCancel()
+
+    with pytest.raises(_StreamCancel):
+        await handler.execute(call_fn, fallback_fn=fallback_fn)

@@ -20,10 +20,12 @@ from openai import APIResponseValidationError, BadRequestError, RateLimitError
 
 from app.config import settings
 from app.integration.llm.client import ClientManager
-from app.integration.llm.retry import RetryConfig, RetryHandlerManager
-from app.integration.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
 from app.integration.llm.llm_service import LLMService
+from app.integration.llm.request_budget import RequestBudgetConfig, RequestBudgetManager
+from app.integration.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
+from app.integration.llm.retry import RetryConfig, RetryHandlerManager
 from app.domain.ports.llm_gateway import StreamResult
+from app.shared.exceptions import ContextWindowExceededError
 
 
 # =====================================================================
@@ -405,6 +407,23 @@ async def test_create_failure_no_rectify(monkeypatch):
     assert sr.content == ""
     assert sr.error is not None, "create 失败应标记 result.error（编排层短路信号）"
     assert "bad request" in sr.error.lower(), f"error 应含失败原因，实际: {sr.error}"
+
+
+@pytest.mark.asyncio
+async def test_create_context_window_exceeded_raises_through(monkeypatch):
+    """预算闸拒绝（create 阶段 validate 抛）→ 异常穿透整流流，不折 error 事件。"""
+    monkeypatch.setattr(
+        RequestBudgetManager, "_configs", {"main": RequestBudgetConfig(80, 4)}
+    )
+    monkeypatch.setattr(RequestBudgetManager, "_instances", {})
+    _, completions, run, calls = _setup(monkeypatch, script=[], stream_max_retries=3)
+
+    # 默认 max_tokens=4096 > 窗口 80 → input_budget 为负，validate 必抛
+    with pytest.raises(ContextWindowExceededError):
+        await run()
+
+    assert completions.calls == 0, "预算闸拒绝不得调用 provider"
+    assert calls["reserve"] == 0, "validate 在 reserve 之前，不得预留配额"
 
 
 @pytest.mark.asyncio

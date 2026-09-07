@@ -16,7 +16,8 @@ import pytest
 from openai import APITimeoutError, APIResponseValidationError, AuthenticationError
 
 from app.integration.llm.llm_service import LLMService
-from app.shared.exceptions import LLMAPIError
+from app.integration.llm.request_budget import RequestBudgetConfig, RequestBudgetManager
+from app.shared.exceptions import ContextWindowExceededError, LLMAPIError
 
 
 # =====================================================================
@@ -254,70 +255,85 @@ async def test_generate_fills_reasoning_fields(monkeypatch):
     assert result.has_reasoning is True
 
 
-# =====================================================================
-# _count_prompt_tokens content 归一化：None / 多模态 list 不抛 TypeError
-# =====================================================================
-
-
-class _FakeEncoder:
-    """模拟 tiktoken 编码器：encode 只接受 str，非 str 抛 TypeError（对齐真实行为）。"""
-
-    def encode(self, text):
-        if not isinstance(text, str):
-            raise TypeError(f"expected str, got {type(text).__name__}")
-        return list(text)
-
-
-def test_count_prompt_tokens_none_content(monkeypatch):
-    """content 为 None（工具报错场景）→ 不抛 TypeError，按空串计数。
-
-    修复前：msg.get("content", "") 在 content 键存在但值为 None 时返回
-    None → encoder.encode(None) 抛 TypeError，限流预留阶段崩溃整次调用。
-    """
-    from app.integration.llm.llm_service import _count_prompt_tokens
-
-    monkeypatch.setattr(
-        "app.integration.llm.llm_service._get_encoder",
-        staticmethod(lambda model: _FakeEncoder()),
+@pytest.mark.asyncio
+async def test_generate_rejects_oversized_request_before_provider_call(monkeypatch):
+    """最终预算闸超限时不得预留配额或调用 provider。"""
+    completions = _FakeCompletions([_FakeResponse("不应到达")])
+    _patch_generate_env(
+        monkeypatch,
+        client=_FakeClient(completions),
+        retry=_FakeRetryDirect(),
+        reservation=_TrackingReservation(),
     )
+    previous = dict(RequestBudgetManager._configs)
+    RequestBudgetManager.register_config(
+        {"fast": RequestBudgetConfig(context_window_tokens=80, safety_margin_tokens=4)}
+    )
+    try:
+        with pytest.raises(ContextWindowExceededError):
+            await LLMService().generate(
+                messages=[{"role": "user", "content": "x" * 1_000}],
+                max_tokens=16,
+            )
+    finally:
+        RequestBudgetManager.register_config(previous)
+
+    assert completions.calls == []
+
+
+@pytest.mark.asyncio
+async def test_generate_fallback_reserves_with_own_pool_and_settles_once(monkeypatch):
+    """fallback 参与 reserve/settle：独立配额池 + 成功结算恰一次（不再裸 create）。
+
+    修复前：fallback 直接 SDK create，绕过 reserve/settle（无限流保护、无配额记账）；
+    修复后：fallback 经统一请求入口用 fallback 键窗口 + 独立池 reserve → create，
+    Reservation 写入同一 active，由 generate finally 结算。
+    """
+    monkeypatch.setattr(LLMService, "_fallback_model_id", "fallback-model")
     monkeypatch.setattr(
         "app.integration.llm.llm_service.ClientManager.get_model",
-        staticmethod(lambda key: "main-model"),
+        staticmethod(lambda key: f"{key}-model"),
     )
+    completions = _FakeCompletions([_FakeResponse('{"ok": true}')])
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.ClientManager.get_client",
+        staticmethod(lambda key: _FakeClient(completions)),
+    )
+    # 主链路失败（重试耗尽）→ retry 调 fallback_fn（不调主 call_fn）
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.RetryHandlerManager.get",
+        staticmethod(lambda key: _FakeRetry(_FakeResponse('{"ok": true}'))),
+    )
+    fallback_res = _TrackingReservation()
+    pool_keys: list[str] = []
 
-    messages = [{"role": "user", "content": None}]  # 工具报错场景 content 为 None
-    total = _count_prompt_tokens("main", messages, max_tokens=10)
-    assert isinstance(total, int), "None content 不应抛异常，应返回 token 计数"
-
-
-def test_count_prompt_tokens_multimodal_list_content(monkeypatch):
-    """content 为多模态 list（[{"type":"text","text":...}]）→ 不抛 TypeError。
-
-    修复前：encoder.encode(list) 抛 TypeError。修复后：归一化只取文本片段。
-    """
-    from app.integration.llm.llm_service import _count_prompt_tokens
+    def limiter_get(key):
+        pool_keys.append(key)
+        return _StubLimiter(fallback_res if key == "fallback" else _TrackingReservation())
 
     monkeypatch.setattr(
-        "app.integration.llm.llm_service._get_encoder",
-        staticmethod(lambda model: _FakeEncoder()),
+        "app.integration.llm.llm_service.ReservationLimiterManager.get",
+        staticmethod(limiter_get),
     )
-    monkeypatch.setattr(
-        "app.integration.llm.llm_service.ClientManager.get_model",
-        staticmethod(lambda key: "main-model"),
-    )
-
-    messages = [
+    previous = dict(RequestBudgetManager._configs)
+    RequestBudgetManager.register_config(
         {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "分析这张图"},
-                {"type": "image_url", "image_url": {"url": "..."}},
-            ],
+            "fast": RequestBudgetConfig(1_000_000, 16),
+            "fallback": RequestBudgetConfig(1_000_000, 16),
         }
-    ]
-    total = _count_prompt_tokens("main", messages, max_tokens=10)
-    assert isinstance(total, int), "多模态 list content 不应抛异常"
-    assert total > 0, "多模态文本片段应计入 token"
+    )
+    try:
+        result = await LLMService().generate(
+            messages=[{"role": "user", "content": "hi"}]
+        )
+    finally:
+        RequestBudgetManager.register_config(previous)
+
+    assert result is not None and result.content == '{"ok": true}'
+    assert completions.calls and completions.calls[0]["model"] == "fallback-model"
+    assert "fallback" in pool_keys, "fallback 应使用独立配额池"
+    assert fallback_res.settle_calls == 1, "fallback 成功应结算恰一次"
+    assert fallback_res.cancel_calls == 0, "请求已发出，不应 cancel 全额退"
 
 
 # =====================================================================
@@ -395,7 +411,7 @@ async def test_generate_normalizes_openai_401_to_llm_api_error(monkeypatch):
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.__cause__ is original, "应链原始 openai 异常（诊断经 __cause__）"
-    # create 抛异常 → _rate_limited_call cancel 全额退（请求未确认发出），非 settle
+    # create 抛异常 → _budget_guarded_call 限流段 cancel 全额退（请求未确认发出），非 settle
     assert reservation.cancel_calls == 1
     assert reservation.settled, "cancel 后应标记终态"
 

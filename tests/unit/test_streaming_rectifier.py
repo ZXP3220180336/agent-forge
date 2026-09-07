@@ -18,6 +18,7 @@ import pytest
 
 from app.integration.llm.streaming_rectifier import RectifierContext, StreamingRectifier
 from app.domain.ports.llm_gateway import StreamResult
+from app.shared.exceptions import ContextWindowExceededError
 
 
 # =====================================================================
@@ -829,6 +830,75 @@ def test_continuation_create_failure_degrades_to_abandon():
         assert retry.circuit_breaker.failures == 1, (
             "原中断为 RETRYABLE → 与未续接的放弃一致，喂熔断"
         )
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_continuation_context_window_exceeded_raises_through():
+    """续接请求命中预算闸 → 异常穿透 rectified_stream（不退化放弃、不吞）。"""
+    saved = _tiny_watchdog()
+    try:
+        exc = ContextWindowExceededError(
+            model_key="main", input_tokens=1000, input_budget=100, max_tokens=20
+        )
+        result = StreamResult()
+        active = {"res": _FakeReservation()}
+        context = RectifierContext(result, active, {})
+        retry = _FakeRetry(
+            [
+                _FakeStream(
+                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
+                )
+            ]
+        )
+
+        async def cont_fn(prefix):
+            raise exc
+
+        async def collect():
+            async for ev in StreamingRectifier.rectified_stream(
+                create_fn=lambda: _FakeStream([]),
+                retry=retry,
+                cancel_event=None,
+                stream_max_retries=1,
+                context=context,
+                continue_fn=cont_fn,
+                continuation_max_retries=1,
+            ):
+                pass
+
+        with pytest.raises(ContextWindowExceededError) as exc_info:
+            asyncio.run(collect())
+        assert exc_info.value is exc, "异常对象应原样穿透（供调用方终结语义）"
+        assert result.content == "部分", "已产出的部分 content 保留在 result"
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_continuation_cancel_during_resume_uses_cancel_exit():
+    """续接调用中业务取消（_StreamCancel）→ 走用户取消出口，不当作 create 失败退化。
+
+    修复前：continue_fn（经 _budget_guarded_call 的取消复查）抛 _StreamCancel 落
+    except Exception → 按「create 失败」退化放弃，取消语义丢失，且 _abandon_path
+    若原中断为 RETRYABLE 会喂熔断（违背 LLM-011「取消非下游故障」）。
+    """
+    from app.integration.llm.errors import _StreamCancel
+
+    saved = _tiny_watchdog()
+    try:
+        events, result, retry, _, prefixes = _run_continue(
+            streams=[
+                _FakeStream(
+                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
+                )
+            ],
+            continue_streams=[_StreamCancel()],
+        )
+        assert prefixes == ["部分"], "应尝试续接一次（尽力而为）"
+        assert result.error == "用户取消", "续接中取消应以取消语义出口，而非原中断原因"
+        assert result.content == "部分", "已产出 content 保留"
+        assert any("用户取消了请求" in e for e in events), "应产出用户取消事件"
+        assert retry.circuit_breaker.failures == 0, "用户取消不得喂熔断器"
     finally:
         _restore_watchdog(saved)
 

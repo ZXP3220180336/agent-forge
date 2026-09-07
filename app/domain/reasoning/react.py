@@ -58,7 +58,7 @@ from app.shared.events import (
     build_tool_call_event,
     build_tool_result_event,
 )
-from app.shared.exceptions import AppError
+from app.shared.exceptions import AppError, ContextWindowExceededError
 
 from ._common import dispatch_error, merge_usage
 
@@ -583,6 +583,24 @@ class ReActStrategy:
 
             return
 
+        except ContextWindowExceededError as exc:
+            # 最终请求预算闸已在网络调用前拒绝。它不是传输失败或空输出，继续重试
+            # 无法改变 messages/tools/schema，直接按终结性上下文超限收尾并保留进度。
+            error = str(exc)
+            for ev in await self._finalize_terminal(
+                AgentErrorKind.CONTEXT_EXCEEDED,
+                error,
+                iteration,
+                success=bool(last_result.content.strip()) if last_result else False,
+                content=last_result.content.strip() if last_result else "",
+                reasoning=last_result.reasoning_content.strip() if last_result else "",
+                total_usage=total_usage,
+                error=error,
+                info_message=error,
+            ):
+                yield ev
+            return
+
         except Exception as e:  # noqa: BLE001 — 未捕获异常 → UNKNOWN 分发（保留部分进度）
             # ----- 11. 未捕获异常 → UNKNOWN 分发（默认保留部分进度）-----
             # 关闭判别（对齐 TimeoutError 分支）：生成器被 finalizer/aclose 关闭
@@ -629,6 +647,9 @@ class ReActStrategy:
                 max_tokens=max_tokens,
                 model_key="main",  # 显式 main 对齐 async_generate 默认，勿用 generate 默认 "fast"
             )
+        except ContextWindowExceededError:
+            # 交由主循环映射为 CONTEXT_EXCEEDED；不可折算为可重试 LLM_FAILED。
+            raise
         except AppError as e:
             exc_text = str(e)[:500]  # 对齐整流器错误截断上限
             stream_result.error = exc_text

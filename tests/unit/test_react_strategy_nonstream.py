@@ -27,7 +27,7 @@ from app.domain.reasoning import ReActStrategy
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.tool_service import ToolService
 from app.shared.events import build_message_event
-from app.shared.exceptions import LLMAPIError
+from app.shared.exceptions import ContextWindowExceededError, LLMAPIError
 
 
 class _NonStreamingScriptedLLM:
@@ -266,6 +266,29 @@ async def test_nonstream_apperror_maps_to_llm_failed():
     assert "Agent 运行异常" not in strategy.outcome.error  # 非 UNKNOWN
     error_evs = _typed(events, "error")
     assert error_evs and "401 认证失败" in error_evs[0]["content"]
+    assert _typed(events, "done")
+
+
+@pytest.mark.asyncio
+async def test_nonstream_context_window_exceeded_is_terminal():
+    """请求预算闸拒绝 → CONTEXT_EXCEEDED 收尾，不重试且不归类为 LLM_FAILED。"""
+    llm = _NonStreamingScriptedLLM(
+        [
+            ContextWindowExceededError(
+                model_key="main", input_tokens=1000, input_budget=100, max_tokens=256
+            )
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    events = await _run(
+        strategy, [{"role": "user", "content": "hi"}], stream_mode=False
+    )
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "请求上下文超限" in (strategy.outcome.error or "")
+    assert llm.calls == 1
     assert _typed(events, "done")
 
 

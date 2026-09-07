@@ -42,6 +42,17 @@ from openai import (
 from app.shared.exceptions import LLMAPIError
 
 
+# 业务取消信号（llm 层内部共享，非传输错误分类——retry / rectifier / llm_service 共用，
+# 定义于本共享低层避免组件间反向依赖）。
+class _StreamCancel(Exception):
+    """业务取消信号：整流迭代 / 预留后复查命中 `cancel_event` → 优雅终止。
+
+    与 asyncio.CancelledError（硬取消）区分——取消置位是终态业务意图，须走结算 +
+    取消事件出口。不得被当作可恢复 LLM 失败重试、也不得被包装成传输异常 cause
+    （如 fallback 分支 `raise last_exc from fallback_exc`）：用户已取消，继续付费调用无意义。
+    """
+
+
 # 分类契约（LLM 传输层语义，仅集成层 LLM 消费 → 随实现归本模块，不入 shared）
 class ErrorCategory(Enum):
     """LLM 传输错误分类，决定处理策略（重试 / 退避 / 熔断）。

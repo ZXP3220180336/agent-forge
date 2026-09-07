@@ -11,20 +11,27 @@ import app.container as container_module
 from app.config import settings
 from app.container import Container
 from app.integration.llm.client import ClientManager
+from app.integration.llm.llm_service import LLMService
+from app.integration.llm.request_budget import RequestBudgetManager
 from app.integration.llm.reservation_limiter import ReservationLimiterManager
 from app.integration.llm.retry import RetryHandlerManager
 from app.integration.llm.streaming_rectifier import StreamingRectifier
 from app.integration.llm.structured import StructuredOutput
-from app.integration.llm.llm_service import LLMService
 
 # initialize() 会修改这些类级注册表/配置，测试后恢复为快照
 _GLOBAL_STATE = {
     ClientManager: ("_instances", "_configs", "_pending_closes", "_closing_tasks"),
     RetryHandlerManager: ("_instances", "_config", "_circuit_breaker_config"),
     ReservationLimiterManager: ("_instances", "_configs"),
-    LLMService: ("_fallback_model_id", "_adaptive_reserve", "_stream_max_retries"),
+    LLMService: (
+        "_fallback_model_id",
+        "_adaptive_reserve",
+        "_stream_max_retries",
+        "_continuation_max_retries",
+    ),
     StructuredOutput: ("_default_max_tokens",),
     StreamingRectifier: ("_base_delay", "_max_delay", "_use_jitter"),
+    RequestBudgetManager: ("_configs", "_instances", "_default_config"),
 }
 
 
@@ -137,6 +144,13 @@ async def test_initialize_happy_path(monkeypatch):
     }
     # 成本上限：未配置（默认 None）→ cost_limiter 为 None（不启用）
     assert c.cost_limiter is None
+    # 请求预算配置：按 model_key 注入 settings 窗口能力
+    main_budget = RequestBudgetManager._configs["main"]
+    assert main_budget.context_window_tokens == settings.llm_main_context_window_tokens
+    assert (
+        main_budget.safety_margin_tokens == settings.llm_context_safety_margin_tokens
+    )
+    assert RequestBudgetManager.get("reasoning") is not None
     assert c._errors == []
 
 

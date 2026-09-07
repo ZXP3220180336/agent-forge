@@ -27,8 +27,11 @@ class AppErrorCode(StrEnum):
     UNAUTHORIZED = "UNAUTHORIZED"  # 未认证（UnauthorizedError，401）
     FORBIDDEN = "FORBIDDEN"  # 权限不足（ForbiddenError，403）
     NOT_FOUND = "NOT_FOUND"  # 资源不存在（NotFoundError，404）
+    CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED"  # 请求超出模型上下文窗口
     CIRCUIT_OPEN = "CIRCUIT_OPEN"  # 熔断开启（CircuitBreakerOpenError）
-    LLM_API_ERROR = "LLM_API_ERROR"  # LLM 下游不可恢复错误（LLMAPIError，openai 4xx/认证归一）
+    LLM_API_ERROR = (
+        "LLM_API_ERROR"  # LLM 下游不可恢复错误（LLMAPIError，openai 4xx/认证归一）
+    )
     LLM_TRUNCATED = "LLM_TRUNCATED"  # 结构化输出截断（StructuredTruncationError）
     LLM_REFUSAL = "LLM_REFUSAL"  # 模型拒答（StructuredRefusalError）
     LLM_TOOL_CALL = "LLM_TOOL_CALL"  # 模型选择调用工具（StructuredToolCallError）
@@ -66,6 +69,33 @@ class CircuitBreakerOpenError(NonRetryableError):
     """熔断器开启时请求被拒绝（无 fallback 兜底），调用方需等待冷却或降级备用链路。"""
 
     code = AppErrorCode.CIRCUIT_OPEN
+
+
+class ContextWindowExceededError(NonRetryableError):
+    """请求在发往 provider 前已确认无法容纳于模型上下文窗口。
+
+    不可重试：消息内容不变时重试与降级均无意义，是调用方需差异化处理的
+    不可恢复短路。区别于 LLMAPIError——provider 从未被调用，无 status_code。
+    """
+
+    code = AppErrorCode.CONTEXT_WINDOW_EXCEEDED
+
+    def __init__(
+        self,
+        *,
+        model_key: str,
+        input_tokens: int,
+        input_budget: int,
+        max_tokens: int,
+    ) -> None:
+        self.model_key = model_key
+        self.input_tokens = input_tokens
+        self.input_budget = input_budget
+        self.max_tokens = max_tokens
+        super().__init__(
+            f"请求上下文超限（model_key={model_key}，输入估算 {input_tokens}，"
+            f"输入预算 {input_budget}，输出预留 {max_tokens}）"
+        )
 
 
 class LLMAPIError(NonRetryableError):

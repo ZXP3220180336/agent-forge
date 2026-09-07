@@ -84,7 +84,9 @@ class Settings(BaseSettings):
     llm_timeout_write: float = 10.0
     llm_timeout_pool: float = 10.0
     # 首包/空闲双阈值看门狗（整流层逐 chunk 计时；httpx read 档无法区分二者）
-    llm_timeout_first_token: float = 60.0  # 首 chunk（首字节）等待上限（宽，覆盖模型思考）
+    llm_timeout_first_token: float = (
+        60.0  # 首 chunk（首字节）等待上限（宽，覆盖模型思考）
+    )
     llm_timeout_chunk_idle: float = 15.0  # 后续单 chunk 空闲上限（窄，判定断流）
     # 连接池上限（httpx.Limits，经 http_client 注入 AsyncOpenAI）
     llm_pool_max_connections: int = 100
@@ -107,7 +109,9 @@ class Settings(BaseSettings):
     # LLM 高级配置（重试、熔断、限流）
     llm_max_retries: int = 2
     llm_stream_max_retries: int = 1  # 流式整流重试次数（首 token 前中断才整流；0=禁用）
-    llm_stream_max_continuations: int = 1  # 半流续接轮次上限（已产出 content 中断续写；0=禁用，LLM-ADR-015）
+    llm_stream_max_continuations: int = (
+        1  # 半流续接轮次上限（已产出 content 中断续写；0=禁用，LLM-ADR-015）
+    )
     llm_base_delay: float = 1.0
     llm_max_delay: float = 30.0
     llm_use_jitter: bool = True
@@ -125,20 +129,31 @@ class Settings(BaseSettings):
     llm_main_rpm: int = 60
     llm_reasoning_rpm: int = 30
     llm_fast_rpm: int = 100
+    llm_fallback_rpm: int = 60  # fallback 独立配额池（客户端限流）：仅备用链路兜底时使用。若供应商对备用模型与主模型共享配额，应合并记账（见 ADR 升级路径），当前按独立池。
     # TPM（Tokens Per Minute）—— 与 RPM 组成双桶限流。默认参考 DeepSeek 官方限额
     llm_main_tpm: int = 2_000_000
     llm_reasoning_tpm: int = 2_000_000
     llm_fast_tpm: int = 2_000_000
-
-    # ===== LLM 自适应预留（Fenic 式 OutputTokenEstimator，默认关闭） =====
+    llm_fallback_tpm: int = 2_000_000
+    # ===== LLM 自适应预留（Fenic式 OutputTokenEstimator，默认关闭） =====
     # 开启后用「历史实际输出的高分位 × 安全系数」替代固定 max_tokens 预留，
     # 减少预留期间占桶（并发空耗）。详见 limiter.md「对比 3.2」。
     llm_adaptive_reserve: bool = False
     llm_reserve_quantile: float = 0.95  # 普通模型输出分位数（p95）
-    llm_reserve_reasoning_quantile: float = 0.99  # 推理模型 p99（推理输出有相关性突发尖峰）
+    llm_reserve_reasoning_quantile: float = (
+        0.99  # 推理模型 p99（推理输出有相关性突发尖峰）
+    )
     llm_reserve_safety_margin: float = 1.15  # 安全系数（1.0~4.0）
     llm_reserve_min_samples: int = 30  # 冷启动阈值：样本不足用静态上限
     llm_reserve_window: int = 256  # 滚动样本窗口（deque 上限）
+
+    # 请求上下文窗口：按 model_key 注入 Integration 请求预算闸。默认 128K
+    # 适配默认 gpt-4；DeepSeek 等 1M 模型可经环境变量显式提高，禁止按模型名猜测。
+    llm_main_context_window_tokens: int = 128_000
+    llm_reasoning_context_window_tokens: int = 128_000
+    llm_fast_context_window_tokens: int = 128_000
+    llm_fallback_context_window_tokens: int = 128_000  # fallback 备用模型窗口：按目标（备用）模型实际窗口配置，启用llm_fallback_model_id 时须同步设置——禁止按模型名猜测窗口。
+    llm_context_safety_margin_tokens: int = 1_024
 
     # ===== 结构化输出 =====
     # 三级降级（strict json_schema → json mode → 正则）的模型输出预算。
@@ -156,11 +171,17 @@ class Settings(BaseSettings):
     agent_timeout: int = 300  # 5分钟
     agent_streaming: bool = True
     agent_max_refine_rounds: int = 2  # 修复尝试上限：Reflection 修正（初稿 1 + 修正上限 max_refine_rounds-1）与 Planner replan（步骤失败重规划预算）共用
-    agent_max_context_rounds: int = 8  # 上下文预算：Agent 循环保留最近轮数（0/None 走 AgentContext 默认）
+    agent_max_context_rounds: int = (
+        8  # 上下文预算：Agent 循环保留最近轮数（0/None 走 AgentContext 默认）
+    )
     agent_max_empty_retries: int = 2  # 连续空输出重试上限：空输出最多重试 N 次，第 N+1 次仍空输出则终止（0=首次空输出即终止）
     agent_max_llm_fail_retries: int = 2  # LLM 失败重试上限：LLM 调用失败最多重试 N 次，第 N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏，防 handler CONTINUE 无限重试烧钱）
-    agent_max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）超过 N 轮，下一轮仍相同则终止
-    agent_max_cost: float | None = None  # 成本上限（美元 USD）；None=不启用（0 则任何正成本即停）
+    agent_max_same_action_turns: int = (
+        3  # 循环停滞检测：连续相同工具调用（工具+参数）超过 N 轮，下一轮仍相同则终止
+    )
+    agent_max_cost: float | None = (
+        None  # 成本上限（美元 USD）；None=不启用（0 则任何正成本即停）
+    )
 
     # 任务优先级配置
     agent_priority_levels: list[Literal["low", "normal", "high", "urgent"]] = [
@@ -201,7 +222,9 @@ class Settings(BaseSettings):
     tool_max_retries: int = 3  # 工具执行最大重试次数
     tool_max_output_length: int = 100_000  # 工具输出最大字符数（code_exec、readFile）
     tool_max_content_length: int = 50_000  # 网页抓取最大字符数（web_browse）
-    tool_allowed_dirs: tuple[str, ...] = (str(Path(__file__).resolve().parents[2]),)  # 文件工具允许目录（默认项目根）
+    tool_allowed_dirs: tuple[str, ...] = (
+        str(Path(__file__).resolve().parents[2]),
+    )  # 文件工具允许目录（默认项目根）
     tool_http_timeout: float = 15.0  # external http_api 示例工具请求超时（秒）
 
     # ===== Tavily 配置 =====

@@ -34,6 +34,7 @@ class AgentErrorKind(StrEnum):
         STALLED          连续相同工具调用（工具+参数）→ 停机
         REFUSED          模型拒答（refusal/content_filter）→ 停机
         CANCELLED        外部取消 → 取消态
+        CONTEXT_EXCEEDED  最终请求超出模型窗口 → 保留部分进度并终止
         UNKNOWN          未捕获异常 → FAILED 态
     可恢复错误（默认 CONTINUE = 回喂模型继续，现有行为）：
         TOOL_FAILED          工具执行失败 → 回喂模型自纠
@@ -51,6 +52,7 @@ class AgentErrorKind(StrEnum):
     STALLED = "STALLED"
     REFUSED = "REFUSED"
     CANCELLED = "CANCELLED"
+    CONTEXT_EXCEEDED = "CONTEXT_EXCEEDED"
     UNKNOWN = "UNKNOWN"
     TOOL_FAILED = "TOOL_FAILED"
     PARSE_FAILED = "PARSE_FAILED"
@@ -117,6 +119,7 @@ _DEFAULT_ACTIONS: dict[AgentErrorKind, AgentErrorAction] = {
     AgentErrorKind.STALLED: AgentErrorAction.STOP,
     AgentErrorKind.REFUSED: AgentErrorAction.STOP,
     AgentErrorKind.CANCELLED: AgentErrorAction.STOP,
+    AgentErrorKind.CONTEXT_EXCEEDED: AgentErrorAction.STOP,
     AgentErrorKind.UNKNOWN: AgentErrorAction.STOP,
     AgentErrorKind.TOOL_FAILED: AgentErrorAction.CONTINUE,
     AgentErrorKind.PARSE_FAILED: AgentErrorAction.CONTINUE,

@@ -26,9 +26,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, ClassVar
 
-from app.shared.exceptions import CircuitBreakerOpenError
+from app.shared.exceptions import CircuitBreakerOpenError, ContextWindowExceededError
 
-from .errors import ErrorCategory, classify_error
+from .errors import ErrorCategory, _StreamCancel, classify_error
 
 # =====================================================================
 # 熔断器
@@ -343,56 +343,51 @@ class RetryHandler:
             return await self._probe_attempt(call_fn, fallback_fn=fallback_fn)
 
         # --- 重试循环（仅 CLOSED 正常状态）---
-        for attempt in range(self.config.max_retries + 1):
-            try:
-                result = await call_fn()
-                cb.record_success()
-                return result
-            except asyncio.CancelledError:
-                # 退避 sleep 期间被硬取消：本次请求已触及过 RETRYABLE 故障
-                # （5xx/超时）的话，该下游故障信号仍应计入熔断窗口——取消是
-                # 客户端主动终止，不代表下游恢复，故障证据不能随取消丢失。
-                if saw_retryable_failure:
-                    cb.record_failure()
-                raise
-            except Exception as e:
-                last_exc = e
-                category = classify_error(e)
-
-                # 不可恢复的错误 → 直接抛出。但若本次请求此前已触及过
-                # RETRYABLE 故障（超时/5xx），该下游故障信号仍应计入熔断窗口
-                # ——4xx 本身是调用方问题不计入，但前期的下游故障不能因
-                # 最后一次是 4xx 而被抹掉。
-                if category == ErrorCategory.NON_RETRYABLE:
-                    if saw_retryable_failure:
-                        cb.record_failure()
-                    raise
-
-                # 出现下游故障（超时/5xx）：标记本次请求触及过故障
-                if category == ErrorCategory.RETRYABLE:
-                    saw_retryable_failure = True
-
-                # 最后一次尝试失败 → 结束循环，进入请求级记录 + fallback
-                if attempt >= self.config.max_retries:
-                    break
-
-                # 限流：尊重服务端退避时间（Retry-After），不计入熔断。
-                # 可重试（超时/5xx）：按指数退避等待后重试。
-                retry_after = (
-                    self._extract_retry_after(e)
-                    if category == ErrorCategory.RATE_LIMITED
-                    else None
-                )
-                delay = self._calculate_delay(attempt, retry_after=retry_after)
+        # 取消（调用或退避 sleep 期间被硬取消）统一收敛到外层守卫：取消是客户端
+        # 主动终止，不代表下游恢复——只要本次请求触及过 RETRYABLE 故障（5xx/超时），
+        # 该下游故障信号仍应计入熔断窗口，故障证据不能随取消丢失。
+        try:
+            for attempt in range(self.config.max_retries + 1):
                 try:
+                    result = await call_fn()
+                    cb.record_success()
+                    return result
+                except Exception as e:
+                    last_exc = e
+                    category = classify_error(e)
+
+                    # 不可恢复的错误 → 直接抛出。但若本次请求此前已触及过
+                    # RETRYABLE 故障（超时/5xx），该下游故障信号仍应计入熔断窗口
+                    # ——4xx 本身是调用方问题不计入，但前期的下游故障不能因
+                    # 最后一次是 4xx 而被抹掉。
+                    if category == ErrorCategory.NON_RETRYABLE:
+                        if saw_retryable_failure:
+                            cb.record_failure()
+                        raise
+
+                    # 出现下游故障（超时/5xx）：标记本次请求触及过故障
+                    if category == ErrorCategory.RETRYABLE:
+                        saw_retryable_failure = True
+
+                    # 最后一次尝试失败 → 结束循环，进入请求级记录 + fallback
+                    if attempt >= self.config.max_retries:
+                        break
+
+                    # 限流：尊重服务端退避时间（Retry-After），不计入熔断。
+                    # 可重试（超时/5xx）：按指数退避等待后重试。
+                    retry_after = (
+                        self._extract_retry_after(e)
+                        if category == ErrorCategory.RATE_LIMITED
+                        else None
+                    )
+                    delay = self._calculate_delay(
+                        attempt, retry_after=retry_after
+                    )
                     await asyncio.sleep(delay)
-                except asyncio.CancelledError:
-                    # 退避 sleep 期间被硬取消：本次请求已触及过 RETRYABLE 故障
-                    # （5xx/超时）的话，下游故障信号仍应计入熔断窗口——取消是
-                    # 客户端主动终止，不代表下游恢复，故障证据不能随取消丢失。
-                    if saw_retryable_failure:
-                        cb.record_failure()
-                    raise
+        except asyncio.CancelledError:
+            if saw_retryable_failure:
+                cb.record_failure()
+            raise
 
         # --- 请求粒度统一记录主链路最终结果 ---
         # 本次请求只要任一次尝试是 RETRYABLE 故障（超时/5xx），就记录一次失败
@@ -405,15 +400,7 @@ class RetryHandler:
         # 主链路已按自身成败记录过熔断（record_success/record_failure）；
         # fallback 是备用链路，成功/失败都不再触碰熔断器。
         if fallback_fn is not None:
-            try:
-                return await fallback_fn()
-            except Exception as fallback_exc:
-                # 主调用异常才是最终结果（上层按它判定熔断/重试语义，
-                # 熔断窗口记录的也是主链路）；fallback 失败仅作为 __cause__ 链上，
-                # 不覆盖主异常——否则上层拿到 fallback 异常会与熔断器记录的
-                # 主链路状态不一致。
-                assert last_exc is not None  # 走到 fallback 必然主调用已失败
-                raise last_exc from fallback_exc
+            return await self._run_fallback(fallback_fn, last_exc)
 
         # --- 所有路径均失败 ---
         assert last_exc is not None
@@ -478,17 +465,35 @@ class RetryHandler:
 
         # 探针失败（429/超时/5xx）：尝试 fallback 兜底（不记录熔断）
         if fallback_fn is not None:
-            try:
-                return await fallback_fn()
-            except Exception as fallback_exc:
-                # 主调用（探针）异常才是最终结果：熔断窗口已按主链路记录
-                # （record_failure 回 OPEN），上层需按主异常判定语义；fallback
-                # 失败仅作为 __cause__ 链上保留诊断信息，不覆盖主异常。
-                assert last_exc is not None  # 走到 fallback 必然主调用已失败
-                raise last_exc from fallback_exc
+            return await self._run_fallback(fallback_fn, last_exc)
 
         assert last_exc is not None
         raise last_exc
+
+    async def _run_fallback(
+        self,
+        fallback_fn: Callable[[], Awaitable[Any]],
+        last_exc: Exception | None,
+    ) -> Any:
+        """执行纯兜底 fallback（不触碰熔断状态机）。
+
+        - 终结性信号（请求未发 / 用户已取消）直抛、不包成主网络故障 cause：
+          预算拒绝（CWEE）——否则 decide_downstream_error 会把主超时归可恢复
+          降级，甚至触发结构化/整流再调主（付费但必然再超限）；业务取消
+          （_StreamCancel）——否则用户取消被吞成主失败，下游当可恢复错误继续付费重试。
+        - 主调用异常才是最终结果（上层按它判定熔断/重试语义，熔断窗口记录的
+          也是主链路）；其余 fallback 失败仅作为 __cause__ 链上保留诊断，不覆盖
+          主异常——否则上层拿到 fallback 异常会与熔断器记录的主链路状态不一致。
+        """
+        try:
+            return await fallback_fn()
+        except Exception as fallback_exc:
+            if isinstance(
+                fallback_exc, (ContextWindowExceededError, _StreamCancel)
+            ):
+                raise
+            assert last_exc is not None  # 走到 fallback 必然主调用已失败
+            raise last_exc from fallback_exc
 
     def _calculate_delay(
         self,
@@ -523,7 +528,7 @@ class RetryHandler:
             return None
         try:
             return float(value)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None  # 可能是 HTTP-date 形式，简化忽略，回退到指数退避
 
 

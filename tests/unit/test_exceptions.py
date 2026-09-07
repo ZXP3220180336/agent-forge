@@ -17,6 +17,7 @@ from app.shared.exceptions import (
     AppError,
     AppErrorCode,
     BusinessError,
+    ContextWindowExceededError,
     NonRetryableError,
     StructuredExtractionError,  # 中间基类定义在 shared（structured 不 re-export）
 )
@@ -25,6 +26,7 @@ from app.shared.exceptions import (
 ALL_ERRORS = [
     CircuitBreakerOpenError,
     ParameterValidationError,
+    ContextWindowExceededError,
     StructuredExtractionError,
     StructuredTruncationError,
     StructuredRefusalError,
@@ -39,9 +41,11 @@ def test_all_exceptions_are_app_error_subclasses():
 
 
 def test_recoverability_classification():
-    """不可恢复分支：熔断 / 参数校验"""
+    """不可恢复分支：熔断 / 参数校验 / 上下文超限（均不可重试）"""
     assert issubclass(CircuitBreakerOpenError, NonRetryableError)
     assert issubclass(ParameterValidationError, NonRetryableError)
+    assert issubclass(ContextWindowExceededError, NonRetryableError)
+    assert not issubclass(ContextWindowExceededError, BusinessError)
     # 业务边界分支：结构化失败 / SSRF
     assert issubclass(StructuredExtractionError, BusinessError)
     assert issubclass(StructuredTruncationError, BusinessError)

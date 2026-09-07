@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.api.middleware.error_handler import register_error_handlers
 from app.shared.exceptions import (
     CircuitBreakerOpenError,
+    ContextWindowExceededError,
     ForbiddenError,
     NotFoundError,
     ParameterValidationError,
@@ -49,6 +50,12 @@ def client():
     @app.get("/ssrf")
     async def ssrf():
         raise SSRFError("SSRF 拦截")
+
+    @app.get("/context_exceeded")
+    async def context_exceeded():
+        raise ContextWindowExceededError(
+            model_key="main", input_tokens=1000, input_budget=100, max_tokens=100
+        )
 
     return TestClient(app)
 
@@ -96,3 +103,9 @@ def test_ssrf(client):
     resp = client.get("/ssrf")
     assert resp.status_code == 400
     assert resp.json()["code"] == "SSRF_BLOCKED"
+
+
+def test_context_window_exceeded(client):
+    resp = client.get("/context_exceeded")
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "CONTEXT_WINDOW_EXCEEDED"

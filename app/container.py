@@ -19,6 +19,10 @@ from app.application.task.task_service import TaskService
 from app.integration.embedding import EmbeddingService
 from app.integration.llm.client import ClientManager
 from app.integration.llm.llm_service import LLMService
+from app.integration.llm.request_budget import (
+    RequestBudgetConfig,
+    RequestBudgetManager,
+)
 from app.integration.llm.reservation_limiter import (
     ReservationLimiterConfig,
     ReservationLimiterManager,
@@ -185,25 +189,37 @@ class Container:
             ),
         )
 
-        def _reservation_config(
-            key: str, quantile_field: str
-        ) -> ReservationLimiterConfig:
-            return ReservationLimiterConfig(
-                rpm=getattr(settings, f"llm_{key}_rpm", 60),
-                tpm=getattr(settings, f"llm_{key}_tpm", 2_000_000),
-                quantile=getattr(settings, quantile_field, 0.95),
-                safety_margin=getattr(settings, "llm_reserve_safety_margin", 1.15),
-                min_samples=getattr(settings, "llm_reserve_min_samples", 30),
-                window=getattr(settings, "llm_reserve_window", 256),
-            )
+        RequestBudgetManager.register_config(
+            {
+                key: RequestBudgetConfig(
+                    context_window_tokens=getattr(
+                        settings, f"llm_{key}_context_window_tokens"
+                    ),
+                    safety_margin_tokens=settings.llm_context_safety_margin_tokens,
+                )
+                for key in ("main", "reasoning", "fast", "fallback")
+            }
+        )
 
         ReservationLimiterManager.register_config(
             {
-                "main": _reservation_config("main", "llm_reserve_quantile"),
-                "reasoning": _reservation_config(
-                    "reasoning", "llm_reserve_reasoning_quantile"
-                ),
-                "fast": _reservation_config("fast", "llm_reserve_quantile"),
+                # fallback 独立配额池：备用链路兜底时使用（独立于主池，见
+                # request-context-budget ADR 的配额绑定说明）
+                key: ReservationLimiterConfig(
+                    rpm=getattr(settings, f"llm_{key}_rpm", 60),
+                    tpm=getattr(settings, f"llm_{key}_tpm", 2_000_000),
+                    quantile=getattr(
+                        settings,
+                        "llm_reserve_reasoning_quantile"
+                        if key == "reasoning"
+                        else "llm_reserve_quantile",
+                        0.95,
+                    ),
+                    safety_margin=getattr(settings, "llm_reserve_safety_margin", 1.15),
+                    min_samples=getattr(settings, "llm_reserve_min_samples", 30),
+                    window=getattr(settings, "llm_reserve_window", 256),
+                )
+                for key in ("main", "reasoning", "fast", "fallback")
             }
         )
 

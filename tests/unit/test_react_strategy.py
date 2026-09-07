@@ -29,6 +29,7 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_error_event, build_message_event
+from app.shared.exceptions import ContextWindowExceededError
 
 
 class _EchoTool(BaseTool):
@@ -845,6 +846,38 @@ async def test_react_unknown_exception_handler_raise():
 
     assert exc_info.value.kind == AgentErrorKind.UNKNOWN
     assert "Agent 运行异常" in exc_info.value.message
+
+
+# ---------------------------------------------------------------
+# 请求预算闸拒绝（CONTEXT_EXCEEDED 终结）：非 LLM_FAILED/UNKNOWN，不重试
+# ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_react_context_window_exceeded_is_terminal():
+    """预算闸拒绝（异常从 async_generate 上抛）→ CONTEXT_EXCEEDED 终结，保留进度语义。"""
+    llm = _RaisingLLM(
+        [{"finish_reason": "stop", "content": "不会到达"}],
+        raise_on_call=1,
+        exc=ContextWindowExceededError(
+            model_key="main", input_tokens=1000, input_budget=100, max_tokens=1024
+        ),
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    events = []
+    async for ev in strategy.execute(
+        "hi", [{"role": "user", "content": "hi"}],
+        max_iterations=3, temperature=0.2, max_tokens=1024,
+    ):
+        events.append(ev)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "请求上下文超限" in (strategy.outcome.error or "")
+    assert "Agent 运行异常" not in (strategy.outcome.error or "")  # 未误归 UNKNOWN
+    assert llm.calls == 1  # 终结性错误不重试
+    assert any('"type": "done"' in e for e in events)
 
 
 @pytest.mark.asyncio
