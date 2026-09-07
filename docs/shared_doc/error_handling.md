@@ -120,6 +120,7 @@
 
 ```text
 调用方 async for ... in async_generate()
+  ├─ create 预算闸拒绝（ContextWindowExceededError）→ 原样上抛（不折 error 事件），领域层终结为 CONTEXT_EXCEEDED
   ├─ create 失败（阶段1）  → except Exception → yield build_error_event(f"LLM 调用失败: {e!s}") + return
   ├─ 迭代中断（阶段2）     → except Exception → 可整流则重试，不可整流 yield build_error_event(f"流式响应中断: {e!s}") + return
   └─ 硬取消（CancelledError）→ finally 兜底 cancel reservation，异常向上传播
@@ -128,6 +129,8 @@
 > 整流/错误事件/finally 兜底逻辑封装在 `StreamingRectifier`（见 [streaming_rectifier.md](../integration_doc/llm_doc/streaming_rectifier.md)），`async_generate` 只做编排。
 
 **关键**：async_generate 是 **async generator**，异常被捕获后**不是静默吞掉**，而是转成 SSE 错误事件产出。错误通过事件流（`build_error_event`）传达给调用方，错误文案携带异常信息。调用方（Agent 层）收到错误事件即可感知失败。
+
+**例外——预算闸拒绝（`ContextWindowExceededError`）**：请求在 create 阶段网络调用前即被本地预算闸拒绝，属业务边界短路——整流/续接/重试/降级均无意义（消息不变则必然再次超限），整流器识别后**原样上抛**而非折成「LLM 调用失败」事件，供领域层（react 主循环）映射为终结性 `CONTEXT_EXCEEDED`。这与 `generate()` 非流式边界对该异常原样 re-raise 一致——两通道对上下文超限的语义已对齐。
 
 ### `structured.py` —— 业务边界短路
 
@@ -152,11 +155,11 @@ extract()
 ## 关键边界
 
 1. **`except Exception` 只捕获该层该处理的错误**：`generate()`/`async_generate()` 的 `except Exception` 覆盖 `retry.execute` 的调用——配置错误（`_build_chat_kwargs` 内的 `get_model`）在 **try 块外**，能自然穿透不被吞。
-2. **请求构建阶段异常永不吞**：`_build_chat_kwargs`、`_count_prompt_tokens` 等「请求组装」代码若产生异常（未注册 key、编码器缺失），应在 try 外 fail fast，而不是被 facade 的 `except Exception` 吞掉。
+2. **请求构建阶段异常永不吞**：`_build_chat_kwargs`、TPM 预留量估算等「请求组装」代码若产生异常（未注册 key、编码器缺失），应在 try 外 fail fast，而不是被 facade 的 `except Exception` 吞掉。
 3. **structured 的 `except Exception` 防什么**：`generate()` 已把可恢复错误转 None、不可恢复错误 re-raise，structured 的 `except Exception` 再做一次分类——`NON_RETRYABLE` re-raise、可恢复降级（兜底防御）。作为兜底合理；真正区分靠 `classify_error`。
 4. **可靠性层已重试的异常，上层不要重复处理**：`retry.execute` 内部完成重试/退避/熔断，抛出的就是「最终状态」异常；上层只需决策「要不要降级/短路」，不要再重试。
 5. **限流模块（reserve/settle/cancel）异常不被吞**：`generate()`/`async_generate()` 的 `except Exception` 只覆盖 `retry.execute` 的调用；限流三阶段都在捕获范围外——
-   - **reserve（预留）**：在 `_rate_limited_call` 的 try 之前，异常直接传播（CancelledError 穿透 BaseException；普通异常被 `classify_error` 归 NON_RETRYABLE re-raise）
+   - **reserve（预留）**：在 `_budget_guarded_call` 限流段的 try 之前，异常直接传播（CancelledError 穿透 BaseException；普通异常被 `classify_error` 归 NON_RETRYABLE re-raise）
    - **cancel（create 失败退款）**：在内层 `except BaseException` 中 re-raise 原异常，不吞
    - **settle（create 成功退差）**：在 generate 的 try 块外，异常（如 CancelledError）直接向上传播
 
@@ -169,9 +172,9 @@ extract()
 | 异常来源 | 表现 | 说明 |
 | --- | --- | --- |
 | generator 内部 `yield build_error_event(...)` | 正常产出错误事件，循环**不抛异常** | 错误以数据（事件字符串）形式传达 |
-| generator 内部 `raise`（如 CancelledError 传播） | `async for` 循环抛出异常 | 只有无法转成事件的异常才走这条路 |
+| generator 内部 `raise`（业务边界短路 `ContextWindowExceededError` / `CancelledError`） | `async for` 循环抛出异常 | 需终结语义、无法以可重试失败表达时才走这条路 |
 
-**约定**：LLM 流式调用优先用「错误事件」传达失败（符合 SSE 语义），只有取消等无法转为事件的异常才向上抛。新增流式接口应遵循此模式。
+**约定**：LLM 流式调用优先用「错误事件」传达失败（符合 SSE 语义）；只有取消、以及预算闸拒绝（`ContextWindowExceededError`，需领域层终结为 `CONTEXT_EXCEEDED` 而非重试）这类无法以「可重试 LLM 失败」表达的异常才向上抛。新增流式接口应遵循此模式。
 
 ---
 
@@ -219,7 +222,7 @@ encoder = tiktoken.encoding_for_model(model)  # 若抛异常，直接向上传�
 
 **反例**：给「能自然传播的异常」加 `except ...: raise` 是死代码——捕获了又原样抛回，多包一层什么都不做的 try/except，只降可读性。
 
-**实例（`_get_encoder`）**：`encoding_for_model(model)` 对未知模型抛 `KeyError`——**捕获并回退** cl100k_base（设计意图，不抛）；`import tiktoken` 失败抛 `ImportError`——**不捕获，自然传播**（tiktoken 是硬依赖，缺失即环境损坏，应 fail fast 暴露，无需显式 raise）。
+**实例（`get_encoder`）**：`encoding_for_model(model)` 对未知模型抛 `KeyError`——**捕获并回退** cl100k_base（设计意图，不抛）；`import tiktoken` 失败抛 `ImportError`——**不捕获，自然传播**（tiktoken 是硬依赖，缺失即环境损坏，应 fail fast 暴露，无需显式 raise）。
 
 ---
 

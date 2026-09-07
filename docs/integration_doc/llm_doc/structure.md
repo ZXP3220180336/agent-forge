@@ -469,7 +469,7 @@ structured.py 的调用参数（无独立配置节，max_tokens 由 `register_co
 | `model_key` | `fast`（可传参覆盖） | 默认用廉价快速模型，必要时传 reasoning/main（参数名契约见 [LLM-036](../../../issues/integration/llm/2026-08-16-generate-structured-model-key-param.md)） |
 | `response_format` | 级内构造 | 第一级 json_schema / 第二级 json_object / 第三级无 |
 
-> **与限流的关系**：结构化模块不直接接触限流配置（RPM/TPM 由 generate 内部按 model_key 读取），但其每次调用都按 `model_key` 扣配额——`max_tokens` 参数会直接影响 `_count_prompt_tokens` 的 TPM 预留量（调用方传更大预算，限流预留随之增大），见 [limiter.md](limiter.md)。
+> **与限流的关系**：结构化模块不直接接触限流配置（RPM/TPM 由 generate 内部按 model_key 读取），但其每次调用都按 `model_key` 扣配额——`max_tokens` 参数会直接影响 `_plan_request` 内 TPM 预留量估算（调用方传更大预算，限流预留随之增大），见 [limiter.md](limiter.md)。
 
 ---
 

@@ -1,3 +1,277 @@
+# 2026-09-06 会话交接：主副模型请求守卫与上下文预算跨策略闭环
+
+> 本节是后续会话的执行交接入口；下方原计划保留详细 Slice 清单。交接以当前未提交工作区为基线，不以之前会话的摘要或“已完成”勾选替代代码核验。
+> 最近进展（2026-09-06 本轮）：主副模型请求守卫 **B+C+D 已落地**（fallback 独立键窗口 + 独立配额池参与限流 + 预算超限直抛 + 取消/收尾闭环），见下方 [LLM-041 条目](../issues/integration/llm/2026-09-06-fallback-window-and-quota.md)；E（结构化调用取消/期限闭环）与 F（Slice 2-4）仍待续。
+> 注意：下节 §2「`_build_fallback_fn` 直接 SDK create」与 §3 冲突①的描述已被本轮修复，读取时以代码为准（主/副真实请求现由统一目标闭包工厂 `_make_guarded_call` 构造，fallback 走独立键窗口 + 独立池）。
+
+## 1. 目标、范围与用户约束
+
+产品目标是让多 Agent 良率 RCA 在超长证据、模型故障、取消和总时长耗尽时可靠终止，并保留证据链与部分成果。
+
+近期优先项是主副模型在 `await client.chat.completions.create(**kwargs)` 前后的请求生命周期：最终请求预算、预留限流、取消、绝对截止时间、usage 回填、资源收尾。完成该基础后，继续下方“上下文预算跨策略闭环”的 Slice 2-7。
+
+用户已经明确：
+
+- 两类上下文分开管理：Application 的历史语义裁剪与 Integration 的最终请求准入不合并。
+- `RequestBudgetGuard` 由 LLM 模块内部按模型配置管理，类似现有 Manager；**不得为了调用预算闸修改 `LLMGateway` 的接口契约**。
+- 遵守 [架构依赖原则](architecture.md)：Domain 依赖端口，Integration 实现端口，Integration 不依赖 Application 的上下文管理实现；配置经 Container 注入。
+- 主副模型请求都应按实际目标校验窗口；副模型需要考虑预留限流，配额是否共享取决于供应商真实配额范围。
+- 取消与总执行时间约束覆盖限流前、限流等待中、限流后，以及 SDK 调用和流读取；所有阶段共用一个截止时间。
+- 调研定案进入 ADR 的“工业级参照”，不在 docs 下新建研究目录；不要新增重复的研究记录。
+- 全程中文；非平凡任务先计划；超过 3 个文件拆分；复杂任务使用子智能体；Bug 先写失败测试；纠正后记录教训。
+
+规范先读仓库 `AGENTS.md` / `CLAUDE.md`，以及 [组件规范](component_doc.md)、[模块规范](module_doc.md)、[层 README 规范](layer_readme_doc.md)。项目实际使用本文件和 [lessons.md](lessons.md) 管理计划与教训；不另建 tasks 目录。用户引用的 `编码规范文档.txt` 本次未在仓库根找到，后续应搜索确认，不宣称已读。
+
+## 2. 当前代码基线（已核实）
+
+| 位置 | 当前实现与交接重点 |
+| --- | --- |
+| `app/integration/llm/request_budget.py` | Config / Result / Guard / Manager 已存在；按 key 缓存；注册配置清缓存；有 reset；校验窗口、余量、输出正整数；白名单计 messages/tools/response_format；JSON 序列化后 tiktoken 估算，加 16 协议开销；特殊 token 字面量按普通文本编码。仍使用 `default=str`，缺失 key 默认 128000/1024。 |
+| `app/integration/llm/llm_service.py` | 主请求已使用 `_budget_guarded_call(budget_guard, ...)`，Facade 获取 Manager 实例；入口先校验预算，再 reserve，再 SDK create。流式初次请求、整流、续接和非流式调用复用该入口。不要按旧摘要继续查找 `_rate_limited_call`。 |
+| 同文件 `_make_guarded_call` | 主/副同构目标闭包工厂（guard_key/model_id 参数化），复用同一 client/base_url/key（同 provider，LLM-012）。✅ 本轮已修复：fallback 独立键窗口校验 + fallback 独立配额池 reserve → create，Reservation 写入共享 `active` 统一结算（LLM-041）。 |
+| `app/integration/llm/retry.py` | 主链路重试与熔断；CLOSED 重试耗尽、OPEN 拒绝、HALF_OPEN 探针失败可进入 fallback；fallback 单次调用，不参与主熔断健康记账。 |
+| `app/integration/llm/errors.py` | 错误知识单一归属。未知异常默认 NON_RETRYABLE；`decide_downstream_error` 对非 SDK 的不可重试异常原样上抛。不要在多处复制错误分类。 |
+| `app/integration/llm/streaming_rectifier.py` | 当前代码已经对 create 与续接 create 的 `ContextWindowExceededError` 记录日志后原样上抛；其余普通流式失败仍走 result.error/SSE。不要沿用较早会话“所有流式错误均转字符串”的结论。 |
+| `app/integration/llm/structured.py` | JSON Schema → JSON mode → prompt 提取；还有输出上限翻倍、校验回喂；每次均通过 generate。可得 usage 累计到调用方传入字典；上下文超限在集成层应短路。 |
+| `app/integration/llm/reservation_limiter.py` | Manager 按 model_key 缓存；RPM/TPM 组合预留；TokenBucket 等待可被任务取消，但不直接消费业务 cancel_event。预留过程中部分扣款有异常退款逻辑，需实测取消竞态，不凭推断重写。 |
+| `app/shared/exceptions.py` | `ContextWindowExceededError` 当前属于 `NonRetryableError`，携带 model_key/input_tokens/input_budget/max_tokens。 |
+| `app/api/middleware/error_handler.py` | 已有上下文超限 → 422 映射；这只是当前实现，不能据此证明所有策略均有正确降级。 |
+| `app/domain/reasoning/react.py` | 流式和非流式已有 CONTEXT_EXCEEDED 收尾；非流式仍在 usage 合并前检查取消，有已完成调用用量丢失风险；超时或续接超限时当前部分结果的保存仍需核验。 |
+| `app/domain/reasoning/_common.py` | `guard_exceeded` 仍返回文案二元组；取消/时间/成本尚未演进为类型化无状态判断。 |
+| `app/domain/reasoning/reflection.py`、`planner.py` | 自查/修正/规划/重规划/汇总共 5 处 except AppError 会把上下文超限按普通失败处理；需要具名终止与成果保留。Planner 剩余时长仍有 0.05 秒下限，取消前子步骤 usage 吸收顺序需修正。 |
+| `app/domain/prompts/manager.py` | evidence/step results 有字符切片；draft/issues/schema 等缺少阶段语义预算。应保留原始审计证据，只缩减发给模型的视图并显式标记省略。 |
+| `app/application/context/context_manager.py` | 当前实际路径；负责历史语义裁剪，不能移入 provider 最终请求准入或向 Integration 反向注入实现对象。 |
+
+## 3. 必须先处理的代码、文档与讨论冲突
+
+1. **同 provider 不等于同窗口。** 当前 fallback 注释、下方“fallback 预算裁定”和 `test_open_circuit_fallback_shares_main_window_guard` 固化了共享主窗口行为，与最近讨论目标冲突。后续应按目标模型配置修正并同步测试；不能为了绿灯继续保留错误前提。
+2. **预算闸不通过新增 LLM 调用参数接入。** [请求准入 ADR](../adr/integration/llm/2026-09-06-request-context-budget.md) Decision 7 仍提议扩展 `LLMGateway` 传递硬输入预算，需依据用户明确约束修订。取消/执行期限如何跨内部 await 生效则仍需单独确定实现机制，不能把伪代码视为已批准的新增公共接口。
+3. **“流式上下文超限上抛”是当前代码事实。** 前一轮只读分析曾建议维持 SSE 字符串语义，但工作区现在已经采用类型化异常穿透。新会话须连同 ADR、端口说明、ReAct 收尾测试核验该例外，不盲目撤销，也不继续引用过时描述。
+4. **测试通过不代表目标完成。** 下方 Slice 1 已完成标记不包含备用模型独立窗口、共享配额解析和贯穿请求生命周期的取消/截止时间控制；仍须保留这些未完成项。
+5. **估算不是 provider 精确计数。** JSON + tiktoken + 固定余量不保证所有模型、多模态和协议字段的精确容量。默认窗口不能被表述为适配所有模型；尤其默认模型与窗口的配置一致性要核查。不要将限流自适应输出估算当作上下文输出预留。
+
+## 4. 已讨论的目标流程与资源规则
+
+主副模型共用单次实际调用流程；重试/熔断/fallback 是其外层编排。
+
+```text
+策略入口：确定本次运行绝对截止时间、取消信号、累计成本
+  → 按策略缩减语义上下文
+  → 外层取消/期限/成本检查
+  → 可靠性编排选择实际调用目标
+      → 检查取消与绝对截止时间
+      → 构造最终请求并按目标模型校验上下文窗口
+      → 在取消/截止时间约束下等待对应配额
+      → 获得预留后再次检查取消/截止时间
+      → 在同一作用域内 await client.chat.completions.create(**kwargs)
+      → 非流式：解析并记录可得 usage → 结算 → 返回后终止检查
+      → 流式：移交流与预留的所有权 → 逐 chunk 受控读取 → 记录 usage → 关闭与结算
+  → 策略吸收 usage 后执行取消/期限/成本检查
+  → 输出结果，或保留部分成果终止
+```
+
+落实该流程时必须满足：
+
+- 主调用重试、退避、fallback、整流、续接、结构化降级/回喂都消耗同一绝对时间预算，不能逐层重新计时；时间使用 monotonic。
+- 业务 cancel_event 置位与硬任务取消都要覆盖。若使用竞争等待，必须取消并等待辅助任务结束，处理“配额已取得但外层同时取消”的竞态，不遗留后台 SDK 请求或无人持有的 Reservation。
+- 取消、整体 DeadlineExceeded 不得被通用 TimeoutError 分类误当成可重试网络超时。尤其 deadline 若经过 retry/structured 的 catch，必须能保留执行终止语义。
+- SDK 自身连接/读超时仍按既有传输策略处理；有剩余总时间才允许下一次实际尝试。
+- 拿到预留但尚未发起 SDK 调用时终止，应退款。create 抛错目前按项目既有规则 cancel 退款；不能把“未成功返回 response”解释为远端绝对没有收到请求。
+- create 已成功后的解析失败、取消、超时仍须结算，不能统一 cancel 退款；无实际 usage 时按现有 settle(None) 保守记账。清理应有确定的所有权和幂等终态。
+- 流式 create 成功只表示取得流对象，不能立即结算；若此时取消，要关闭流。预留移交给读取器前后必须避免所有权空档或双重结算。
+- 上下文闸只在每次最终请求发出前检查；同一请求成功返回后不重复检查窗口。续接前缀、结构化修正提示、schema 和翻倍 max_tokens 改变后要重新计数。
+- 可得真实 usage 在终止判断前回填且只累计一次；不可得的传输失败用量不能用估算冒充实际 usage。上下文准入、TPM 预留、成本统计保持各自口径。
+
+## 5. 主副模型配置与异常编排的待定实现点
+
+| 问题 | 约束与建议 |
+| --- | --- |
+| 目标模型窗口如何绑定 | 使用实际目标的配置；不得仅替换模型名而沿用主窗口。独立 fallback key 或现有目标配置复用仍需根据当前配置结构选择，业务角色与供应商模型不能混为一谈。 |
+| 配额池如何绑定 | 独立配额用独立池；共享配额合并记账；副模型的普通入口与降级入口若消耗同一份额度，应指向同一池。不要未经核实硬编码“fallback 总是独立桶”。 |
+| 是否保留模型 client 复用 | 当前仅支持同 provider fallback，暂不扩展跨供应商路由。相同端点的连接故障换模型通常无法隔离，不能宣称实现了独立网络容灾。 |
+| 是否让副模型再重试 | 沿用现有一次 fallback，不递归调用主 Facade 形成套娃重试或再次 fallback。 |
+| fallback 异常如何传播 | 当前 CLOSED/HALF_OPEN 主请求失败后，fallback 异常只作为主异常 cause；OPEN 直接 fallback 则直接抛其异常。若加入整体期限异常，必须防止它被包成主网络故障后触发结构化再调用。该边界需要专项测试与设计，不能笼统承诺“异常总能穿透”。 |
+| 熔断健康如何记账 | 本地预算拒绝不作为下游故障；副模型成功不证明主模型恢复；主请求已发生的真实网络故障不能因之后取消而无条件抹除。 |
+| 通用方法放哪里 | `_common.py` 可放领域层无状态判断、剩余时间计算与类型化结果；供应商请求计数/限流编排留在 Integration。跨 await 的取消作用域具体放置须先审阅依赖和现有机制。 |
+
+## 6. 建议续接顺序（先更新计划再按切片推进）
+
+- [x] **A：核验基线与决策。** ✅ 本轮完成：核验代码与交接描述吻合；ADR Decision 7 修订（否决扩展 LLMGateway 调用级预算）；副模型承载定案为独立 `fallback` 键 + 参与限流。
+- [x] **B：主副模型预算配置闭环。** ✅ 本轮完成：settings/container/.env 加 fallback 窗口 + RPM/TPM；fallback 独立键窗口校验（主窗可容/备用窗拒绝正反例）。
+- [x] **C：单次调用执行控制与预留所有权。** ✅ 本轮完成：fallback 进统一请求入口（独立池 reserve → create → 共享 active 结算）；retry 对 fallback 预算超限直抛不包装；`_budget_guarded_call` reserve 后 create 前取消复查 + `_StreamCancel` 整流映射（拿到预留但已取消 → 退款不请求）。
+- [x] **D：副模型预留与流式收尾。** ✅ 本轮完成：fallback 成功/中断走主链路同一 settle 收尾（单次、不双结算，测试锁定）。非流式 generate 业务取消仍属既有边界（由策略层 deadline 硬取消兜底）。
+- [ ] **E：结构化内部调用闭环。** 检查 structured.py 的各级降级、回喂和扩容；配合 deadline/cancel 作用域，让终止后无后续 SDK 调用、先前 usage 仍可回填。
+- [ ] **F：领域策略闭环。** 按下方 Slice 2-4 分别处理 _common/ReAct、Reflection、Planner 与 prompts；每批区分公共判断和策略私有降级，保留最近稿、步骤进度与证据引用。
+- [ ] **G：文档、问题与验证（收尾）。** 后续批完成后更新 ALIGNMENT 与交接评审；只生成提交信息，不擅自提交。
+
+## 7. 必须覆盖的回归矩阵
+
+| 场景 | 核心断言 |
+| --- | --- |
+| 主/副模型窗口不同 | 大窗口可放、小窗口拒绝；取目标配置；拒绝请求 SDK 调用为 0。 |
+| 超大 user/system/tools/schema | 完整最终输入被检查；拒绝前不 reserve，不增加熔断故障统计。 |
+| 主模型熔断 CLOSED/OPEN/HALF_OPEN | 所有 fallback 入口都受守卫；健康记账保持主副模型分离。 |
+| 副模型普通调用 + 降级并发 | 共享真实配额时共享池；没有两份虚增容量；独立配额不互相扣减。 |
+| 限流前/等待中/返回后取消或超时 | 无新 SDK 调用；部分预留可回收；辅助任务全部退出；重复取消不双退。 |
+| SDK create 成功后立刻取消 | 非流式可得 usage 不丢；流式 response 关闭；请求已发生的配额正确结算。 |
+| 整体超时与 SDK 超时 | 前者终止整个执行链，后者按传输重试规则；不重置 deadline。 |
+| 主网络失败 + 副模型超限/超时 | 异常 cause、外层决策、结构化是否继续调用均有断言；防止终止信号被降级吞掉。 |
+| 结构化扩容/回喂/下一级格式 | 每个新 payload 重新准入；拒绝后不追加调用；前几次真实 usage 保留。 |
+| 半流续接超限/取消 | 当前内容、已知用量和之前审计证据可保留；流关闭，预留无泄漏。 |
+| Reflection/Planner 超限 | 不把超限当普通失败继续付费重试；采用最近稿/已完成步骤，标明不完整性。 |
+| SSE 与结果一致 | 终结 done 只产生一次，token 总数与 outcome 一致；不依赖错误文案驱动控制流。 |
+| 配置与缓存 | 非法值 fail fast；register/reset 生效；测试恢复所有全局 Manager 配置和缓存。 |
+
+## 8. 新会话必读文件与运行环境
+
+仓库：`E:\MyWorkSpace\Agent\VSCodeDemo\PersonalProject\agent-forge`；Shell：PowerShell；当前工作区有大量未提交修改及未跟踪文件，必须保留。新会话可能与其他编辑共享工作区，先重新读取，不用旧快照覆盖。
+
+按顺序阅读：
+
+1. `CLAUDE.md`、`docs/architecture.md` 的依赖原则、本交接及下方 Slice 计划。
+2. `app/domain/ports/llm_gateway.py`，核对公开契约及 StreamResult 用量语义。
+3. `app/integration/llm/llm_service.py`、request_budget.py、client.py、reservation_limiter.py、retry.py、errors.py、streaming_rectifier.py、structured.py、token_counter.py。
+4. `app/config/settings.py`、`app/container.py`；不要输出 .env 密钥。
+5. `app/domain/reasoning/_common.py`、react.py、reflection.py、planner.py，以及 prompts/manager.py、Application context_manager.py / cost_limiter.py。
+6. [请求预算 ADR](../adr/integration/llm/2026-09-06-request-context-budget.md)、[语义预算 ADR](../adr/domain/reasoning/2026-08-28-context-budget.md)、[LLM 文档入口](integration_doc/llm_doc/llm.md) 及其组件导航、[异常处理说明](shared_doc/error_handling.md)。
+
+研究参照沿用已有 ADR；关于配额范围的补充事实可查 [OpenAI 官方限流说明](https://developers.openai.com/api/docs/guides/rate-limits)：配额可能按组织/项目/模型及共享模型组约束。它只支持“需要核实供应商范围”，不能当作当前项目已配置供应商的具体配额事实。
+
+常用验证：
+
+```powershell
+git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forge status --short
+uv run pytest tests/unit/test_request_budget.py tests/unit/test_llm_request_budget.py tests/unit/test_llm_service.py tests/unit/test_streaming_rectifier.py tests/unit/test_stream_rectify.py tests/unit/test_generate_structured.py tests/unit/test_retry.py tests/unit/test_react_strategy.py tests/unit/test_react_strategy_nonstream.py -q
+uv run pytest tests/unit/test_reservation_limiter.py tests/unit/test_retry_handler_manager.py tests/unit/test_token_counter.py tests/unit/test_container.py tests/unit/test_settings.py -q
+uv run pytest tests/unit/test_reflection.py tests/unit/test_planner.py tests/unit/test_prompts.py tests/unit/test_reflection_agent.py tests/unit/test_planner_agent.py -q
+uv run pytest
+uv run python -m scripts.verify_alignment
+git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forge diff --check
+```
+
+## 9. 本次交接验证记录
+
+- 相关 9 个测试文件：**265 passed in 39.35s**（上节第一条 pytest 命令）。
+- 文档对齐与空白检查：`verify_alignment` 通过，`git diff --check` 通过；Git 仅提示工作区 LF/CRLF 转换。
+- 未在本次交接中运行全量测试；不继承旧会话的全量通过声明作为当前工作区证据。
+- 当前 `test_open_circuit_fallback_shares_main_window_guard` 检查的是待修正行为；即使通过也不能验收副模型窗口隔离。
+
+### 本批（2026-09-06 B+C+D）补充
+
+- 受影响文件 9 组 **223 passed**；全量 **855 passed**（94s，1 外部依赖 deprecation 警告）；LLM-042 补修后复跑 **856 passed**（见下方 LLM-042 条目）。
+- `test_open_circuit_fallback_shares_main_window_guard` 已改名改向为 fallback 独立键（`test_open_circuit_fallback_uses_fallback_window_guard`），并新增 `_open_circuit` helper——置 `_last_failure_time` 向未来使冷却未过，确保真触发 fallback 路径。
+- 文档对齐与空白：`verify_alignment` 通过；`git diff --check` 通过（本批完成后复核）。
+
+## 10. 可复制到新会话的启动指令
+
+> 请先阅读 `docs/todo.md` 顶部“2026-09-06 会话交接：主副模型请求守卫与上下文预算跨策略闭环”，核验当前未提交 diff 和最新代码。目标是完善主、副模型每次实际 SDK 请求前后的上下文准入、预留限流、取消与同一绝对截止时间约束，以及 usage/流资源/Reservation 的可靠收尾，再继续原 Slice 2-7。先指出现有代码与交接目标冲突，给出按文件拆分的实施计划。不得为了请求预算闸修改 LLMGateway 调用契约，不得把 Integration 请求准入放进 Application ContextManager，不得假设同端点模型同窗口或不同 model_key 必然配额独立。保留工作区已有修改，测试先行；文档遵守 CLAUDE.md，调研定案进既有 ADR，不在 docs 新建研究目录。以新会话明确授权的范围执行。
+
+---
+
+# 上下文预算跨策略闭环（Slice 1 已落地收尾 · Slice 2-7 待续）
+
+> 目标：在不破坏半导体良率 RCA 证据链的前提下，使 ReAct、Reflection、Plan-then-Execute 的每一次实际 LLM 请求均受上下文窗口保护；请求无法容纳时阻止网络调用，并按策略保留可用的部分结果。
+> 进度：集成层预算闸（Slice 1）已实现并收尾（2026-09-06，见下方条目）；Slice 2-7 进行中。
+> **阻塞标注**：reflection/planner 的 5 处 `except AppError`（critique/refine/plan/replan/summarize）会把超限当普通结构化失败吞掉降级——该缺口归入 Slice 3/4 专项处理。
+
+## 已核实现状与范围
+
+| 调用路径 | 现有保护 | 本次缺口 |
+| --- | --- | --- |
+| ReAct 流式/非流式循环 | 调用前 `trim_messages`；整体超时；调用后成本检查 | 单条超长输入、tools、`final_answer` schema 与实际模型窗口未计入；裁剪后不验证是否仍可请求 |
+| Reflection 的 ReAct 收集 | 复用 ReAct | 同 ReAct |
+| Reflection 自查/修正 | 阶段入口取消/总时长/成本检查 | evidence、draft、issues 构成单条 user 消息，未做预算；`generate_structured` 内部重试未逐次检查 |
+| Planner 步骤执行 | 每步复用 ReAct | 同 ReAct |
+| Planner 规划/重规划/汇总 | 阶段入口取消/总时长/成本检查 | tool catalog、executed、failed step 构成单条 user 消息，未做预算；结构化内部重试未逐次检查 |
+
+## 设计约束（实施前不可破坏）
+
+- `ContextBudgetPort` 继续负责 Agent 多轮消息的语义裁剪；Provider 请求编码、tools 或 JSON Schema 的计数逻辑留在 Integration 的 `LLMService` 请求准入闸。
+- LLMService 在发起 provider 请求前拥有最终预算校验权；校验须覆盖当前 `model_key`、messages、tools、response_format 及该次 `max_tokens` 输出预留。
+- Domain 决定语义缩减策略和降级结果：Reflection 保留最近可用稿与证据引用，Planner 保留已完成步骤与证据，ReAct 保留工具配对；Integration 不擅自删除业务证据。
+- 预算口径是单次请求的输入窗口，不与累计 token 成本、总执行时间或轮次数混用；所有超限路径都不得发起网络调用。
+- 不吞 `asyncio.CancelledError`；保留 ReAct 流式取消、SSE 事件和 usage 计量的既有语义。
+
+## 计划
+
+- [x] **Gate 0：调研并固化边界。** LangGraph 与 Semantic Kernel 将会话历史裁剪/摘要置于状态或历史 reducer；OpenHands 将 provider 共享窗口规则置于 LLM adapter；Amazon Bedrock 对输入与输出预留施加硬窗口校验。语义预算决策记录在 `adr/domain/reasoning/2026-08-28-context-budget.md`，请求准入决策记录在 `adr/integration/llm/2026-09-06-request-context-budget.md`；不以模型名称或固定常量猜测窗口。
+- [x] **Gate 1：先定契约与异常语义。** ADR 已定义有效输入额度、模型窗口配置、`ContextWindowExceededError` 和策略降级语义；`max_context_tokens` 仍保持既有 AgentContext 注入语义。
+- [x] **Slice 1：Integration 最终请求预算闸。** 新增 `request_budget.py`，由 `LLMService` 真实请求入口 `_budget_guarded_call` 在每次主请求前校验最终参数（预算准入是入口内先于限流预留的独立第一步）；流式整流、续接、非流式、JSON Schema/JSON mode/fallback/回喂/扩容重试均复用该入口。新增窗口配置和零 provider 调用回归测试。
+- [ ] **Slice 2：ReAct 预缩减与收尾一致性。** 修改 `app/domain/reasoning/react.py`、`_common.py` 和必要端口：保留现有轮次/assistant-tool 原子裁剪；将取消、剩余总时长、成本准入判断演进为类型化无状态结果，避免通过错误文案驱动控制流；调用成功后先归并可得 usage，再处理取消、超时和成本收尾。Integration 最终闸拒绝后走明确的上下文超限终止分支，而非误判为空输出或 LLM 临时失败。
+- [ ] **Slice 3：Reflection 阶段上下文缩减。** 修改 `app/domain/reasoning/reflection.py` 与 prompts 序列化边界：为 evidence、draft、issues 定义稳定的预算分配和截断标记，优先保留证据 ID、结论、量测值、时间锚点与未解决问题；缩减后仍超限则采用最近可验证稿完成降级。自查、修正的每次调用前后都执行通用执行护栏；请求级准确性由 Integration 最终闸保证。
+- [ ] **Slice 4：Planner 阶段上下文缩减。** 修改 `app/domain/reasoning/planner.py` 与 planning 序列化边界：规划保留目标和可用工具摘要，重规划保留依赖、成功步骤摘要和失败原因，汇总保留各步骤结构化结论及证据引用。超限时不丢弃已完成步骤：汇总降级为既有纯文本/部分报告路径，并明确其不完整性。
+- [ ] **Slice 5：结构化调用的取消和总时长闭环。** 为 `generate_structured` 的实际子调用传递取消信号与剩余总时长，或在调用边界施加同等语义的超时；禁止 Reflection/Planner 在总时长耗尽后继续等待或发起 JSON 降级、回喂、扩容重试。此项与预算闸共同覆盖所有真实请求。
+- [ ] **Slice 6：测试驱动实现。** 每个 Slice 先添加失败用例，再实现。至少覆盖：单条超长 user/system；超大 tool 定义与 schema；不同 `model_key` 窗口；ReAct 裁剪后仍不可容纳；Reflection evidence/draft/issue 超限；Planner replan/summarize 超限；结构化 JSON 降级、回喂、扩容重试再次超限；拒绝时 SDK 调用次数为零；取消、超时、成本与上下文检查的优先级；usage 不重复计入；SSE 只产生一个 done；证据和部分进度保留。
+- [ ] **Slice 7：文档与评审。** 同步 `docs/domain_doc/reasoning_doc/`、`docs/application_doc/context_doc/context.md`、`docs/integration_doc/llm_doc/`、配置文档、`docs/ALIGNMENT.md`；新增一个问题记录说明本次发现、修复、验证和教训。运行相关测试、全量 `uv run pytest` 与 `uv run python -m scripts.verify_alignment`，在本节填写评审结果和边缘情况。
+
+## 文件影响预估
+
+| 范围 | 预期文件 |
+| --- | --- |
+| Domain 契约与策略 | `app/domain/ports/llm_gateway.py`、`context_budget.py`、`app/domain/reasoning/_common.py`、`react.py`、`reflection.py`、`planner.py`、必要 prompts 模板/manager |
+| Application / 配置 | `app/application/context/context_manager.py`、`app/config/settings.py`、实际 Container 装配文件 |
+| Integration | `app/integration/llm/token_counter.py`、`llm_service.py`、`structured.py`、必要的 `client.py` / `errors.py` |
+| 测试与文档 | 对应 unit/integration 测试、reasoning/context/llm/config 文档、ALIGNMENT、ADR、issue |
+
+## 可选项（Gate 1 决策）
+
+- [ ] **严格 provider 计数**：为已知 provider 采用精确协议计数；未知 OpenAI 兼容 provider 使用显式保守余量。优点是容量利用率高，代价是配置与适配复杂度增加。
+- [ ] **语义摘要**：暂不纳入本次。工具原始证据摘要可能破坏 RCA 可追溯性；本次只做可标识的字段级缩减。真实产品需求出现后再单独设计证据摘要和可追溯引用。
+- [ ] **调用前成本预留**：暂不纳入本次。现有成本护栏在取得精确 usage 后判定；严格防止单次调用越过成本上限需要独立的最坏成本预留策略。
+
+## 评审（待实施后填写）
+
+- [ ] 所有真实 LLM 请求均在网络调用前通过最终预算闸。
+- [ ] 三种策略在超限时均保留定义好的部分进度，且不将上下文超限误归类为临时 LLM 故障。
+- [ ] 取消、总时长、成本、上下文四类护栏的优先级和 usage 口径有单测覆盖。
+- [ ] 全量测试和文档对齐校验通过；未新增未登记模块。
+
+---
+
+# 2026-09-06 主副模型请求守卫：fallback 独立键 + 独立池限流 + 取消/收尾闭环（LLM-041）
+
+> 对应交接 §6 B+C+D。ADR：请求准入 Decision 3/7/9 修订（fallback 独立键、否决端口扩展、副模型生命周期）。Issue：[LLM-041](../issues/integration/llm/2026-09-06-fallback-window-and-quota.md)。
+
+- [x] **§3 冲突处置**：①同 provider≠同窗口 → fallback 独立键（修订）；②ADR Decision 7 否决端口扩展（修订）；③流式超限上抛核验通过不撤销；④测试绿灯不验收（原共享主窗口用例实际测的是 HALF_OPEN 主链路探针，未真走 fallback，已修正）；⑤估算非精确 → config/request_budget 补窗口一致性责任句。
+- [x] **B 配置接线**：settings `llm_fallback_context_window_tokens/rpm/tpm` + container 注册 `fallback` 键（RequestBudget/ReservationLimiter）+ .env.example/config 文档。
+- [x] **B/D fallback 进统一入口**：`_build_fallback_fn` → async 闭包经 `_budget_guarded_call`（fallback 键窗口 + fallback 独立池 reserve → create）；Reservation 写入共享 `active` 由调用方统一 settle/cancel；`active` 构造前移（async_generate/generate）；过时注释同步。
+- [x] **C1 预算超限直抛**：`retry.execute` 两处 fallback 失败分支对 `ContextWindowExceededError` 直抛（不 `raise last_exc from ...`），防下游把终结信号当可恢复错误触发再调主。
+- [x] **C2 取消复查**：`_budget_guarded_call` 预留后 create 前复查业务 `cancel_event` → `cancel()` 退款 + 抛 `_StreamCancel`，整流器映射用户取消出口（拿到预留但已取消不发起请求）。
+- [x] **测试**：fallback 独立键拒绝（model_key=="fallback"）、主窗可容/备用窗拒正反例、CLOSED/HALF_OPEN fallback 超限直抛、fallback 成功走独立池 settle 恰一次、reserve 排队期间业务取消退款零 SDK；`_open_circuit` helper 置 `_last_failure_time` 向未来保证真走 fallback。
+- [x] **文档/ADR/issue**：ADR Decision 3/7/9 + Consequences；llm_service.md（fallback 参与闭环/约束边界/流程 ②.5）/ request_budget.md（fallback 窗口/测试状态）/ config.md（字段 + 窗口一致性责任）；issue LLM-041 + README 登记。
+- [x] **验证**：受影响 223 passed；全量 **855 passed**；verify_alignment 通过；git diff --check（见下）。
+
+---
+
+# 2026-09-07 reserve R5 兜底退款二次取消 RPM 泄漏（LLM-042）
+
+> 独立问题（一个问题一个文件）。发现 → 分析 → 修复 → 验证 → 教训见 [LLM-042](../issues/integration/llm/2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md)。
+
+- [x] **发现（探针红）**：`_acquire` R5 兜底 `res.cancel()` 退款 await 被二次取消时 RPM 桶不回满（探针 `test_reserve_r5_refund_interrupted_by_cancel_leaks_rpm` 修复前 4≠5）。
+- [x] **根因**：reserve 的 res 不外传 `_acquire`、无外层续退——「未终态供外层续退」契约的适用前提（Reservation 被外层持有）在 reserve 内不成立。
+- [x] **方案取舍**：A（shield 进 `Reservation.cancel`）改动共享契约面大；B（采用）R5 就地循环补齐退款到终态再传播取消，只改无外层续退死角。
+- [x] **修复**：`reservation_limiter.py` `_acquire` R5 分支 `while not res.settled: try cancel except CancelledError: continue; raise`。
+- [x] **验证**：reservation_limiter 39 passed + 集成组 109 passed + 全量 856 passed；既有未终态契约测试零改动通过。
+- [x] **登记**：issue LLM-042 + issues/integration/llm/README 索引；LLM-041 与本节不再挂靠。
+
+---
+
+# 2026-09-06 上下文预算闸对齐收尾（Slice 1 落地收尾 + 流式穿透）
+
+> 目标：请求预算闸按 llm 模块子组件纪律收尾——流式/非流式一致终结、request_budget 对齐规范、异常树与 API 语义自洽、全量测试与文档同步。ADR：`adr/integration/llm/2026-09-06-request-context-budget.md`。
+
+- [x] **Slice 1 实现收尾**：request_budget.py 补 `RequestBudgetConfig` 非法组合校验（`ParameterValidationError`）/ `RequestBudgetManager.reset()` / `validate` 的 max_tokens 正整数校验——test_request_budget 3 组红转绿；意外 2 组红揭示规格：sampling/metadata 不计入窗口（序列化从黑名单剔除改**内容白名单**，贴合 ADR Decision 4）、特殊 token 拼写（`<|endoftext|>`）不得使估算崩溃（`disallowed_special=()`）
+- [x] **流式契约对齐**：`ContextWindowExceededError` 在整流器 create 阶段与半流续接链识别后**原样上抛**（不折「LLM 调用失败」error 事件、不置 result.error）→ react 流式主循环也走 `CONTEXT_EXCEEDED` 终结（与非流式一致，落 ADR Decision 5）；test_llm_request_budget stream 分支改 `pytest.raises`，整流器两穿透用例 + react 流式终结回归新增
+- [x] **异常树**：`ContextWindowExceededError` 改挂 `NonRetryableError`（不可重试语义，与 CircuitBreakerOpenError 同位；无 except BusinessError 消费方，行为零变化）；test_exceptions 补父类断言
+- [x] **API 层**：error_handler 登记 `CONTEXT_WINDOW_EXCEEDED → 422`（原误落 500，区别于 LLM_API_ERROR 502 / CIRCUIT_OPEN 503）+ 映射测试
+- [x] **fallback 预算裁定**：fallback 共享主模型窗口（同 provider 同端点 LLM-012，不单独注入配置）；test_open_circuit_fallback 改向为「熔断 OPEN 走 fallback 时预算闸仍生效（主 key 窗口）」
+- [x] 顺带修复 react.py:133 except 逗号语法（AGENT-001 元组约定）；test_container 补 `RequestBudgetManager` 全局快照与装配断言、LLMService `_continuation_max_retries` 既有遗漏
+- [x] 文档：error_handling（async_generate「错误转事件」例外）/ streaming_rectifier（失败信号表外上抛通道）/ llm（双通道上抛）/ __init__ 组件枚举 / request_budget 契约与测试状态 同步
+- [x] 验证：受影响 197 passed；全量 pytest + verify_alignment（见下）
+- [ ] 遗留：reflection/planner 结构化调用超限被 `except AppError` 吞（顶部阻塞标注）；Slice 2 取消/成本护栏类型化与 ReAct 收尾其余项；Slice 3/4 阶段上下文缩减
+
+---
+
 # 2026-09-05 Planner Strategy（Plan-then-Execute 单 Agent 编排）+ PlannerAgent 桥接落地
 
 > 产品主链路第一步「主 Agent 拆分」原语落地：PlannerStrategy（规划 → 逐步骤执行 → 证据链汇总）两层结构 + PlannerAgent 桥接 + planning 提示词完整化。
@@ -77,7 +351,7 @@
 
 - [x] errors.py：迁移白名单 / `classify_error` / `normalize_transport_error` / `is_unsupported_response_format_error`（自 retry.py / structured.py）+ 新增 `DownstreamDecision` / `decide_downstream_error`
 - [x] retry.py：删迁移符号，从 errors 导入 classify_error（保留熔断/重试机制）
-- [x] llm_service.py / structured.py：generate / _call_generate except 改用 decide_downstream_error；unsupported 400 降级下一级特判保留 structured（降级链私有语义 + 诊断日志）
+- [x] llm_service.py / structured.py：generate /_call_generate except 改用 decide_downstream_error；unsupported 400 降级下一级特判保留 structured（降级链私有语义 + 诊断日志）
 - [x] streaming_rectifier.py：classify_error import 源收敛
 - [x] 测试：新增 test_errors.py（16 用例：normalize / unsupported / decide 决策矩阵）；test_classify_error / test_error_category import 源更新；全量 755 passed
 - [x] 文档：ALIGNMENT（登记 errors.py + 更新 retry/llm_service 行）+ retry.md（错误处理节归属与决策描述）
@@ -120,7 +394,7 @@
 > Phase C 后台子 Agent 前置：ReAct 支持非流式通道（generate() 一次拿结果）——单循环换 LLM 调用点，非另一套循环（工业实证：OpenAI run/run_streamed 同 agent loop、Claude include_partial_messages 选项式同构）。
 
 - [x] `react.py`：execute 加 `stream_mode: bool = True` + 主循环第 3 步双通道分叉 + `_llm_round_non_streaming` helper（generate None/AppError→LLM_FAILED、非 AppError→UNKNOWN；整条 reasoning/message 合成）+ 非流式轮末 cancel 补查（仅 False 生效）
-- [x] `base.py` AgentContext.stream_mode + `executor.py` _strategy_cycle 透传
+- [x] `base.py` AgentContext.stream_mode + `executor.py`_strategy_cycle 透传
 - [x] 测试：test_react_strategy_nonstream.py（11 用例：合成事件+model_key/工具循环/None→LLM_FAILED/cancel 补查/AppError→LLM_FAILED/RuntimeError→UNKNOWN/usage/空输出/reasoning-only/final_answer/双通道参数化）+ test_agent 透传哨兵；全量 799 passed
 - [x] 文档：react.md（签名/流程第 3 步/架构图/边界 #20 非流式通道契约/测试状态/决策表）/ executor.md / agent.md / error_handling.md
 - [x] ADR：`adr/domain/reasoning/2026-09-04-react-stream-channel.md`（新增）+ reasoning-feedback Decision #3 更新（非流式回喂同构，原「非流式不处理」失效）

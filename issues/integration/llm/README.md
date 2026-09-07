@@ -58,6 +58,8 @@
 | [LLM-038](2026-09-02-usage-accounting.md) | generate_structured usage 回填不累计 + 变量错位，成本护栏低估 | P1 | ✅ 已修复 | llm_service / structured + domain reflection | 2026-09-02 | 2026-09-02 |
 | [LLM-039](2026-09-02-usage-accounting.md) | 传输层失败调用 token 消耗不可计量（数据不可得） | P3 | 🔵 口径记录 | llm_service / streaming_rectifier / retry / structured | 2026-09-02 | — |
 | [LLM-040](2026-09-02-non-stream-reasoning-content.md) | 非流式 generate 丢弃 reasoning_content / has_reasoning（thinking 模型） | P3 | ✅ 已修复 | streaming（parse_non_stream）/ llm_service（generate） | 2026-09-02 | 2026-09-02 |
+| [LLM-041](2026-09-06-fallback-window-and-quota.md) | fallback 备用链路沿用主窗口且绕过限流闭环 | P2 | ✅ 已修复 | llm_service / request_budget / retry / streaming_rectifier | 2026-09-06 | 2026-09-06 |
+| [LLM-042](2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md) | reserve R5 兜底退款被二次取消时 RPM 配额泄漏 | P2 | ✅ 已修复 | reservation_limiter（_acquire R5） | 2026-09-07 | 2026-09-07 |
 
 ## 新问题登记规范
 

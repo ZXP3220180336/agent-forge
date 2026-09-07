@@ -65,6 +65,7 @@
 | app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪（CostTracker 静态定价，经 LLMService Facade 对外） |
 | app/integration/llm/errors.py | ✅ | docs/integration_doc/llm_doc/error.md | tests/unit/test_errors.py | 传输错误统一处理（分类契约 ErrorCategory/ErrorClassifier + 归一/降级判定/下游决策；归一 LLMAPIError） |
 | app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；专属测试覆盖 fallback 传递/结算/异常归一决策（decide_downstream_error → LLMAPIError） |
+| app/integration/llm/request_budget.py | ✅ | docs/integration_doc/llm_doc/request_budget.md | tests/unit/test_request_budget.py | 最终请求上下文预算闸（model_key 窗口、输出预留、tools/schema） |
 | app/integration/llm/reservation_limiter.py | ✅ | docs/integration_doc/llm_doc/limiter.md | tests/unit/test_reservation_limiter.py | reserve/settle 限流 |
 | app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试机制（错误分类/归一迁至 llm/errors.py，经 classify_error 消费分类） |
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |

@@ -1,7 +1,7 @@
 # LLM 网关对外接口文档
 
 > **对应代码**：`app/integration/llm/`
-> **更新日期**：2026-09-02
+> **更新日期**：2026-09-06
 > **文档定位**：LLM 模块（`app/integration/llm/`）对外接口文档——`LLMService` Facade
 > 的接口契约 + 内部组件导航；服务对象为 LLM 网关的**外部调用方**（领域层 / 应用层 /
 > API 层）
@@ -52,7 +52,8 @@ app/integration/llm/
 ├── structured.py              ← StructuredOutput 结构化输出
 ├── reservation_limiter.py     ← ReservationLimiter 客户端限流
 ├── cost_tracker.py            ← CostTracker 成本计算
-└── token_counter.py           ← tiktoken 计数实现
+├── token_counter.py           ← tiktoken 计数实现
+└── request_budget.py          ← 最终请求上下文预算闸
 ```
 
 ### 设计原则
@@ -83,7 +84,7 @@ app/integration/llm/
     └── CostTracker
 ```
 
-可靠性链（每次调用依次经过）：限流（reserve/settle）→ 重试/熔断/降级 →
+调用闸链（每次调用依次经过）：请求预算校验 → 限流（reserve/settle）→ 重试/熔断/降级 →
 流式整流 → 解析 → 事件日志（`llm_call`）。
 
 ---
@@ -117,7 +118,8 @@ app/integration/llm/
 - `generate_structured`：成功返回 `dict`，三级降级耗尽返回 `None`；拒答抛
   `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`（需差异化处理）
 - `async_generate`：产出 SSE 事件字符串（`StreamParser` 逐 chunk 解析的增量事件）；
-  失败信号透传 `StreamResult.error`（供编排层短路决策，见 [LLM-001](../../../issues/integration/llm/2026-08-16-stream-error-propagation.md)）
+  失败信号透传 `StreamResult.error`（供编排层短路决策，见 [LLM-001](../../../issues/integration/llm/2026-08-16-stream-error-propagation.md)）；
+  预算闸拒绝（`ContextWindowExceededError`）属业务边界短路，异常上抛（不折 error 事件）
 
 ### 对外异常契约
 
@@ -130,6 +132,7 @@ app/integration/llm/
 | `StructuredToolCallError` | `generate_structured` 模型转工具调用（`finish_reason=tool_calls`） | 按工具调用走 Agent 循环 |
 | `StructuredTruncationError` | 结构化输出截断（扩 token 重试后仍不完整） | 扩大预算重试 / 降级处理 |
 | `LLMAPIError` | `generate` 下游不可恢复（openai 4xx/认证/响应校验归一，携带 status_code） | 领域层 `except AppError` 统一兜底（如 Reflection 降级） |
+| `ContextWindowExceededError` | 最终请求超过模型窗口（网络调用前本地预检拒绝，`NonRetryableError` 分支） | 终结当前调用（`CONTEXT_EXCEEDED` 语义，流式/非流式均上抛）；策略层保留部分结果；API 层映射 422 |
 | 不可恢复错误（非 openai 原样上抛） | 熔断开启 / 编程错误（`NON_RETRYABLE`） | 修复调用参数 / 返回错误响应 |
 
 ### 最小调用示例
@@ -188,6 +191,7 @@ cost = LLMService.calculate_cost(
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配 + 会话级累计） | [cost_tracker.md](cost_tracker.md) |
 | 传输错误处理 | errors.py | 传输异常分类/归一/降级判定/下游决策（retry/llm_service/structured/streaming_rectifier 消费） | [error.md](error.md) |
 | `token_counter` | token_counter.py | tiktoken 计数实现（编码器解析 / content 归一化 / 消息计数，经 `LLMService.count_*` 对外） | [token_counter.md](token_counter.md) |
+| `request_budget` | request_budget.py | 最终请求预算校验（窗口、输出预留、tools/schema） | [request_budget.md](request_budget.md) |
 
 **组件间协作**（可靠性链）：`ReservationLimiter`（事前限流）→ `RetryHandler`
 （重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流/续接）→
@@ -214,8 +218,8 @@ cost = LLMService.calculate_cost(
 
 - [集成层说明](../README.md)（层总览：LLM 网关在集成层中的位置）
 - 组件子文档：client / retry / errors / streaming / streaming_rectifier / structure /
-  limiter / cost_tracker / token_counter（见「内部实现组织」）
+  limiter / cost_tracker / token_counter / request_budget（见「内部实现组织」）
 - [架构设计](../../architecture.md)（分层与演进路径）
 - [全局日志框架](../../platform_doc/observability/logging.md)（`llm_call` 业务事件）
-- 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~013）
+- 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~016）
 - 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~040）

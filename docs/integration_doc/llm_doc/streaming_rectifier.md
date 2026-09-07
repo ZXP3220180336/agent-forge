@@ -111,6 +111,16 @@
 | 迭代放弃（不整流） | `str(e)`（同上截断） | `流式响应中断: ...` |
 | 用户取消 | `"用户取消"` | `用户取消了请求` |
 
+> **预算闸拒绝（`ContextWindowExceededError`）不入上表**：create 阶段与续接链在网络调用前
+> 被本地预算闸拒绝，整流器识别后**原样上抛**（不产 error 事件、不置 `result.error`），由领域层
+> （react 主循环）映射为终结性 `CONTEXT_EXCEEDED`——它与可整流/可放弃的失败不同源（消息不变
+> 则必然再次超限）。`generate()` 非流式边界对该异常同为原样 re-raise（两通道一致）。
+>
+> **预留后取消同样在 create 阶段被识别**：`_budget_guarded_call` 在 reserve 返回后、create 前
+> 复查业务 `cancel_event`，命中则**退款（cancel）且不发起请求**并抛 `_StreamCancel`；整流器在
+> create 阶段识别该信号走「用户取消」出口（error 事件 + 短路返回，与迭代内取消一致），
+> 覆盖「配额已取得但外层已取消」竞态（LLM-041）。
+
 **语义边界**：
 
 - 正常空回（`finish_reason="stop"` 且 content 空）→ `error` 保持 `None`（编排层仍走「空输出重试」逻辑，不被误判为失败）
@@ -155,7 +165,7 @@ create_fn（限流闭环 reserve + create）
 ```python
 rectifier_context = RectifierContext(result, active, event_fields)
 async for event in StreamingRectifier.rectified_stream(
-    create_fn=lambda: _rate_limited_call(...),   # 每次整流 attempt 重新 reserve + create
+    create_fn=lambda: _budget_guarded_call(...),  # 每次整流 attempt 预算准入 → reserve + create
     retry=retry,
     cancel_event=cancel_event,
     stream_max_retries=stream_max_retries,      # 由 async_generate 传入（llm_stream_max_retries 配置值）
@@ -170,7 +180,8 @@ async for event in StreamingRectifier.rectified_stream(
 **整流/续接循环内部**：
 
 - `_drain`：迭代单个流式响应——逐 chunk 看门狗（首包宽/空闲窄，LLM-ADR-014）+ `_apply_chunk` 累积 + 事件产出；迭代中用户取消置位抛内部 `_StreamCancel` 信号（与硬取消 CancelledError 区分）。整流 attempt 与续接 attempt 共用
-- `_apply_chunk`：解析 chunk → 累积 `StreamResult` + 产出事件；`emitted_any` **累积语义**（`emitted_any or chunk_emitted`）——已产出标记单调递增，元数据 chunk 不冲掉历史产出（[LLM-035](../../../issues/integration/llm/2026-08-10-rectify-emitted-any-marker-reset.md)）；整流 `continue` 前清空 `tool_deltas`（[LLM-030](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）；续接 attempt 时 content token 经 `seam` 接缝剥离
+- `_apply_chunk`：解析 chunk → 累积 `StreamResult` + 产出事件（**不判定/返回 emitted_any**）；整流用的「是否已产出」由编排层从 `result` 状态用累积语义推导——usage/finish/refusal 不算首 token、元数据 chunk 不冲掉已产出标记（[LLM-035](../../../issues/integration/llm/2026-08-10-rectify-emitted-any-marker-reset.md)）；整流/续接中断的半成品 tool_deltas 不跨 attempt 残留（每 attempt 全新列表、仅成功轮合并，[LLM-030](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）；续接 attempt 时 content token 经 `seam` 接缝剥离
+- `_cancel_exit`：用户取消统一出口——置 `result.error="用户取消"` + 产出取消事件（取消非失败，不记日志、不喂熔断，LLM-011/041）；整流/续接/放弃各取消分支收敛于此
 - `_should_rectify`：整流判定（见「核心概念解释·整流条件」）
 - `_abandon_path`：整流不适用时的收尾路径——LLM-011 取消守卫（取消非下游故障，不喂熔断）→ 半流续接链（尽力而为，completed 即结束）→ 放弃（RETRYABLE 喂熔断 + 失败信号，部分 content 保留）；产出其 SSE 事件即整流流结束
 - `_should_continue` / `_try_continuations`：半流续接判定与尽力而为续接链（见「核心概念解释·半流续接」）；`_SeamStripper` 接缝重叠剥离
@@ -256,9 +267,9 @@ async_generate → rectified_stream（整流/续接循环）
 6. **纯 usage/finish 死流**：`finish_reason` / `usage` 不算首 token——`emitted_any=False` 仍可整流
 7. **settle 退款中途被取消**：`_settle_active` 把未终态 res 塞回 `active`，`finally` 兜底 `settle(None)` 收尾（R2：不泄漏）
 8. **失败信号透传语义边界**：正常空回 / 整流成功路径 → `error` 保持 `None`（不误判失败）；SSE error 事件与 `result.error` 独立
-9. **整流后死流元数据复位**：整流重试 `continue` 前复位 `finish_reason`/`usage`/`refusal` 为 `None` + 清空 `tool_deltas`——usage/finish/refusal 不算首 token（死流仍可整流），但不残留到下一尝试，避免成功尝试被死流拒答元数据污染（下游误判拒答）
+9. **整流后死流元数据复位**：整流重试 `continue` 前复位 `finish_reason`/`usage`/`refusal` 为 `None`——usage/finish/refusal 不算首 token（死流仍可整流），但不残留到下一尝试，避免成功尝试被死流拒答元数据污染（下游误判拒答）。半成品 `tool_deltas` 无需清空：每 attempt 全新列表且仅成功轮合并，天然不跨尝试残留
 10. **半流续接触发**（LLM-ADR-015）：已产出 content（模型未收尾）+ 异常可恢复 + 非 reasoning 流 + 无 tool_call 半成品 + 预算未超 + 未取消 → 带前缀续写；任一不满足维持放弃
-11. **续接 create 失败**：如 OpenAI 兼容端点忽略/拒绝 `prefix` 字段 → 记日志退化放弃——部分 content 保留 + `result.error` 用**原中断原因**（对用户更贴切），行为不劣化
+11. **续接 create 失败**：如 OpenAI 兼容端点忽略/拒绝 `prefix` 字段 → 记日志退化放弃——部分 content 保留 + `result.error` 用**原中断原因**（对用户更贴切），行为不劣化；续接调用中业务取消（`_StreamCancel`，经统一入口预留后取消复查）**不当作 create 失败**——走用户取消出口（置 completed、不喂熔断，LLM-011 契约）
 12. **续接再断**：预算内（`cont_attempt < llm_stream_max_continuations`）→ 带增长后的新前缀（`result.content` 最新值）再续；超预算 → 放弃（喂熔断 + 失败信号照旧）
 13. **接缝重叠剥离**：续接流首部与已产 content 尾部重叠（窗口 ≤ `_SEAM_OVERLAP_LIMIT`=64 字符）剥离后再产出/累积；流自然结束仍全命中重叠视为纯重放丢弃
 14. **续接成功**：`error` 保持 `None`；`usage` 取末次完成流（断流 attempt 数据不可得不计，LLM-039）

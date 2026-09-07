@@ -121,11 +121,15 @@ CLOSED（正常）──窗口错误率≥阈值 或 全部失败≥样本 ─�
 主模型 call_fn → 重试 N 次 → 全部失败
     → fallback_fn（备用模型）→ 成功 → 直接返回（不触碰熔断器）
     → fallback_fn 也失败 → 抛出主调用异常（fallback 异常链为 __cause__）
+    → fallback 因预算闸拒绝（ContextWindowExceededError）→ 直接抛该异常（请求未发、终结性，不包装）
+    → fallback 阶段业务取消（_StreamCancel）→ 直接抛该信号（用户已取消，不包装成主失败）
 ```
 
 **关键约束：fallback 是纯兜底，其成败完全不进入熔断状态机**（不调用 `record_success`/`record_failure`）。熔断器只观察主链路（`call_fn`）的健康：备用链路通不能证明主链路恢复，备用链路故障也不代表主链路故障。
 
 **fallback 也失败时**：最终抛出**主调用（call_fn）异常**，fallback 异常以 `__cause__` 链上保留——熔断窗口记录的是主链路状态，上层需按主异常判定语义（重试/降级/日志）；被 fallback 异常覆盖会导致上层拿到的异常类型与熔断器记录不一致。此约定对 CLOSED 重试路径与 HALF_OPEN 探针路径（`_probe_attempt`）一致；熔断 OPEN 的拒绝路径主调用未执行，fallback 异常直接抛。
+
+**终结性信号直抛（LLM-041）**：fallback 阶段的预算拒绝（`ContextWindowExceededError`，请求未发）与业务取消（`_StreamCancel`，用户已取消）都直接 re-raise，**不**包装为主调用 cause——前者否则 `decide_downstream_error` 会把主超时归为可恢复降级、触发结构化/整流再调主（付费但必然再超限）；后者否则用户取消被吞成主失败、下游当可恢复错误继续付费重试。此例外同样适用于 CLOSED 与 HALF_OPEN 探针路径。
 
 ---
 
@@ -518,7 +522,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
    - 429 / 不可恢复错误不记录
    - **取消路径补记**：退避 sleep 期间（或 `call_fn` 执行期间）被硬取消时，若本次请求已触及过 RETRYABLE 故障（5xx/超时），取消路径仍 `record_failure()`——取消是客户端主动终止，不代表下游恢复，故障证据不随取消丢失
 3. **半开探针耗尽**：拒绝主调用（有 fallback 走纯兜底）但不改变熔断状态，直到现有探针完成。**每个被放行的探针必然推进状态机**（成功→连续成功，失败→回 OPEN 或归还探针槽位），不存在"放行后不记录"的路径，因此无 HALF_OPEN 死锁
-4. **fallback 也失败**：抛出**主调用（call_fn）异常**，fallback 异常以 `__cause__` 链上保留（诊断完整）——熔断窗口记录的是主链路状态，上层需按主异常判定语义；被 fallback 异常覆盖会导致上层拿到的异常类型与熔断器记录不一致。fallback 的成败不进入熔断状态机。此约定对 CLOSED 重试路径与 HALF_OPEN 探针路径一致；熔断 OPEN 的拒绝路径主调用未执行，fallback 异常直接抛
+4. **fallback 也失败**：抛出**主调用（call_fn）异常**，fallback 异常以 `__cause__` 链上保留（诊断完整）——熔断窗口记录的是主链路状态，上层需按主异常判定语义；被 fallback 异常覆盖会导致上层拿到的异常类型与熔断器记录不一致。fallback 的成败不进入熔断状态机。此约定对 CLOSED 重试路径与 HALF_OPEN 探针路径一致；熔断 OPEN 的拒绝路径主调用未执行，fallback 异常直接抛。**终结性信号直抛**：fallback 因预算闸拒绝（`ContextWindowExceededError`，请求未发）或业务取消（`_StreamCancel`，用户已取消）时直接 re-raise，不包装为主调用 cause（见上「降级 / Fallback」节，LLM-041）
 5. **429 探针回 OPEN、4xx 探针不改变状态**：
    - CLOSED 下 429 只退避重试（尊重服务端 `Retry-After`），不进入窗口统计；
    - HALF_OPEN 下探针收到 429 / 超时 / 5xx → 回 OPEN（停止探测让下游喘息）；
@@ -554,7 +558,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | `LLM_CIRCUIT_ALL_FAILED_MIN` | `3` | 低流量纯失败保护：全部失败且达此样本量才熔断 | `CircuitBreakerConfig.all_failed_min` |
 | `LLM_CIRCUIT_RECOVERY_TIMEOUT` | `30.0` | 熔断恢复到半开的时间（秒） | `CircuitBreakerConfig.recovery_timeout` |
 | `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | `3` | 半开状态最大探针数 | `CircuitBreakerConfig.half_open_max_requests` |
-| `LLM_FALLBACK_MODEL_ID` | `""` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `LLMService.register_config` 注入，`_build_fallback_fn` 构建 `fallback_fn` |
+| `LLM_FALLBACK_MODEL_ID` | `""` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `LLMService.register_config` 注入；`_plan_request` 内联生成 `fallback_fn`（"fallback" 键窗口 + 独立池） |
 
 ---
 

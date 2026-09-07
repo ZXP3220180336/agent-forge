@@ -270,10 +270,11 @@ llm_service = LLMService(**settings.llm_config)
 | `LLM_CIRCUIT_ALL_FAILED_MIN` | int | 3 | 低流量纯失败保护：全部失败且达此样本量才熔断 |
 | `LLM_CIRCUIT_RECOVERY_TIMEOUT` | float | 30.0 | 熔断恢复超时（秒） |
 | `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | int | 3 | 半开探针最大放行请求数 |
-| `LLM_FALLBACK_MODEL_ID` | str | "" | 主模型降级备用模型（空则无 fallback） |
+| `LLM_FALLBACK_MODEL_ID` | str | "" | 主模型降级备用模型（空则无 fallback）；启用时须同步其 `LLM_FALLBACK_CONTEXT_WINDOW_TOKENS` 与 RPM/TPM |
 | `LLM_PROXY_URL` | str | "" | HTTP 代理地址 |
 | `LLM_MAIN_RPM` / `LLM_REASONING_RPM` / `LLM_FAST_RPM` | int | 60 / 30 / 100 | 三档模型客户端限流 RPM 配额 |
 | `LLM_MAIN_TPM` / `LLM_REASONING_TPM` / `LLM_FAST_TPM` | int | 2000000 | 三档模型 TPM 配额（双 Token Bucket） |
+| `LLM_FALLBACK_RPM` / `LLM_FALLBACK_TPM` | int | 60 / 2000000 | fallback 独立配额池（备用链路兜底时使用，独立于主池） |
 
 熔断基于滑动时间窗口 + 错误率判定（Hystrix 模型），TPM 与 RPM 组成双桶限流，默认参考 DeepSeek 官方限额。具体机制见 [retry.md](../integration_doc/llm_doc/retry.md) 与 [limiter.md](../integration_doc/llm_doc/limiter.md)。
 
@@ -289,6 +290,20 @@ llm_service = LLMService(**settings.llm_config)
 | `LLM_RESERVE_WINDOW` | int | 256 | 滚动样本窗口（deque 上限） |
 
 开启后用「历史实际输出的高分位 × 安全系数」替代固定 `max_tokens` 预留，减少预留期间占桶（并发空耗）。详见 [limiter.md](../integration_doc/llm_doc/limiter.md)「对比 3.2」。
+
+#### 3.8 LLM 请求上下文预算配置
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `LLM_MAIN_CONTEXT_WINDOW_TOKENS` | int | 128000 | `main` 模型的完整上下文窗口 |
+| `LLM_REASONING_CONTEXT_WINDOW_TOKENS` | int | 128000 | `reasoning` 模型的完整上下文窗口 |
+| `LLM_FAST_CONTEXT_WINDOW_TOKENS` | int | 128000 | `fast` 模型的完整上下文窗口 |
+| `LLM_FALLBACK_CONTEXT_WINDOW_TOKENS` | int | 128000 | `fallback`（备用模型）的完整上下文窗口 |
+| `LLM_CONTEXT_SAFETY_MARGIN_TOKENS` | int | 1024 | 从模型窗口扣除的保守余量 |
+
+装配根按 `main`、`reasoning`、`fast`、`fallback` 注册这些能力值给 `RequestBudgetManager`。每次 provider 调用（含 fallback 备用链路）前，输入额度为“完整窗口减去本次 `max_tokens` 和安全余量”；超限请求在本地抛 `ContextWindowExceededError`，不会发送到 provider。会话历史的语义裁剪仍由 `ContextManager` 管理，详见 [request_budget.md](../integration_doc/llm_doc/request_budget.md)。
+
+> **窗口一致性责任**：窗口值按模型官方容量显式配置，禁止按模型名猜测——更改任一档 `model_id`（含 `fallback`）时，必须同步其 `_CONTEXT_WINDOW_TOKENS`，否则换用大窗口模型而保留旧窗口会导致合法请求被误拒、或小窗口模型被放行直至 provider 侧报错。
 
 ### 4. 上下文配置
 

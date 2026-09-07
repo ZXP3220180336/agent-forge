@@ -1,7 +1,7 @@
 # LLM 模块决策记录（ADR）
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/`）的结构性/契约性设计决策，记录 Context → Decision → Consequences 完整前因后果，供追溯与复用。
-> **更新日期**：2026-09-03
+> **更新日期**：2026-09-06
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [问题追踪](../../../issues/integration/llm/README.md)
 
 ## 状态图例
@@ -31,6 +31,7 @@
 | [LLM-ADR-013](2026-09-01-openai-error-normalization.md) | openai 异常归一：LLMAPIError 入 AppError 树（generate 下游不可恢复统一决策） | ✅ 已采纳 | errors / llm_service / structured / shared | 2026-09-01 |
 | [LLM-ADR-014](2026-09-03-connection-establishment-phase.md) | 连接建立期异常全景与守护机制（分级超时 connect/read/write/pool + 连接池 limits + 首包/空闲双阈值看门狗实施） | ✅ 已采纳 | client / errors / retry / reservation_limiter / streaming_rectifier / settings / container | 2026-09-03 |
 | [LLM-ADR-015](2026-09-03-mid-stream-continuation.md) | 半流中断接续策略（text-only prefix continuation：已产出 content 带前缀续写，尽力而为退化放弃） | ✅ 已采纳 | streaming_rectifier / llm_service / settings / container / llm_gateway | 2026-09-03 |
+| [LLM-ADR-016](2026-09-06-request-context-budget.md) | Provider 请求上下文准入：语义预算与最终请求预算分离 | ✅ 已采纳 | request_budget / llm_service / token_counter | 2026-09-06 |
 
 ## 新决策登记规范
 

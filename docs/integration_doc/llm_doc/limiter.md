@@ -361,6 +361,7 @@ class Reservation:  # 完整实现见 reservation_limiter.py
 - `cancel()`：请求未发出（create 失败/取消）时**所有桶全额退还**
 - **终态幂等**：settle/cancel 任一调用后，再次调用为 no-op
 - **取消泄漏防护**：终态标记 `_settled` 在**全部退款完成后**才置位——若退款循环中途被取消（`CancelledError` 向上传播），保持未终态，外层兜底（`llm_service` 的 `cancel`/`finally`）可续退剩余条目，避免部分桶配额永久泄漏。`TokenBucket.refund` 的 capacity 封顶保证重复退款不超发，兜底续退安全幂等
+  - **例外（reserve 内部，无外层续退）**：`_acquire` 的 R5 兜底（TPM 预留被取消 → 退 RPM）中 res 不外传、无外层兜底——退款再被二次取消会永久泄漏 RPM，故 R5 就地循环补齐退款到终态再传播取消（[LLM-042](../../../issues/integration/llm/2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md)）
 
 ### ReservationLimiter — 双桶组合（reserve/settle 形态）
 
@@ -959,7 +960,7 @@ async_generate() / generate()
     ├─ limiter = ReservationLimiterManager.get(model_key)
     ├─ active: dict[str, Reservation] = {}
     │
-    ├─ retry.execute(call_fn=_rate_limited_call)
+    ├─ retry.execute(call_fn=_budget_guarded_call)
     │     └─ 每次 call_fn（原始 + retry 内部重试）：
     │           if llm_adaptive_reserve:                     # 自适应形态（默认关）
     │               res = await limiter.reserve_adaptive(prompt_tokens, max_tokens)
@@ -985,10 +986,10 @@ async_generate() / generate()
 ```text
 async_generate() / generate()
     │
-    ├─ estimated = _count_prompt_tokens(model_key, messages, max_tokens)  # 循环外一次
+    ├─ estimated = TiktokenTokenCounter 计数 + max_tokens（输出余量，循环外一次）
     ├─ limiter = RateLimiterManager.get(model_key)
     │
-    ├─ retry.execute(call_fn=_rate_limited_call)
+    ├─ retry.execute(call_fn=_budget_guarded_call)
     │     └─ 每次 call_fn：
     │           await limiter.acquire(estimated_tokens=estimated)   # 一次性扣减，无结算
     │           await client.chat.completions.create(**kwargs)
@@ -1014,7 +1015,7 @@ async_generate() / generate()
 ## 边界情况
 
 1. **等待期间锁外 sleep**（`TokenBucket.acquire` 的 `while True` 循环）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见下文 [问题 2](../../../issues/integration/llm/2026-08-02-lock-hold-sleep.md)（✅ 已修复）。
-2. **estimated_tokens = prompt + 输出余量**：`_count_prompt_tokens(model_key, messages, max_tokens)` 返回 prompt tokens + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文 [问题 3](../../../issues/integration/llm/2026-08-02-tpm-prompt-only.md)（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
+2. **estimated_tokens = prompt + 输出余量**：`_plan_request` 内以 `TiktokenTokenCounter.count_messages_tokens` 计数 + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文 [问题 3](../../../issues/integration/llm/2026-08-02-tpm-prompt-only.md)（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
 3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见下文 [问题 4](../../../issues/integration/llm/2026-08-02-api-clarity-fixes.md)（✅ 已修复）。`reserve` 形态无返回值（返回 Reservation，等待发生在内部）。
 4. **配置 0 = 禁用限流**：`register_config()` 注入的 `rpm`/`tpm` 为 0（或未注入该 key 用默认）；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文 [问题 1](../../../issues/integration/llm/2026-08-02-zero-refill-crash.md)（✅ 已修复）。
 5. **cancel/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。
