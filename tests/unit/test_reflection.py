@@ -10,6 +10,7 @@ StreamResult）与 generate_structured（返回 dict/None/抛异常），记录�
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -99,7 +100,7 @@ class _ReflectionLLM:
         yield build_message_event(spec.get("content", ""))
         return
 
-    async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None):
+    async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None):
         self.structured_calls += 1
         self.structured_messages.append(messages)
         spec = self.structured_scripts[
@@ -650,9 +651,17 @@ async def test_reflect_cancel_event_stops_degrades_to_draft():
     cancel_event = asyncio.Event()
 
     class _CancelOnCritiqueLLM(_ReflectionLLM):
-        async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None):
+        async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None):
             cancel_event.set()  # 自查调用后置位取消（模拟运行中用户取消）
-            return await super().generate_structured(messages, schema, model_key, max_tokens, usage)
+            return await super().generate_structured(
+                messages,
+                schema,
+                model_key=model_key,
+                max_tokens=max_tokens,
+                usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
+            )
 
     llm = _CancelOnCritiqueLLM(
         react_scripts=_react_scripts_with_draft(DRAFT),
@@ -773,3 +782,78 @@ async def test_reflect_critique_bug_propagates():
 
     with pytest.raises(TypeError):
         await _run(strategy)
+
+
+# ── E：结构化调用取消/期限信号下沉（reflection 侧接线 + usage 保留）──
+
+
+@pytest.mark.asyncio
+async def test_reflect_passes_cancel_deadline_to_structured():
+    """E：execute 的 cancel_event 与总时长现算 deadline 透传到自查结构化调用。
+
+    防线：reflection 在循环顶部护栏外，自查/修正的 generate_structured 必须拿到
+    同一 cancel_event / 绝对 deadline，结构化内部才能拦截降级链（G1 接线验证）。
+    """
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[{"ok": True, "issues": []}],
+    )
+    captured = {}
+    orig = llm.generate_structured
+
+    async def rec(messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None):
+        captured["cancel_event"] = cancel_event
+        captured["deadline"] = deadline
+        return await orig(
+            messages, schema, model_key=model_key, max_tokens=max_tokens,
+            usage=usage, cancel_event=cancel_event, deadline=deadline,
+        )
+
+    llm.generate_structured = rec
+    cancel_event = asyncio.Event()
+    before = time.monotonic()
+    strategy = _make_strategy(llm)
+    async for _ in strategy.execute(
+        "分析良率下降原因",
+        [{"role": "user", "content": "分析良率下降原因"}],
+        max_iterations=5,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=60.0,
+        cancel_event=cancel_event,
+    ):
+        pass
+
+    assert captured["cancel_event"] is cancel_event, "自查收到同一取消信号"
+    assert captured["deadline"] is not None, "传了 max_execution_time 时 deadline 应非 None"
+    assert before + 60.0 <= captured["deadline"] <= time.monotonic() + 60.0
+
+
+@pytest.mark.asyncio
+async def test_reflect_refusal_usage_kept_on_degrades():
+    """E(G3)：自查拒答上抛（AppError）不丢链内已成功调用 usage——降级后成本计量仍含。
+
+    修复前：_critique except 返回 usage=None，拒答前那次成功调用的用量被丢弃。
+    """
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[StructuredRefusalError("拒答")],
+    )
+    orig = llm.generate_structured
+
+    async def fill_and_raise(messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None):
+        if usage is not None:
+            usage.update({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+        return await orig(
+            messages, schema, model_key=model_key, max_tokens=max_tokens,
+            usage=usage, cancel_event=cancel_event, deadline=deadline,
+        )
+
+    llm.generate_structured = fill_and_raise
+    strategy = _make_strategy(llm)
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.degraded is True
+    merged = strategy.outcome.usage or {}
+    assert merged.get("total_tokens", 0) >= 15, "拒答上抛路径已成功调用的 usage 应保留"

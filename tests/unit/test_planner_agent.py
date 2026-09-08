@@ -51,7 +51,14 @@ class _AgentPlannerLLM:
         return
 
     async def generate_structured(
-        self, messages, schema, model_key="fast", max_tokens=None, usage=None
+        self,
+        messages,
+        schema,
+        model_key="fast",
+        max_tokens=None,
+        usage=None,
+        cancel_event=None,
+        deadline=None,
     ):
         self.structured_calls += 1
         if self.structured_calls == 1:

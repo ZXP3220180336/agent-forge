@@ -10,9 +10,12 @@ LLMService.generate_structured 单元测试
 通过真实委托验证 generate_structured 内部走三级降级（断言各级 generate 调用参数）。
 """
 
+import asyncio
 import json
 import logging
+import time
 
+import httpx
 import pytest
 
 from app.integration.llm.llm_service import LLMService
@@ -224,11 +227,16 @@ async def test_generate_unrecoverable_exception_propagates():
 
 @pytest.mark.asyncio
 async def test_generate_recoverable_exception_returns_none():
-    """generate 抛可恢复异常（超时）→ 仍返回 None 降级（B3 保持降级契约）。"""
+    """generate 抛可恢复异常（传输超时）→ 仍返回 None 降级（B3 保持降级契约）。
+
+    网络可恢复超时用 httpx.TimeoutException 族代表（classify_error → RETRYABLE）；
+    **内置 TimeoutError 已保留为「整体执行期限终止」语义**（E：直抛不降级，见
+    test_builtin_timeout_reraises_not_degrade_to_next_level）——不再冒充网络超时。
+    """
     llm = LLMService()
 
     async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
-        raise TimeoutError("downstream timeout")
+        raise httpx.ReadTimeout("downstream timeout")
 
     llm.generate = fake_generate
     assert await llm.generate_structured(MESSAGES, SCHEMA) is None
@@ -1144,3 +1152,143 @@ async def test_reask_log_path_truncates_instance_values(caplog):
     assert long_secret not in caplog.text, "回喂日志不应包含完整敏感实例值"
     # 校验错误摘要（validator 名）仍应保留——可观测性不因脱敏而丢失
     assert "maxLength" in caplog.text, "脱敏摘要（validator 名）应保留在日志"
+
+
+# =====================================================================
+# 取消 / 期限信号下沉（E：结构化内部子调用闭环）
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_cancel_before_first_call_returns_none_no_sdk():
+    """cancel_event 已置位 → 首笔子调用前拦截，return None 且 SDK generate 0 次。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
+
+    llm.generate = fake_generate
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    result = await llm.generate_structured(MESSAGES, SCHEMA, cancel_event=cancel_event)
+    assert result is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_mid_chain_stops_degrade_no_further_sdk():
+    """降级链中途 cancel：level1 失败后将置位 → 不再发 level2/3，仅 1 次 SDK 调用。"""
+    llm = LLMService()
+    calls = []
+    cancel_event = asyncio.Event()
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        if len(calls) == 1:
+            cancel_event.set()  # 首次（level1）成功返回后置位——回喂/降级均应被拦截
+            return _sr("bad json")
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA, cancel_event=cancel_event)
+    assert result is None
+    assert len(calls) == 1, "cancel 后不得再发起任何真实请求"
+
+
+@pytest.mark.asyncio
+async def test_cancel_truncation_retry_not_issued():
+    """截断扩容重试前 cancel → 不追加扩容调用。"""
+    llm = LLMService()
+    calls = []
+    cancel_event = asyncio.Event()
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(max_tokens)
+        cancel_event.set()  # 首次返回截断；扩容重试应在 _call_generate 入口被拦截
+        return _sr("", finish_reason="length")
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(MESSAGES, SCHEMA, cancel_event=cancel_event)
+    assert result is None
+    assert len(calls) == 1, "截断扩容重试前命中取消，不得再调用"
+
+
+@pytest.mark.asyncio
+async def test_deadline_passed_returns_none_no_sdk():
+    """deadline 已过 → 拦截 return None，SDK 0 次。"""
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(
+        MESSAGES, SCHEMA, deadline=time.monotonic() - 1.0
+    )
+    assert result is None
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_deadline_future_normal_path_unchanged():
+    """对照：deadline 远在未来 → 正常走链，行为不受信号参数影响。"""
+    llm = LLMService()
+    seen = {}
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        seen["response_format"] = response_format
+        return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
+
+    llm.generate = fake_generate
+    result = await llm.generate_structured(
+        MESSAGES, SCHEMA, deadline=time.monotonic() + 60.0
+    )
+    assert result == {"name": "张三"}
+    assert seen["response_format"]["type"] == "json_schema"
+
+
+@pytest.mark.asyncio
+async def test_usage_kept_when_chain_cancelled_mid():
+    """中断保留：降级链已有成功调用（含 usage）后被取消 → usage 已回填该笔，不丢弃。"""
+    llm = LLMService()
+    calls = []
+    cancel_event = asyncio.Event()
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        sr = _sr("bad json")
+        if len(calls) == 1:
+            cancel_event.set()
+            sr.usage = {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
+        return sr
+
+    llm.generate = fake_generate
+    usage: dict = {}
+    result = await llm.generate_structured(MESSAGES, SCHEMA, cancel_event=cancel_event, usage=usage)
+    assert result is None
+    assert len(calls) == 1
+    assert usage == {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
+
+
+@pytest.mark.asyncio
+async def test_builtin_timeout_reraises_not_degrade_to_next_level():
+    """内置 TimeoutError 防御直抛：不得被当可恢复错误吞掉降级到下一级。
+
+    防线：外层策略绝对截止（asyncio.timeout 到期抛内置 TimeoutError）若注入
+    结构化链，须保留执行终止语义（todo §4），而非 classify RETRYABLE → 降级再调用。
+    """
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+        calls.append(response_format)
+        raise TimeoutError("整体 deadline 到期")
+
+    llm.generate = fake_generate
+    with pytest.raises(TimeoutError):
+        await llm.generate_structured(MESSAGES, SCHEMA)
+    assert len(calls) == 1, "TimeoutError 直抛，不得降级到第二级再调用"

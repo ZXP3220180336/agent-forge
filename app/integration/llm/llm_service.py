@@ -550,6 +550,8 @@ class LLMService:
         model_key: str = "fast",
         max_tokens: int | None = None,
         usage: dict | None = None,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> dict | None:
         """
         生成结构化输出（委托 StructuredOutput.extract 三级降级）。
@@ -566,6 +568,10 @@ class LLMService:
                 （prompt_tokens / completion_tokens / total_tokens，含多级降级 /
                 截断重试 / 回喂的所有成功调用，供成本计量）。
                 仿 ``async_generate`` 的 ``result`` 参数模式——返回签名不变，向后兼容。
+            cancel_event: 业务取消信号；已置位则降级链不再发起后续子调用，返回 None
+                （与降级耗尽同出口）。
+            deadline: 绝对截止时刻（time.monotonic），由调用方现算（同一时间预算不
+                逐级重计）；已过则同上拦截。None = 不限制。
 
         Returns:
             解析后的 dict，失败返回 None
@@ -583,6 +589,8 @@ class LLMService:
             model_key=model_key,
             max_tokens=max_tokens,
             usage=usage,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
 
     # ==================================================================

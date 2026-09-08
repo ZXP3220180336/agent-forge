@@ -11,6 +11,7 @@ RAISE/STOP + schema 严格性 + done 抑制/口径一致 + usage 累计。
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -87,7 +88,14 @@ class _PlannerLLM:
         return
 
     async def generate_structured(
-        self, messages, schema, model_key="fast", max_tokens=None, usage=None
+        self,
+        messages,
+        schema,
+        model_key="fast",
+        max_tokens=None,
+        usage=None,
+        cancel_event=None,
+        deadline=None,
     ):
         self.structured_calls += 1
         spec = self.structured_scripts[
@@ -475,3 +483,44 @@ async def test_step_react_stops_on_accumulated_cost():
     assert llm.structured_calls == 1
     # 部分进度：step1 完成进入 executed
     assert [s["success"] for s in strategy.outcome.steps_executed] == [True, False]
+
+
+# ── E：结构化调用取消/期限信号下沉（planner 侧接线）──
+
+
+async def test_planner_passes_cancel_deadline_to_structured():
+    """E：execute 的 cancel_event 与总时长现算 deadline 透传到规划结构化调用。
+
+    防线：planner 各阶段入口 guard 外，plan/summarize 的 generate_structured 必须
+    拿到同一 cancel_event / 绝对 deadline，结构化内部才能拦截降级链（G1 接线验证）。
+    """
+    llm = _PlannerLLM(
+        react_scripts=[_stop_script("步骤1结果"), _stop_script("步骤2结果")],
+        structured_scripts=[PLAN, SUMMARY],
+    )
+    captured = {}
+    orig = llm.generate_structured
+
+    async def rec(messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None):
+        if not captured:  # 首笔结构化调用 = plan
+            captured["cancel_event"] = cancel_event
+            captured["deadline"] = deadline
+        return await orig(
+            messages, schema, model_key=model_key, max_tokens=max_tokens,
+            usage=usage, cancel_event=cancel_event, deadline=deadline,
+        )
+
+    llm.generate_structured = rec
+    cancel_event = asyncio.Event()
+    before = time.monotonic()
+    strategy = PlannerStrategy(llm=llm, tools=None)
+    await _run(
+        strategy,
+        [{"role": "user", "content": "hi"}],
+        max_execution_time=60.0,
+        cancel_event=cancel_event,
+    )
+
+    assert captured["cancel_event"] is cancel_event, "规划收到同一取消信号"
+    assert captured["deadline"] is not None, "传了 max_execution_time 时 deadline 应非 None"
+    assert before + 60.0 <= captured["deadline"] <= time.monotonic() + 60.0

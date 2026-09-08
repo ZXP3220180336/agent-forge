@@ -279,6 +279,13 @@ class PlannerStrategy:
         self._last_structured_error: str | None = None  # 最近一次结构化调用失败原因
         self._replan_used: int = 0  # 实际 replan 次数
         start_time = time.monotonic()
+        # E：结构化调用（规划/汇总）的绝对截止——与各阶段 guard 同一时间预算（monotonic
+        # 绝对时刻，不逐级重计），随 generate_structured 下沉到降级链每笔子调用前。
+        deadline = (
+            start_time + max_execution_time
+            if max_execution_time is not None
+            else None
+        )
         executed: list[dict] = []  # 步骤审计记录（含失败步）
         completed: set[int] = set()  # 成功步骤 id（depends_on 守卫）
         tool_catalog = self._tool_catalog()
@@ -350,7 +357,9 @@ class PlannerStrategy:
                 yield e
             return
 
-        plan, plan_action, plan_usage = await self._plan(user_input, tool_catalog)
+        plan, plan_action, plan_usage = await self._plan(
+            user_input, tool_catalog, cancel_event=cancel_event, deadline=deadline
+        )
         if plan_usage:
             self._structured_usage = merge_usage(self._structured_usage, plan_usage)
         if plan is None:
@@ -535,7 +544,9 @@ class PlannerStrategy:
                         ):
                             yield e
                         return
-                    sub_result, _, sub_usage = await self._summarize(goal, executed)
+                    sub_result, _, sub_usage = await self._summarize(
+                        goal, executed, cancel_event=cancel_event, deadline=deadline
+                    )
                     if sub_usage:
                         self._structured_usage = merge_usage(
                             self._structured_usage, sub_usage
@@ -585,7 +596,9 @@ class PlannerStrategy:
                 yield e
             return
 
-        result, action, result_usage = await self._summarize(goal, executed)
+        result, action, result_usage = await self._summarize(
+            goal, executed, cancel_event=cancel_event, deadline=deadline
+        )
         if result_usage:
             self._structured_usage = merge_usage(self._structured_usage, result_usage)
         if result is None:
@@ -633,6 +646,12 @@ class PlannerStrategy:
         Returns:
             归一化后的新尾步骤列表（继续执行）；None = replan 耗尽/失败 → 调用方降级。
         """
+        # E：重规划结构化调用的绝对截止（同 execute 时间预算）
+        deadline = (
+            start_time + max_execution_time
+            if max_execution_time is not None
+            else None
+        )
         while self._replan_used < max_replan_rounds:
             # 每轮 replan 也是付费结构化调用：发起前终止/成本护栏（对齐每步 react）——
             # 超限 → 返回 None 由调用方降级，不再发起付费 replan（不消耗 replan 预算）
@@ -650,7 +669,12 @@ class PlannerStrategy:
                 return None
             self._replan_used += 1
             new_tail, _action, _usage = await self._replan(
-                goal, tool_catalog, executed, failed_step
+                goal,
+                tool_catalog,
+                executed,
+                failed_step,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             if _usage:
                 self._structured_usage = merge_usage(self._structured_usage, _usage)
@@ -675,6 +699,9 @@ class PlannerStrategy:
         self,
         user_input: str,
         tool_catalog: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
         """规划：generate_structured 产出 PLAN_SCHEMA。返回 (计划, 分发动作, 用量)。
 
@@ -696,6 +723,8 @@ class PlannerStrategy:
                 self._plan_schema,
                 model_key=self._plan_model_key,
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             if result is None:
                 self._last_structured_error = "规划（结构化降级耗尽）"
@@ -708,7 +737,8 @@ class PlannerStrategy:
                 f"规划失败: {e}",
                 iteration=0,
             )
-            return None, action, None
+            # 保留链内已成功调用的 usage（拒答/不可恢复上抛前已发生的真实消耗）
+            return None, action, usage or None
 
     async def _replan(
         self,
@@ -716,6 +746,9 @@ class PlannerStrategy:
         tool_catalog: str,
         executed: list[dict],
         failed_step: dict,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> tuple[list[dict] | None, AgentErrorAction | None, dict | None]:
         """重规划：基于已完成步骤 + 失败步骤产出新尾（REPLAN_SCHEMA.steps）。
 
@@ -740,6 +773,8 @@ class PlannerStrategy:
                 self._replan_schema,
                 model_key=self._plan_model_key,
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             if result is None:
                 return None, None, usage or None
@@ -751,12 +786,16 @@ class PlannerStrategy:
                 f"重规划失败: {e}",
                 iteration=0,
             )
-            return None, action, None
+            # 保留链内已成功调用的 usage（拒答/不可恢复上抛前已发生的真实消耗）
+            return None, action, usage or None
 
     async def _summarize(
         self,
         goal: str,
         executed: list[dict],
+        *,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
         """汇总：基于各步骤结果产出 RESULT_SCHEMA（证据链报告）。
 
@@ -777,6 +816,8 @@ class PlannerStrategy:
                 self._result_schema,
                 model_key=self._summarize_model_key,
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             return result, None, usage or None
         except AppError as e:
@@ -786,7 +827,8 @@ class PlannerStrategy:
                 f"汇总失败: {e}",
                 iteration=0,
             )
-            return None, action, None
+            # 保留链内已成功调用的 usage（拒答/不可恢复上抛前已发生的真实消耗）
+            return None, action, usage or None
 
     # ==================================================================
     # 内部辅助

@@ -17,9 +17,11 @@ StructuredOutput — 结构化输出支持
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import re
+import time
 from typing import Any
 
 from jsonschema import Draft7Validator, ValidationError, validate
@@ -320,6 +322,23 @@ def _accumulate_usage(target: dict | None, src: dict | None) -> None:
             target[key] = value
 
 
+def _should_abort(cancel_event: asyncio.Event | None, deadline: float | None) -> bool:
+    """业务取消 / 绝对期限命中判定（E：结构化链每笔真实请求前的执行护栏）。
+
+    - cancel_event 置位 = 用户取消；
+    - deadline（monotonic 绝对时刻，调用方现算 start_time + max_execution_time）已过
+      = 总时长耗尽。
+    命中即**不再发起下一笔真实请求**：检查点只放 `_call_generate` 入口（三级初始 /
+    截断扩容 / 回喂 / fallback 所有真实请求必经），命中 return None——与「降级耗尽」
+    同出口，reflection/planner 既有 None 降级路径保证终止后不再有后续调用（E 决策 2/3）。
+    正在进行的单笔 generate（限流排队 / SDK create 中）不在本层优雅打断（对齐
+    request-context-budget ADR Decision 8：限流排队不提前打断，绝对截止硬取消总兜底）。
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    return deadline is not None and time.monotonic() >= deadline
+
+
 class StructuredOutput:
     """
     结构化输出提取器（三级降级实现载体）。
@@ -345,6 +364,8 @@ class StructuredOutput:
         model_key: str = "fast",
         max_tokens: int | None = None,
         usage: dict | None = None,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any] | None:
         """
         根据 JSON Schema 从消息中提取结构化数据（三级降级）。
@@ -364,6 +385,10 @@ class StructuredOutput:
                 截断时扩 2 倍重试 1 次。
             usage: 可选，可变引用回填本次 extract 全程调用的 token 用量累计
                 （含多级降级 / 截断重试 / 回喂的所有成功调用，供成本计量）。
+            cancel_event: 业务取消信号；已置位则**不再发起后续子调用**，直接返回
+                None（与降级耗尽同出口——调用方既有 None 降级路径保证终止后无新调用）。
+            deadline: 绝对截止时刻（time.monotonic）；已过则同上拦截。由调用方现算
+                start_time + max_execution_time，同一时间预算不逐级重计；None = 不限制。
 
         Returns:
             解析后的 dict，三级均失败返回 None
@@ -388,6 +413,8 @@ class StructuredOutput:
                 schema=schema,
                 max_tokens=max_tokens,
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
         except StructuredTruncationError:
             return None  # 截断短路，不降级
@@ -405,6 +432,8 @@ class StructuredOutput:
                 schema=schema,
                 max_tokens=max_tokens,
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
         except StructuredTruncationError:
             return None  # 截断短路，不降级
@@ -420,6 +449,8 @@ class StructuredOutput:
                 schema=schema,
                 max_tokens=max_tokens,
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
         except StructuredTruncationError:
             return None  # 截断短路
@@ -434,6 +465,8 @@ class StructuredOutput:
         schema: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         usage: dict | None = None,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any] | None:
         """尝试用指定 response_format 提取（解析前做边界检查）。
 
@@ -458,6 +491,8 @@ class StructuredOutput:
             max_tokens=max_tokens,
             response_format=response_format,
             usage=usage,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
         if result is None:
             return None
@@ -486,6 +521,8 @@ class StructuredOutput:
                 response_format=response_format,
                 stage="结构化输出截断重试",
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             if retry is None:
                 return None  # 下游失败 → 降级，与首次调用语义一致
@@ -540,6 +577,8 @@ class StructuredOutput:
                 response_format=response_format,
                 stage="结构化输出回喂",
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             if retry is None:
                 return None  # 下游失败 → 降级
@@ -573,6 +612,8 @@ class StructuredOutput:
         schema: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         usage: dict | None = None,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any] | None:
         """纯 prompt 约束降级方案（同样做三态检查，截断/拒答短路）。
 
@@ -586,6 +627,8 @@ class StructuredOutput:
             max_tokens=max_tokens,
             stage="结构化输出 fallback",
             usage=usage,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
         if result is None:
             return None
@@ -623,6 +666,8 @@ class StructuredOutput:
         response_format: dict | None = None,
         stage: str = "结构化输出",
         usage: dict | None = None,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> StreamResult | None:
         """调用 generate 并统一处理下游异常（_try_extract/_fallback_extract 复用）。
 
@@ -632,7 +677,16 @@ class StructuredOutput:
 
         所有真实成功调用（多级降级 / 截断重试 / 回喂任一）在此累加 usage——成本计量
         需要全程消耗，只回填"最后一次成功"会系统性低估（缺陷修复的单一归口）。
+
+        cancel_event / deadline：每笔真实请求前的执行护栏（E）——命中即返回 None
+        （视作下游不可用 → 降级路径），**不发此笔请求**；单笔 generate 发起后
+        （限流排队 / SDK create 中）不在此优雅打断，对齐 request-context-budget ADR
+        Decision 8（绝对截止硬取消总兜底）。
         """
+        # E：每笔真实请求前的执行护栏（单点覆盖三级初始/截断扩容/回喂/fallback）。
+        # 取消/期限命中 → 与「下游失败」同出口返回 None，不再发起此笔请求。
+        if _should_abort(cancel_event, deadline):
+            return None
         try:
             # max_tokens 上游（extract）已把 None 归一为默认预算，此处兜底防御直接调用
             result = await llm_service.generate(
@@ -647,6 +701,13 @@ class StructuredOutput:
                 model_key=model_key,
             )
         except Exception as e:
+            # 整体 deadline 防御（todo §4）：外层策略绝对截止（asyncio.timeout 到期）
+            # 注入的**内置 TimeoutError** 是执行终止信号——直接 re-raise 保留终止语义，
+            # 不得被 decide_downstream_error 归为 RETRYABLE 降级再调用。
+            # openai APITimeoutError / httpx.TimeoutException 均非内置 TimeoutError，
+            # 仍走下方可恢复路径，不误伤网络超时语义。
+            if isinstance(e, TimeoutError):
+                raise
             # 明确因「response_format 不被支持」而 400（模型/兼容网关不支持
             # strict json_schema）：这不是调用方 bug，而是约束模式不被支持——
             # 降级到下一级（JSON mode / 正则）而非致命上抛，兑现降级链契约。

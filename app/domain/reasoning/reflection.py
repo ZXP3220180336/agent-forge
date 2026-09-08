@@ -244,6 +244,13 @@ class ReflectionStrategy:
         self._structured_usage = {}
         # 总时长护栏起点（反思循环顶部检查 elapsed > max_execution_time，P3）
         start_time = time.monotonic()
+        # E：结构化调用（自查/修正）的绝对截止——与循环顶部护栏同一时间预算（monotonic
+        # 绝对时刻，不逐级重计），随 generate_structured 下沉到降级链每笔子调用前。
+        deadline = (
+            start_time + max_execution_time
+            if max_execution_time is not None
+            else None
+        )
 
         # ── 阶段一：收集 + 初稿（复用 ReAct，工具证据链 + final_answer 结构化）──
         async for event in self._react.execute(
@@ -336,7 +343,11 @@ class ReflectionStrategy:
 
             # ── 自查当前稿 ──
             critique, crit_action, crit_usage = await self._critique(
-                evidence, current, react_outcome.iterations
+                evidence,
+                current,
+                react_outcome.iterations,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             if crit_usage:
                 self._structured_usage = merge_usage(self._structured_usage, crit_usage)
@@ -395,7 +406,12 @@ class ReflectionStrategy:
                 f"自查发现 {len(issues)} 个问题，修正第 {refine_round} 轮"
             )
             refined, ref_action, ref_usage = await self._refine(
-                evidence, current, issues, react_outcome.iterations
+                evidence,
+                current,
+                issues,
+                react_outcome.iterations,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             if ref_usage:
                 self._structured_usage = merge_usage(self._structured_usage, ref_usage)
@@ -425,6 +441,9 @@ class ReflectionStrategy:
         evidence: list[dict[str, Any]],
         draft: dict[str, Any],
         iteration: int,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
         """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
 
@@ -446,6 +465,8 @@ class ReflectionStrategy:
                 self._critique_schema,
                 model_key=self._critique_model_key,
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             return result, None, usage
         except AppError as e:
@@ -455,7 +476,8 @@ class ReflectionStrategy:
                 f"自查生成失败: {e}",
                 iteration,
             )
-            return None, action, None
+            # 保留链内已成功调用的 usage（refusal/不可恢复上抛前已发生的真实消耗）
+            return None, action, usage or None
 
     async def _refine(
         self,
@@ -463,6 +485,9 @@ class ReflectionStrategy:
         draft: dict[str, Any],
         issues: list[dict[str, Any]],
         iteration: int,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
         """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
 
@@ -484,6 +509,8 @@ class ReflectionStrategy:
                 self._output_schema,
                 model_key=self._critique_model_key,
                 usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
             return result, None, usage
         except AppError as e:
@@ -493,7 +520,8 @@ class ReflectionStrategy:
                 f"修正失败: {e}",
                 iteration,
             )
-            return None, action, None
+            # 保留链内已成功调用的 usage（refusal/不可恢复上抛前已发生的真实消耗）
+            return None, action, usage or None
 
     def _finalize(
         self,

@@ -72,6 +72,8 @@ class LLMGateway(Protocol):
         model_key: str = "fast",
         max_tokens: int | None = None,
         usage: dict | None = None,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> dict | None: ...
 
     def calculate_cost(
