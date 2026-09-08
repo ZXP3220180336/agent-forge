@@ -424,8 +424,8 @@ generate_structured(messages, schema, model_key="fast")
 
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
-| `LLMService.generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None) -> dict \| None` | 异步方法 | 对外唯一入口，委托 `StructuredOutput.extract` 三级降级；拒答/工具调用抛异常（见 Raises）；`usage` 可变引用回填**全程累计** token 用量（含降级/截断重试/回喂的所有成功调用，供成本计量） |
-| `StructuredOutput.extract(llm_service, messages, schema, model_key="fast", max_tokens=None, usage=None) -> dict \| None` | 静态异步 | 三级降级编排（JSON Schema strict → JSON Mode → 正则），返回 dict/None；`usage` 可变引用累计全程成功调用（与 `generate_structured` 同源） |
+| `LLMService.generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None) -> dict \| None` | 异步方法 | 对外唯一入口，委托 `StructuredOutput.extract` 三级降级；拒答/工具调用抛异常（见 Raises）；`usage` 可变引用回填**全程累计** token 用量（含降级/截断重试/回喂的所有成功调用，供成本计量）；`cancel_event` 置位 / `deadline`（monotonic 绝对，调用方现算）到期 → 直接返回 None（与降级耗尽同出口，不再发起后续子调用） |
+| `StructuredOutput.extract(llm_service, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None) -> dict \| None` | 静态异步 | 三级降级编排（JSON Schema strict → JSON Mode → 正则），返回 dict/None；`usage` 可变引用累计全程成功调用（与 `generate_structured` 同源）；`cancel_event`/`deadline` 同上拦截 |
 | `StructuredOutput.register_config(max_tokens)` | 同步类方法 | 注入默认输出预算（Container 读 settings 后调用） |
 
 > 模块级私有函数（`_build_json_schema_request` / `_strict_compliant` / `_enforce_no_extra_fields` / `_parse_and_validate` / `_validate_schema` / `_build_reask_messages` 等）与类内私有方法（`_try_extract` / `_fallback_extract` / `_call_generate` / `_classify_result` / `_raise_boundary`）为内部实现载体，不构成对外接口，见「组件详解」。

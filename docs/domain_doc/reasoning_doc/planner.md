@@ -197,6 +197,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 | cancel 在步骤 react 中置位 | 立即终止并部分汇总（防被误判步骤失败而 replan）；阶段顶部终止 → 未开始 / 部分进度降级 |
 | 总时长超限（全局墙钟） | 每步 ReAct 转剩余预算（全局墙钟差额，下界 0.05s）；阶段顶部超限 → 采用已完成步骤 |
 | 成本超限（cost_limiter） | 每步 react 子跑带 planner 累计 `baseline_usage`（react 内每轮即按累计成本检查，子跑中途累计越界在越界轮停）；结构化调用发起前经 `guard_exceeded` check；超限 → 停机降级（未开始 / 部分进度），不空转 replan / summarize |
+| 结构化降级链内取消/超时（E） | plan/replan/summarize 的 `generate_structured` 透传 `cancel_event` + 绝对 `deadline`（execute / `_replan_loop` 现算 `start_time + max_execution_time`）——降级链每条子调用前命中即返回 None（与降级耗尽同出口，不空转降级/回喂/扩容）；`plan is None` 后 guard 复查拦截 ReAct 兜底（取消/超时不再降级兜底） |
 | 每步隔离前提被破坏（需上一步数值未带进摘要） | 步骤自包含约束要求；未覆盖应合并成一步（提示层纪律） |
 | 同一实例并发 / 多次 execute | 不并发复用——outcome 与累计态在每次 execute 覆盖，每次运行新建或串行读取 |
 | 步骤产出为空 / react 子跑无结果 | 判步骤失败（无产出工件视为失败），走 replan |

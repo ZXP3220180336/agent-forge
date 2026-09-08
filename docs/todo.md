@@ -100,7 +100,7 @@
 - [x] **B：主副模型预算配置闭环。** ✅ 本轮完成：settings/container/.env 加 fallback 窗口 + RPM/TPM；fallback 独立键窗口校验（主窗可容/备用窗拒绝正反例）。
 - [x] **C：单次调用执行控制与预留所有权。** ✅ 本轮完成：fallback 进统一请求入口（独立池 reserve → create → 共享 active 结算）；retry 对 fallback 预算超限直抛不包装；`_budget_guarded_call` reserve 后 create 前取消复查 + `_StreamCancel` 整流映射（拿到预留但已取消 → 退款不请求）。
 - [x] **D：副模型预留与流式收尾。** ✅ 本轮完成：fallback 成功/中断走主链路同一 settle 收尾（单次、不双结算，测试锁定）。非流式 generate 业务取消仍属既有边界（由策略层 deadline 硬取消兜底）。
-- [ ] **E：结构化内部调用闭环。** 检查 structured.py 的各级降级、回喂和扩容；配合 deadline/cancel 作用域，让终止后无后续 SDK 调用、先前 usage 仍可回填。
+- [x] **E：结构化内部调用闭环。** ✅ 2026-09-08 完成（见 [LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)）：`generate_structured` 增加可选 `cancel_event`/`deadline`，`StructuredOutput` 降级链每条真实子调用前（`_call_generate` 入口）拦截命中即 return None（与降级耗尽同出口）；内置 `TimeoutError` 直抛防终止被吞；reflection/planner 透传 + usage 上抛路径保留。
 - [ ] **F：领域策略闭环。** 按下方 Slice 2-4 分别处理 _common/ReAct、Reflection、Planner 与 prompts；每批区分公共判断和策略私有降级，保留最近稿、步骤进度与证据引用。
 - [ ] **G：文档、问题与验证（收尾）。** 后续批完成后更新 ALIGNMENT 与交接评审；只生成提交信息，不擅自提交。
 
@@ -171,7 +171,7 @@ git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forg
 # 上下文预算跨策略闭环（Slice 1 已落地收尾 · Slice 2-7 待续）
 
 > 目标：在不破坏半导体良率 RCA 证据链的前提下，使 ReAct、Reflection、Plan-then-Execute 的每一次实际 LLM 请求均受上下文窗口保护；请求无法容纳时阻止网络调用，并按策略保留可用的部分结果。
-> 进度：集成层预算闸（Slice 1）已实现并收尾（2026-09-06，见下方条目）；Slice 2-7 进行中。
+> 进度：集成层预算闸（Slice 1，2026-09-06）与结构化调用取消/期限闭环（Slice 5，2026-09-08，见 [LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)）已实现；Slice 2-4 / 6-7 待续。
 > **阻塞标注**：reflection/planner 的 5 处 `except AppError`（critique/refine/plan/replan/summarize）会把超限当普通结构化失败吞掉降级——该缺口归入 Slice 3/4 专项处理。
 
 ## 已核实现状与范围
@@ -200,7 +200,7 @@ git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forg
 - [ ] **Slice 2：ReAct 预缩减与收尾一致性。** 修改 `app/domain/reasoning/react.py`、`_common.py` 和必要端口：保留现有轮次/assistant-tool 原子裁剪；将取消、剩余总时长、成本准入判断演进为类型化无状态结果，避免通过错误文案驱动控制流；调用成功后先归并可得 usage，再处理取消、超时和成本收尾。Integration 最终闸拒绝后走明确的上下文超限终止分支，而非误判为空输出或 LLM 临时失败。
 - [ ] **Slice 3：Reflection 阶段上下文缩减。** 修改 `app/domain/reasoning/reflection.py` 与 prompts 序列化边界：为 evidence、draft、issues 定义稳定的预算分配和截断标记，优先保留证据 ID、结论、量测值、时间锚点与未解决问题；缩减后仍超限则采用最近可验证稿完成降级。自查、修正的每次调用前后都执行通用执行护栏；请求级准确性由 Integration 最终闸保证。
 - [ ] **Slice 4：Planner 阶段上下文缩减。** 修改 `app/domain/reasoning/planner.py` 与 planning 序列化边界：规划保留目标和可用工具摘要，重规划保留依赖、成功步骤摘要和失败原因，汇总保留各步骤结构化结论及证据引用。超限时不丢弃已完成步骤：汇总降级为既有纯文本/部分报告路径，并明确其不完整性。
-- [ ] **Slice 5：结构化调用的取消和总时长闭环。** 为 `generate_structured` 的实际子调用传递取消信号与剩余总时长，或在调用边界施加同等语义的超时；禁止 Reflection/Planner 在总时长耗尽后继续等待或发起 JSON 降级、回喂、扩容重试。此项与预算闸共同覆盖所有真实请求。
+- [x] **Slice 5：结构化调用的取消和总时长闭环。** ✅ 2026-09-08 实现（[LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)）：`generate_structured` 实际子调用获得取消/期限边界（信号下沉 + 每条子调用前检查，命中返回 None 与降级同出口）——Reflection/Planner 在总时长耗尽/取消后不再发起 JSON 降级、回喂、扩容重试；与预算闸共同覆盖所有真实请求。
 - [ ] **Slice 6：测试驱动实现。** 每个 Slice 先添加失败用例，再实现。至少覆盖：单条超长 user/system；超大 tool 定义与 schema；不同 `model_key` 窗口；ReAct 裁剪后仍不可容纳；Reflection evidence/draft/issue 超限；Planner replan/summarize 超限；结构化 JSON 降级、回喂、扩容重试再次超限；拒绝时 SDK 调用次数为零；取消、超时、成本与上下文检查的优先级；usage 不重复计入；SSE 只产生一个 done；证据和部分进度保留。
 - [ ] **Slice 7：文档与评审。** 同步 `docs/domain_doc/reasoning_doc/`、`docs/application_doc/context_doc/context.md`、`docs/integration_doc/llm_doc/`、配置文档、`docs/ALIGNMENT.md`；新增一个问题记录说明本次发现、修复、验证和教训。运行相关测试、全量 `uv run pytest` 与 `uv run python -m scripts.verify_alignment`，在本节填写评审结果和边缘情况。
 
@@ -240,6 +240,19 @@ git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forg
 - [x] **测试**：fallback 独立键拒绝（model_key=="fallback"）、主窗可容/备用窗拒正反例、CLOSED/HALF_OPEN fallback 超限直抛、fallback 成功走独立池 settle 恰一次、reserve 排队期间业务取消退款零 SDK；`_open_circuit` helper 置 `_last_failure_time` 向未来保证真走 fallback。
 - [x] **文档/ADR/issue**：ADR Decision 3/7/9 + Consequences；llm_service.md（fallback 参与闭环/约束边界/流程 ②.5）/ request_budget.md（fallback 窗口/测试状态）/ config.md（字段 + 窗口一致性责任）；issue LLM-041 + README 登记。
 - [x] **验证**：受影响 223 passed；全量 **855 passed**；verify_alignment 通过；git diff --check（见下）。
+
+---
+
+# 2026-09-08 generate_structured 降级链取消/期限闭环（LLM-043）
+
+> 对应交接 §6-E / Slice 5（"结构化内部调用闭环"）。Issue：[LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)。
+
+- [x] **发现**：StructuredOutput 三级降级链（每级含截断扩容 + 回喂，单次 generate_structured 最坏 ~9 次真实请求）无任何取消/期限检查点；reflection/planner 只在阶段入口 guard，一旦进入 generate_structured 内部跑满为止。
+- [x] **信号下沉**：`generate_structured`/`StructuredOutput.extract` 增加可选 `cancel_event` + `deadline`（monotonic 绝对，调用方现算 start_time+max_execution_time）；检查点单点放 `_call_generate` 入口（三级初始/截断扩容/回喂/fallback 全部真实请求必经），命中返回 None（与降级耗尽同出口）。
+- [x] **TimeoutError 防御**：`_call_generate` except 对内置 `TimeoutError` 直抛（整体期限终止不得被 decide_downstream_error 当 RETRYABLE 吞成降级再调用）；`APITimeoutError`/`httpx.TimeoutException` 仍走可恢复路径。
+- [x] **领域层透传**：reflection/planner execute 现算 deadline，`_critique`/`_refine`/`_plan`/`_replan`/`_summarize` 加形参透传；usage 上抛路径保留（except AppError 返回 `usage or None`）。
+- [x] **测试**：7 红转绿（cancel/deadline/TimeoutError 集成）+ reflection 透传/usage 保留 2 + planner 透传 1；既有 recoverable 用例改 `httpx.ReadTimeout`（内置 TimeoutError 不再冒充网络超时）。
+- [x] **验证**：全量 **867 passed**（857 + 10）；verify_alignment 通过。
 
 ---
 

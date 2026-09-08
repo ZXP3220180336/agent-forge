@@ -1,5 +1,10 @@
 # 研发教训
 
+## 2026-09-08 generate_structured 取消/期限闭环（LLM-043）
+
+- **执行护栏锚定「真实请求前」而非「策略阶段入口」**（LLM-043）：结构化三级降级链是单次 Facade 调用内的多条真实请求——reflection/planner 的阶段入口 guard 覆盖不到链内部，取消/超时后仍空烧降级/回喂/扩容。护栏粒度与 REASON-001 同一教训在集成层重现：凡「一次编排内多次真实请求」的组件（降级链/重试），护栏检查点必须落在每次请求的统一入口，而非编排层入口。
+- **内置 `TimeoutError` 是执行终止信号，不是网络可恢复超时**（LLM-043）：`asyncio.timeout` 到期抛的就是内置 `TimeoutError`；凡 `except Exception` 兜底后按 `classify_error → RETRYABLE` 处理的层，都会把整体 deadline 到期吞成「可恢复失败 → 降级再调用」——termination 语义丢失、超时后仍付费。网络可恢复超时用 `APITimeoutError` / `httpx.TimeoutException` 表达，二者勿混；终止信号必须在 catch 边界直抛（todo §4 明文约束）。
+
 ## 2026-09-06 主副模型请求守卫（LLM-041）
 
 - **置熔断状态 ≠ 触发该状态行为**（LLM-041）：手动 `_state = OPEN` 后若 `_last_failure_time` 已过 `recovery_timeout`，`allow_request` 自动转 `HALF_OPEN` 放行主链路探针——测试实际走探针主链路而非 fallback。原「fallback 共享主窗口」绿灯正是因此误测成主链路预算闸（断言 `model_key == "fast"` 掩盖「从没走到 fallback」）。设被测条件须连状态机派生条件一起置（`_last_failure_time` 置向未来令冷却未过）。

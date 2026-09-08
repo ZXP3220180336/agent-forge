@@ -60,6 +60,7 @@
 | [LLM-040](2026-09-02-non-stream-reasoning-content.md) | 非流式 generate 丢弃 reasoning_content / has_reasoning（thinking 模型） | P3 | ✅ 已修复 | streaming（parse_non_stream）/ llm_service（generate） | 2026-09-02 | 2026-09-02 |
 | [LLM-041](2026-09-06-fallback-window-and-quota.md) | fallback 备用链路沿用主窗口且绕过限流闭环 | P2 | ✅ 已修复 | llm_service / request_budget / retry / streaming_rectifier | 2026-09-06 | 2026-09-06 |
 | [LLM-042](2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md) | reserve R5 兜底退款被二次取消时 RPM 配额泄漏 | P2 | ✅ 已修复 | reservation_limiter（_acquire R5） | 2026-09-07 | 2026-09-07 |
+| [LLM-043](2026-09-08-structured-cancel-deadline.md) | generate_structured 降级链无取消/期限检查点（终止后仍空烧付费调用） | P2 | ✅ 已修复 | structured / llm_service / reflection / planner | 2026-09-08 | 2026-09-08 |
 
 ## 新问题登记规范
 
