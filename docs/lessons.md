@@ -41,7 +41,7 @@
 
 ## 2026-08-17 工具模块重构（六大子组件对齐）
 
-- **「看似 bug」需实测语义再定性**：`domain/agent/executor.py` 的 `except json.JSONDecodeError, KeyError:` 初判为 Python 2 语法 bug，实测 Python 3.14（PEP 758）下语义 = 元组捕获（运行时正确），但 <3.14 会 SyntaxError——定性为「风格/可移植性问题」而非运行时缺陷，仍需修复为显式元组。多异常捕获永远写 `except (A, B):`。
+- **「看似 bug」需实测语义再定性**：`except json.JSONDecodeError, KeyError:` 初判为 Python 2 语法 bug，实测 Python 3.14（PEP 758）下语义 = 元组捕获（运行时正确）——异常语法 / 语义疑似 bug 时，先实测当前解释器行为再定性，勿凭版本印象下结论。
 - **head+tail 截断后长度 ≠ max_length**：截断结果 = head + marker + tail，marker 占额外空间必然略超 max_length。测试断言不能写 `len(content) <= max_length`，应断言 head 开头 / tail 结尾 / marker 存在 / 远小于原始。
 - **文档跨目录相对链接要算准路径**：`docs/integration_doc/tools_doc/` 下的子文档引用 `adr/` 需 `../../../` 前缀（三级到根），漏前缀会被 `verify_alignment.py` 死链校验拦截（报「死链」而非解析错误）。
 - **verify_alignment 的强制项**：`app/` 下每个非空 `.py` 必须在 ALIGNMENT.md 登记；✅ 状态必须同时有非空文档 + 非空测试；文档路径必须真实存在。新增组件文件后不同步 ALIGNMENT 会直接导致 `test_verify_alignment.py` 失败。

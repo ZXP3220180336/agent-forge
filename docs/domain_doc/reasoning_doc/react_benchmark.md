@@ -139,5 +139,4 @@
 - [ReActStrategy 策略组件](react.md)（本模块对外接口）
 - [推理策略模块](reasoning.md)（主文档）
 - [ReActAgent 桥接组件](../agent_doc/executor.md)
-- [问题记录 AGENT-001](../../../issues/domain/agent/2026-08-17-except-comma-tuple-semantics.md)（except 逗号语法回归）
 - [Agent 模块对外接口文档](../agent_doc/agent.md)

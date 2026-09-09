@@ -1,7 +1,7 @@
 # 领域层 Agent 模块问题追踪
 
 > **用途**：登记 Domain 层 Agent 模块（`app/domain/agent/`）的问题记录（发现 → 分析 → 修复 → 验证 → 教训）。
-> **更新日期**：2026-08-17
+> **更新日期**：2026-09-09
 > **关联**：[Agent 层说明文档](../../../docs/domain_doc/agent_doc/agent.md) · [决策记录](../../../adr/integration/tools/README.md)
 
 ## 状态图例
@@ -16,7 +16,6 @@
 
 | ID | 问题 | 状态 | 涉及模块 | 日期 |
 | --- | --- | --- | --- | --- |
-| [AGENT-001](2026-08-17-except-comma-tuple-semantics.md) | except 逗号元组语法（PEP 758 语义 + 可移植性） | ✅ 已修复 | executor | 2026-08-17 |
 
 ## 新问题登记规范
 

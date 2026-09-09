@@ -378,7 +378,6 @@ result = strategy.outcome  # ReActOutcome
 
 ## 问题记录
 
-- [AGENT-001 except 逗号语法回归](../../../issues/domain/agent/2026-08-17-except-comma-tuple-semantics.md)：`except (A, B)` 与 `except A, B` 语义差异导致的历史回归（已修复，回归护栏在测试）
 - [REASON-001 上下文预算仅工具路径生效](../../../issues/domain/reasoning/2026-08-30-context-budget-placement.md)：预算原放 `_handle_tool_calls` 尾部，非工具重试路径漏裁；已移主循环顶部统一裁剪（已修复）
 - [REASON-002 UNKNOWN 部分进度](../../../issues/domain/reasoning/2026-08-30-unknown-partial-progress.md)：未捕获异常路径不保留部分进度，与其余终结护栏不一致；已统一用 last_result 组装（已修复）
 - [REASON-003 取消信号语义错位 + 未接线](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)：优雅取消被误判为 LLM 失败 / 无调用方接线；已贯通 cancel_event 链路 + /chat/stop 真实实现（已修复）
