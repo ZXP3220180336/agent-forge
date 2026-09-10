@@ -130,13 +130,14 @@ ReflectionStrategy.execute()（三阶段）
 阶段二+三 自查 → 修正 → 复查 循环（真迭代，每次修正后重新自查）：
   current = draft
   while True:
-    ├─ _common.evaluate_guard：调用前及归账后按 cancel > deadline > cost 判定
-    │      命中 → 不再发起修正/复查，采用最近完整稿降级
+    ├─ 护栏①（自查调用前准入）：cancel > deadline > cost 命中 → 采用最近完整稿降级停机
     ├─ 自查 current（CRITIQUE_SCHEMA）→ 失败 → 降级采用 current（degraded）
-    ├─ critique.ok → 采用 current（degraded=False，early exit）
+    ├─ critique.ok → 采用 current（degraded=False，early exit；此后不再付费，故护栏复查在其后）
     ├─ refine_round >= max_refine_rounds-1 → 达上限，采用 current（degraded）
+    ├─ 护栏②（修正调用前准入）：命中 → 采用最近稿降级停机，不发起修正
     └─ issues → 修正（REFINE_PROMPT + 证据链 + current + issues）→
-        成功 current = refined → 回到循环顶部重新自查修正稿
+        成功 current = refined → 护栏③（归账并接管新稿后复查）→ 命中则采用 refined 降级停机；
+        否则回到循环顶部重新自查修正稿
 ```
 
 > 真迭代依据（工业标准）：Self-Refine 每轮用新 feedback；LangGraph「revise 后必 re-reflect，否则循环无效」。复用同一批 issues 反复修正是反模式（[REASON-009](../../../issues/domain/reasoning/2026-09-01-reflect-refine-loop.md)）。
@@ -159,7 +160,7 @@ ReflectionStrategy.execute()（三阶段）
 | 修正返回 None / 熔断等不可恢复错误 / 达 max_refine_rounds 上限 | 采用最近稿（degraded=True） |
 | 结构化输出截断 | 集成层短路返回 None → 走自查/修正 None 降级路径（本层无感知） |
 | 自查/修正抛非 AppError 编程错误（TypeError 等） | 不吞，向上冒泡（fail fast） |
-| 循环中用户取消（cancel_event 置位） | 每次自查/修正调用前和归账后复查；停机降级采用最近完整稿，不再多发下一笔结构化调用 |
+| 循环中用户取消（cancel_event 置位） | 自查前与修正前准入、修正归账后复查；命中即停机降级采用最近完整稿，不再多发下一笔结构化调用；若命中时自查已通过（此后无付费动作），产出干净成功 |
 | 总时长超限（elapsed > max_execution_time） | 停机降级采用最近稿（degraded=True，error 标注执行超时） |
 | 结构化调用中取消/超时（E） | `_critique`/`_refine` 的 `generate_structured` 透传 `cancel_event` + 绝对 `deadline`；信号约束每笔 reserve/create/retry，并在 extract 最外层收敛 None，外层按既有路径停机降级 |
 | critique/refine 结构化输出超预算 | 走 generate_structured 默认预算（settings.llm_structured_max_tokens）；截断由集成层短路返回 None → 走 None 降级（不崩溃，P4） |
@@ -184,7 +185,7 @@ ReflectionStrategy.execute()（三阶段）
 - 降级路径：自查失败 / 拒答 / **不可恢复 AppError（熔断 / LLMAPIError 401/403）** / 修正失败 / ReAct 无 structured / ReAct 失败
 - 非 AppError 编程错误不吞、向上冒泡（fail fast）
 - done 事件 total_tokens 与 outcome 一致 + 抑制 ReAct 中间 done（P2 / REASON-011，事件流仅收尾 1 个 done）
-- 反思循环统一护栏：自查/修正调用前和 usage 归账后均经 `_common.evaluate_guard`；覆盖自查后取消或成本超限时零额外修正调用，以及修正成功后先接管新稿再终止
+- 反思循环统一护栏：自查前与修正前准入、修正归账后复查均经 `_common.evaluate_guard`；覆盖自查后取消/成本超限零额外修正调用（`test_reflect_cost_limit_stops` / `test_reflect_cancel_event_stops_degrades_to_draft`）、修正成功后接管新稿再终止（`test_reflect_refined_adopted_on_cost_limit_after_refine`），以及自查通过 + 累计超限仍产出干净成功（`test_reflect_critique_ok_after_cost_limit_is_clean_success`）
 - max_refine_rounds 上限（max=1 不修正）、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
 - Scope 盲区清单维度穷举（9 dimension）、护栏透传
 - 桥接：_map_outcome 映射 / ctx 透传 / 端到端 / 默认向后兼容
@@ -199,6 +200,7 @@ ReflectionStrategy.execute()（三阶段）
 - [REASON-010 自查/修正失败降级缺口](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md)：不可恢复 AppError / 结构化截断未覆盖降级——统一 CRITIQUE_FAILED 分发 + 集成层短路返回 None
 - [REASON-011 done 事件 token 口径](../../../issues/domain/reasoning/2026-09-01-reflect-done-token-caliber.md)：ReAct 中间 done 泄漏 / total_tokens 口径不一致——抑制中间 done，收尾 1 个 done 与 outcome 一致
 - [REASON-016 跨策略执行护栏](../../../issues/domain/reasoning/2026-09-10-cross-strategy-guard-priority.md)：自查/修正调用前后统一判定，取消或成本超限后不再多发下一笔请求
+- [REASON-020 护栏复查挂载点](../../../issues/domain/reasoning/2026-09-11-reflection-guard-checkpoint.md)：复查落在自查 ok 判定之前——合格报告被标降级、自查结论丢失；复查改挂到修正调用前
 
 ## 相关文档
 

@@ -344,19 +344,6 @@ class ReflectionStrategy:
             if crit_usage:
                 self._structured_usage = merge_usage(self._structured_usage, crit_usage)
 
-            guard = evaluate_guard(
-                cancel_event=cancel_event,
-                deadline=deadline,
-                cost_limiter=self._cost_limiter,
-                running_usage=merge_usage(react_outcome.usage, self._structured_usage),
-            )
-            if guard is not None:
-                for e in self._finalize_guard(
-                    guard, react_outcome, draft, current, refine_round
-                ):
-                    yield e
-                return
-
             if critique is None:
                 # 自查失败 → 降级采用当前稿（best-effort，不抛错）
                 suffix = "（STOP）" if crit_action == AgentErrorAction.STOP else ""
@@ -401,6 +388,23 @@ class ReflectionStrategy:
                     degraded=True,
                     error=f"达到修正上限({max_refine_rounds})，采用最近稿（未通过自查）",
                     info=f"达到修正上限({max_refine_rounds})，采用最近稿",
+                ):
+                    yield e
+                return
+
+            # 护栏（P3）：执行到此处 = 自查未通过且未达修正上限，即将发起修正这笔付费调用——
+            # 本处检查是「修正调用前准入」。两条早退路径（自查通过 / 达到修正上限）之后都不再
+            # 付费，故复查不置于其前：已产出的合格稿不因累计预算被改判为降级、自查结论不丢失。
+            # 命中（取消 / 超时 / 成本超限）→ 停机降级采用最近稿（保留进度），不发起修正。
+            guard = evaluate_guard(
+                cancel_event=cancel_event,
+                deadline=deadline,
+                cost_limiter=self._cost_limiter,
+                running_usage=merge_usage(react_outcome.usage, self._structured_usage),
+            )
+            if guard is not None:
+                for e in self._finalize_guard(
+                    guard, react_outcome, draft, current, refine_round
                 ):
                     yield e
                 return

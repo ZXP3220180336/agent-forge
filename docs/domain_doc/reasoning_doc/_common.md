@@ -17,8 +17,10 @@ react / reflection / planner 三策略共用、不 import 任何策略的无状�
   `cancelled` / `deadline_exceeded` 接收 LLM Facade 已识别的类型化信号；`context_error` 只由捕获
   `ContextWindowExceededError` 的策略传入。成本检查仅在更高优先级信号未命中时执行。
 
-`running_usage` 由调用方按本策略累计口径现算，函数不修改 usage。三个策略都在付费调用前准入、
-调用成功并归账后复查；ReAct 子跑通过 `baseline_usage` 把 Planner 已累计用量带入每轮判定。
+`running_usage` 由调用方按本策略累计口径现算，函数不修改 usage。**付费调用前准入**是三个策略
+的共同规则；**调用成功并归账后复查**由 ReAct / Planner 在每笔付费调用后执行，Reflection 只挂在
+**修正**调用上——自查返回后不再有付费动作，复查只会把已合格的稿改判为降级。ReAct 子跑通过
+`baseline_usage` 把 Planner 已累计用量带入每轮判定。
 
 使用方式：`from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage`。
 策略不再各持本地定义；error_handlers 等生命周期仍由各策略自行管理。

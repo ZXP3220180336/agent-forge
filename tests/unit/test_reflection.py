@@ -608,6 +608,78 @@ async def test_reflect_cost_limit_stops():
 
 
 @pytest.mark.asyncio
+async def test_reflect_refined_adopted_on_cost_limit_after_refine():
+    """修正成功归账后成本超限 → 接管修正稿再终止（不丢弃已付费的修正结果）。
+
+    配方：每次结构化调用 30 tokens；阈值 30 → 自查归账后累计 30 不越界（放行本次修正），
+    修正归账后累计 60 越界 → 护栏在「接管新稿之后」命中，保留 REFINED 而非退回 DRAFT。
+    与 test_reflect_cost_limit_stops（自查后命中、停在 DRAFT）互补。注意 _make_strategy
+    不暴露 cost_limiter，故直接构造 ReflectionStrategy（对齐本文件既有护栏用例写法）。
+    """
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[
+            {
+                "ok": False,
+                "issues": [
+                    {
+                        "severity": "critical",
+                        "dimension": "grounding",
+                        "description": "证据不足",
+                    }
+                ],
+            },
+            REFINED,
+        ],
+        usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    )
+    tools = ToolService(max_concurrent_tools=10)
+    tools.register(_EchoTool())
+    strategy = ReflectionStrategy(
+        llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(30)
+    )
+
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == REFINED, "已付费的修正稿必须被接管"
+    assert strategy.outcome.degraded is True
+    assert "成本超限" in strategy.outcome.error
+    assert strategy.outcome.refine_rounds == 1
+    assert llm.structured_calls == 2, "自查 + 修正；命中后不再发起复查调用"
+
+
+@pytest.mark.asyncio
+async def test_reflect_critique_ok_after_cost_limit_is_clean_success():
+    """自查通过时累计已超限 → 仍产出干净成功（不因预算把合格稿改判降级）。
+
+    自查是最后一笔付费调用：其返回后不再有付费动作，故 ok 早退先于护栏复查，护栏只保留
+    在「修正调用前准入」。修复前该场景产出 success=True + degraded=True +
+    error="成本超限…" + critique=None 的矛盾信号（合格报告被标降级、自查结论丢失）。
+    """
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[{"ok": True, "issues": []}],
+        usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    )
+    tools = ToolService(max_concurrent_tools=10)
+    tools.register(_EchoTool())
+    strategy = ReflectionStrategy(
+        llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(20)
+    )
+
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.critique == {"ok": True, "issues": []}
+    assert strategy.outcome.success is True
+    assert strategy.outcome.degraded is False
+    assert strategy.outcome.error is None
+    assert llm.structured_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_reflect_cancel_event_stops_degrades_to_draft():
     """自查返回时取消 → 立即停机，不能再发起修正调用。"""
     cancel_event = asyncio.Event()
