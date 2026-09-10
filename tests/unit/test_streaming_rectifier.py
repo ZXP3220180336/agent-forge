@@ -12,10 +12,13 @@ StreamingRectifier 直接单元测试
 """
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
 
+from app.integration.llm.errors import _DeadlineExceeded, _StreamCancel
+from app.integration.llm.retry import RetryConfig, RetryHandler
 from app.integration.llm.streaming_rectifier import RectifierContext, StreamingRectifier
 from app.domain.ports.llm_gateway import StreamResult
 from app.shared.exceptions import ContextWindowExceededError
@@ -64,6 +67,7 @@ class _FakeStream:
         # 默认可恢复异常（TimeoutError → RETRYABLE，能触发整流）
         self._exc = exc or TimeoutError("connection reset")
         self._i = 0
+        self.close_calls = 0
 
     def __aiter__(self):
         return self
@@ -77,6 +81,9 @@ class _FakeStream:
         chunk = self._chunks[self._i]
         self._i += 1
         return chunk
+
+    async def close(self):
+        self.close_calls += 1
 
 
 class _FakeCircuitBreaker:
@@ -97,7 +104,9 @@ class _FakeRetry:
         self.calls = 0
         self.circuit_breaker = _FakeCircuitBreaker()
 
-    async def execute(self, call_fn, fallback_fn=None):
+    async def execute(
+        self, call_fn, fallback_fn=None, *, cancel_event=None, deadline=None
+    ):
         self.calls += 1
         if not self._streams:
             return _FakeStream([])
@@ -145,6 +154,161 @@ def _run(streams, cancel_event=None, stream_max_retries=1):
     return events, result, retry, reservation
 
 
+async def test_create_retry_backoff_obeys_execution_deadline():
+    """流式 create 的 RetryHandler 退避必须使用整条调用的绝对 deadline。"""
+    calls = 0
+
+    async def create_fn():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("first create failed")
+        return _FakeStream([_content_chunk("不应请求")])
+
+    result = StreamResult()
+    context = RectifierContext(result, {}, {})
+    retry = RetryHandler(
+        RetryConfig(max_retries=1, base_delay=0.05, max_delay=0.05, use_jitter=False)
+    )
+
+    with pytest.raises(_DeadlineExceeded):
+        async for _ in StreamingRectifier.rectified_stream(
+            create_fn=create_fn,
+            retry=retry,
+            cancel_event=None,
+            stream_max_retries=0,
+            context=context,
+            deadline=time.monotonic() + 0.01,
+        ):
+            pass
+
+    assert calls == 1, "deadline 命中后不得发起第二次 create"
+
+
+async def test_drain_absorbs_completed_usage_chunk_before_cancel_and_closes_stream():
+    """chunk 与取消同时就绪时先吸收 usage，并关闭未读完的底层流。"""
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    stream = _FakeStream([_usage_chunk(10, 3)])
+    result = StreamResult()
+    context = RectifierContext(result, {}, {})
+
+    with pytest.raises(_StreamCancel):
+        async for _ in StreamingRectifier._drain(
+            stream,
+            context=context,
+            tool_deltas=[],
+            cancel_event=cancel_event,
+        ):
+            pass
+
+    assert result.usage == {
+        "prompt_tokens": 10,
+        "completion_tokens": 3,
+        "total_tokens": 13,
+    }
+    assert stream.close_calls == 1
+
+
+async def test_continuation_backoff_obeys_deadline_and_never_calls_provider(monkeypatch):
+    """半流续接退避期间到期后必须终止，不能再调用 continue_fn。
+
+    整流中断流已收 usage（usage chunk 后 content 再断）→ 退避中 deadline 命中时终止
+    异常必须保留该 usage（不因续接退避裸抛而丢成本）。
+    """
+    monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.05)
+    monkeypatch.setattr(StreamingRectifier, "_max_delay", 0.05)
+    monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
+
+    initial = _FakeStream(
+        [_usage_chunk(5, 3), _content_chunk("部分")],
+        fail_at=2,
+        exc=TimeoutError("stream reset"),
+    )
+    result = StreamResult()
+    reservation = _FakeReservation()
+    context = RectifierContext(result, {"res": reservation}, {})
+    retry = _FakeRetry([initial])
+    continuation_calls = 0
+
+    async def continue_fn(_prefix):
+        nonlocal continuation_calls
+        continuation_calls += 1
+        return _FakeStream([_content_chunk("不应请求")])
+
+    with pytest.raises(_DeadlineExceeded) as exc_info:
+        async for _ in StreamingRectifier.rectified_stream(
+            create_fn=lambda: initial,
+            retry=retry,
+            cancel_event=None,
+            stream_max_retries=0,
+            context=context,
+            continue_fn=continue_fn,
+            continuation_max_retries=1,
+            deadline=time.monotonic() + 0.01,
+        ):
+            pass
+
+    assert exc_info.value.usage == {
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8,
+    }, "整流中断流已收的 usage 不因续接退避 deadline 终止而丢失"
+    assert continuation_calls == 0
+
+
+async def test_continuation_backoff_cancel_goes_cancel_exit(monkeypatch):
+    """续接退避中用户取消 → 走取消出口（error 事件短路），不再发起续接 create。
+
+    回归：原退避不捕 _StreamCancel，cancel 置位时裸抛绕过取消出口直达 Facade——
+    丢 SSE 取消事件；修复后与整流退避同语义，async for 正常收尾。
+    """
+    monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.05)
+    monkeypatch.setattr(StreamingRectifier, "_max_delay", 0.05)
+    monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
+
+    initial = _FakeStream(
+        [_content_chunk("部分")], fail_at=1, exc=TimeoutError("stream reset")
+    )
+    result = StreamResult()
+    context = RectifierContext(result, {"res": _FakeReservation()}, {})
+    retry = _FakeRetry([initial])
+    cancel_event = asyncio.Event()
+    continuation_calls = 0
+
+    async def continue_fn(_prefix):
+        nonlocal continuation_calls
+        continuation_calls += 1
+        return _FakeStream([_content_chunk("不应请求")])
+
+    # 整流中断（已产 content）进入续接退避（0.05s）后置位取消
+    async def set_later():
+        await asyncio.sleep(0.02)
+        cancel_event.set()
+
+    events = []
+    cancel_task = asyncio.ensure_future(set_later())
+    try:
+        async for event in StreamingRectifier.rectified_stream(
+            create_fn=lambda: initial,
+            retry=retry,
+            cancel_event=cancel_event,
+            stream_max_retries=0,
+            context=context,
+            continue_fn=continue_fn,
+            continuation_max_retries=1,
+        ):
+            events.append(event)
+    finally:
+        if not cancel_task.done():
+            cancel_task.cancel()
+        await asyncio.gather(cancel_task, return_exceptions=True)
+
+    assert continuation_calls == 0, "退避中取消不应再发起续接 create"
+    assert result.error == "用户取消", "取消应置失败信号（编排层短路语义）"
+    assert any("error" in e for e in events), f"取消应走 error 事件出口: {events}"
+
+
 # =====================================================================
 # 首 token 前中断 → 整流重试
 # =====================================================================
@@ -164,6 +328,40 @@ def test_rectifies_pre_first_token_interrupt():
     assert reservation.settle_calls == 1, "成功路径应 settle"
     assert reservation.cancel_calls == 0, "成功不应 cancel"
     assert all("error" not in e for e in events), f"不应有 error 事件: {events}"
+
+
+async def test_rectify_backoff_deadline_preserves_usage(monkeypatch):
+    """整流退避被 deadline 中断：整流失败流已收 usage（usage 不算首 token）不因终止丢失。
+
+    整流 attempt 1 = usage chunk 后中断 → 无 content 属首 token 前 → 整流退避；
+    退避期间 deadline 命中（L553 重建）→ 已收 usage 必须随终止异常保留。
+    """
+    monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.05)
+    monkeypatch.setattr(StreamingRectifier, "_max_delay", 0.05)
+    monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
+
+    result = StreamResult()
+    reservation = _FakeReservation()
+    context = RectifierContext(result, {"res": reservation}, {})
+    retry = _FakeRetry([_FakeStream([_usage_chunk(7, 1)], fail_at=1)])
+
+    with pytest.raises(_DeadlineExceeded) as exc_info:
+        async for _ in StreamingRectifier.rectified_stream(
+            create_fn=lambda: _FakeStream([]),
+            retry=retry,
+            cancel_event=None,
+            stream_max_retries=1,
+            context=context,
+            deadline=time.monotonic() + 0.02,
+        ):
+            pass
+
+    assert exc_info.value.usage == {
+        "prompt_tokens": 7,
+        "completion_tokens": 1,
+        "total_tokens": 8,
+    }, "整流失败流已收的 usage 不因整流退避 deadline 终止而丢失"
+    assert retry.calls == 1, "deadline 命中后不得整流重试第二次"
 
 
 # =====================================================================
@@ -1012,5 +1210,71 @@ def test_continuation_reinterrupt_budget_exhausted_abandons():
         assert result.error, "预算耗尽应放弃（失败信号）"
         assert retry.circuit_breaker.failures == 1, "最终 RETRYABLE 放弃应喂熔断"
         assert any("error" in e for e in events)
+    finally:
+        _restore_watchdog(saved)
+
+
+def test_continuation_finish_success_error_not_retried(monkeypatch):
+    """续接流 EOF 后 _finish_success（结算/日志）异常 → 非续接流中断：原样上抛，不再续接。
+
+    回归：主流路径 drain 读到 EOF 后置 stream_done，_finish_success（settle/log）异常被
+    原样上抛（不整流/不重发）；修复前续接路径无同类守卫——续接 EOF 后 settle/log 抛可恢复
+    异常落 except Exception 被当续接流中断，预算内再次调 continue_fn（同一前缀）→ 重复
+    content + 双倍计费。修复后与主流路径共用完成态守卫（cont_stream_done）：不置
+    outcome.error、不喂熔断、不再续接。
+    """
+    saved = _tiny_watchdog()
+
+    class _FinishLogError(TimeoutError):
+        """续接成功收尾的日志侧失败：RETRYABLE，足以被误判为可续接的流中断。"""
+
+    async def raising_log_success(context, attempt_start):
+        raise _FinishLogError("日志收尾失败")
+
+    try:
+        monkeypatch.setattr(StreamingRectifier, "_log_success", raising_log_success)
+
+        result = StreamResult()
+        reservation = _FakeReservation()
+        context = RectifierContext(result, {"res": reservation}, {})
+        retry = _FakeRetry(
+            [
+                _FakeStream(
+                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
+                )
+            ]
+        )
+        prefixes: list[str] = []
+        continuation_calls = 0
+
+        async def cont_fn(prefix):
+            nonlocal continuation_calls
+            prefixes.append(prefix)
+            continuation_calls += 1
+            return _FakeStream([_content_chunk("续写"), _usage_chunk(10, 3)])
+
+        async def collect():
+            async for _ in StreamingRectifier.rectified_stream(
+                create_fn=lambda: _FakeStream([]),
+                retry=retry,
+                cancel_event=None,
+                stream_max_retries=1,
+                context=context,
+                continue_fn=cont_fn,
+                continuation_max_retries=2,  # 预算余量足以暴露「误当续接中断再续」的 bug
+            ):
+                pass
+
+        with pytest.raises(_FinishLogError):
+            asyncio.run(collect())
+
+        assert continuation_calls == 1, (
+            "续接成功后的收尾异常不得再触发续接（重复内容 + 双倍计费）"
+        )
+        assert prefixes == ["部分"]
+        assert result.content == "部分续写", "续接已产出的内容保留（非放弃丢弃）"
+        assert result.error is None, "收尾异常按主流路径原样上抛，不折失败信号"
+        assert retry.circuit_breaker.failures == 0, "续接成功流的收尾异常不喂熔断"
+        assert reservation.settle_calls == 1, "首次中断结算 1 次（续接流已成功读完）"
     finally:
         _restore_watchdog(saved)

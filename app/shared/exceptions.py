@@ -28,6 +28,8 @@ class AppErrorCode(StrEnum):
     FORBIDDEN = "FORBIDDEN"  # 权限不足（ForbiddenError，403）
     NOT_FOUND = "NOT_FOUND"  # 资源不存在（NotFoundError，404）
     CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED"  # 请求超出模型上下文窗口
+    LLM_CANCELLED = "LLM_CANCELLED"  # LLM 调用被业务取消（LLMCancelledError，领域可识别执行终止）
+    LLM_DEADLINE = "LLM_DEADLINE"  # LLM 调用整体执行期限耗尽（LLMDeadlineExceededError）
     CIRCUIT_OPEN = "CIRCUIT_OPEN"  # 熔断开启（CircuitBreakerOpenError）
     LLM_API_ERROR = (
         "LLM_API_ERROR"  # LLM 下游不可恢复错误（LLMAPIError，openai 4xx/认证归一）
@@ -96,6 +98,38 @@ class ContextWindowExceededError(NonRetryableError):
             f"请求上下文超限（model_key={model_key}，输入估算 {input_tokens}，"
             f"输入预算 {input_budget}，输出预留 {max_tokens}）"
         )
+
+
+class LLMCancelledError(NonRetryableError):
+    """LLM 调用被业务取消（用户取消信号经 Facade 翻译的领域出口，LLM-044）。
+
+    集成层内部以 `_StreamCancel` 承载；LLMService.generate / async_generate 边界把
+    私有信号翻译为本异常抛给领域层——取消与「LLM 失败」路由分离，领域据此按用户
+    取消停机收尾，而非当作失败（LLM_FAILED）重试。不可重试：用户已取消。
+    """
+
+    code = AppErrorCode.LLM_CANCELLED
+
+    def __init__(self, message: str = "", *, usage: dict | None = None) -> None:
+        # usage：终止前已完成调用的实际用量（如 create 成功返回后到期）——Facade 翻译
+        # 时由集成层私有信号携带，领域层可按需归入成本口径，不因终止丢失。
+        self.usage = usage
+        super().__init__(message)
+
+
+class LLMDeadlineExceededError(NonRetryableError):
+    """LLM 调用整体执行期限耗尽（绝对 deadline 到期，经 Facade 翻译的领域出口，LLM-044）。
+
+    集成层内部以 `_DeadlineExceeded` 承载；**不以内置 TimeoutError 表现**——避免被
+    classify_error 归为可重试网络超时触发重试/整流/续接。领域据此按执行超时终止，
+    而非传输重试。
+    """
+
+    code = AppErrorCode.LLM_DEADLINE
+
+    def __init__(self, message: str = "", *, usage: dict | None = None) -> None:
+        self.usage = usage
+        super().__init__(message)
 
 
 class LLMAPIError(NonRetryableError):

@@ -27,7 +27,11 @@ from app.domain.reasoning import ReActStrategy
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.tool_service import ToolService
 from app.shared.events import build_message_event
-from app.shared.exceptions import ContextWindowExceededError, LLMAPIError
+from app.shared.exceptions import (
+    ContextWindowExceededError,
+    LLMAPIError,
+    LLMDeadlineExceededError,
+)
 
 
 class _NonStreamingScriptedLLM:
@@ -52,6 +56,8 @@ class _NonStreamingScriptedLLM:
         max_tokens=None,
         model_key=None,
         response_format=None,
+        cancel_event=None,
+        deadline=None,
     ) -> StreamResult | None:
         self.calls += 1
         self.last_kwargs = {
@@ -128,6 +134,20 @@ async def _run(strategy, messages, **kw):
     ):
         events.append(ev)
     return events
+
+
+async def test_nonstream_deadline_exception_preserves_usage():
+    """generate 成功结算后到期时，异常携带的 usage 必须进入 ReAct 总账。"""
+    usage = {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}
+    llm = _NonStreamingScriptedLLM(
+        [LLMDeadlineExceededError("执行期限耗尽", usage=usage)]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    await _run(strategy, [{"role": "user", "content": "hi"}], stream_mode=False)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.usage == usage
 
 
 # =====================================================================
@@ -222,7 +242,7 @@ async def test_nonstream_none_maps_to_llm_failed():
 
 
 async def test_nonstream_cancel_after_return_cancels():
-    """成功返回 + 调用期间 cancel 置位 → 轮末补查 CANCELLED（非流式 generate 无 chunk 中断）。"""
+    """成功响应与 cancel 同时完成时，generate 返回前复查并按 CANCELLED 收尾。"""
 
     class _CancelOnFirstGenerate(_NonStreamingScriptedLLM):
         def __init__(self, scripts, cancel_event):
@@ -236,8 +256,9 @@ async def test_nonstream_cancel_after_return_cancels():
             return sr
 
     cancel_event = asyncio.Event()
+    usage = {"prompt_tokens": 6, "completion_tokens": 2, "total_tokens": 8}
     llm = _CancelOnFirstGenerate(
-        [{"finish_reason": "stop", "content": "答案"}], cancel_event
+        [{"finish_reason": "stop", "content": "答案", "usage": usage}], cancel_event
     )
     strategy = ReActStrategy(llm=llm, tools=None)
     messages = [{"role": "user", "content": "hi"}]
@@ -249,6 +270,7 @@ async def test_nonstream_cancel_after_return_cancels():
     assert strategy.outcome is not None
     assert strategy.outcome.error == "Agent 已被取消"  # 轮末补查 → CANCELLED
     assert strategy.outcome.content == "答案"  # 部分进度保留（取消语义，非丢弃）
+    assert strategy.outcome.usage == usage, "完整响应的真实 usage 不因轮末取消丢失"
     assert _typed(events, "done")
 
 

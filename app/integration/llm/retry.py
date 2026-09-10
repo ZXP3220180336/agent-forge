@@ -28,7 +28,12 @@ from typing import Any, ClassVar
 
 from app.shared.exceptions import CircuitBreakerOpenError, ContextWindowExceededError
 
-from .errors import ErrorCategory, _StreamCancel, classify_error
+from .errors import (
+    ErrorCategory,
+    _ExecutionAbort,
+    classify_error,
+)
+from .execution_control import _raise_if_aborted, wait_with_execution_control
 
 # =====================================================================
 # 熔断器
@@ -293,6 +298,9 @@ class RetryHandler:
         self,
         call_fn: Callable[[], Awaitable[Any]],
         fallback_fn: Callable[[], Awaitable[Any]] | None = None,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> Any:
         """
         执行调用，自动重试和熔断。
@@ -304,16 +312,27 @@ class RetryHandler:
         （成功在循环内记录，失败在循环结束后统一记录一次），避免单请求的
         重试放大熔断计数。
 
+        cancel_event / deadline（LLM-044 执行控制）：入口快检 + 重试退避等待
+        可被中断——取消/期限命中抛类型化终止信号（跳过后续重试与 fallback）；
+        若本次请求已实际触及主网络故障（saw_retryable_failure），信号传播前仍
+        记账一次熔断失败（故障证据不随取消丢失），取消本身不计下游故障。
+
         Args:
             call_fn: 主要调用函数
             fallback_fn: 降级调用函数（主调用全部失败时尝试）
+            cancel_event: 业务取消信号（置位则不再发起后续尝试）
+            deadline: 整体执行期限（monotonic 绝对，到期同取消终止）
 
         Returns:
             API 响应
 
         Raises:
-            最后一次异常（所有重试 + fallback 均失败）
+            最后一次异常（所有重试 + fallback 均失败）；或 `_StreamCancel` /
+            `_DeadlineExceeded`（执行控制终止，跳过重试与 fallback）
         """
+        # LLM-044 入口快检：已取消/已到期 → 不发本请求（含 OPEN/探针/fallback 路径前置）
+        _raise_if_aborted(cancel_event, deadline)
+
         last_exc: Exception | None = None
         cb = self.circuit_breaker
         # 本次请求是否出现过下游故障（超时/5xx，RETRYABLE）。
@@ -380,10 +399,19 @@ class RetryHandler:
                         if category == ErrorCategory.RATE_LIMITED
                         else None
                     )
-                    delay = self._calculate_delay(
-                        attempt, retry_after=retry_after
-                    )
-                    await asyncio.sleep(delay)
+                    delay = self._calculate_delay(attempt, retry_after=retry_after)
+                    # LLM-044：退避等待可被 cancel/deadline 中断——终止后不发起下一次
+                    # 真实 create（也不进 fallback）。若本次已实际触及主网络故障（超时/
+                    # 5xx），传播前仍记账一次熔断失败（证据不随取消丢失）；纯 429/取消
+                    # 本身不计下游故障。
+                    try:
+                        await wait_with_execution_control(
+                            delay, cancel_event=cancel_event, deadline=deadline
+                        )
+                    except _ExecutionAbort:
+                        if saw_retryable_failure:
+                            cb.record_failure()
+                        raise
         except asyncio.CancelledError:
             if saw_retryable_failure:
                 cb.record_failure()
@@ -477,10 +505,11 @@ class RetryHandler:
     ) -> Any:
         """执行纯兜底 fallback（不触碰熔断状态机）。
 
-        - 终结性信号（请求未发 / 用户已取消）直抛、不包成主网络故障 cause：
+        - 终结性信号（请求未发 / 执行终止）直抛、不包成主网络故障 cause：
           预算拒绝（CWEE）——否则 decide_downstream_error 会把主超时归可恢复
-          降级，甚至触发结构化/整流再调主（付费但必然再超限）；业务取消
-          （_StreamCancel）——否则用户取消被吞成主失败，下游当可恢复错误继续付费重试。
+            降级，甚至触发结构化/整流再调主（付费但必然再超限）；
+          执行终止（_ExecutionAbort：用户取消 / 整体期限耗尽）——否则被吞成主失败，
+            下游当可恢复错误继续付费重试/整流/续接。
         - 主调用异常才是最终结果（上层按它判定熔断/重试语义，熔断窗口记录的
           也是主链路）；其余 fallback 失败仅作为 __cause__ 链上保留诊断，不覆盖
           主异常——否则上层拿到 fallback 异常会与熔断器记录的主链路状态不一致。
@@ -488,9 +517,7 @@ class RetryHandler:
         try:
             return await fallback_fn()
         except Exception as fallback_exc:
-            if isinstance(
-                fallback_exc, (ContextWindowExceededError, _StreamCancel)
-            ):
+            if isinstance(fallback_exc, (ContextWindowExceededError, _ExecutionAbort)):
                 raise
             assert last_exc is not None  # 走到 fallback 必然主调用已失败
             raise last_exc from fallback_exc
@@ -528,7 +555,7 @@ class RetryHandler:
             return None
         try:
             return float(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None  # 可能是 HTTP-date 形式，简化忽略，回退到指数退避
 
 

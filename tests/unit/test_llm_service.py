@@ -74,7 +74,7 @@ class _FakeRetry:
         self.fallback_result = fallback_result
         self.execute_kwargs: dict | None = None
 
-    async def execute(self, call_fn, fallback_fn=None):
+    async def execute(self, call_fn, fallback_fn=None, *, cancel_event=None, deadline=None):
         self.execute_kwargs = {"call_fn": call_fn, "fallback_fn": fallback_fn}
         # 模拟真实行为：主链路失败（重试耗尽）→ 调用 fallback_fn 兜底
         return await fallback_fn()
@@ -136,7 +136,7 @@ class _StubLimiter:
 class _FakeRetryDirect:
     """retry.execute 直接调 call_fn（主链路成功，reserve 进 active）。"""
 
-    async def execute(self, call_fn, fallback_fn=None):
+    async def execute(self, call_fn, fallback_fn=None, *, cancel_event=None, deadline=None):
         return await call_fn()
 
 

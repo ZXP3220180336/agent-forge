@@ -29,7 +29,7 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_error_event, build_message_event
-from app.shared.exceptions import ContextWindowExceededError
+from app.shared.exceptions import ContextWindowExceededError, LLMDeadlineExceededError
 
 
 class _EchoTool(BaseTool):
@@ -1045,6 +1045,302 @@ async def test_react_execute_timeout_keeps_partial_progress():
     # 第 1 轮工具已执行完成，调用记录保留（部分进度证据）
     assert len(strategy.outcome.tool_calls) == 1
     assert strategy.outcome.tool_calls[0]["tool"] == "echo"
+    assert "超时" in (strategy.outcome.error or "")
+
+
+async def test_internal_deadline_keeps_current_round_partial_result_and_usage():
+    """当前轮流式内容已产出后命中内部 deadline，TIMEOUT outcome 保留内容与用量。"""
+
+    usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+
+    class _PartialDeadlineLLM:
+        async def async_generate(self, *args, result=None, **kwargs):
+            assert result is not None
+            result.content = "当前轮部分答案"
+            result.reasoning_content = "当前轮推理"
+            yield build_message_event(result.content)
+            raise LLMDeadlineExceededError("执行期限耗尽", usage=usage)
+
+    strategy = ReActStrategy(llm=_PartialDeadlineLLM(), tools=None)
+    events = []
+    async for event in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=5.0,
+    ):
+        events.append(event)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.content == "当前轮部分答案"
+    assert strategy.outcome.reasoning == "当前轮推理"
+    assert strategy.outcome.usage == usage, "异常 usage 只应归账一次"
+    assert strategy.outcome.total_tokens == 10
+    assert "超时" in (strategy.outcome.error or "")
+    assert any('"type": "done"' in event for event in events)
+
+
+async def test_internal_deadline_empty_current_round_keeps_previous_result():
+    """下一轮尚无可见产出便到期时，不用空 current_result 覆盖上一轮成果。"""
+
+    class _SecondRoundDeadlineLLM:
+        def __init__(self):
+            self.calls = 0
+
+        async def async_generate(self, *args, result=None, **kwargs):
+            self.calls += 1
+            assert result is not None
+            if self.calls == 1:
+                result.content = "上一轮阶段成果"
+                result.finish_reason = "tool_calls"
+                result.tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": json.dumps({"text": "hi"}),
+                        },
+                    }
+                ]
+                yield build_message_event(result.content)
+                return
+            raise LLMDeadlineExceededError("执行期限耗尽")
+            yield  # pragma: no cover - 保持 async generator 形态
+
+    strategy = ReActStrategy(
+        llm=_SecondRoundDeadlineLLM(), tools=_make_registry(tools=[_EchoTool()])
+    )
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=5.0,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.content == "上一轮阶段成果"
+    assert "超时" in (strategy.outcome.error or "")
+
+
+@pytest.mark.parametrize("max_execution_time", [5.0, None])
+async def test_inner_timeout_error_is_unknown_and_keeps_current_round(
+    max_execution_time,
+):
+    """timeout scope 未到期时，LLM 内部 TimeoutError 应归 UNKNOWN 并保留当前轮成果。"""
+
+    usage = {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}
+
+    class _FinishTimeoutLLM:
+        async def async_generate(self, *args, result=None, **kwargs):
+            assert result is not None
+            result.content = "续接已经完成"
+            result.reasoning_content = "当前轮推理"
+            result.usage = usage
+            yield build_message_event(result.content)
+            raise TimeoutError("日志收尾超时")
+
+    strategy = ReActStrategy(llm=_FinishTimeoutLLM(), tools=None)
+    events = []
+    async for event in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=1,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=max_execution_time,
+    ):
+        events.append(event)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.error == "Agent 运行异常: TimeoutError"
+    assert strategy.outcome.content == "续接已经完成"
+    assert strategy.outcome.reasoning == "当前轮推理"
+    assert strategy.outcome.usage == usage
+    assert strategy.outcome.total_tokens == 15
+    assert any('"type": "done"' in event for event in events)
+
+
+async def test_unknown_exception_keeps_current_round():
+    """普通收尾异常同样保留尚未正常归账的当前轮成果。"""
+
+    class _FinishErrorLLM:
+        async def async_generate(self, *args, result=None, **kwargs):
+            assert result is not None
+            result.content = "已生成内容"
+            result.usage = {"total_tokens": 6}
+            yield build_message_event(result.content)
+            raise RuntimeError("日志收尾失败")
+
+    strategy = ReActStrategy(llm=_FinishErrorLLM(), tools=None)
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=1,
+        temperature=0.2,
+        max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.error == "Agent 运行异常: RuntimeError"
+    assert strategy.outcome.content == "已生成内容"
+    assert strategy.outcome.usage == {"total_tokens": 6}
+
+
+async def test_external_task_cancel_still_propagates_cancelled_error():
+    """调用方硬取消 task 时不应被 UNKNOWN/TIMEOUT 降级吞掉。"""
+
+    started = asyncio.Event()
+
+    class _HangingLLM:
+        async def async_generate(self, *args, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+            yield  # pragma: no cover - 保持 async generator 形态
+
+    strategy = ReActStrategy(llm=_HangingLLM(), tools=None)
+    events = []
+
+    async def _collect():
+        async for event in strategy.execute(
+            "hi",
+            [{"role": "user", "content": "hi"}],
+            max_iterations=1,
+            temperature=0.2,
+            max_tokens=1024,
+            max_execution_time=5.0,
+        ):
+            events.append(event)
+
+    task = asyncio.create_task(_collect())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert strategy.outcome is None
+    assert not any('"type": "done"' in event for event in events)
+
+
+async def test_execute_aclose_from_another_task_has_no_terminal_event():
+    """异 task 关闭执行生成器时应干净退出，不伪造 UNKNOWN/TIMEOUT 终态。"""
+
+    strategy = ReActStrategy(llm=_ScriptedLLM([]), tools=None)
+    stream = strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=1,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=5.0,
+    )
+    first_event = await anext(stream)
+    assert '"type": "agent_info"' in first_event
+
+    await asyncio.create_task(stream.aclose())
+
+    assert strategy.outcome is None
+
+
+async def test_internal_deadline_cleanup_finishes_before_hard_timeout(monkeypatch):
+    """内部 deadline 后的小段清理应在外层硬超时前完成。"""
+    import app.domain.reasoning.react as react_module
+
+    monkeypatch.setattr(react_module, "_EXECUTION_CLEANUP_GRACE_RATIO", 0.5)
+    monkeypatch.setattr(react_module, "_MAX_EXECUTION_CLEANUP_GRACE", 0.1)
+    cleanup_started = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    class _DeadlineCleanupLLM:
+        async def async_generate(self, *args, result=None, deadline=None, **kwargs):
+            assert deadline is not None
+            await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+            cleanup_started.set()
+            await asyncio.sleep(0.01)
+            cleanup_finished.set()
+            raise LLMDeadlineExceededError("执行期限耗尽")
+            yield  # pragma: no cover - 保持 async generator 形态
+
+    strategy = ReActStrategy(llm=_DeadlineCleanupLLM(), tools=None)
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=1,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=0.2,
+    ):
+        pass
+
+    assert cleanup_started.is_set()
+    assert cleanup_finished.is_set(), "硬超时不得与内部 deadline 同刻打断资源清理"
+    assert strategy.outcome is not None
+    assert "超时" in (strategy.outcome.error or "")
+
+
+async def test_hard_timeout_keeps_current_round_partial_result(monkeypatch):
+    """内部信号未生效而落入硬超时时，也应保留当前轮已产出的部分内容。"""
+    import app.domain.reasoning.react as react_module
+
+    monkeypatch.setattr(react_module, "_EXECUTION_CLEANUP_GRACE_RATIO", 0.1)
+    monkeypatch.setattr(react_module, "_MAX_EXECUTION_CLEANUP_GRACE", 0.01)
+
+    class _PartialThenHangLLM:
+        async def async_generate(self, *args, result=None, **kwargs):
+            assert result is not None
+            result.content = "硬超时前的部分答案"
+            yield build_message_event(result.content)
+            await asyncio.Event().wait()
+
+    strategy = ReActStrategy(llm=_PartialThenHangLLM(), tools=None)
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=1,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=0.05,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.content == "硬超时前的部分答案"
+    assert "超时" in (strategy.outcome.error or "")
+
+
+async def test_deadline_unaware_llm_is_cancelled_at_timeout_trigger(monkeypatch):
+    """忽略内部 deadline、但配合 task 取消的调用会在 timeout 触发点停止。"""
+    import app.domain.reasoning.react as react_module
+
+    monkeypatch.setattr(react_module, "_EXECUTION_CLEANUP_GRACE_RATIO", 0.25)
+    monkeypatch.setattr(react_module, "_MAX_EXECUTION_CLEANUP_GRACE", 0.05)
+
+    class _DeadlineUnawareLLM:
+        async def async_generate(self, *args, **kwargs):
+            await asyncio.Event().wait()
+            yield  # pragma: no cover - 保持 async generator 形态
+
+    strategy = ReActStrategy(llm=_DeadlineUnawareLLM(), tools=None)
+    started = time.monotonic()
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=1,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=0.05,
+    ):
+        pass
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2, "不识别内部 deadline 的调用应由 timeout task 取消终止"
+    assert strategy.outcome is not None
     assert "超时" in (strategy.outcome.error or "")
 
 

@@ -29,6 +29,8 @@ from jsonschema import Draft7Validator, ValidationError, validate
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.platform.observability.logger import get_logger
 from app.shared.exceptions import (
+    LLMCancelledError,
+    LLMDeadlineExceededError,
     StructuredRefusalError,
     StructuredToolCallError,
     StructuredTruncationError,
@@ -82,15 +84,17 @@ def _build_json_schema_request(
     schema: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    构建 response_format 参数。
+    构建 native JSON Schema 的 response_format（strict=True，LLM-009 归一）。
 
-    当模型支持 strict=True 时启用，否则降级为普通 JSON mode。
+    无条件构建 strict json_schema；模型 / 网关不支持该格式（400）时，由调用方
+    （_extract_impl 第二级 JSON mode / _call_generate 的
+    is_unsupported_response_format_error）降级，本函数不做支持性判断。
 
     Args:
         schema: JSON Schema
 
     Returns:
-        {"type": "json_schema" | "json_object", "json_schema": {...}}
+        {"type": "json_schema", "json_schema": {"name", "strict", "schema"}}
     """
     # 尝试 native JSON Schema
     return {
@@ -322,23 +326,6 @@ def _accumulate_usage(target: dict | None, src: dict | None) -> None:
             target[key] = value
 
 
-def _should_abort(cancel_event: asyncio.Event | None, deadline: float | None) -> bool:
-    """业务取消 / 绝对期限命中判定（E：结构化链每笔真实请求前的执行护栏）。
-
-    - cancel_event 置位 = 用户取消；
-    - deadline（monotonic 绝对时刻，调用方现算 start_time + max_execution_time）已过
-      = 总时长耗尽。
-    命中即**不再发起下一笔真实请求**：检查点只放 `_call_generate` 入口（三级初始 /
-    截断扩容 / 回喂 / fallback 所有真实请求必经），命中 return None——与「降级耗尽」
-    同出口，reflection/planner 既有 None 降级路径保证终止后不再有后续调用（E 决策 2/3）。
-    正在进行的单笔 generate（限流排队 / SDK create 中）不在本层优雅打断（对齐
-    request-context-budget ADR Decision 8：限流排队不提前打断，绝对截止硬取消总兜底）。
-    """
-    if cancel_event is not None and cancel_event.is_set():
-        return True
-    return deadline is not None and time.monotonic() >= deadline
-
-
 class StructuredOutput:
     """
     结构化输出提取器（三级降级实现载体）。
@@ -396,6 +383,36 @@ class StructuredOutput:
         Raises:
             StructuredRefusalError: 模型拒答（内容安全策略触发），不强行 repair
         """
+        # LLM-044（修正 2）：整条降级链在**最外层**收敛执行终止——_extract_impl 内任一
+        # 级 generate 抛的执行终止（shared LLMCancelledError/LLMDeadlineExceededError）
+        # 不得被当作「当前格式失败」继续 JSON mode / 回喂 / 扩容等剩余降级级；统一在
+        # 此 return None（与降级耗尽同出口），整条链只终止一次。
+        try:
+            return await StructuredOutput._extract_impl(
+                llm_service=llm_service,
+                messages=messages,
+                schema=schema,
+                model_key=model_key,
+                max_tokens=max_tokens,
+                usage=usage,
+                cancel_event=cancel_event,
+                deadline=deadline,
+            )
+        except LLMCancelledError, LLMDeadlineExceededError:
+            return None
+
+    @staticmethod
+    async def _extract_impl(
+        llm_service: LLMGateway,
+        messages: list[dict],
+        schema: dict[str, Any],
+        model_key: str = "fast",
+        max_tokens: int | None = None,
+        usage: dict | None = None,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, Any] | None:
+        """extract 的三级降级主体（与 extract 同参，由 extract 包装终止收敛）。"""
         # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）。
         # 默认拒绝额外字段，模型无法扩展接口混入业务不需要的字段。
         schema = _enforce_no_extra_fields(schema)
@@ -672,21 +689,23 @@ class StructuredOutput:
         """调用 generate 并统一处理下游异常（_try_extract/_fallback_extract 复用）。
 
         不可恢复错误（4xx/认证/熔断，NON_RETRYABLE）向上抛——generate 已对
-        NON_RETRYABLE raise，此处防御性兜底；可恢复错误（超时/5xx/429）可靠性层
-        已重试耗尽，generate 转 None，此处同样返回 None 触发降级。
+        NON_RETRYABLE raise，此处防御性兜底；
+        可恢复错误（超时/5xx/429）可靠性层已重试耗尽，generate 转 None，
+        此处同样返回 None 触发降级。
 
         所有真实成功调用（多级降级 / 截断重试 / 回喂任一）在此累加 usage——成本计量
         需要全程消耗，只回填"最后一次成功"会系统性低估（缺陷修复的单一归口）。
 
-        cancel_event / deadline：每笔真实请求前的执行护栏（E）——命中即返回 None
-        （视作下游不可用 → 降级路径），**不发此笔请求**；单笔 generate 发起后
-        （限流排队 / SDK create 中）不在此优雅打断，对齐 request-context-budget ADR
-        Decision 8（绝对截止硬取消总兜底）。
+        cancel_event / deadline：每笔真实请求前的执行护栏。命中时抛 shared 类型化
+        终止信号，由 extract 最外层一次性收敛为 None，整条降级链不再空转；信号同时
+        透传给 generate，约束其 reserve、SDK create、retry 与 fallback。
         """
-        # E：每笔真实请求前的执行护栏（单点覆盖三级初始/截断扩容/回喂/fallback）。
-        # 取消/期限命中 → 与「下游失败」同出口返回 None，不再发起此笔请求。
-        if _should_abort(cancel_event, deadline):
-            return None
+        # 入口命中必须抛到 extract 最外层统一收敛；若仅返回 None，_extract_impl 会继续
+        # 访问 JSON mode / prompt fallback，虽然不发 SDK 请求，仍会空转整条降级链。
+        if cancel_event is not None and cancel_event.is_set():
+            raise LLMCancelledError("用户取消")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise LLMDeadlineExceededError("执行期限耗尽")
         try:
             # max_tokens 上游（extract）已把 None 归一为默认预算，此处兜底防御直接调用
             result = await llm_service.generate(
@@ -699,8 +718,22 @@ class StructuredOutput:
                 ),
                 response_format=response_format,
                 model_key=model_key,
+                # LLM-044：把执行控制信号透传到每次真实 SDK attempt（reserve/create/
+                # 返回前检查点按同一 cancel_event + 绝对 deadline 受控）——不是只在
+                # 本入口检查一次后放任 generate 内部 retry/fallback 在终止后继续。
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
         except Exception as e:
+            # LLM-044：执行控制终止（generate Facade 翻译后的 shared 领域异常）——
+            # 累计本次异常携带的 usage 后**继续 raise**，由 extract 最外层收敛为
+            # return None：整条结构化降级链只终止一次，不空转 JSON mode / 回喂 /
+            # 扩容等剩余降级级（D1 修正）。
+            if isinstance(e, (LLMCancelledError, LLMDeadlineExceededError)):
+                if usage is not None and getattr(e, "usage", None):
+                    _accumulate_usage(usage, e.usage)
+                raise
+
             # 整体 deadline 防御（todo §4）：外层策略绝对截止（asyncio.timeout 到期）
             # 注入的**内置 TimeoutError** 是执行终止信号——直接 re-raise 保留终止语义，
             # 不得被 decide_downstream_error 归为 RETRYABLE 降级再调用。
@@ -708,6 +741,7 @@ class StructuredOutput:
             # 仍走下方可恢复路径，不误伤网络超时语义。
             if isinstance(e, TimeoutError):
                 raise
+
             # 明确因「response_format 不被支持」而 400（模型/兼容网关不支持
             # strict json_schema）：这不是调用方 bug，而是约束模式不被支持——
             # 降级到下一级（JSON mode / 正则）而非致命上抛，兑现降级链契约。
@@ -718,6 +752,7 @@ class StructuredOutput:
                     e,
                 )
                 return None
+
             # 统一决策（llm/errors.py）：可恢复错误（超时/5xx/429）兜底防御降级；
             # 不可恢复错误（generate 已归一为 LLMAPIError 或原样）上抛交上层决策。
             decision = decide_downstream_error(e)
@@ -740,7 +775,7 @@ class StructuredOutput:
 
         检查顺序：refusal 字段 → finish_reason 拒答/过滤 → finish_reason 截断 →
         finish_reason 工具调用 → content 空。
-        返回 "ok" / "truncated" / "refusal" / "tool_calls"。
+        返回 "ok" / "truncated" / "refusal" / "tool_calls" / "empty"。
         """
         if getattr(result, "refusal", None):
             return "refusal"

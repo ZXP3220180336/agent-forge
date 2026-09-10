@@ -51,6 +51,7 @@ class LLMGateway(Protocol):
         result: StreamResult | None = None,
         model_key: str = "main",
         cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> AsyncGenerator[str]:
         """流式生成；yield 标记为 async generator（类型用途，运行时不可达）。"""
         yield ""  # 使类型检查器识别为 async generator，可被 async for 遍历
@@ -63,6 +64,8 @@ class LLMGateway(Protocol):
         max_tokens: int = 1024,
         response_format: dict | None = None,
         model_key: str = "fast",
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> StreamResult | None: ...
 
     async def generate_structured(

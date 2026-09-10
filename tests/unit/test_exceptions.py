@@ -18,6 +18,8 @@ from app.shared.exceptions import (
     AppErrorCode,
     BusinessError,
     ContextWindowExceededError,
+    LLMCancelledError,
+    LLMDeadlineExceededError,
     NonRetryableError,
     StructuredExtractionError,  # 中间基类定义在 shared（structured 不 re-export）
 )
@@ -94,3 +96,16 @@ def test_business_error_hierarchy():
     assert issubclass(StructuredTruncationError, StructuredExtractionError)
     assert issubclass(StructuredRefusalError, StructuredExtractionError)
     assert issubclass(StructuredToolCallError, StructuredExtractionError)
+
+
+def test_execution_abort_errors_are_nonretryable():
+    """执行终止领域出口（LLM-044）：领域可识别、不可重试（对齐 CWEE）"""
+    assert issubclass(LLMCancelledError, NonRetryableError)
+    assert issubclass(LLMDeadlineExceededError, NonRetryableError)
+
+
+def test_execution_abort_error_codes():
+    """取消/期限各自独立错误码，供领域路由（CANCELLED vs TIMEOUT）区分"""
+    assert LLMCancelledError.code == AppErrorCode.LLM_CANCELLED
+    assert LLMDeadlineExceededError.code == AppErrorCode.LLM_DEADLINE
+    assert LLMCancelledError.code != LLMDeadlineExceededError.code

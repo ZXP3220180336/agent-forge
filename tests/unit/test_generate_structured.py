@@ -21,10 +21,12 @@ import pytest
 from app.integration.llm.llm_service import LLMService
 from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm.structured import (
+    StructuredOutput,
     StructuredRefusalError,
     StructuredTruncationError,
     _enforce_no_extra_fields,
 )
+from app.shared.exceptions import LLMCancelledError, LLMDeadlineExceededError
 
 SCHEMA = {
     "type": "object",
@@ -63,7 +65,7 @@ async def test_first_level_schema_success():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         seen["response_format"] = response_format
         seen["model_key"] = model_key
         seen["max_tokens"] = max_tokens
@@ -84,7 +86,7 @@ async def test_second_level_json_mode_fallback():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) <= 3:  # 第一级 + 回喂 2 次（均解析失败）
             return _sr("not valid json {")
@@ -107,7 +109,7 @@ async def test_third_level_regex_fallback():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) <= 2:  # 第一级 + 回喂 2 次
             return _sr("bad json")
@@ -139,7 +141,7 @@ async def test_usage_accumulates_across_degrade_and_reask():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         sr = _sr(
             "not valid json {" if len(calls) <= 3
@@ -176,7 +178,7 @@ async def test_json_parse_failure_returns_none():
     """三级均返回非法 JSON → None。"""
     llm = LLMService()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         return _sr("definitely not json")
 
     llm.generate = fake_generate
@@ -188,7 +190,7 @@ async def test_non_dict_content_returns_none():
     """content 是 JSON 数组（非 dict）→ None（isinstance dict 校验）。"""
     llm = LLMService()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         return _sr("[1, 2, 3]")
 
     llm.generate = fake_generate
@@ -200,7 +202,7 @@ async def test_empty_response_returns_none():
     """generate 返回 None / 空 content → None。"""
     llm = LLMService()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         return _sr_none()
 
     llm.generate = fake_generate
@@ -217,7 +219,7 @@ async def test_generate_unrecoverable_exception_propagates():
     """
     llm = LLMService()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         raise RuntimeError("downstream failure")
 
     llm.generate = fake_generate
@@ -235,7 +237,7 @@ async def test_generate_recoverable_exception_returns_none():
     """
     llm = LLMService()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         raise httpx.ReadTimeout("downstream timeout")
 
     llm.generate = fake_generate
@@ -253,7 +255,7 @@ async def test_messages_passed_through():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         seen["messages"] = messages
         return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
 
@@ -268,7 +270,7 @@ async def test_schema_embedded_in_first_level():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         seen["response_format"] = response_format
         return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
 
@@ -288,7 +290,7 @@ async def test_model_key_forwarded():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         seen["model_key"] = model_key
         return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
 
@@ -318,7 +320,7 @@ async def test_schema_validation_pass_no_extra_call():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr(json.dumps({"name": "张三", "confidence": 0.5}))
 
@@ -334,7 +336,7 @@ async def test_schema_validation_range_failure_falls_back():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) == 1:
             return _sr(json.dumps({"name": "张三", "confidence": 5}))
@@ -353,7 +355,7 @@ async def test_schema_validation_missing_required_falls_back():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) == 1:
             return _sr(json.dumps({"name": "张三"}))
@@ -371,7 +373,7 @@ async def test_schema_validation_all_levels_fail_returns_none():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr(json.dumps({"name": "张三", "confidence": "很高"}))
 
@@ -393,7 +395,7 @@ async def test_truncation_retries_with_larger_max_tokens():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         if not seen.get("first"):
             seen["first"] = True
             return _sr('{"name": "张', finish_reason="length")  # 截断的半 JSON
@@ -412,7 +414,7 @@ async def test_max_tokens_param_overrides_settings():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         seen["max_tokens"] = max_tokens
         return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
 
@@ -428,7 +430,7 @@ async def test_max_tokens_truncation_retry_doubles_param():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         if not seen.get("first"):
             seen["first"] = True
             return _sr('{"name": "张', finish_reason="length")
@@ -448,7 +450,7 @@ async def test_truncation_retry_still_truncated_returns_none():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(max_tokens)
         return _sr('{"name": "张', finish_reason="length")
 
@@ -463,7 +465,7 @@ async def test_refusal_short_circuits_no_retry():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr("", refusal="抱歉，我无法处理这个请求。")
 
@@ -479,7 +481,7 @@ async def test_content_filter_short_circuits():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr("", finish_reason="content_filter")
 
@@ -495,7 +497,7 @@ async def test_refusal_from_third_level_short_circuits():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) <= 2:  # 第一级 + 回喂 2 次
             return _sr("bad json")
@@ -516,7 +518,7 @@ async def test_fallback_truncation_short_circuits():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) <= 2:  # 第一级 + 回喂 2 次
             return _sr("bad json")
@@ -536,7 +538,7 @@ async def test_empty_content_normal_finish_treated_as_refusal():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr("", finish_reason="stop")
 
@@ -558,7 +560,7 @@ async def test_empty_content_no_finish_treated_as_no_result():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr("", finish_reason=None)  # 适配层空响应形态（parse_non_stream 空 choices）
 
@@ -583,7 +585,7 @@ async def test_tool_calls_finish_not_treated_as_refusal():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr("", finish_reason="tool_calls")
 
@@ -599,7 +601,7 @@ async def test_normal_path_unaffected_by_classification():
     """正常响应（stop + 完整 JSON）→ 校验通过直接返回，不误判。"""
     llm = LLMService()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         return _sr(json.dumps({"name": "张三"}, ensure_ascii=False), finish_reason="stop")
 
     llm.generate = fake_generate
@@ -619,7 +621,7 @@ async def test_reask_retries_then_success():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         if not seen.get("first"):
             seen["first"] = True
             seen["first_messages"] = messages
@@ -650,7 +652,7 @@ async def test_reask_succeeds_on_last_attempt():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         # 第 1 次：超范围；回喂 1：仍超范围；回喂 2（最后一次）：修正成功
         if len(calls) < 3:
@@ -674,7 +676,7 @@ async def test_reask_exhausted_falls_back():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) <= 3:  # 第一级 + 回喂 2 次，均校验失败
             return _sr(json.dumps({"name": "张三", "confidence": 5}))
@@ -697,7 +699,7 @@ async def test_reask_does_not_pollute_caller_messages():
     seen = {}
     original_messages = [{"role": "user", "content": "张三去了北京"}]
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         if not seen.get("first"):
             seen["first"] = True
             seen["caller_messages_at_first"] = messages
@@ -743,7 +745,7 @@ async def test_json_schema_unsupported_400_degrades_to_json_mode():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) == 1:
             raise _UnsupportedResponseFormat400(
@@ -771,7 +773,7 @@ async def test_generic_bad_request_400_still_propagates():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         raise _GenericBadRequest400("Invalid messages format")
 
@@ -787,7 +789,7 @@ async def test_reask_truncation_does_not_enter_loop():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) == 1:
             return _sr(json.dumps({"name": "张三", "confidence": 5}))  # 校验失败 → 回喂
@@ -814,7 +816,7 @@ async def test_reask_empty_response_returns_none():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) == 1:
             return _sr("bad json")  # 首次：无效 JSON → 进回喂
@@ -837,7 +839,7 @@ async def test_invalid_schema_returns_none_not_crash():
     """
     llm = LLMService()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         return _sr('{"name": "张三"}')
 
     llm.generate = fake_generate
@@ -863,7 +865,7 @@ async def test_refusal_log_truncated(caplog):
     llm = LLMService()
     long_refusal = "敏感数据" * 400  # 1600 字符，超过 _LOG_TRUNCATE_LIMIT=500
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         return _sr("", refusal=long_refusal)
 
     llm.generate = fake_generate
@@ -893,7 +895,7 @@ async def test_strict_schema_normalizes_additional_properties_true():
         "additionalProperties": True,  # strict 不支持
     }
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr('{"name": "张三"}')
 
@@ -914,7 +916,7 @@ async def test_reask_refusal_short_circuits():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) == 1:
             return _sr(json.dumps({"name": "张三", "confidence": 5}))
@@ -944,7 +946,7 @@ async def test_extra_field_rejected_by_default():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) <= 3:  # 第一级 + 回喂 2 次（均带额外字段，同约束被拒）
             return _sr(json.dumps({"name": "张三", "user_emotion": "开心"}))
@@ -1021,7 +1023,7 @@ async def test_fallback_regex_extracts_json_from_prose():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) <= 2:  # 第一级 + 回喂 2 次
             return _sr("bad json")
@@ -1133,7 +1135,7 @@ async def test_reask_log_path_truncates_instance_values(caplog):
     calls = []
     long_secret = "yield=99.7,wafer=W12345-ABCD," * 50
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         # 第一级 + 回喂 2 次均返回超长敏感值（校验失败）→ 耗尽降级第二级
         if len(calls) <= 3:
@@ -1165,7 +1167,7 @@ async def test_cancel_before_first_call_returns_none_no_sdk():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
 
@@ -1177,6 +1179,22 @@ async def test_cancel_before_first_call_returns_none_no_sdk():
     assert calls == []
 
 
+async def test_call_generate_pre_cancel_raises_typed_abort_to_stop_fallback_chain():
+    """子调用入口已取消时应抛类型化终止，由 extract 最外层一次性收敛。"""
+    event = asyncio.Event()
+    event.set()
+    llm = LLMService()
+
+    with pytest.raises(LLMCancelledError):
+        await StructuredOutput._call_generate(
+            llm_service=llm,
+            messages=[{"role": "user", "content": "x"}],
+            model_key="fast",
+            max_tokens=32,
+            cancel_event=event,
+        )
+
+
 @pytest.mark.asyncio
 async def test_cancel_mid_chain_stops_degrade_no_further_sdk():
     """降级链中途 cancel：level1 失败后将置位 → 不再发 level2/3，仅 1 次 SDK 调用。"""
@@ -1184,7 +1202,7 @@ async def test_cancel_mid_chain_stops_degrade_no_further_sdk():
     calls = []
     cancel_event = asyncio.Event()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         if len(calls) == 1:
             cancel_event.set()  # 首次（level1）成功返回后置位——回喂/降级均应被拦截
@@ -1204,7 +1222,7 @@ async def test_cancel_truncation_retry_not_issued():
     calls = []
     cancel_event = asyncio.Event()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(max_tokens)
         cancel_event.set()  # 首次返回截断；扩容重试应在 _call_generate 入口被拦截
         return _sr("", finish_reason="length")
@@ -1221,7 +1239,7 @@ async def test_deadline_passed_returns_none_no_sdk():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
 
@@ -1239,7 +1257,7 @@ async def test_deadline_future_normal_path_unchanged():
     llm = LLMService()
     seen = {}
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         seen["response_format"] = response_format
         return _sr(json.dumps({"name": "张三"}, ensure_ascii=False))
 
@@ -1258,7 +1276,7 @@ async def test_usage_kept_when_chain_cancelled_mid():
     calls = []
     cancel_event = asyncio.Event()
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         sr = _sr("bad json")
         if len(calls) == 1:
@@ -1284,7 +1302,7 @@ async def test_builtin_timeout_reraises_not_degrade_to_next_level():
     llm = LLMService()
     calls = []
 
-    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast"):
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
         calls.append(response_format)
         raise TimeoutError("整体 deadline 到期")
 
@@ -1292,3 +1310,39 @@ async def test_builtin_timeout_reraises_not_degrade_to_next_level():
     with pytest.raises(TimeoutError):
         await llm.generate_structured(MESSAGES, SCHEMA)
     assert len(calls) == 1, "TimeoutError 直抛，不得降级到第二级再调用"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "abort_exc",
+    [LLMCancelledError, LLMDeadlineExceededError],
+    ids=["cancelled", "deadline"],
+)
+async def test_typed_abort_with_usage_accumulates_and_stops_degrade(abort_exc):
+    """携 usage 的 shared 终止（cancel / deadline）→ usage 累计到调用方 + raise 给
+    extract 最外层收敛 return None，剩余降级级不再发起（LLM-047 #6）。
+
+    回归护栏：_call_generate 的 except 分支对携 usage 的终止异常先 _accumulate_usage
+    再 raise——若只在成功返回路径累计，deadline 命中时已完成的这笔真实调用用量即丢
+    （成本护栏低估），且终止被吞掉会空转 level2/3 降级。
+    """
+    llm = LLMService()
+    calls = []
+
+    async def fake_generate(messages, temperature, max_tokens, response_format=None, model_key="fast", cancel_event=None, deadline=None):
+        calls.append(response_format)
+        raise abort_exc(
+            "执行终止",
+            usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+        )
+
+    llm.generate = fake_generate
+    usage: dict = {}
+    result = await llm.generate_structured(MESSAGES, SCHEMA, usage=usage)
+    assert result is None, "extract 最外层把执行终止收敛为 None（与降级耗尽同出口）"
+    assert len(calls) == 1, "携 usage 终止后不得再发 level2/3（停止降级）"
+    assert usage == {
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8,
+    }, "异常携带的 usage 应累计回填调用方（LLM-047 成本不丢）"

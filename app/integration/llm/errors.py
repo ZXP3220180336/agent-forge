@@ -39,18 +39,50 @@ from openai import (
     RateLimitError,
 )
 
-from app.shared.exceptions import LLMAPIError
+from app.shared.exceptions import (
+    LLMAPIError,
+    LLMCancelledError,
+    LLMDeadlineExceededError,
+)
 
 
-# 业务取消信号（llm 层内部共享，非传输错误分类——retry / rectifier / llm_service 共用，
-# 定义于本共享低层避免组件间反向依赖）。
-class _StreamCancel(Exception):
-    """业务取消信号：整流迭代 / 预留后复查命中 `cancel_event` → 优雅终止。
+# 执行终止信号（llm 层内部共享，非传输错误分类——retry / rectifier / llm_service /
+# structured 共用，定义于本共享低层避免组件间反向依赖）。Facade 边界（generate /
+# async_generate）将私有信号翻译为 shared 领域出口（LLMCancelledError /
+# LLMDeadlineExceededError）再抛给领域层，不得以私有类型泄漏出集成层（LLM-044）。
+class _ExecutionAbort(Exception):
+    """集成层执行终止信号基类：用户取消 / 整体执行期限耗尽共用。
 
-    与 asyncio.CancelledError（硬取消）区分——取消置位是终态业务意图，须走结算 +
-    取消事件出口。不得被当作可恢复 LLM 失败重试、也不得被包装成传输异常 cause
-    （如 fallback 分支 `raise last_exc from fallback_exc`）：用户已取消，继续付费调用无意义。
+    与 asyncio.CancelledError（硬取消）区分——执行控制（cancel_event 置位 / 绝对
+    deadline 到期）是终态业务意图，须走结算 + 终止出口。统一语义（LLM-044）：
+    跳过重试、跳过 fallback、跳过 JSON mode/回喂/扩容、不计熔断失败、保留已获
+    usage。可携带 usage（非流式 create 成功返回后到期时，已结算用量不因终止丢失）。
+
+    不得被当作可恢复 LLM 失败重试、不得被包装成传输异常 cause（如 fallback 分支
+    `raise last_exc from fallback_exc`）：用户已取消 / 预算耗尽，继续付费调用无意义。
     """
+
+    def __init__(self, *, usage: dict | None = None, message: str = "") -> None:
+        self.usage = usage
+        super().__init__(message)
+
+
+class _StreamCancel(_ExecutionAbort):
+    """业务取消信号：整流迭代 / 预留后复查 / 等待竞争命中 `cancel_event` → 优雅终止。
+
+    message 文案区分可留领域层（F）；本层按类型路由，不计文案。
+    """
+
+
+class _DeadlineExceeded(_ExecutionAbort):
+    """整体执行期限耗尽：绝对 deadline（monotonic）到期 → 执行终止。
+
+    不以内置 TimeoutError 表现——避免被 classify_error 归为可重试网络超时触发
+    重试/整流/续接（P1 根因之一）。整流 create 后到期可携带该次已完成 usage。
+    """
+
+    def __init__(self, *, usage: dict | None = None, message: str = "") -> None:
+        super().__init__(usage=usage, message=message or "LLM 调用整体执行期限耗尽")
 
 
 # 分类契约（LLM 传输层语义，仅集成层 LLM 消费 → 随实现归本模块，不入 shared）
@@ -193,3 +225,15 @@ def decide_downstream_error(exc: Exception) -> DownstreamDecision:
     if normalized is not None:
         return DownstreamDecision(to_raise=normalized, normalized=True)
     return DownstreamDecision(to_raise=exc)
+
+
+def translate_abort(exc: _ExecutionAbort):
+    """把集成层私有执行终止信号翻译为 shared 领域出口（LLM-044 Facade 边界）。
+
+    generate / async_generate 边界只抛 shared（`LLMCancelledError` /
+    `LLMDeadlineExceededError`）——Domain 不依赖 integration 私有异常。usage 一并
+    携带：终止前已完成调用的实际用量不因翻译丢失。
+    """
+    if isinstance(exc, _DeadlineExceeded):
+        return LLMDeadlineExceededError(message=str(exc), usage=exc.usage)
+    return LLMCancelledError(message=str(exc), usage=exc.usage)

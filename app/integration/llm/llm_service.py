@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 from app.domain.ports.llm_gateway import StreamResult
 from app.platform.observability.logger import fill_llm_event_fields
+from app.shared.exceptions import LLMCancelledError, LLMDeadlineExceededError
 from app.shared.types import Messages
 
 if TYPE_CHECKING:
@@ -29,7 +30,12 @@ if TYPE_CHECKING:
 # 包内组件一律相对深路径 import（LLM 包对外只暴露 LLMService，__init__ 不重导出内部组件）
 from .client import ClientManager
 from .cost_tracker import CostTracker
-from .errors import decide_downstream_error
+from .errors import (
+    _ExecutionAbort,
+    decide_downstream_error,
+    translate_abort,
+)
+from .execution_control import _raise_if_aborted, await_with_execution_control
 from .request_budget import RequestBudgetGuard, RequestBudgetManager
 from .reservation_limiter import (
     Reservation,
@@ -38,11 +44,7 @@ from .reservation_limiter import (
 )
 from .retry import RetryHandlerManager
 from .streaming import StreamParser
-from .streaming_rectifier import (
-    RectifierContext,
-    StreamingRectifier,
-    _StreamCancel,
-)
+from .streaming_rectifier import RectifierContext, StreamingRectifier
 from .structured import StructuredOutput
 from .token_counter import TiktokenTokenCounter
 
@@ -117,6 +119,9 @@ class _CallContext:
     estimated: int
     max_tokens: int
     cancel_event: asyncio.Event | None = None
+    # LLM-044：整体执行期限（monotonic 绝对时刻，调用方现算）。真实请求三检查点 /
+    # reserve / create 执行控制均按 ctx 同一信号判断——不逐层重计、不重算时长。
+    deadline: float | None = None
 
 
 async def _budget_guarded_call(
@@ -131,42 +136,83 @@ async def _budget_guarded_call(
     本入口。client / 预留策略 / 结算容器 ``ctx.active`` / 取消复查由 ``_CallContext``
     承载（一次调用内共享），budget_guard / limiter 由调用点按 guard_key 解析传入。
     准入在同一入口内按序执行、职责分明：
-    1. **预算闸**（先于 reserve）：按最终请求参数校验窗口，超限请求不预留配额、
-       不触网络，抛 `ContextWindowExceededError`（不可重试）。
-    2. **限流闭环**：reserve → （预留后取消复查）→ create；create 失败/被硬取消时
-       全额退（cancel）再 re-raise——每次真实请求都重新 reserve。
+    1. **入口执行检查**：cancel_event 置位 / 绝对 deadline 到期 → 抛类型化终止信号
+       （`_StreamCancel` / `_DeadlineExceeded`），不发本请求（也不进预算/限流队列）。
+    2. **预算闸**：按最终请求参数校验窗口，超限请求不预留配额、不触网络，抛
+       `ContextWindowExceededError`（不可重试）。
+    3. **限流闭环（受控 reserve）**：reserve 排队等待经执行控制（LLM-044），可被
+       cancel/deadline 中断（部分配额经 R5 循环退款回收）；每次真实请求都重新 reserve。
 
-    预留后 create 前复查业务取消（``ctx.cancel_event`` 置位）：reserve 可能排队等待，
-    等待结束后若业务已取消则退款且不发起请求，覆盖「配额已取得但外层同时取消」
-    竞态；命中抛整流器业务取消信号 ``_StreamCancel``，由调用方映射为用户取消出口。
+    4. **reserve 后、create 前复查**：覆盖「配额已取得但外层同时取消 / 迟回」竞态——
+       create 尚未启动，命中 cancel/deadline 则 `cancel()` 全额退 + 不发起请求
+       （LLM-044/045：reserve 与终止同时完成、或吞取消以值迟回时，Reservation 已被
+       helper 返回，此处显式释放，不丢返回值）。
+    5. **create 状态机（create_started，LLM-044 / LLM-045）**：create task 一旦调度，
+       请求可能已到达 provider。终止到达后按 create 结局分派：
+       - create **配合取消**（重抛 CancelledError）或外层硬取消 → 此处 `settle(None)`
+         保守结算（防配额虚增→429，不 cancel 全额退）；
+       - create **吞取消以值迟回**（response / stream 实际已取得）→ 正常 return，
+         Reservation 留在 ``ctx.active`` 交调用方（generate/整流）接管——按实际 usage
+         `settle(actual)` 或整流器结算，不再于本步 settle(None)；
+       - create 自然抛的普通传输异常 → 维持既有 `cancel()`（供 retry 重试语义）。
 
     预算不混入限流步骤内部：它是入口的独立第一步，超限异常在网络前上抛，由
     整流器/领域层终结。
 
     fallback 备用链路同样经本入口（fallback 键窗口 + 独立配额池）。
     """
-    # ----- ① 请求预算准入（独立步骤，先于 reserve） -----
+    # ----- ① 入口执行检查（先于预算/限流）：已取消/已到期 → 不发本请求 -----
+    _raise_if_aborted(ctx.cancel_event, ctx.deadline)
+
+    # ----- ② 请求预算准入（独立步骤，先于 reserve） -----
     budget_guard.validate(kwargs["model"], kwargs)
 
-    # ----- ② 限流闭环 -----
+    # ----- ③ 限流闭环：reserve 受执行控制等待（LLM-044，可中断排队） -----
     if ctx.adaptive:
-        res = await limiter.reserve_adaptive(
-            prompt_tokens=ctx.prompt_tokens, max_tokens=ctx.max_tokens
+        res = await await_with_execution_control(
+            lambda: limiter.reserve_adaptive(
+                prompt_tokens=ctx.prompt_tokens, max_tokens=ctx.max_tokens
+            ),
+            cancel_event=ctx.cancel_event,
+            deadline=ctx.deadline,
         )
     else:
-        res = await limiter.reserve(estimated_tokens=ctx.estimated)
+        res = await await_with_execution_control(
+            lambda: limiter.reserve(estimated_tokens=ctx.estimated),
+            cancel_event=ctx.cancel_event,
+            deadline=ctx.deadline,
+        )
     ctx.active["res"] = res
 
-    # 预留后、create 前取消复查：业务取消 → 退款 + 不发起请求（覆盖外层取消竞态）
-    if ctx.cancel_event is not None and ctx.cancel_event.is_set():
-        await res.cancel()
-        ctx.active.pop("res", None)
-        raise _StreamCancel()
-
+    # ----- ④ reserve 后、create 前复查（create 尚未启动 → cancel 全额退） -----
+    # 竞态 / 迟回：reserve 与终止同时完成、或 reserve 吞取消以值迟回时，Reservation 已
+    # 被 helper 返回并落入 active，此处显式释放（LLM-044/045：不丢返回值）。
     try:
-        return await ctx.client.chat.completions.create(**kwargs)
-    except BaseException:  # 含 CancelledError（R1：硬取消不泄漏预留）
-        await res.cancel()
+        _raise_if_aborted(ctx.cancel_event, ctx.deadline)
+    except _ExecutionAbort:  # create 未启动即命中终止：请求未发
+        await res.cancel()  # 全额退（RPM 1 + TPM 全额）
+        ctx.active.pop("res", None)
+        raise
+
+    # ----- ⑤ create 受执行控制（create_started 状态机，LLM-044/045） -----
+    # 吞取消迟回值（create 实际成功、以值返回）不经此处 except，直接 return 交下游接管；
+    # 仅 create 配合取消 / 清理期异常 / 外层硬取消 / 普通传输异常落下方 except 收尾。
+    try:
+        return await await_with_execution_control(
+            lambda: ctx.client.chat.completions.create(**kwargs),
+            cancel_event=ctx.cancel_event,
+            deadline=ctx.deadline,
+        )
+    except _ExecutionAbort:  # 业务取消 / deadline
+        await res.settle(None)  # 保留全部预留（不退 RPM/TPM，防配额虚增→429）
+        ctx.active.pop("res", None)
+        raise
+    except asyncio.CancelledError:  # 外层硬取消 CancelledError
+        await res.settle(None)  # 保留全部预留（不退 RPM/TPM，防配额虚增→429）
+        ctx.active.pop("res", None)
+        raise
+    except BaseException:  # 普通传输异常（重试、限流、不可重试语义），请求未发出
+        await res.cancel()  # 维持既有 cancel() 语义，全额退（RPM 1 + TPM 全额）
         ctx.active.pop("res", None)
         raise
 
@@ -186,6 +232,7 @@ class _RequestPlan(NamedTuple):
 
     retry: RetryHandler
     active: dict[str, Reservation]
+    ctx: _CallContext
     call_fn: Callable[[], Awaitable[Any]]
     fallback_fn: Callable[[], Awaitable[Any]] | None
     continue_fn: Callable[[str], Awaitable[Any]] | None
@@ -264,6 +311,7 @@ class LLMService:
         stream: bool,
         response_format: dict | None = None,
         cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> _RequestPlan:
         """一次 LLM 调用的公共编排（流式 / 非流式通道共用）。
 
@@ -325,6 +373,7 @@ class LLMService:
             estimated=estimated,
             max_tokens=max_tokens,
             cancel_event=cancel_event,
+            deadline=deadline,
         )
 
         # 主链路：保留 kwargs 已装配的主模型（guard_key = 调用方 model_key）。主 / 副 / 续接
@@ -375,6 +424,7 @@ class LLMService:
         return _RequestPlan(
             retry=retry,
             active=active,
+            ctx=ctx,
             call_fn=call_fn,
             fallback_fn=fallback_fn,
             continue_fn=continue_fn,
@@ -394,6 +444,7 @@ class LLMService:
         result: StreamResult | None = None,
         model_key: str = "main",
         cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> AsyncGenerator[str]:
         """
         单轮 LLM 流式生成（Agent 专用）。
@@ -403,13 +454,18 @@ class LLMService:
         Args:
             model_key: 使用 ClientManager 的哪个配置（main / reasoning / fast）
             cancel_event: 取消信号，置位时优雅终止
+            deadline: 整体执行期限（monotonic 绝对，由调用方现算）；整流 create /
+                reserve / 读取期按同一期限受控（LLM-044）
 
         Yields:
             str: SSE 事件字符串
 
         Raises:
             ContextWindowExceededError: 请求预算闸在网络调用前拒绝（业务边界短路）。
-                除该异常外，流式失败一律折为 error 事件产出，不抛异常。
+            LLMCancelledError / LLMDeadlineExceededError: 执行控制终止（用户取消 /
+                整体期限耗尽，整流读取期 deadline 命中）——类型化冒泡给领域层，不折为
+                普通 error 事件（避免被识别为 LLM_FAILED）。其余流式失败一律折为
+                error 事件产出，不抛异常。
         """
         # 公共编排（见 _plan_request）：build kwargs / 估算 / 主副/续接闭包一次就绪
         plan = self._plan_request(
@@ -420,6 +476,7 @@ class LLMService:
             max_tokens=max_tokens,
             stream=True,
             cancel_event=cancel_event,
+            deadline=deadline,
         )
         if result is None:
             result = StreamResult()
@@ -427,19 +484,26 @@ class LLMService:
 
         # ----- 流式整流 / 续接（独立策略 StreamingRectifier） -----
         # 首 token 前中断 → 整流重试；已产出 content 中断 → 续接（尽力而为）或放弃。
-        # create 阶段由 plan.retry.execute() 保护（重试/熔断/fallback），迭代阶段异常
-        # 由 rectifier 判断整流/续接。产出 SSE 事件字符串。
-        async for event in StreamingRectifier.rectified_stream(
-            create_fn=plan.call_fn,
-            retry=plan.retry,
-            cancel_event=cancel_event,
-            stream_max_retries=self._stream_max_retries,
-            context=rectifier_context,
-            fallback_fn=plan.fallback_fn,
-            continue_fn=plan.continue_fn,
-            continuation_max_retries=self._continuation_max_retries,
-        ):
-            yield event
+        # create 阶段由 plan.retry.execute() 保护（重试/熔断/fallback），
+        # 迭代阶段异常由 rectifier 判断整流/续接。产出 SSE 事件字符串。
+        # 整流内部私有执行终止信号（deadline 命中，LLM-044）在 Facade 边界翻译为
+        # shared 领域出口抛给领域层（domain 不依赖 integration 私有异常）；其余流式
+        # 失败已折为 error 事件 / result.error，不抛异常。
+        try:
+            async for event in StreamingRectifier.rectified_stream(
+                create_fn=plan.call_fn,
+                retry=plan.retry,
+                cancel_event=cancel_event,
+                stream_max_retries=self._stream_max_retries,
+                context=rectifier_context,
+                fallback_fn=plan.fallback_fn,
+                continue_fn=plan.continue_fn,
+                continuation_max_retries=self._continuation_max_retries,
+                deadline=deadline,
+            ):
+                yield event
+        except _ExecutionAbort as e:
+            raise translate_abort(e) from None
 
     async def generate(
         self,
@@ -449,6 +513,8 @@ class LLMService:
         max_tokens: int = 1024,
         response_format: dict | None = None,
         model_key: str = "fast",
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> StreamResult | None:
         """
         非流式单轮生成（适合简单任务）。
@@ -456,6 +522,10 @@ class LLMService:
         Args:
             model_key: 使用哪个模型（默认 fast，低成本）
             response_format: 结构化输出格式，如 {"type": "json_object"}
+            cancel_event: 业务取消信号（LLM-044）：真实请求入口/reserve/create/
+                返回前检查点受控，置位即优雅终止
+            deadline: 整体执行期限（monotonic 绝对，LLM-044）：同一期限约束每笔
+                reserve/create 与结算后复查
 
         Returns:
             StreamResult | None（可恢复失败返回 None）
@@ -463,6 +533,9 @@ class LLMService:
         Raises:
             不可恢复错误（4xx/认证/熔断开启）：重试/降级无意义，向上抛。
             可恢复错误（超时/5xx/429）重试耗尽后返回 None。
+            LLMCancelledError / LLMDeadlineExceededError：执行控制终止（用户取消 /
+                整体期限耗尽）——Facade 把内部私有信号翻译为本异常上抛，领域据此
+                按取消/超时收尾，而非当失败重试。
         """
         # 公共编排（见 _plan_request）：build kwargs / 估算 / 主副闭包一次就绪。
         # 绑定本地名，使下方重试 / 解析 / 结算收尾与编排字段一一对应。
@@ -474,6 +547,8 @@ class LLMService:
             max_tokens=max_tokens,
             stream=False,
             response_format=response_format,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
         event_fields = plan.event_fields
         active = plan.active
@@ -485,7 +560,13 @@ class LLMService:
             response = await retry.execute(
                 call_fn=plan.call_fn,
                 fallback_fn=plan.fallback_fn,
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
+        except _ExecutionAbort as e:
+            # LLM-044 Facade 出口：私有执行终止信号（取消/期限）翻译为 shared 领域异常，
+            # 不折为可恢复失败 None / 不上抛私有类型（domain 不得依赖 integration 私有）。
+            raise translate_abort(e) from None
         except Exception as e:
             await fill_llm_event_fields(
                 event_fields,
@@ -524,13 +605,25 @@ class LLMService:
             res = active.pop("res", None)
             if res is not None and not res.settled:
                 try:
-                    await res.settle((sr.usage or {}).get("total_tokens"))
+                    await res.settle(
+                        (sr.usage or {}).get("total_tokens")
+                    )  # 按实际 usage 退 TPM 差（RPM 不退）
                 except BaseException:
                     # settle(actual) 被取消 → 未终态 res 收尾（LLM-003）：请求已发出，
-                    # settle(None) 保留配额 + 标记终态（不 cancel 退 RPM，防配额虚增→429）
                     if not res.settled:
-                        await res.settle(None)
+                        await res.settle(
+                            None
+                        )  # 保留全部预留并标记终态（不 cancel，防配额虚增）
                     raise
+
+        # LLM-044 检查点 3：create 成功返回并结算完成后、返回前复查执行状态——当前
+        # 请求在执行期间已到期/被取消 → 抛 shared 终止（不把「恰好完成但已超时」的
+        # 结果当成功返回；费用已 settle、信号携带 sr.usage 供上层成本归量不丢）。
+        # generate 是 Facade 边界：直接抛 shared 领域异常（域不依赖 integration 私有）。
+        if plan.ctx.cancel_event is not None and plan.ctx.cancel_event.is_set():
+            raise LLMCancelledError(message="用户取消", usage=sr.usage)
+        if plan.ctx.deadline is not None and time.monotonic() >= plan.ctx.deadline:
+            raise LLMDeadlineExceededError(message="执行期限耗尽", usage=sr.usage)
 
         await fill_llm_event_fields(
             event_fields,

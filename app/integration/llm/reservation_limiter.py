@@ -112,6 +112,80 @@ class TokenBucket:
         self._last_refill = now
 
 
+class Reservation:
+    """
+    预留的配额，支持事后结算（settle）或取消（cancel）。
+
+    以条目列表统一单桶 / 多桶组合：每个条目 = (桶, 预留量)。
+    空对象构造，由 ReservationLimiter.reserve() 逐桶 acquire 扣减后 add() 追加条目。
+    语义约定：**首个条目为按次桶（RPM，settle 不退）**——请求已发出即真实消耗；
+    其余条目为按量桶（TPM，settle 退差）。单桶场景仅一个条目。
+
+    请求前预留后，请求完成后：
+        - settle(actual)    实际消耗 actual，按量桶退 max(0, reserved - actual)
+        - settle(None)      保留全部预留（保守），但标记终态
+        - cancel()          所有桶全额退还（请求未确认发出时用）
+
+    终态幂等：settle/cancel 任一调用后，再次调用为 no-op。
+    """
+
+    __slots__ = ("_entries", "_lock", "_settle_callback", "_settled")
+
+    def __init__(self, settle_callback: Callable[[int], None] | None = None) -> None:
+        self._entries: list[tuple[TokenBucket, float]] = []
+        self._settled = False
+        # settle(actual) 成功路径的回调：喂实际消耗给自适应估算器（可选）。
+        # 仅当 actual 非 None（有真实 usage）时触发；settle(None)/cancel 不触发。
+        self._settle_callback = settle_callback
+        # LLM-010：终态操作（settle/cancel）互斥锁——「_settled 检查 + 退款循环」
+        # 含 await 点，无锁时并发调用可同时通过检查重复退款，向桶注入不存在的额度。
+        self._lock = asyncio.Lock()
+
+    def add(self, bucket: TokenBucket, reserved: float) -> None:
+        """追加一个桶到组合预留（按次桶之后追加按量桶）。"""
+        self._entries.append((bucket, reserved))
+
+    async def settle(self, actual: int | None) -> None:
+        """按实际消耗结算，退还未使用配额。
+
+        Args:
+            actual: 实际消耗的 token 数（None = 保留全部预留，保守语义）
+
+        仅对按量桶（非首个条目）退差；按次桶请求已发出即真实消耗，不退。
+        """
+        async with self._lock:  # LLM-010：终态操作互斥，防并发重复退款
+            if self._settled:
+                return
+
+            if actual is not None:
+                for bucket, reserved in self._entries[1:]:
+                    await bucket.refund(max(0.0, reserved - actual))
+                if self._settle_callback is not None:
+                    self._settle_callback(actual)
+
+            # 终态标记放在全部退款完成之后：
+            # ①退款循环中途被取消时（CancelledError 向上传播）保持未终态，
+            #   外层兜底（llm_service / rectifier 的 finally）
+            #   再 settle(None) 保守收尾（保留全部预留 + 标记终态，请求已发出不过退），
+            #   避免未终态 res 无归属导致配额永久泄漏。
+            # ② settle(None) 保留全部预留（不退 RPM/TPM，防配额虚增→429），但标记终态。
+            self._settled = True
+
+    async def cancel(self) -> None:
+        """全额退还所有桶的预留配额（请求未确认发出时用）。幂等。"""
+        async with self._lock:  # LLM-010：终态操作互斥，防并发重复退款
+            if self._settled:
+                return
+            for bucket, reserved in self._entries:
+                await bucket.refund(reserved)
+            self._settled = True
+
+    @property
+    def settled(self) -> bool:
+        """是否已到达终态（settle/cancel 任一调用）。"""
+        return self._settled
+
+
 class OutputTokenEstimator:
     """
     输出 token 自适应估算器（Fenic 式）。
@@ -160,76 +234,6 @@ class OutputTokenEstimator:
     def reset(self) -> None:
         """清空所有样本（配置变更或测试时调用）。"""
         self._samples.clear()
-
-
-class Reservation:
-    """
-    预留的配额，支持事后结算（settle）或取消（cancel）。
-
-    以条目列表统一单桶 / 多桶组合：每个条目 = (桶, 预留量)。
-    空对象构造，由 ReservationLimiter.reserve() 逐桶 acquire 扣减后 add() 追加条目。
-    语义约定：**首个条目为按次桶（RPM，settle 不退）**——请求已发出即真实消耗；
-    其余条目为按量桶（TPM，settle 退差）。单桶场景仅一个条目。
-
-    请求前预留后，请求完成后：
-        - settle(actual)    实际消耗 actual，按量桶退 max(0, reserved - actual)
-        - settle(None)      保留全部预留（保守），但标记终态
-        - cancel()          所有桶全额退还（请求未确认发出时用）
-
-    终态幂等：settle/cancel 任一调用后，再次调用为 no-op。
-    """
-
-    __slots__ = ("_entries", "_lock", "_settle_callback", "_settled")
-
-    def __init__(self, settle_callback: Callable[[int], None] | None = None) -> None:
-        self._entries: list[tuple[TokenBucket, float]] = []
-        self._settled = False
-        # settle(actual) 成功路径的回调：喂实际消耗给自适应估算器（可选）。
-        # 仅当 actual 非 None（有真实 usage）时触发；settle(None)/cancel 不触发。
-        self._settle_callback = settle_callback
-        # LLM-010：终态操作（settle/cancel）互斥锁——「_settled 检查 + 退款循环」
-        # 含 await 点，无锁时并发调用可同时通过检查重复退款，向桶注入不存在的额度。
-        self._lock = asyncio.Lock()
-
-    def add(self, bucket: TokenBucket, reserved: float) -> None:
-        """追加一个桶到组合预留（按次桶之后追加按量桶）。"""
-        self._entries.append((bucket, reserved))
-
-    async def settle(self, actual: int | None) -> None:
-        """按实际消耗结算，退还未使用配额。
-
-        Args:
-            actual: 实际消耗的 token 数（None = 保留全部预留，保守语义）
-
-        仅对按量桶（非首个条目）退差；按次桶请求已发出即真实消耗，不退。
-        """
-        async with self._lock:  # LLM-010：终态操作互斥，防并发重复退款
-            if self._settled:
-                return
-            if actual is not None:
-                for bucket, reserved in self._entries[1:]:
-                    await bucket.refund(max(0.0, reserved - actual))
-            # 终态标记放在全部退款完成之后：退款循环中途被取消时（CancelledError
-            # 向上传播）保持未终态，外层兜底（llm_service 的 cancel / finally）可
-            # 续退其余条目，避免部分桶配额永久泄漏。TokenBucket.refund 的 capacity
-            # 封顶保证重复退款安全，不超发。
-            self._settled = True
-            if self._settle_callback is not None and actual is not None:
-                self._settle_callback(actual)
-
-    async def cancel(self) -> None:
-        """全额退还所有桶的预留配额（请求未确认发出时用）。幂等。"""
-        async with self._lock:  # LLM-010：终态操作互斥，防并发重复退款
-            if self._settled:
-                return
-            for bucket, reserved in self._entries:
-                await bucket.refund(reserved)
-            self._settled = True
-
-    @property
-    def settled(self) -> bool:
-        """是否已到达终态（settle/cancel 任一调用）。"""
-        return self._settled
 
 
 @dataclass
@@ -314,7 +318,7 @@ class ReservationLimiter:
             # （cancel 幂等 + refund 容量封顶，重复退款安全）。
             while not res.settled:
                 try:
-                    await res.cancel()
+                    await res.cancel()  # TPM 预留前被取消：全额退已扣 RPM（请求未发）
                 except asyncio.CancelledError:
                     continue  # 退款途中再被取消 → 下一轮继续补齐
             raise

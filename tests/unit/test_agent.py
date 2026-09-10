@@ -350,6 +350,8 @@ class _GenerateOnlyLLM:
         max_tokens=None,
         model_key=None,
         response_format=None,
+        cancel_event=None,
+        deadline=None,
     ) -> StreamResult:
         sr = StreamResult()
         sr.finish_reason = "stop"

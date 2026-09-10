@@ -58,7 +58,12 @@ from app.shared.events import (
     build_tool_call_event,
     build_tool_result_event,
 )
-from app.shared.exceptions import AppError, ContextWindowExceededError
+from app.shared.exceptions import (
+    AppError,
+    ContextWindowExceededError,
+    LLMCancelledError,
+    LLMDeadlineExceededError,
+)
 
 from ._common import dispatch_error, merge_usage
 
@@ -75,6 +80,37 @@ _TRUNCATED_MARKER = "\n[结果已截断]"
 # prompts/manager._serialize_evidence 以字面量实现（prompts 不 import reasoning，规避环），
 # 不引用本常量。
 _FINAL_ANSWER_TOOL = "final_answer"
+
+# max_execution_time 是 ReAct 业务循环的取消触发点。内部 LLM deadline 提前预留一小段
+# 时间用于 close / settle / 日志等终止清理，避免与外层 asyncio.timeout 同刻二次取消。
+# timeout scope 之外的领域终态组装不再发起 LLM/工具副作用，但可扩展 handler 可能
+# 形成额外尾部延迟；asyncio 不对同步阻塞或吞取消代码作绝对返回时限保证。
+_MAX_EXECUTION_CLEANUP_GRACE = 1.0
+_EXECUTION_CLEANUP_GRACE_RATIO = 0.1
+
+
+def _terminal_result(
+    current_result: StreamResult | None,
+    last_result: StreamResult | None,
+) -> StreamResult | None:
+    """终止时选择最新可用成果：当前轮有可见进度则优先，否则保留上一完成轮。"""
+    if current_result is not None and (
+        current_result.content
+        or current_result.reasoning_content
+        or current_result.tool_calls
+    ):
+        return current_result
+    return last_result
+
+
+def _unaccounted_usage(
+    current_result: StreamResult | None,
+    exception_usage: dict | None = None,
+) -> dict | None:
+    """返回当前未归账用量；异常携带值优先，避免与 result 中的同一笔 usage 双计。"""
+    if exception_usage is not None:
+        return exception_usage
+    return current_result.usage if current_result is not None else None
 
 
 def _truncate_with_marker(text: str, limit: int) -> str:
@@ -234,8 +270,9 @@ class ReActStrategy:
             max_iterations: 最大迭代轮数
             temperature: LLM 采样温度
             max_tokens: 单轮最大输出 token
-            max_execution_time: 整个循环总时长上限（秒），None=不设限（向后兼容）；
-                超时对齐 max_iterations 兜底模式降级，error 记录超时原因
+            max_execution_time: ReAct 业务循环的超时取消触发点（秒），None=不设限；
+                LLM 内部 deadline 会提前预留有界清理窗口，用于关闭流和结算用量。
+                触发后的领域终态组装位于 timeout scope 外，不再发起 LLM/工具副作用
             max_context_rounds: 上下文预算——保留最近 N 轮 assistant/tool 配对（None=不裁剪）
             max_context_tokens: 上下文预算——消息总 token 上限（None=不裁剪）
             max_empty_retries: 连续空输出重试上限——空输出最多重试 N 次，第
@@ -290,13 +327,32 @@ class ReActStrategy:
         self._last_action_fp = None
         self._stall_count = 0
         last_result: StreamResult | None = None
+        # 当前正在生成、尚未完成正常归账的一轮。deadline/硬超时可能在 async_generate
+        # 中途逸出，须保留该对象中的部分 content/reasoning；正常归账后立即清空防 usage 双计。
+        current_result: StreamResult | None = None
         total_usage: dict = {}
         # 记录进入 timeout 的 task：超时降级时判别「真超时」与「生成器被 finalizer
         # 关闭」（慢消费者场景 aclose 由不同 task 驱动，需干净停止不 yield 降级事件）。
         entered_task = asyncio.current_task()
+        # LLM-044：内部执行截止（monotonic 绝对）——流式/非流式 LLM 调用按同一期限
+        # 受控（集成 reserve/create/整流读取期执行控制）。内部 deadline 早于外层
+        # timeout 取消触发点一个有界窗口，使 close/settle/日志有机会先完成收尾。
+        execution_start = time.monotonic()
+        if max_execution_time is None:
+            deadline = None
+            hard_timeout_at = None
+        else:
+            duration = max(0.0, max_execution_time)
+            hard_timeout_at = asyncio.get_running_loop().time() + duration
+            cleanup_grace = min(
+                _MAX_EXECUTION_CLEANUP_GRACE,
+                duration * _EXECUTION_CLEANUP_GRACE_RATIO,
+            )
+            deadline = execution_start + duration - cleanup_grace
 
+        hard_timeout_scope: asyncio.Timeout | None = None
         try:
-            async with asyncio.timeout(max_execution_time):
+            async with asyncio.timeout_at(hard_timeout_at) as hard_timeout_scope:
                 for iteration in range(1, max_iterations + 1):
                     # ----- 1. 用户取消（cancel_event 置位）→ CANCELLED 分发（优雅停止）-----
                     # 置于每轮 LLM 调用前：快速响应（即使不在 LLM 调用中，如工具执行后）；
@@ -327,6 +383,7 @@ class ReActStrategy:
                     # 子 Agent 无人订阅，Phase C）。两者最终填同一 stream_result → 下游
                     # 分支逻辑全复用（对齐 OpenAI run()/run_streamed() 同一 agent loop）。
                     stream_result = StreamResult()
+                    current_result = stream_result
                     if stream_mode:
                         async for event in self._llm.async_generate(
                             messages=messages,
@@ -335,6 +392,7 @@ class ReActStrategy:
                             max_tokens=max_tokens,
                             result=stream_result,
                             cancel_event=cancel_event,
+                            deadline=deadline,
                         ):
                             yield event
                     else:
@@ -344,13 +402,18 @@ class ReActStrategy:
                             tool_defs,
                             temperature,
                             max_tokens,
+                            cancel_event=cancel_event,
+                            deadline=deadline,
                         ):
                             yield event
                         # 非流式轮末 cancel 补查：generate() 无法在调用中观察 cancel
                         # （无 chunk 级中断）→ 返回后补查一次，对齐 OpenAI after_turn 轮次
-                        # 边界语义。置于 usage 累计前：被取消的轮不累计 usage——与流式取消
-                        # 一致（流式中断发生在完成前，整流器亦未产出完整 usage）。
+                        # 边界语义。响应已经完整返回并产生真实 usage，取消只改变业务终态，
+                        # 不改变成本归账；因此先累计本轮 usage，再按 CANCELLED 收尾。
                         if cancel_event is not None and cancel_event.is_set():
+                            total_usage.update(
+                                merge_usage(total_usage, stream_result.usage)
+                            )
                             for e in await self._finalize_cancelled(
                                 stream_result, iteration, total_usage
                             ):
@@ -364,6 +427,7 @@ class ReActStrategy:
                             total_usage[k] = total_usage.get(
                                 k, 0
                             ) + stream_result.usage.get(k, 0)
+                    current_result = None
 
                     # ----- 4. 成本护栏：累计成本超限 → 错误分发（默认 STOP 降级）-----
                     # 置于 error 判断前：成本是全局资源护栏，预算超限时不允许
@@ -567,17 +631,35 @@ class ReActStrategy:
             # RAISE 决策的领域错误：不吞，传播到 BaseAgent.run（统一 re-raise），
             # 不被下方 except Exception 兜底转 UNKNOWN
             raise
-        except TimeoutError:
-            # ----- 10. 超时（总时长上限）→ TIMEOUT 分发（默认超时降级）-----
+        except TimeoutError as exc:
+            # ----- 10. 区分外层硬超时与内部普通 TimeoutError -----
             # 关闭判别：生成器正被 finalizer/aclose 关闭（不同 task 驱动）或外部取消
             # → 干净停止，不 yield 降级事件（避免 RuntimeError: async generator ignored GeneratorExit）
             cur = asyncio.current_task()
             if cur is None or cur is not entered_task or cur.cancelling() > 0:
                 return
 
-            # 真超时 → 错误分发 + 降级
+            # TimeoutError 也可能由 LLM 的结算、日志或传输代码抛出。只有本次
+            # asyncio.timeout_at 确实到期，才能解释为 ReAct 总执行超时；仅比较当前
+            # 时钟与 deadline 会把「期限已过但 timeout 回调尚未取消 task」误判为硬超时。
+            if hard_timeout_scope is None or not hard_timeout_scope.expired():
+                terminal_result = _terminal_result(current_result, last_result)
+                total_usage.update(
+                    merge_usage(total_usage, _unaccounted_usage(current_result))
+                )
+                for event in await self._finalize_unknown(
+                    terminal_result, iteration, total_usage, exc
+                ):
+                    yield event
+                return
+
+            # 外层 timeout 真实到期 → 保留当前轮已生成部分成果；若当前轮尚无可见进度则沿用上一轮。
+            terminal_result = _terminal_result(current_result, last_result)
+            total_usage.update(
+                merge_usage(total_usage, _unaccounted_usage(current_result))
+            )
             for e in await self._finalize_timeout(
-                last_result, iteration, total_usage, max_execution_time
+                terminal_result, iteration, total_usage, max_execution_time
             ):
                 yield e
 
@@ -586,19 +668,61 @@ class ReActStrategy:
         except ContextWindowExceededError as exc:
             # 最终请求预算闸已在网络调用前拒绝。它不是传输失败或空输出，继续重试
             # 无法改变 messages/tools/schema，直接按终结性上下文超限收尾并保留进度。
+            terminal_result = _terminal_result(current_result, last_result)
+            total_usage.update(
+                merge_usage(total_usage, _unaccounted_usage(current_result))
+            )
             error = str(exc)
             for ev in await self._finalize_terminal(
                 AgentErrorKind.CONTEXT_EXCEEDED,
                 error,
                 iteration,
-                success=bool(last_result.content.strip()) if last_result else False,
-                content=last_result.content.strip() if last_result else "",
-                reasoning=last_result.reasoning_content.strip() if last_result else "",
+                success=(
+                    bool(terminal_result.content.strip()) if terminal_result else False
+                ),
+                content=terminal_result.content.strip() if terminal_result else "",
+                reasoning=(
+                    terminal_result.reasoning_content.strip()
+                    if terminal_result
+                    else ""
+                ),
                 total_usage=total_usage,
                 error=error,
                 info_message=error,
             ):
                 yield ev
+            return
+
+        except LLMCancelledError as exc:
+            # LLM-044：LLM 层内部业务取消（执行控制穿透到 generate/async_generate，
+            # 非轮间 cancel 检查路径）→ CANCELLED 分发（默认 STOP，保留部分进度）。
+            terminal_result = _terminal_result(current_result, last_result)
+            total_usage.update(
+                merge_usage(
+                    total_usage,
+                    _unaccounted_usage(current_result, exc.usage),
+                )
+            )
+            for e in await self._finalize_cancelled(
+                terminal_result, iteration, total_usage
+            ):
+                yield e
+            return
+
+        except LLMDeadlineExceededError as exc:
+            # LLM-044：内部整体期限耗尽（集成 deadline 先于外层 asyncio.timeout 触发）
+            # → TIMEOUT 分发（对齐外层超时降级；非传输网络超时，不得当可重试）。
+            terminal_result = _terminal_result(current_result, last_result)
+            total_usage.update(
+                merge_usage(
+                    total_usage,
+                    _unaccounted_usage(current_result, exc.usage),
+                )
+            )
+            for e in await self._finalize_timeout(
+                terminal_result, iteration, total_usage, max_execution_time
+            ):
+                yield e
             return
 
         except Exception as e:  # noqa: BLE001 — 未捕获异常 → UNKNOWN 分发（保留部分进度）
@@ -609,11 +733,15 @@ class ReActStrategy:
             if cur is None or cur is not entered_task or cur.cancelling() > 0:
                 return
 
-            # 真异常 → UNKNOWN 分发（默认 STOP，保留 last_result 部分进度 + 证据链）。
+            # 真异常 → UNKNOWN 分发（默认 STOP，优先保留当前轮部分进度 + 证据链）。
             # asyncio.CancelledError / GeneratorExit 是 BaseException，不被本分支捕获
             # → 保持 CANCELLED / 生成器关闭语义不变。
+            terminal_result = _terminal_result(current_result, last_result)
+            total_usage.update(
+                merge_usage(total_usage, _unaccounted_usage(current_result))
+            )
             for ev in await self._finalize_unknown(
-                last_result, iteration, total_usage, e
+                terminal_result, iteration, total_usage, e
             ):
                 yield ev
 
@@ -626,6 +754,9 @@ class ReActStrategy:
         tool_defs: list[dict] | None,
         temperature: float,
         max_tokens: int,
+        *,
+        cancel_event: asyncio.Event | None = None,
+        deadline: float | None = None,
     ) -> AsyncGenerator[str]:
         """非流式单轮 LLM：generate() 一次拿完整 StreamResult，合成整条 SSE 事件。
 
@@ -646,7 +777,15 @@ class ReActStrategy:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 model_key="main",  # 显式 main 对齐 async_generate 默认，勿用 generate 默认 "fast"
+                # LLM-044：透传执行控制——generate 内部 reserve/create/返回前检查点
+                # 按同一 cancel_event + 绝对 deadline 受控（非流式不再仅靠轮末补查）。
+                cancel_event=cancel_event,
+                deadline=deadline,
             )
+        except (LLMCancelledError, LLMDeadlineExceededError):
+            # LLM-044：执行终止（用户取消 / 整体期限）→ 交由主循环映射
+            # CANCELLED/TIMEOUT，不折算 LLM_FAILED（与 CWEE 同模式：终止 ≠ 可重试失败）。
+            raise
         except ContextWindowExceededError:
             # 交由主循环映射为 CONTEXT_EXCEEDED；不可折算为可重试 LLM_FAILED。
             raise
@@ -1266,10 +1405,10 @@ class ReActStrategy:
     ) -> list[str]:
         """未捕获异常 → 错误分发（默认 STOP；保留部分进度）。
 
-        对齐 _finalize_timeout 降级：用 last_result 组装 outcome（保留已执行工具
-        证据链 + 部分内容），与 TIMEOUT / COST_EXCEEDED / STALLED 的「部分进度保留」
-        模式一致。asyncio.CancelledError / GeneratorExit 是 BaseException，不被主
-        循环 except Exception 捕获（保持 CANCELLED / 生成器关闭语义）。
+        对齐 _finalize_timeout 降级：调用方先从 current_result / last_result 中选择
+        terminal_result 并归账当前轮 usage，本方法据此组装 outcome（保留已执行工具
+        证据链 + 部分内容）。asyncio.CancelledError / GeneratorExit 是 BaseException，
+        不被主循环 except Exception 捕获（保持 CANCELLED / 生成器关闭语义）。
 
         error 脱敏：只保留异常类型名（分类），不拼接异常 message——异常文本可能含
         内部路径 / 参数 / 敏感值 / 堆栈提示，产品可见文本（outcome.error / SSE /

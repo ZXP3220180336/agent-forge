@@ -93,6 +93,7 @@ class FakeLLM:
         result: StreamResult | None = None,
         model_key: str = "main",
         cancel_event=None,
+        deadline=None,
     ):
         self.calls += 1
         self.requests.append(json.loads(json.dumps(messages)))  # 深拷贝

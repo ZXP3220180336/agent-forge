@@ -69,6 +69,7 @@ class FakeLLM:
         result=None,
         model_key="main",
         cancel_event=None,
+        deadline=None,
     ):
         if result is None:
             result = StreamResult()
