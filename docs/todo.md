@@ -1,6 +1,6 @@
 # 2026-09-10 审核遗留：Slice 2 共享护栏统一（REASON-016 复审）
 
-> 状态：待修复。REASON-016 主链路已提交落地，以下是复审发现但未修的遗留项。不影响已通过的验收点，其中前两项涉及对外元数据契约与步骤成功判据。行号已在 REASON-017 批次（工作区未提交）插入行后重新核对。
+> 状态：待修复。REASON-016 主链路已提交落地，以下是复审发现但未修的遗留项。不影响已通过的验收点，其中前两项涉及对外元数据契约与步骤成功判据。行号按 REASON-017 批次落地后的代码重新核对。
 
 - [ ] **`PlannerOutcome.plan` 契约破坏**：`planner.py:377` 的降级收尾在 `_normalize_steps` 之前执行，传入 PLAN_SCHEMA 原始结构（`steps` 无 `id`、含 `depends_on`），与 `{goal, steps:[{id, description}]}` 契约不符；按 `steps[i]["id"]` 消费的编排 / 证据链报告会 KeyError。修法：拆为「`plan is None`」与「plan 成功但已不能开工」两处，后者移至 `plan_result` 构造之后。
 - [ ] **步骤成功判据新增维度未同源**：`planner.py:471` 的 `not sub.error` 使「达到最大迭代次数但有产出」的子跑从成功改判失败，从而触发至多 `max_replan_rounds` 次付费 replan 与替换步重跑；该行为变更未见于同处注释、`planner.md`、planner ADR 与 REASON-016 修复方案。需先定意图：改判则同步四处口径，不改判则按子跑终态 kind 显式判定护栏终止。
@@ -9,14 +9,14 @@
 - [ ] **测试缺口与覆盖声明不符**：`reflection.md:187` 声称覆盖「修正成功后先接管新稿再终止」，但无对应用例（现有两例均为自查后终止，`structured == DRAFT`）；`test_reasoning_common.py` 参数矩阵漏「limiter 已注入未超限且无 `context_error` → None」与「仅 deadline 命中」两条分支。
 - [ ] **REASON-016 记录补节**：新 issue 缺 `## 工业级参照` 与 `## 实施记录`（同目录惯例）。
 - [ ] **注释一致性**：`react.py:470` 段横幅仍写「取消判定 / LLM_FAILED 分发」，取消判定已迁至第 4 步护栏（同函数 docstring 已改）；`react.py:330` 注释括号未闭合。
-- [ ] **测试稳定性**：`test_react_strategy.py:921` 依赖真实墙钟（要求 `max_execution_time=0.05` 内跑完两轮脚本 LLM + 一次 echo），慢机器 / CI 抖动下 `tool.calls == 2` 会假失败。
+- [ ] **测试稳定性**：`test_react_strategy.py:933` 依赖真实墙钟（要求第一轮脚本 LLM + 一次 echo 在 `max_execution_time=0.2` 内跑完），慢机器 / CI 抖动下 `tool.calls == 2` 会假失败。无界等待已改有界（见上一节收尾记录），但该墙钟依赖仍在。
 - [ ] **`.gitignore` 收窄**：`*-learn.md` 通配偏宽（会静默忽略 `docs/xxx-learn.md` 等），可限定目录；文件补尾换行。
 
 ---
 
 # 2026-09-10 三策略重试上限闭环（审计后重规划）
 
-> 状态：✅ 已实现，收尾待办见本节末。审计范围为 ReActStrategy、ReflectionStrategy、PlannerStrategy 及其直接调用的结构化输出、LLM 重试、流式整流/续接和工具执行。结论是所有循环均有总上限，但 ReAct 的工具协议修正只受 `max_iterations` 间接约束，且 API 可传入任意大的迭代值，因此补了独立硬上限并收紧入口契约。
+> 状态：✅ 已完成（实现与收尾）。审计范围为 ReActStrategy、ReflectionStrategy、PlannerStrategy 及其直接调用的结构化输出、LLM 重试、流式整流/续接和工具执行。结论是所有循环均有总上限，但 ReAct 的工具协议修正只受 `max_iterations` 间接约束，且 API 可传入任意大的迭代值，因此补了独立硬上限并收紧入口契约。
 
 ## 审计结论
 
@@ -37,15 +37,19 @@
 - [x] **验证**。见下方验证结果。
 
 > **评审结果**：实现与透传链通过。三类协议错误共享独立预算的语义与既有 `_empty_retries` / `_llm_fail_retries` 同构（`>` 判上限、每次 `execute` 独立计数）；协议校验前置到写历史之前，消除了无工具可用时悬空 `tool_calls` 触发 provider 400 的缺陷；`max_iterations` 的缺省遮蔽在 schema 与路由两层均已解除，越界统一由 FastAPI 422 拒绝。审计最后一项的事实前提经复审更正（见审计结论）。未并入的四项边界仍按原判断留待独立处理。
-> **验证结果**：全量 **952 passed**（1 个既存 StarletteDeprecationWarning）；`verify_alignment` 与 `git diff --check` 通过。收尾四项已闭合：`react.md` 执行流程与代码顺序一致（协议校验在写历史之前）、`react.py` 动作指纹注释与 REASON-017/lessons 改为「参数不入指纹导致误判」、`config.md` 验证器计数更正为 15 组 / 17 字段域、路由层缺省回落与请求覆盖各有判别性用例。指纹新旧对照经实测：旧实现三轮恒为 `"[]"`，新实现互不相同。
+> **验证结果**：全量 **955 passed**（1 个既存 StarletteDeprecationWarning）；`verify_alignment` 与 `git diff --check` 通过。指纹新旧对照经实测：旧实现三轮恒为 `"[]"`，新实现互不相同。
 
-### 收尾待办
+### 收尾记录
 
-- [ ] **测试缺口补齐**：协议预算的「空输出轮不清零」用例；非流式通道的最小协议异常用例（`tests/unit/test_react_strategy_nonstream.py` 目前无协议用例）。
-- [ ] **`_handle_tool_calls` 硬终止后的分发收口**：上限在 `grouped` 循环内即决定终止，但剩余 kind 仍继续 `_dispatch`，handler 可能 RAISE 覆盖协议硬终止，且业务失败的 STOP 归因被吞。
-- [ ] **`docs/shared_doc/class-design.md:133` 漂移**：示例仍写 `max_iterations: int = 10`，与现行契约（可选 `int | null`、1..100、未传取装配值）不符。
-- [ ] **字段注释细节**：`app/api/schemas/request.py:15` 的 `None` 语义（= 不覆盖，由路由取装配值）建议补行尾注释，与同文件 `stream` 字段风格一致。
-- [ ] **非阻塞项**：`tests/unit/test_react_strategy.py:931,959` 用 `asyncio.Event().wait()` 配合 `max_execution_time`，超时链路回归时会在无 `pytest-timeout` 的环境挂死整个测试进程，改有界等待即可；5 处 `agent_params` 字面量重复可提为 fixture。
+- [x] **`react.md` 执行流程**：代码块与代码顺序一致（协议校验在写历史之前），步骤编号与 `react.py` 的 `# ----- N.` 注释对齐为 1..11。
+- [x] **动作指纹表述**：`react.py` 注释、lessons 与 REASON-017 的理由改为「按名排除让参数不入指纹 → 参数各异的轮次被误判」（原「可绕过」前提不成立）。
+- [x] **`config.md` 计数**：验证器计数更正为 15 组 / 17 字段域。
+- [x] **路由层缺省断言**：装配值与请求值取不同值的判别性用例（`tests/integration/test_chat_flow.py`）。
+- [x] **测试缺口补齐**：协议预算的「空输出轮不清零」用例；非流式通道的协议异常用例。
+- [x] **`_handle_tool_calls` 分发收口**：同轮失败按协议类优先分发，预算耗尽即定终局、其余 kind 不再分发（红测先行：修复前业务失败 handler 被调用并 RAISE 顶掉协议硬终止）。
+- [x] **`class-design.md:133` 漂移**：示例同步为现行 `max_iterations` 契约。
+- [x] **字段注释**：`app/api/schemas/request.py:15` 补 `None` 语义行尾注释。
+- [x] **非阻塞项**：四处无界等待改为有界等待（`_hang_until_cancelled`，回归时失败而非挂死进程）；`agent_params` 提为 `tests/conftest.py` fixture，5 处字面量收敛为一处。
 
 > **本次不并入**：Planner `REPLAN_SCHEMA.steps` 缺 `maxItems`、工具退避不响应业务取消、LLM 重试配置缺非负校验、无 deadline 的无限流读取。这些是审计发现的独立边界，不构成本次“自动重试缺少次数上限”的同一根因，避免把协议修正做成跨 Integration 的混合改动。
 
@@ -70,7 +74,7 @@
 
 # 2026-09-10 第一阶段：收紧 P1/P2 验收边界
 
-> 状态：实现、审查与验证已完成；独立提交待执行。范围以 2026-09-10 总体审核路线为准；LLM-044～047、REASON-012～015 当前保留在工作区。
+> 状态：✅ 已完成（实现、审查、验证与独立提交）。范围以 2026-09-10 总体审核路线为准；LLM-044～047、REASON-012～015 已随 `40b4a17`（代码）与 `746053e`（ADR / issue / 文档）落地。
 
 - [x] **TimeoutError / UNKNOWN 红测与修复**：ReAct 仅在 timeout scope `expired()` 时归 TIMEOUT；内部普通异常归 UNKNOWN，并保留当前轮成果与未归账 usage。
 - [x] **续接上下文超限闭环**：真实续接请求因前缀扩大触发 `ContextWindowExceededError` 时，保留当前轮内容和可得 usage，停止续接并只产出一次 done。
@@ -80,7 +84,7 @@
 - [x] **时间契约收紧**：明确 `max_execution_time` 是业务循环的 timeout 取消触发点；领域终态分发位于 timeout scope 外，不再发起副作用但可能形成额外尾部延迟，不承诺同步阻塞或吞取消代码的绝对返回时限。
 - [x] **文档漂移修正**：更新 todo 过时状态、`streaming_rectifier.md` deadline 签名与测试数量，并同步对应 issue/ADR/组件文档。
 - [x] **验证**：执行控制、LLMService、整流、structured、ReAct 定向测试和全量测试通过；alignment/diff check 通过。
-- [ ] **独立提交**：第一阶段代码、测试、ADR、issue、文档已划定提交范围；当前环境拒绝写入 `.git/index`，尚未形成提交。
+- [x] **独立提交**：第一阶段代码、测试、ADR、issue、文档已随 `40b4a17` 与 `746053e` 提交。
 
 > **评审结果**：第一阶段通过。TimeoutError 来源、UNKNOWN/current result、续接上下文超限、真实 close/settle 清理链和 fallback reserve cancel/deadline/R5 均有跨层回归；最终只保留一个已修正的措辞问题——timeout scope 外的可扩展 handler 可能产生额外尾部延迟，不能称为有界绝对返回。
 > **验证结果**：定向套件 **348 passed**；全量 **917 passed**（1 个既存 StarletteDeprecationWarning）；`verify_alignment` 与 `git diff --check` 通过。
@@ -413,7 +417,7 @@ git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forg
 - [x] **API 层**：error_handler 登记 `CONTEXT_WINDOW_EXCEEDED → 422`（原误落 500，区别于 LLM_API_ERROR 502 / CIRCUIT_OPEN 503）+ 映射测试
 - [x] **fallback 预算裁定**：fallback 共享主模型窗口（同 provider 同端点 LLM-012，不单独注入配置）；test_open_circuit_fallback 改向为「熔断 OPEN 走 fallback 时预算闸仍生效（主 key 窗口）」
 - [x] 顺带修复 react.py:133 except 逗号语法（AGENT-001 元组约定）；test_container 补 `RequestBudgetManager` 全局快照与装配断言、LLMService `_continuation_max_retries` 既有遗漏
-- [x] 文档：error_handling（async_generate「错误转事件」例外）/ streaming_rectifier（失败信号表外上抛通道）/ llm（双通道上抛）/ __init__ 组件枚举 / request_budget 契约与测试状态 同步
+- [x] 文档：error_handling（async_generate「错误转事件」例外）/ streaming_rectifier（失败信号表外上抛通道）/ llm（双通道上抛）/ **init** 组件枚举 / request_budget 契约与测试状态 同步
 - [x] 验证：受影响 197 passed；全量 pytest + verify_alignment（见下）
 - [ ] 遗留：reflection/planner 结构化调用超限被 `except AppError` 吞（顶部阻塞标注）；Slice 2 取消/成本护栏类型化与 ReAct 收尾其余项；Slice 3/4 阶段上下文缩减
 

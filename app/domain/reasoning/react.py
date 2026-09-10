@@ -1285,14 +1285,20 @@ class ReActStrategy:
                     else AgentErrorKind.TOOL_FAILED
                 )
                 grouped.setdefault(kind, []).append(r)
+            # 分发顺序固定：协议类在前。它带独立预算且可能硬终止，终局必须先定——
+            # 否则同轮业务失败仍会被分发，其 RAISE 会把预算诊断顶成无关错误，STOP 归因
+            # 也会被硬终止错误覆盖（grouped 的插入序还取决于工具的返回顺序）。
             # 同 kind 的多个失败聚合为一条 message；RAISE 在分发时立即传播，
             # 因此 decisions 只包含 STOP / CONTINUE。
             decisions: list[tuple[AgentErrorKind, str, AgentErrorAction]] = []
-            hard_protocol_error: str | None = None
-            for kind, fails in grouped.items():
+            for kind in (AgentErrorKind.PARSE_FAILED, AgentErrorKind.TOOL_FAILED):
+                fails = grouped.get(kind)
+                if not fails:
+                    continue
                 fail_msg = "；".join(
                     f"{f.get('tool', '?')}: {f.get('error', '')}" for f in fails
                 )
+                hard_protocol_error: str | None = None
                 if kind == AgentErrorKind.PARSE_FAILED:
                     (
                         action,
@@ -1305,19 +1311,21 @@ class ReActStrategy:
                     )
                 else:
                     action = await self._dispatch(kind, fail_msg, iteration)
+                if hard_protocol_error is not None:
+                    # 预算耗尽：终局已定，同轮剩余 kind 不再分发——STOP/CONTINUE 改变不了终局，
+                    # RAISE 只会用一个无关错误顶掉这条预算诊断。
+                    for e in self._finalize_outcome(
+                        success=False,
+                        content="",
+                        reasoning=full_reasoning.strip(),
+                        iteration=iteration,
+                        total_usage=total_usage,
+                        error=hard_protocol_error,
+                        info_message=hard_protocol_error,
+                    ):
+                        yield e
+                    return
                 decisions.append((kind, fail_msg, action))
-            if hard_protocol_error is not None:
-                for e in self._finalize_outcome(
-                    success=False,
-                    content="",
-                    reasoning=full_reasoning.strip(),
-                    iteration=iteration,
-                    total_usage=total_usage,
-                    error=hard_protocol_error,
-                    info_message=hard_protocol_error,
-                ):
-                    yield e
-                return
             # RAISE 已在 _dispatch 中传播；剩余决策中任何 STOP 都终止。
             for kind, fail_msg, action in decisions:
                 if action == AgentErrorAction.STOP:

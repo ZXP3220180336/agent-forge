@@ -136,7 +136,7 @@ def _parse_sse(chunks: list[str]) -> list[dict]:
 
 
 @pytest.mark.asyncio
-async def test_chat_send_message_react_loop(tmp_path):
+async def test_chat_send_message_react_loop(tmp_path, agent_params):
     """验证完整 ReAct 闭环：LLM 调工具 → 工具执行 → LLM 总结 → 消息保存"""
     # 1. 准备依赖
     fake_sm = FakeSessionManager(
@@ -166,7 +166,7 @@ async def test_chat_send_message_react_loop(tmp_path):
         llm_service=fake_llm,
         tool_service=registry,
         task_service=TaskService(),
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
+        agent_params=agent_params,
         cost_limiter=None,  # 直接调用绕过 FastAPI DI，显式传 None（不启用成本上限）
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持（不触发断连）
     )
@@ -217,7 +217,7 @@ async def test_chat_send_message_react_loop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_chat_send_message_no_tools_plain_answer():
+async def test_chat_send_message_no_tools_plain_answer(agent_params):
     """LLM 直接给答复（不调工具）时，闭环仍正常"""
     fake_sm = FakeSessionManager(
         {"id": "s2", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
@@ -236,7 +236,7 @@ async def test_chat_send_message_no_tools_plain_answer():
         llm_service=fake_llm,
         tool_service=registry,
         task_service=TaskService(),
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
+        agent_params=agent_params,
         cost_limiter=None,  # 直接调用绕过 FastAPI DI，显式传 None（不启用成本上限）
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持（不触发断连）
     )
@@ -258,7 +258,7 @@ async def test_chat_send_message_no_tools_plain_answer():
 
 
 @pytest.mark.asyncio
-async def test_chat_stop_cancels_running_agent():
+async def test_chat_stop_cancels_running_agent(agent_params):
     """/chat/stop 置位 → 运行中的 Agent 优雅取消（CANCELLED），流带取消事件结束。"""
     fake_sm = FakeSessionManager(
         {"id": "s3", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
@@ -278,7 +278,7 @@ async def test_chat_stop_cancels_running_agent():
         llm_service=fake_llm,
         tool_service=registry,
         task_service=ts,
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
+        agent_params=agent_params,
         cost_limiter=None,
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持
     )
@@ -305,7 +305,7 @@ async def test_chat_stop_cancels_running_agent():
 
 
 @pytest.mark.asyncio
-async def test_chat_client_disconnect_auto_cancels(monkeypatch):
+async def test_chat_client_disconnect_auto_cancels(monkeypatch, agent_params):
     """客户端被动断连 → 自动置位会话取消（优雅停），不再发新 LLM 调用、停止向断连端推送。
 
     场景：LLM 首轮声明调工具（registry 空 → 协议错误会 CONTINUE 触发第二轮 LLM），
@@ -345,7 +345,7 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch):
         llm_service=fake_llm,
         tool_service=registry,
         task_service=ts,
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
+        agent_params=agent_params,
         cost_limiter=None,
         # 前 1 次检查正常、之后视为断连：模拟首个事件推送后连接断开
         http_request=cast(Request, _FakeRawRequest(disconnect_after=1)),
@@ -366,21 +366,12 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch):
     assert ts.get_cancel_event("s4") is None, "流结束应清理会话取消事件"
 
 
-_AGENT_PARAMS_BASE = {
-    "temperature": 0.2,
-    "max_tokens": 4096,
-    "max_execution_time": 300,
-    "max_context_rounds": 8,
-    "max_context_tokens": 128000,
-    "max_empty_retries": 2,
-    "max_llm_fail_retries": 2,
-    "max_tool_protocol_retries": 2,
-    "max_same_action_turns": 3,
-}
-
-
 async def _run_with_iteration_budget(
-    tmp_path, *, agent_max_iterations: int, request_max_iterations: int | None
+    tmp_path,
+    agent_params: dict,
+    *,
+    agent_max_iterations: int,
+    request_max_iterations: int | None,
 ) -> FakeLLM:
     """按给定的装配值 / 请求值跑一次 send_message，返回 FakeLLM（用于读实际 LLM 调用次数）。
 
@@ -419,10 +410,7 @@ async def _run_with_iteration_budget(
         llm_service=fake_llm,
         tool_service=registry,
         task_service=TaskService(),
-        agent_params={
-            **_AGENT_PARAMS_BASE,
-            "max_iterations": agent_max_iterations,
-        },
+        agent_params={**agent_params, "max_iterations": agent_max_iterations},
         cost_limiter=None,
         http_request=cast(Request, _FakeRawRequest()),
     )
@@ -433,20 +421,20 @@ async def _run_with_iteration_budget(
 
 
 @pytest.mark.asyncio
-async def test_chat_send_request_iterations_override_agent_params(tmp_path):
+async def test_chat_send_request_iterations_override_agent_params(tmp_path, agent_params):
     """请求显式传入 max_iterations 时覆盖装配值（装配 1 被请求 3 覆盖）。"""
     fake_llm = await _run_with_iteration_budget(
-        tmp_path, agent_max_iterations=1, request_max_iterations=3
+        tmp_path, agent_params, agent_max_iterations=1, request_max_iterations=3
     )
 
     assert fake_llm.calls == 3, "请求显式 max_iterations 应覆盖装配值"
 
 
 @pytest.mark.asyncio
-async def test_chat_send_falls_back_to_agent_params_iterations(tmp_path):
+async def test_chat_send_falls_back_to_agent_params_iterations(tmp_path, agent_params):
     """请求未提供 max_iterations 时采用装配值（装配 1 生效，不回落 schema 旧默认 10）。"""
     fake_llm = await _run_with_iteration_budget(
-        tmp_path, agent_max_iterations=1, request_max_iterations=None
+        tmp_path, agent_params, agent_max_iterations=1, request_max_iterations=None
     )
 
     assert fake_llm.calls == 1, "未提供 max_iterations 时应采用装配根值"

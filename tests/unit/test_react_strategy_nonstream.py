@@ -321,6 +321,26 @@ async def test_nonstream_context_window_exceeded_is_terminal():
     assert _typed(events, "done")
 
 
+async def test_nonstream_tool_protocol_error_obeys_shared_budget():
+    """非流式通道共用同一协议修正预算：允许 N 次修正，第 N+1 次硬终止。"""
+    llm = _NonStreamingScriptedLLM(
+        [{"finish_reason": "tool_calls", "tool_calls": []}] * 3
+    )
+    strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
+
+    events = await _run(
+        strategy,
+        [{"role": "user", "content": "hi"}],
+        stream_mode=False,
+        max_tool_protocol_retries=1,
+    )
+
+    assert llm.calls == 2
+    assert strategy.outcome is not None
+    assert "连续工具调用协议异常（2 轮）" in (strategy.outcome.error or "")
+    assert _typed(events, "done")
+
+
 async def test_nonstream_non_apperror_maps_to_unknown():
     """generate 抛非 AppError（RuntimeError）→ 冒泡外层 except → UNKNOWN。"""
     llm = _NonStreamingScriptedLLM([RuntimeError("boom")])

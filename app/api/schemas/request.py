@@ -12,7 +12,7 @@ class SendMessageRequest(BaseModel):
 
     session_id: str
     message: str
-    max_iterations: int | None = Field(default=None, ge=1, le=100)
+    max_iterations: int | None = Field(default=None, ge=1, le=100)  # None=未覆盖，采用装配根配置
     stream: bool = True  # 是否流式返回
 
 

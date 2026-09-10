@@ -183,7 +183,7 @@ ReActStrategy.execute()（ReAct 主循环）
 | --- | --- | --- |
 | `_handle_tool_protocol_error` | finish_reason=tool_calls 但 tool_calls 为空 / 当前无可用工具（协议信号与数据或能力不一致） | `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表）；连续超过 `max_tool_protocol_retries` 硬终止（handler 可 STOP 终止 / RAISE 上抛，CONTINUE 在硬上限处折算为终止） |
 | `_handle_empty_output` | finish_reason 空 + content 空 | CONTINUE 重试；连续超过 `max_empty_retries` 硬终止（handler 可 STOP / RAISE，CONTINUE 被忽略） |
-| `_handle_tool_calls` | finish_reason=tool_calls | 调 `execute_tool_calls` 执行 → 失败工具按 kind 聚合分发 + 仲裁 → 全 CONTINUE → 继续循环（工具参数 JSON 解析失败计入 `max_tool_protocol_retries` 共享预算；预算在循环顶部统一裁剪，见上下文预算节） |
+| `_handle_tool_calls` | finish_reason=tool_calls | 调 `execute_tool_calls` 执行 → 失败工具按 kind 聚合分发 + 仲裁 → 全 CONTINUE → 继续循环（分发顺序固定为协议类在前：协议预算耗尽即定终局，同轮业务失败不再分发；工具参数 JSON 解析失败计入 `max_tool_protocol_retries` 共享预算；预算在循环顶部统一裁剪，见上下文预算节） |
 | `_handle_final_answer` | 检测到 final_answer 工具调用 | 成功提取 → 终止写 `outcome.structured`；校验失败 → `STRUCTURED_INVALID` 分发（默认回喂自纠，连续超过 `max_tool_protocol_retries` 共享预算硬终止） |
 
 ### 支撑方法（_finalize_outcome / _finalize_terminal / _dispatch）
@@ -249,7 +249,8 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
   │     │     │       校验失败受 max_tool_protocol_retries 共享预算）
   │     │     ├─ 停滞检测：连续相同工具调用超 max_same_action_turns → _finalize_stalled（不执行工具）
   │     │     └─ _handle_tool_calls：execute_tool_calls 并行执行 → 失败工具按 kind 聚合分发 + 仲裁
-  │     │           （工具参数 JSON 解析失败受 max_tool_protocol_retries 共享预算）→ 全 CONTINUE → 下一轮
+  │     │           （协议类先分发，预算耗尽即定终局、同轮业务失败不再分发；
+  │     │            工具参数 JSON 解析失败受 max_tool_protocol_retries 共享预算）→ 全 CONTINUE → 下一轮
   │     ├─ "stop"/"length"/有内容 → _finalize_outcome（正常结束）
   │     └─ 空输出 → _handle_empty_output（默认 CONTINUE 重试；连续超 max_empty_retries 硬终止；STOP → 终止）
   ├─ 10. 循环耗尽 → _finalize_max_turns（默认 STOP：last_visible_result 兜底）

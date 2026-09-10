@@ -39,6 +39,7 @@ API 请求模型同时允许调用方传入任意大的 `max_iterations`，使�
 4. 工具协议信号先校验再写 assistant 历史；无效响应不进入空输出计数、停滞检测或工具执行。
 5. 动作指纹不再按工具名称无条件排除 `final_answer`。真正的结构化终止工具在停滞检测前已完成处理；未启用 schema 时同名工具必须和其它未知工具一样受停滞上限约束。
 6. 新配置经 settings → container → API `AgentContext` → 三个 Agent → 三个 Strategy 透传。请求体 `max_iterations` 改为可选且限制为 1..100，缺省时使用装配值。
+7. 同轮工具失败的分发顺序固定为协议类在前；协议预算耗尽即定终局，同轮业务失败不再分发。原实现按 `grouped` 插入序分发（取决于工具返回顺序），剩余 kind 仍会调用 handler——其 RAISE 会把预算诊断顶成无关错误，STOP 归因也会被硬终止错误覆盖。
 
 ### 决策取舍
 
@@ -50,7 +51,7 @@ API 请求模型同时允许调用方传入任意大的 `max_iterations`，使�
 
 | 范围 | 实施内容 |
 | --- | --- |
-| ReAct | 新增协议修正计数与统一分发；三类异常接入；无效历史短路；动作指纹不再按名排除 `final_answer` |
+| ReAct | 新增协议修正计数与统一分发（协议类优先、预算耗尽即定终局）；三类异常接入；无效历史短路；动作指纹不再按名排除 `final_answer` |
 | Reflection / Planner | execute 参数和每次内嵌 ReAct 调用完整透传 |
 | Agent / 装配 | `AgentContext`、三个 Agent 包装器、settings、container、chat 路由接线 |
 | API | `SendMessageRequest.max_iterations` 改为可选的 1..100；缺省回落装配配置 |
@@ -58,13 +59,15 @@ API 请求模型同时允许调用方传入任意大的 `max_iterations`，使�
 
 ## 验证
 
-- `tests/unit/test_react_strategy.py`：协议修正状态机、错误分发、历史所有权与动作指纹覆盖面。
+- `tests/unit/test_react_strategy.py`：协议修正状态机、错误分发、历史所有权、动作指纹覆盖面、空输出轮不清零、协议硬上限优先于同轮业务失败分发。
+- `tests/unit/test_react_strategy_nonstream.py`：非流式通道共用同一协议修正预算。
 - `tests/unit/test_agent.py`、`test_reflection_agent.py`、`test_planner_agent.py`：配置从 AgentContext 到三个策略的真实行为透传。
 - `tests/unit/test_settings.py`、`test_container.py`、`test_request_schemas.py`：默认值、非负校验、装配字典和 API 边界。
-- 三策略定向测试、相关集成测试、全量测试、文档对齐与 diff 检查均在本任务最终验证后回填 `docs/todo.md`。
+- `tests/integration/test_chat_flow.py`：路由层请求覆盖与缺省回落装配值。
+- 全量测试、alignment 与 diff check 结果记录在 `docs/todo.md` 的对应切片。
 
 ## 教训沉淀
 
-总循环上限只能保证最终停止，不能替代局部恢复链的预算。只要某个错误处理动作会再次发起付费调用，就应明确它消耗哪一个独立预算、由什么成功信号清零，以及 handler 是否有权绕过硬上限。
+总循环上限只能保证最终停止，不能替代局部恢复链的预算。只要某个错误处理动作会再次发起付费调用，就应明确它消耗哪一个独立预算、由什么成功信号清零，以及 handler 是否有权绕过硬上限。同一轮里多个失败并存时，先定终局再分发：预算类失败的终局一旦成立，其余 handler 的决策改变不了结果，却能用 RAISE 顶掉诊断——分发顺序本身就是契约的一部分。
 
 协议响应必须在写入历史前完成一致性校验。消息对象不仅是文本，也是下一次 provider 请求的协议载体；把无效 tool_calls 留在历史中，会把一个可恢复的模型行为错误放大为下一轮请求格式错误。

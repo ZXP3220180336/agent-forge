@@ -81,7 +81,7 @@ class FakeLLM:
         )
 
 
-def _wire(monkeypatch, session, llm_script=None):
+def _wire(monkeypatch, agent_params, session, llm_script=None):
     """把 container 单例服务替换为 fake。"""
     fake_sm = FakeSessionManager(session)
     monkeypatch.setattr(container, "session_manager", fake_sm)
@@ -89,11 +89,7 @@ def _wire(monkeypatch, session, llm_script=None):
     monkeypatch.setattr(container, "llm_service", FakeLLM(llm_script or []))
     monkeypatch.setattr(container, "tool_service", ToolService())
     monkeypatch.setattr(container, "task_service", TaskService())
-    monkeypatch.setattr(
-        container,
-        "agent_params",
-        {"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
-    )
+    monkeypatch.setattr(container, "agent_params", agent_params)
     return fake_sm
 
 
@@ -103,9 +99,9 @@ def test_chat_send_requires_auth():
     assert resp.status_code == 401
 
 
-def test_chat_send_session_not_found(monkeypatch):
+def test_chat_send_session_not_found(monkeypatch, agent_params):
     """会话不存在返回 404"""
-    _wire(monkeypatch, session=None)
+    _wire(monkeypatch, agent_params, session=None)
     resp = client.post(
         "/api/chat/send",
         json={"session_id": "s1", "message": "hi"},
@@ -116,10 +112,11 @@ def test_chat_send_session_not_found(monkeypatch):
     assert resp.json()["message"] == "会话不存在"
 
 
-def test_chat_send_streams_sse_and_saves_messages(monkeypatch):
+def test_chat_send_streams_sse_and_saves_messages(monkeypatch, agent_params):
     """完整聊天闭环经 HTTP 层：SSE 帧 + user/assistant 消息保存"""
     fake_sm = _wire(
         monkeypatch,
+        agent_params,
         session={"id": "s1", "user_id": "user_testtoke", "system_prompt": "sys"},
         llm_script=[{"type": "stop", "content": "你好，我是AI"}],
     )
@@ -143,9 +140,9 @@ def test_chat_send_streams_sse_and_saves_messages(monkeypatch):
     assert assistant["content"] == "你好，我是AI"
 
 
-def test_create_session_endpoint(monkeypatch):
+def test_create_session_endpoint(monkeypatch, agent_params):
     """POST /api/session/create 经路由与 schema 返回响应"""
-    fake_sm = _wire(monkeypatch, session=None)
+    fake_sm = _wire(monkeypatch, agent_params, session=None)
     resp = client.post(
         "/api/session/create",
         json={"system_prompt": "p", "title": "t"},

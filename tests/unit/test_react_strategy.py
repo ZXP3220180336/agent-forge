@@ -475,6 +475,18 @@ def _echo_call(text: str = "hi") -> dict:
     }
 
 
+_HANG_SECONDS = 5.0
+
+
+async def _hang_until_cancelled() -> None:
+    """用有界等待表达「挂起」：正常路径由取消 / 超时打断，回归时以有界等待失败而非挂死测试进程。
+
+    仓库未安装 pytest-timeout，无界等待（asyncio.Event().wait()）一旦失去取消链
+    会永久占住整个测试进程，掩盖回归的真实失败面。
+    """
+    await asyncio.sleep(_HANG_SECONDS)
+
+
 @pytest.mark.asyncio
 async def test_react_stall_same_action_stops():
     """同工具同参数连续 4 轮（默认 max=3）→ 第 4 轮 STALLED 终止，该轮工具不执行。"""
@@ -928,7 +940,7 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
         async def execute(self, **kwargs) -> ToolResult:
             self.calls += 1
             if self.calls == 2:
-                await asyncio.Event().wait()
+                await _hang_until_cancelled()
             return await super().execute(**kwargs)
 
     llm = _ScriptedLLM(
@@ -1386,7 +1398,7 @@ async def test_external_task_cancel_still_propagates_cancelled_error():
     class _HangingLLM:
         async def async_generate(self, *args, **kwargs):
             started.set()
-            await asyncio.Event().wait()
+            await _hang_until_cancelled()
             yield  # pragma: no cover - 保持 async generator 形态
 
     strategy = ReActStrategy(llm=_HangingLLM(), tools=None)
@@ -1481,7 +1493,7 @@ async def test_hard_timeout_keeps_current_round_partial_result(monkeypatch):
             assert result is not None
             result.content = "硬超时前的部分答案"
             yield build_message_event(result.content)
-            await asyncio.Event().wait()
+            await _hang_until_cancelled()
 
     strategy = ReActStrategy(llm=_PartialThenHangLLM(), tools=None)
     async for _ in strategy.execute(
@@ -1508,7 +1520,7 @@ async def test_deadline_unaware_llm_is_cancelled_at_timeout_trigger(monkeypatch)
 
     class _DeadlineUnawareLLM:
         async def async_generate(self, *args, **kwargs):
-            await asyncio.Event().wait()
+            await _hang_until_cancelled()
             yield  # pragma: no cover - 保持 async generator 形态
 
     strategy = ReActStrategy(llm=_DeadlineUnawareLLM(), tools=None)
@@ -3515,3 +3527,85 @@ async def test_react_unknown_error_redacts_exception_message(caplog):
     assert "10.0.0.1" not in (strategy.outcome.error or "")
     # 完整异常（含 message）进日志，运维可诊断
     assert any("sk-secret" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_react_empty_output_round_does_not_reset_protocol_budget():
+    """空输出不证明工具协议恢复：间隔的空输出轮不得清零协议修正连续计数。"""
+    bad_calls = [
+        {
+            "id": f"bad_{index}",
+            "type": "function",
+            "function": {"name": "echo", "arguments": f"{{bad-{index}"},
+        }
+        for index in range(2)
+    ]
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [bad_calls[0]]},
+            {"finish_reason": "", "content": ""},  # 空输出轮（CONTINUE 重试）
+            {"finish_reason": "tool_calls", "tool_calls": [bad_calls[1]]},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=10,
+        temperature=0.2,
+        max_tokens=1024,
+        max_tool_protocol_retries=1,
+    ):
+        pass
+
+    # 若空输出轮清零了计数，第三轮只会重新计数为 1 并继续重试（calls > 3）
+    assert llm.calls == 3
+    assert strategy.outcome is not None
+    assert "连续工具调用协议异常（2 轮）" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_protocol_hard_limit_preempts_same_round_business_failure():
+    """协议预算耗尽时终局已定：同轮业务失败不再分发，其 RAISE 不得覆盖协议硬终止。"""
+    dispatched: list[AgentErrorKind] = []
+
+    async def on_tool_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        dispatched.append(ctx.kind)
+        return AgentErrorAction.RAISE  # 若被调用则异常上抛，测试立即失败
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.TOOL_FAILED, on_tool_failed)
+
+    bad_json = {
+        "id": "bad",
+        "type": "function",
+        "function": {"name": "echo", "arguments": "{bad"},
+    }
+    business_fail = {
+        "id": "fail",
+        "type": "function",
+        "function": {"name": "fail", "arguments": "{}"},
+    }
+    llm = _ScriptedLLM(
+        [{"finish_reason": "tool_calls", "tool_calls": [bad_json, business_fail]}]
+    )
+    strategy = ReActStrategy(
+        llm=llm,
+        tools=_make_registry(tools=[_EchoTool(), _FailingTool()]),
+        error_handlers=registry,
+    )
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+        max_tool_protocol_retries=0,
+    ):
+        pass
+
+    assert dispatched == [], "协议硬上限已决定终局，同轮业务失败不应再分发"
+    assert strategy.outcome is not None
+    assert "连续工具调用协议异常（1 轮）" in (strategy.outcome.error or "")

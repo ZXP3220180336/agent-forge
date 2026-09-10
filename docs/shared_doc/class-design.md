@@ -130,7 +130,7 @@ class ParsedChunk:
 class SendMessageRequest(BaseModel):
     session_id: str
     message: str
-    max_iterations: int = 10
+    max_iterations: int | None = Field(default=None, ge=1, le=100)  # None=未覆盖，路由取装配根值
 ```
 
 **与 dataclass 的区别**：dataclass 是「存数据的轻量容器」，`BaseModel` 是「要校验 + 要文档的数据边界」。项目里 `ParsedChunk` 用 dataclass、`SendMessageRequest` 用 BaseModel，都是正确选择。
