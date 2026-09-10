@@ -167,7 +167,7 @@ Authorization: Bearer <token>
 | --- | --- | --- | --- | --- |
 | `session_id` | `str` | 是 | — | 目标会话 ID |
 | `message` | `str` | 是 | — | 用户消息内容 |
-| `max_iterations` | `int` | 否 | `10` | Agent 最大迭代次数（ReAct 闭环轮数上限；未传时用 `agent_params` 默认） |
+| `max_iterations` | `int \| null` | 否 | `null` | Agent 最大迭代次数（1..100）；未传时使用装配根的 `agent_max_iterations` |
 | `stream` | `bool` | 否 | `true` | 是否流式返回（**当前未实际使用**，端点始终以 SSE 流式返回） |
 
 **响应**：`text/event-stream`，逐事件推送（SSE 帧格式见 [events.md](../../shared_doc/events.md)），末尾追加 `data: [DONE]\n\n` 帧。响应头包含 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Session-Id`。
@@ -178,7 +178,7 @@ Authorization: Bearer <token>
 2. **保存用户消息**：`session_manager.add_message(role="user", content=message, token_count=context_manager.count_tokens(message))`，token 数由 ContextManager 经 `LLMGateway` 的计数能力统计（实现细节见 [token_counter.md](../../integration_doc/llm_doc/token_counter.md)）
 3. **构建上下文**：`context_manager.build_messages(session_id, user_message)` 组装发送给 LLM 的消息序列
 4. **定义流式生成器 `generate()`**：
-   - 新建 `AgentContext`（8 字段：`session_id` / `user_id` / `max_iterations` / `temperature` / `max_tokens` / `max_execution_time` / `max_context_rounds` / `max_context_tokens`，运行参数来自 `get_agent_params` 注入，`max_iterations` 可被请求体覆盖）与 `ReActAgent(llm=llm_service, tools=tool_service, context_budget=context_manager)` —— **Agent 无状态**，每次请求新建实例
+   - 新建 `AgentContext`（身份、模型参数、执行/上下文护栏及各类重试上限来自 `get_agent_params`，请求体可在 1..100 内覆盖 `max_iterations`）与 `ReActAgent(llm=llm_service, tools=tool_service, context_budget=context_manager)` —— **Agent 无状态**，每次请求新建实例
    - `async for event in task_service.run_agent(user_input, messages, context, agent)` 驱动 ReAct 闭环（LLM 思考 → 工具调用 → LLM 总结），并**在任务级并发信号量 `agent_max_concurrent_tasks` 保护下运行**
    - 每个事件 `yield` 给 `StreamingResponse` 逐帧推送
    - 异常兜底：捕获异常后 `yield build_error_event(...)`，错误以 SSE 事件透出而非中断连接
@@ -195,7 +195,7 @@ Authorization: Bearer <token>
 | `get_llm_service` | 作为 `ReActAgent` 的 LLM 后端 |
 | `get_tool_service` | 提供工具定义与执行（`ReActAgent` 工具侧） |
 | `get_task_service` | 在任务级并发约束下运行 Agent |
-| `get_agent_params` | 提供 Agent 运行参数（max_iterations / temperature / max_tokens / max_execution_time / max_context_rounds / max_context_tokens） |
+| `get_agent_params` | 提供 Agent 运行参数（模型参数、执行/上下文护栏、空输出/LLM 失败/工具协议修正/停滞上限） |
 
 > ✅ **客户端被动断连自动取消**：`send` 流式生成逐事件轮询 `request.is_disconnected()`——客户端关页 / 刷新 / 断网时自动置位会话取消事件（与 `/chat/stop` 同一优雅取消路径），停止向断连端推送、Agent 在轮次边界收尾（不再发起新 LLM 调用 / 工具），防空转烧钱；流结束照常清理注册表与结算。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
 
@@ -257,7 +257,7 @@ Authorization: Bearer <token>
 
 ## 配置关联
 
-- Agent 运行参数（`agent_max_iterations` / `llm_temperature` / `llm_max_tokens` / `agent_timeout` / `agent_max_context_rounds` / `max_context_tokens`）经 `container.agent_params` → `get_agent_params` 注入 chat 路由
+- Agent 运行参数（含 `agent_max_iterations`、`agent_max_tool_protocol_retries` 与其它模型/执行/上下文护栏）经 `container.agent_params` → `get_agent_params` 注入 chat 路由
 - 并发约束（`agent_max_concurrent_tasks` / `agent_max_concurrent_tools`）作用于 TaskService / ToolService
 - 完整配置项见 [config 文档](../../config_doc/config.md)
 

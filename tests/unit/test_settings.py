@@ -33,6 +33,7 @@ VALIDATOR_CASES = [
     ("llm_reserve_window", [0]),
     ("agent_max_cost", [-0.1, -5]),
     ("agent_max_empty_retries", [-1, -5]),
+    ("agent_max_tool_protocol_retries", [-1, -5]),
     ("agent_max_same_action_turns", [0, -1]),
     ("agent_max_refine_rounds", [-1, 21]),
 ]
@@ -60,6 +61,7 @@ VALID_BOUNDARY_CASES = [
     ("llm_reserve_window", [1]),
     ("agent_max_cost", [0.0, 1.5]),
     ("agent_max_empty_retries", [0, 1, 5]),
+    ("agent_max_tool_protocol_retries", [0, 1, 5]),
     ("agent_max_same_action_turns", [1, 3, 100]),
     ("agent_max_refine_rounds", [0, 1, 20]),
 ]
@@ -154,6 +156,11 @@ def test_agent_max_cost_default_none():
 def test_agent_max_empty_retries_default_two():
     """agent_max_empty_retries 默认 2（连续空输出最多重试 2 次，第 3 次终止）。"""
     assert _make().agent_max_empty_retries == 2
+
+
+def test_agent_max_tool_protocol_retries_default_two():
+    """工具调用协议修正默认最多重试 2 次，第 3 次异常终止。"""
+    assert _make().agent_max_tool_protocol_retries == 2
 
 
 def test_agent_max_same_action_turns_default_three():

@@ -89,12 +89,17 @@ async def send_message(
             user_id=uid,
             temperature=agent_params["temperature"],
             max_tokens=agent_params["max_tokens"],
-            max_iterations=request.max_iterations or agent_params["max_iterations"],
+            max_iterations=(
+                request.max_iterations
+                if request.max_iterations is not None
+                else agent_params["max_iterations"]
+            ),
             max_execution_time=agent_params["max_execution_time"],
             max_context_rounds=agent_params["max_context_rounds"],
             max_context_tokens=agent_params["max_context_tokens"],
             max_empty_retries=agent_params["max_empty_retries"],
             max_llm_fail_retries=agent_params["max_llm_fail_retries"],
+            max_tool_protocol_retries=agent_params["max_tool_protocol_retries"],
             max_same_action_turns=agent_params["max_same_action_turns"],
         )
         agent = ReActAgent(

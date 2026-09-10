@@ -81,6 +81,7 @@ class ReflectionAgent(BaseAgent):
             max_context_tokens=ctx.max_context_tokens,
             max_empty_retries=ctx.max_empty_retries,
             max_llm_fail_retries=ctx.max_llm_fail_retries,
+            max_tool_protocol_retries=ctx.max_tool_protocol_retries,
             max_same_action_turns=ctx.max_same_action_turns,
             max_refine_rounds=ctx.max_refine_rounds,
             cancel_event=self._cancel_event,

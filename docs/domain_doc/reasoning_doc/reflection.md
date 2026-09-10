@@ -101,7 +101,7 @@ ReflectionStrategy.execute()（三阶段）
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, output_schema=None, critique_schema=None, critique_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema 可注入覆盖 |
-| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, max_refine_rounds=2, cancel_event=None)` | 三阶段主流程；yield SSE 事件，结果写入 `outcome` |
+| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_tool_protocol_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, max_refine_rounds=2, cancel_event=None)` | 三阶段主流程；yield SSE 事件，结果写入 `outcome`；协议修正上限透传初稿 ReAct |
 
 ### ReflectionOutcome（结果载体）
 
@@ -172,6 +172,7 @@ ReflectionStrategy.execute()（三阶段）
 | 配置 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `agent_max_refine_rounds` | int | 2 | Reflection 报告生成最大尝试轮数（初稿 1 + 至多 N-1 次修正）；经 `AgentContext.max_refine_rounds` 注入 |
+| `agent_max_tool_protocol_retries` | int | 2 | 初稿 ReAct 的工具调用协议修正上限；三类协议错误共享连续预算 |
 
 ## 测试状态
 

@@ -199,6 +199,26 @@ async def test_react_agent_passes_max_llm_fail_retries_to_strategy():
 
 
 @pytest.mark.asyncio
+async def test_react_agent_passes_max_tool_protocol_retries_to_strategy():
+    """AgentContext 的协议修正上限必须进入 ReActStrategy。"""
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls"}])
+    agent = ReActAgent(llm=llm, tools=None)
+    ctx = AgentContext(
+        session_id="s",
+        user_id="u",
+        max_iterations=6,
+        max_tool_protocol_retries=0,
+    )
+
+    async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
+        pass
+
+    assert llm.calls == 1
+    assert agent.result is not None
+    assert "连续工具调用协议异常" in (agent.result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_react_agent_passes_max_same_action_turns_to_strategy():
     """ReActAgent 经 AgentContext.max_same_action_turns 透传给 execute（停滞超限终止）。"""
     call = {

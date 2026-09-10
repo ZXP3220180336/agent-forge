@@ -135,3 +135,30 @@ async def test_ctx_max_refine_rounds_as_replan_budget():
     assert agent.result is not None
     assert agent.result.success is False  # replan 1 次失败后无成功步 → 失败
     assert agent.result.metadata["degraded"] is True
+
+
+async def test_context_max_tool_protocol_retries_reaches_planner_step_react():
+    """PlannerAgent 必须把协议修正预算传给每步 ReAct 子跑。"""
+
+    class _ProtocolErrorLLM(_AgentPlannerLLM):
+        def __init__(self):
+            super().__init__([PLAN])
+            self.react_calls = 0
+
+        async def async_generate(self, *args, result=None, **kwargs):
+            self.react_calls += 1
+            if result is not None:
+                result.finish_reason = "tool_calls"
+            yield build_message_event("")
+
+    llm = _ProtocolErrorLLM()
+    agent = PlannerAgent(llm=llm, tools=None)
+    ctx = _ctx(max_refine_rounds=0, max_tool_protocol_retries=0)
+
+    async for _ in agent.run("任务", [{"role": "user", "content": "hi"}], ctx):
+        pass
+
+    assert llm.react_calls == 1
+    assert agent.result is not None
+    assert agent.result.success is False
+    assert agent.result.metadata["degraded"] is True

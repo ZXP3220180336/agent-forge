@@ -82,6 +82,7 @@ class ReActAgent(BaseAgent):
             max_context_tokens=ctx.max_context_tokens,
             max_empty_retries=ctx.max_empty_retries,
             max_llm_fail_retries=ctx.max_llm_fail_retries,
+            max_tool_protocol_retries=ctx.max_tool_protocol_retries,
             max_same_action_turns=ctx.max_same_action_turns,
             stream_mode=ctx.stream_mode,
             cancel_event=self._cancel_event,

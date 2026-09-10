@@ -113,7 +113,7 @@ PlannerStrategy.execute()（三阶段）
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, plan_schema=None, replan_schema=None, result_schema=None, plan_model_key="fast", summarize_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema / 结构化模型键可注入覆盖 |
-| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, max_replan_rounds=2, tool_timeout=None, tool_max_retries=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 三阶段主流程（见「执行流程」）；yield SSE 事件，结果写入 `outcome` |
+| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_tool_protocol_retries=2, max_same_action_turns=3, max_replan_rounds=2, tool_timeout=None, tool_max_retries=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 三阶段主流程（见「执行流程」）；yield SSE 事件，结果写入 `outcome`；协议修正上限透传每步 ReAct |
 
 私有辅助：`_absorb_react`（react 子跑 usage/iterations 归并）· `_tool_catalog` / `_step_messages`（工具目录 / 每步隔离上下文，已完成步骤摘要已并入）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_finalize_guarded_summary`（汇总成功后护栏命中时保留已生成结构化结果）· `_normalize_steps`（id 单调赋值 + 依赖清洗）· `_plan` / `_replan` / `_summarize`（结构化调用；每笔调用前与 usage 归账后经共享 `_common.evaluate_guard` 复查；每步 / 兜底 react 子跑经 `_run_react` 透传 planner 累计作 `baseline_usage`；PLAN_FAILED 分发经 `_common.dispatch_error`）· `_finalize`（收尾 outcome + done 事件）。
 
@@ -209,7 +209,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 | 配置 | 类型 / 默认 | 说明 |
 | --- | --- | --- |
 | `agent_max_refine_rounds` | int / 2 | replan 预算经 `AgentContext.max_refine_rounds` 注入 `execute(max_replan_rounds)`（Reflection 修正 / Planner replan 共用语义） |
-| `agent_max_iterations` 等 ReAct 护栏字段 | 复用 | `max_iterations` = **每步** ReAct 小跑迭代上限（步骤级）；temperature / max_tokens / max_execution_time（全局，每步转剩余）/ max_context_rounds·tokens / max_empty_retries / max_llm_fail_retries / max_same_action_turns / stream_mode 全部透传每步 ReAct |
+| `agent_max_iterations` 等 ReAct 护栏字段 | 复用 | `max_iterations` = **每步** ReAct 小跑迭代上限（步骤级）；temperature / max_tokens / max_execution_time（全局，每步转剩余）/ max_context_rounds·tokens / max_empty_retries / max_llm_fail_retries / max_tool_protocol_retries / max_same_action_turns / stream_mode 全部透传每步 ReAct |
 | `llm_structured_max_tokens` | 默认预算 | 结构化调用（plan / replan / summarize）走 generate_structured 默认预算；截断由集成层短路返回 None → 走 None 降级（不崩溃） |
 | 结构化模型键 | "fast" | `plan_model_key` / `summarize_model_key` 构造注入（默认 fast），不进 AgentContext |
 

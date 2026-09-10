@@ -164,6 +164,29 @@ async def test_context_max_refine_rounds_passthrough():
 
 
 @pytest.mark.asyncio
+async def test_context_max_tool_protocol_retries_reaches_reflection_react():
+    """ReflectionAgent 必须把协议修正预算传给初稿 ReAct 子跑。"""
+    llm = _ReflectionLLM(
+        react_scripts=[{"finish_reason": "tool_calls"}],
+        structured_scripts=[],
+    )
+    agent = _make_agent(llm)
+    ctx = AgentContext(
+        session_id="s",
+        user_id="u",
+        max_iterations=5,
+        max_tool_protocol_retries=0,
+    )
+
+    async for _ in agent.run("分析良率", [{"role": "user", "content": "分析良率"}], ctx):
+        pass
+
+    assert llm.react_calls == 1
+    assert agent.result is not None
+    assert "连续工具调用协议异常" in (agent.result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_reflection_agent_end_to_end_three_stages():
     """ReflectionAgent.run 桥接端到端：收集→初稿→自查 ok→采用。"""
     llm = _ReflectionLLM(

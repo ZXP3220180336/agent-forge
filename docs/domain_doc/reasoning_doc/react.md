@@ -68,7 +68,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 | finish_reason | 语义 | 处理 |
 | --- | --- | --- |
 | `tool_calls` | 模型请求调用工具 | final_answer 检测 → 执行工具 → 结果回喂 → 下一轮 |
-| `tool_calls` + 空 `tool_calls` / 无工具可用 | 协议信号不一致（声明调工具却没给出 / 系统未注册工具） | `_handle_tool_protocol_error` 协议异常 → `PARSE_FAILED` 分发（默认重试） |
+| `tool_calls` + 空 `tool_calls` / 无工具可用 | 协议信号不一致（声明调工具却没给出 / 系统未注册工具） | `_handle_tool_protocol_error` 协议异常 → `PARSE_FAILED` 分发；受独立协议修正上限约束 |
 | `stop` / `length` | 正常生成完毕（length 为截断） | `_finalize_outcome` 组装正常终态 |
 | 空 + 无内容 | 模型未生成有效输出 | `_handle_empty_output` 错误分发（默认重试） |
 
@@ -181,10 +181,10 @@ ReActStrategy.execute()（ReAct 主循环）
 
 | 方法 | 触发 | 默认行为 |
 | --- | --- | --- |
-| `_handle_tool_protocol_error` | finish_reason=tool_calls 但 tool_calls 为空（协议信号不一致） | `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表）；handler 可 STOP 终止 / RAISE 上抛 |
+| `_handle_tool_protocol_error` | finish_reason=tool_calls 但 tool_calls 为空 / 当前无可用工具（协议信号与数据或能力不一致） | `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表）；连续超过 `max_tool_protocol_retries` 硬终止（handler 可 STOP 终止 / RAISE 上抛，CONTINUE 在硬上限处折算为终止） |
 | `_handle_empty_output` | finish_reason 空 + content 空 | CONTINUE 重试；连续超过 `max_empty_retries` 硬终止（handler 可 STOP / RAISE，CONTINUE 被忽略） |
-| `_handle_tool_calls` | finish_reason=tool_calls | 调 `execute_tool_calls` 执行 → 失败工具按 kind 聚合分发 + 仲裁 → 全 CONTINUE → 继续循环（预算在循环顶部统一裁剪，见上下文预算节） |
-| `_handle_final_answer` | 检测到 final_answer 工具调用 | 成功提取 → 终止写 `outcome.structured`；校验失败 → `STRUCTURED_INVALID` 分发（默认回喂自纠） |
+| `_handle_tool_calls` | finish_reason=tool_calls | 调 `execute_tool_calls` 执行 → 失败工具按 kind 聚合分发 + 仲裁 → 全 CONTINUE → 继续循环（工具参数 JSON 解析失败计入 `max_tool_protocol_retries` 共享预算；预算在循环顶部统一裁剪，见上下文预算节） |
+| `_handle_final_answer` | 检测到 final_answer 工具调用 | 成功提取 → 终止写 `outcome.structured`；校验失败 → `STRUCTURED_INVALID` 分发（默认回喂自纠，连续超过 `max_tool_protocol_retries` 共享预算硬终止） |
 
 ### 支撑方法（_finalize_outcome / _finalize_terminal / _dispatch）
 
@@ -238,21 +238,24 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
   │       └─ LLM 失败 → _handle_llm_failed（STOP 短路 / CONTINUE 重试，重试受 max_llm_fail_retries 上限硬终止）
   ├─ 6. 模型拒答（refusal 字段 / content_filter）→ _finalize_refused（默认 STOP 停机，
   │       不误判为成功答案、不空转重试；DeepSeek stop+空 content 保持空回答语义）
-  ├─ 7. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
-  ├─ 8. 空输出连续计数：本轮有产出（工具调用/stop/length/有内容）→ 清零；空输出 → +1
-  ├─ 9. finish_reason 分支：
-  │     ├─ "tool_calls" 但无 tool_calls → _handle_tool_protocol_error（协议异常 → PARSE_FAILED 分发，
-  │     │       默认重试，不入空输出计数 / 不进停滞检测 / 不执行空工具列表）
+  ├─ 7. 工具协议信号校验（先校验再写历史）：
+  │     finish_reason=tool_calls 但 tool_calls 为空 / 当前无可用工具 → _handle_tool_protocol_error
+  │     （整条响应无效 → PARSE_FAILED 分发，受 max_tool_protocol_retries 共享预算硬终止；
+  │       不入空输出计数 / 不进停滞检测 / 不执行空工具列表；防未配对 tool_calls 触发下一轮 400）
+  ├─ 8. 追加有效 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400；纯空轮不追加）
+  ├─ 9. 根据 finish_reason 决定下一步（空输出连续计数随各分支更新）：
   │     ├─ "tool_calls" 且有工具 →
-  │     │     ├─ 含 final_answer？→ _handle_final_answer（成功终止 / 校验失败回喂）
+  │     │     ├─ 含 final_answer？→ _handle_final_answer（成功终止 / 校验失败回喂；
+  │     │     │       校验失败受 max_tool_protocol_retries 共享预算）
   │     │     ├─ 停滞检测：连续相同工具调用超 max_same_action_turns → _finalize_stalled（不执行工具）
   │     │     └─ _handle_tool_calls：execute_tool_calls 并行执行 → 失败工具按 kind 聚合分发 + 仲裁
-  │     │           → 全 CONTINUE → 下一轮
+  │     │           （工具参数 JSON 解析失败受 max_tool_protocol_retries 共享预算）→ 全 CONTINUE → 下一轮
   │     ├─ "stop"/"length"/有内容 → _finalize_outcome（正常结束）
   │     └─ 空输出 → _handle_empty_output（默认 CONTINUE 重试；连续超 max_empty_retries 硬终止；STOP → 终止）
   ├─ 10. 循环耗尽 → _finalize_max_turns（默认 STOP：last_visible_result 兜底）
-  ├─ 11. 内部 deadline / timeout scope.expired() → _finalize_guard_result(TIMEOUT)（保留当前轮部分成果）
-  └─ 12. 内部普通 TimeoutError / 其他未捕获异常 → _finalize_unknown（默认 STOP：保留当前轮部分进度）；
+  └─ 11. 异常处理：
+        内部 deadline / timeout scope.expired() → _finalize_guard_result(TIMEOUT)（保留当前轮部分成果）；
+        内部普通 TimeoutError / 其他未捕获异常 → _finalize_unknown（默认 STOP：保留当前轮部分进度）；
         AgentRunError（RAISE 决策）前置 re-raise 不被吞；asyncio.CancelledError / GeneratorExit
         是 BaseException 不被捕获（保持 CANCELLED / 生成器关闭语义）
 ```
@@ -266,7 +269,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
 | `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
-| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, output_schema=None, stream_mode=True, cancel_event=None, baseline_usage=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome`。`stream_mode`：True=流式 async_generate（默认，逐 token）；False=非流式 generate()（整条 reasoning/message 事件，后台子 Agent 无人订阅场景，Phase C）。`baseline_usage`：跨阶段复用方（planner 步骤子跑）注入调用方累计用量，仅参与成本判定、不进报告口径 |
+| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_tool_protocol_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, output_schema=None, stream_mode=True, cancel_event=None, baseline_usage=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome`。`max_tool_protocol_retries`：三类工具协议修正共享的连续重试预算。`stream_mode`：True=流式 async_generate（默认，逐 token）；False=非流式 generate()（整条 reasoning/message 事件，后台子 Agent 无人订阅场景，Phase C）。`baseline_usage`：跨阶段复用方（planner 步骤子跑）注入调用方累计用量，仅参与成本判定、不进报告口径 |
 | `execute_tool_calls(tool_calls, messages, iteration, tool_timeout=None, tool_max_retries=None) -> AsyncGenerator[str]` | 异步生成器 | 工具并行执行原语（gather 保序 + 事件产出 + 记录；`tool_timeout`/`tool_max_retries` 透传 ToolGateway，None=走执行器全局）；现独立入口：`ReActAgent._execute_tool_calls` 转发（既有测试兼容）。Reflection / Planner 的收集 / 执行阶段复用完整 `execute`（[reflection.md](reflection.md) / [planner.md](planner.md)） |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
 
@@ -303,11 +306,11 @@ result = strategy.outcome  # ReActOutcome
 12. **错误处理分发**（`error_handlers`，None=默认行为）→ 各终结/可恢复错误按 kind 分发（CONTINUE/STOP/RAISE）；默认 = 现有行为，调用方按 kind 注册覆盖
 13. **多工具失败** → 按 kind 聚合（同 kind 原因合并给 handler）；RAISE 在 `_dispatch` 中立即传播，否则 STOP 优先于 CONTINUE；终止/上报时其他失败不回喂，但全部失败已进证据链
 14. **空输出重试上限**（`max_empty_retries`，默认 2）→ 连续空输出计数，超过上限在空输出分支硬终止（`error` 记录「连续空输出（N 轮）」，先 dispatch 供 handler RAISE，CONTINUE 忽略）；有产出轮计数清零（非连续不累计）；LLM 失败重试轮不参与。**空输出重试轮不追加空 assistant 消息**（无产出不写历史，防累积污染上下文；thinking 空 reasoning 轮 `has_reasoning=True` 仍追加保字段）
-15. **循环停滞检测**（`max_same_action_turns`，默认 3）→ 连续相同工具调用（工具+参数）超过上限 → STALLED 分发硬终止（本轮工具不执行，error 记录「连续 N 轮相同工具调用」）；参数规范化（key 顺序 / 空白不同指纹一致）；换工具 / 换参数重置；`final_answer` 不参与；STALLED handler 可 RAISE 上抛
+15. **循环停滞检测**（`max_same_action_turns`，默认 3）→ 连续相同工具调用（工具+参数）超过上限 → STALLED 分发硬终止（本轮工具不执行，error 记录「连续 N 轮相同工具调用」）；参数规范化（key 顺序 / 空白不同指纹一致）；换工具 / 换参数重置；真正的结构化 `final_answer` 在此之前完成提取或进入修正，未启用 output_schema 时同名未知工具仍参与指纹；STALLED handler 可 RAISE 上抛
 16. **模型拒答**（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，error 记录「模型拒答: <截断文本>」）；显式信号原则（LLM-004，不靠 content 空推断）——DeepSeek 无 refusal 字段的 stop+空 content 保持空回答语义；拒答文本截断（LLM-008 基线）
 17. **未捕获异常**（UNKNOWN）→ 主循环 `except Exception` 兜底：当前轮有可见进度时优先用 `current_result`，否则用 `last_visible_result` 组装 outcome 并合并未归账 usage，保留部分进度 + 证据链；error 仅记录「Agent 运行异常: <异常类型名>」（**脱敏**——不拼接异常 message，完整异常含 traceback 进日志供运维诊断，产品侧不泄漏内部细节，见 [REASON-005](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)）；RAISE 决策（`AgentRunError`）前置 re-raise 不被吞；`asyncio.CancelledError` / `GeneratorExit` 是 `BaseException`，保持 CANCELLED / 生成器关闭语义
 18. **用户取消**（`cancel_event`，None=不启用）→ 调用前、成功归账后与类型化异常出口经同一 guard 判定，CANCELLED 优先于 deadline/cost/context；不重试并保留当前可见成果与真实 usage；`asyncio.CancelledError`（硬取消）仍走 BaseAgent.run 的独立路径
-19. **协议异常**（`finish_reason=tool_calls` 但 `tool_calls` 为空 **或** 无工具可用）→ `_handle_tool_protocol_error` 短路为 `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表，避免空转浪费轮次）；handler 可 STOP 终止（error 记录「协议异常」）/ RAISE 上抛。覆盖两类信号不一致：① 声明调工具却没给出 `tool_calls`；② 要调工具但系统未注册任何工具（`has_tools=False`）。
+19. **工具协议修正上限**：`finish_reason=tool_calls` 信号不一致、`final_answer` 校验失败、工具参数 JSON 解析失败共享连续计数。最多修正 N 次，第 N+1 次仍异常即硬终止；handler 的 RAISE 仍立即传播，STOP/CONTINUE 在硬上限处均终止。合法工具协议轮清零，LLM 失败或空输出不代表协议恢复。无效 assistant/tool_calls 先短路且不写入历史，防止下一轮形成未配对消息。
 20. **非流式通道**（`stream_mode=False`，默认 True）→ 每轮 LLM 改走 `generate(model_key="main")` 一次拿完整 StreamResult，主循环护栏语义（成本/失败/拒答/工具/停滞/空输出）与流式一致；差异：① reasoning/message 事件为**整条一次性**（SSE 协议同构，前端打字机退化为整段）；② 失败契约对齐流式整流——`generate` 返回 None（可恢复耗尽）与抛 `AppError` 均折算 `LLM_FAILED` 分发（流式路径此情形从不走 UNKNOWN）；**共享 `AppError` 树含熔断 `CircuitBreakerOpenError`**（NonRetryableError 子类）→ 熔断同样归 LLM_FAILED（两通道一致）；仅 `AppError` 树外的编程错误冒泡外层 `UNKNOWN`；③ `cancel_event` 与绝对 deadline 进入 generate 内部，约束 reserve/create/retry，成功结算后仍复查一次；④ 无对应 settings 项（YAGNI，Phase C 子 Agent 构造 ctx 置 False；勿与仅作元数据出口的 `agent_streaming` 混淆）
 
 ---
@@ -324,6 +327,7 @@ result = strategy.outcome  # ReActOutcome
 | `agent_max_cost` | float \| None | None | 成本上限（美元 USD）；None=不启用（装配根据此构造 CostLimiter 注入，0 则任何正成本即停） |
 | `agent_max_empty_retries` | int | 2 | 连续空输出重试上限：空输出最多重试 N 次，第 N+1 次仍空输出则终止（0=首次空输出即终止） |
 | `agent_max_llm_fail_retries` | int | 2 | LLM 失败重试上限：LLM 调用失败最多重试 N 次，第 N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏，防 handler CONTINUE 无限重试） |
+| `agent_max_tool_protocol_retries` | int | 2 | 工具调用协议修正上限：三类协议异常共享连续预算；最多修正 N 次，第 N+1 次仍异常则终止（0=首次异常即终止） |
 | `agent_max_same_action_turns` | int | 3 | 循环停滞检测：连续相同工具调用（工具+参数）超过 N 轮，下一轮仍相同则 STALLED 终止 |
 
 `AgentContext.max_context_tokens` 无独立 `agent_max_context_tokens` 配置——生产值复用全局 `max_context_tokens`（默认 128000，LLM 上下文窗口，见 [config](../../config_doc/config.md)）由装配根注入；轮次预算由 `agent_max_context_rounds`（8）配置。完整配置表见 [config 文档](../../config_doc/config.md)。
@@ -339,7 +343,7 @@ result = strategy.outcome  # ReActOutcome
 - **时间上限**：首轮超时降级 / 中途超时保留部分进度 / 宽松上限不影响完成 / `None` 显式不设限 / 内部普通 `TimeoutError` 归 UNKNOWN / 外部 task cancel 与异 task `aclose()` 不被吞
 - **统一护栏**：`cancel > deadline > cost > context` 直接契约 / 基线已超成本时零 LLM 调用 / 流式与非流式调用后取消优先于成本且 usage 不丢 / 宽松上限与未配置 limiter 不触发
 - **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛 / 重试轮不追加空 assistant 消息
-- **循环停滞检测**：同工具同参数达上限终止 / 未达上限正常 / 参数变化重置 / 换工具重置 / 上限可配置 / final_answer 不参与 / STALLED handler RAISE / 参数 key 顺序规范化指纹相同
+- **循环停滞检测**：同工具同参数达上限终止 / 未达上限正常 / 参数变化重置 / 换工具重置 / 上限可配置 / 未启用 output_schema 时同名 `final_answer` 的参数参与指纹（参数变化不误判停滞）/ STALLED handler RAISE / 参数 key 顺序规范化指纹相同
 - **模型拒答**：refusal 非空终止（content 保留）/ content_filter 终止 / REFUSED handler RAISE / CONTINUE 忽略
 - **未捕获异常**：中途异常保留证据链 / UNKNOWN handler RAISE 抛 AgentRunError / CONTINUE 忽略 / error 脱敏（只留异常类型名，敏感 message 不泄漏，完整异常进日志）
 - **优雅取消**：cancel_event 置位终止 / LLM error+置位 → CANCELLED 不重试 / 未置位正常
@@ -349,7 +353,7 @@ result = strategy.outcome  # ReActOutcome
 - **final_answer**：成功提取终止 / 校验失败回喂 / 未配置不注入
 - **错误处理**：LLM_FAILED→CONTINUE 重试 / LLM_FAILED→RAISE 上抛 / EMPTY_OUTPUT→STOP / TOOL_FAILED→STOP（部分进度保留）/ STRUCTURED_INVALID→STOP / **LLM 失败重试上限**（持续失败硬终止 / 成功轮清零 / 达上限 RAISE / 0=首次即终止 / 默认 STOP 零变化）
 - **多工具失败**：同 kind 聚合 message / 跨 kind STOP 仲裁 / 跨 kind RAISE 仲裁
-- **协议异常**：finish_reason=tool_calls 空列表默认重试后正常结束 / 连续协议异常不入空输出计数（max_iterations 兜底）/ PARSE_FAILED handler STOP 终止 / RAISE 上抛 / 无工具场景同样识别 / **无工具 + 非空 tool_calls 短路**
+- **协议异常**：finish_reason 信号不一致、final_answer 校验失败、JSON 参数解析失败共享独立上限 / N 次修正与第 N+1 次硬终止 / 0=首次终止 / 合法工具轮清零 / LLM 失败不清零 / handler STOP、RAISE / 无效 assistant 不污染历史 / 无工具 + 非空 tool_calls 短路
 - **handler 异常防御**：LLM_FAILED handler 抛异常默认 STOP（error 为 LLM 失败原因）/ TOOL_FAILED handler 抛异常默认 CONTINUE（回喂继续）/ UNKNOWN handler 抛异常兜底不崩（registry 层另经 test_error_handling 覆盖）
 
 - **非流式通道**（`tests/unit/test_react_strategy_nonstream.py`）：单轮 stop、工具循环、失败分类、调用后 cancel/cost 优先级、usage 累计、空输出恢复、reasoning-only、final_answer 与双通道 outcome 对齐
@@ -389,6 +393,7 @@ result = strategy.outcome  # ReActOutcome
 - [REASON-014 内部 TimeoutError 分类](../../../issues/domain/reasoning/2026-09-09-internal-timeout-misclassified-as-deadline.md)：仅 timeout scope 实际到期才归 TIMEOUT；内部同名异常归 UNKNOWN 并保留当前轮成果（已修复）
 - [REASON-015 续接上下文超限当前轮成果](../../../issues/domain/reasoning/2026-09-10-continuation-context-overflow-progress.md)：续接前缀被预算闸拒绝时保留当前内容与旧请求 usage，不再发起后续请求（已修复）
 - [REASON-016 跨策略执行护栏](../../../issues/domain/reasoning/2026-09-10-cross-strategy-guard-priority.md)：类型化四类优先级、付费调用前后对称复查与成功结果先接管后终止（已修复）
+- [REASON-017 工具协议修正缺少独立上限](../../../issues/domain/reasoning/2026-09-10-tool-protocol-retry-limit.md)：三类协议修正仅受全局迭代数间接约束，且无效消息可能污染历史；已补共享连续预算、入口边界和三策略透传（已修复）
 
 ---
 

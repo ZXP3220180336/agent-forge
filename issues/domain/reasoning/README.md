@@ -31,6 +31,7 @@
 | [REASON-014](2026-09-09-internal-timeout-misclassified-as-deadline.md) | LLM 内部 TimeoutError 穿透后被 ReAct 误判为总执行超时 | ✅ 已修复 | reasoning/react · integration/llm | 2026-09-09 |
 | [REASON-015](2026-09-10-continuation-context-overflow-progress.md) | 续接前缀上下文超限时丢失当前轮内容与旧请求 usage | ✅ 已修复 | reasoning/react · integration/llm | 2026-09-10 |
 | [REASON-016](2026-09-10-cross-strategy-guard-priority.md) | 跨策略执行护栏缺少类型化优先级与调用后复查 | ✅ 已修复 | reasoning/common · react · reflection · planner | 2026-09-10 |
+| [REASON-017](2026-09-10-tool-protocol-retry-limit.md) | 工具调用协议修正缺少独立重试上限，API 总迭代边界可绕过 | ✅ 已修复 | reasoning/react · reflection · planner · agent · api · config | 2026-09-10 |
 
 ## 新问题登记规范
 

@@ -166,7 +166,7 @@ async def test_chat_send_message_react_loop(tmp_path):
         llm_service=fake_llm,
         tool_service=registry,
         task_service=TaskService(),
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_same_action_turns": 3},
+        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
         cost_limiter=None,  # 直接调用绕过 FastAPI DI，显式传 None（不启用成本上限）
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持（不触发断连）
     )
@@ -236,7 +236,7 @@ async def test_chat_send_message_no_tools_plain_answer():
         llm_service=fake_llm,
         tool_service=registry,
         task_service=TaskService(),
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_same_action_turns": 3},
+        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
         cost_limiter=None,  # 直接调用绕过 FastAPI DI，显式传 None（不启用成本上限）
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持（不触发断连）
     )
@@ -278,7 +278,7 @@ async def test_chat_stop_cancels_running_agent():
         llm_service=fake_llm,
         tool_service=registry,
         task_service=ts,
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_same_action_turns": 3},
+        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
         cost_limiter=None,
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持
     )
@@ -345,7 +345,7 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch):
         llm_service=fake_llm,
         tool_service=registry,
         task_service=ts,
-        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_same_action_turns": 3},
+        agent_params={"max_iterations": 5, "temperature": 0.2, "max_tokens": 4096, "max_execution_time": 300, "max_context_rounds": 8, "max_context_tokens": 128000, "max_empty_retries": 2, "max_llm_fail_retries": 2, "max_tool_protocol_retries": 2, "max_same_action_turns": 3},
         cost_limiter=None,
         # 前 1 次检查正常、之后视为断连：模拟首个事件推送后连接断开
         http_request=cast(Request, _FakeRawRequest(disconnect_after=1)),
@@ -364,3 +364,89 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch):
         f"断连后应停止向断连客户端推送后续事件: {types}"
     )
     assert ts.get_cancel_event("s4") is None, "流结束应清理会话取消事件"
+
+
+_AGENT_PARAMS_BASE = {
+    "temperature": 0.2,
+    "max_tokens": 4096,
+    "max_execution_time": 300,
+    "max_context_rounds": 8,
+    "max_context_tokens": 128000,
+    "max_empty_retries": 2,
+    "max_llm_fail_retries": 2,
+    "max_tool_protocol_retries": 2,
+    "max_same_action_turns": 3,
+}
+
+
+async def _run_with_iteration_budget(
+    tmp_path, *, agent_max_iterations: int, request_max_iterations: int | None
+) -> FakeLLM:
+    """按给定的装配值 / 请求值跑一次 send_message，返回 FakeLLM（用于读实际 LLM 调用次数）。
+
+    脚本每轮都调工具、从不给最终答复，因此循环必然耗尽：LLM 调用次数 == 生效的 max_iterations。
+    """
+    fake_sm = FakeSessionManager(
+        {"id": "s_iter", "user_id": "user_x", "system_prompt": "sys"}
+    )
+    context_manager = ContextManager(
+        session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4")
+    )
+    target_file = tmp_path / "out.txt"
+    fake_llm = FakeLLM(
+        [
+            {
+                "type": "tool_calls",
+                "tool": "writeFile",
+                # 参数逐轮不同：避免触发相同动作停滞检测，保证耗尽路径只由迭代上限决定
+                "args": {"file_path": str(target_file), "content": f"v{index}"},
+            }
+            for index in range(5)
+        ]
+    )
+    registry = ToolService()
+    WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
+    registry.register(WriteFileTool())
+
+    request = SendMessageRequest(
+        session_id="s_iter", message="帮我写个文件", max_iterations=request_max_iterations
+    )
+    response = await send_message(
+        request=request,
+        user_id="user_x",
+        session_manager=fake_sm,
+        context_manager=context_manager,
+        llm_service=fake_llm,
+        tool_service=registry,
+        task_service=TaskService(),
+        agent_params={
+            **_AGENT_PARAMS_BASE,
+            "max_iterations": agent_max_iterations,
+        },
+        cost_limiter=None,
+        http_request=cast(Request, _FakeRawRequest()),
+    )
+
+    async for _ in response.body_iterator:
+        pass
+    return fake_llm
+
+
+@pytest.mark.asyncio
+async def test_chat_send_request_iterations_override_agent_params(tmp_path):
+    """请求显式传入 max_iterations 时覆盖装配值（装配 1 被请求 3 覆盖）。"""
+    fake_llm = await _run_with_iteration_budget(
+        tmp_path, agent_max_iterations=1, request_max_iterations=3
+    )
+
+    assert fake_llm.calls == 3, "请求显式 max_iterations 应覆盖装配值"
+
+
+@pytest.mark.asyncio
+async def test_chat_send_falls_back_to_agent_params_iterations(tmp_path):
+    """请求未提供 max_iterations 时采用装配值（装配 1 生效，不回落 schema 旧默认 10）。"""
+    fake_llm = await _run_with_iteration_budget(
+        tmp_path, agent_max_iterations=1, request_max_iterations=None
+    )
+
+    assert fake_llm.calls == 1, "未提供 max_iterations 时应采用装配根值"

@@ -139,6 +139,7 @@ async def test_initialize_happy_path(monkeypatch):
         "max_context_rounds": settings.agent_max_context_rounds,
         "max_context_tokens": settings.max_context_tokens,
         "max_empty_retries": settings.agent_max_empty_retries,
+        "max_tool_protocol_retries": settings.agent_max_tool_protocol_retries,
         "max_llm_fail_retries": settings.agent_max_llm_fail_retries,
         "max_same_action_turns": settings.agent_max_same_action_turns,
     }

@@ -4,7 +4,7 @@
 集中管理所有 API 请求体模型，路由层只 import 使用，不在路由内定义。
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SendMessageRequest(BaseModel):
@@ -12,7 +12,7 @@ class SendMessageRequest(BaseModel):
 
     session_id: str
     message: str
-    max_iterations: int = 10
+    max_iterations: int | None = Field(default=None, ge=1, le=100)
     stream: bool = True  # 是否流式返回
 
 

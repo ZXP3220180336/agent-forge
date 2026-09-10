@@ -155,13 +155,13 @@ def _action_fingerprint(tool_calls: list[dict]) -> str:
 
     参数 json.loads 后 sort_keys 重 dump——语义相同的不同 key 顺序 / 空白指纹一致
     （对齐 ml-intern doom-loop args 规范化）；参数 JSON 非法时回退原始字符串。
-    排除 final_answer（终止工具，非循环动作）；整轮仅 final_answer 时返回空串（不检测）。
+    真正的 final_answer 会在停滞检测前完成提取或进入协议修正，不会走到本函数；
+    未启用 output_schema 时它只是普通工具名，按名排除会让其参数不参与指纹——
+    整轮仅该调用时指纹恒为 "[]"，参数各异的连续轮次被误判为同一动作。
     """
     sig = []
     for tc in tool_calls:
         name = tc["function"]["name"]
-        if name == _FINAL_ANSWER_TOOL:
-            continue
         try:
             args = json.loads(tc["function"]["arguments"])
         except json.JSONDecodeError, KeyError:
@@ -210,6 +210,8 @@ class ReActStrategy:
         self._tool_call_records: list[dict[str, Any]] = []
         # 连续空输出重试计数（execute 每次开头重置；本轮有产出清零、空输出 +1）
         self._empty_retries = 0
+        # 连续工具调用协议异常计数（execute 开头重置；合法工具协议轮清零）。
+        self._tool_protocol_retries = 0
         # 循环停滞检测状态：上一轮动作指纹 + 连续相同计数（execute 开头重置）
         self._last_action_fp: str | None = None
         self._stall_count = 0
@@ -229,6 +231,7 @@ class ReActStrategy:
         max_context_tokens: int | None = None,
         max_empty_retries: int = 2,
         max_llm_fail_retries: int = 2,
+        max_tool_protocol_retries: int = 2,
         max_same_action_turns: int = 3,
         tool_timeout: int | None = None,
         tool_max_retries: int | None = None,
@@ -248,17 +251,16 @@ class ReActStrategy:
             5. LLM 失败（stream_result.error 非空）→ LLM_FAILED 分发
                （默认 STOP 短路；handler 可 CONTINUE 重试，重试受 max_llm_fail_retries 上限硬终止）
             6. 模型拒答（refusal 字段 / content_filter）→ REFUSED 分发（默认停机）
-            7. 追加 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400）
-            8. 检查 finish_reason
-               - "tool_calls" 但无 tool_calls / 无工具可用 → 协议异常 → PARSE_FAILED 分发（默认重试，不入空输出计数）
+            7. 检查工具协议信号；无效响应先短路，不写入消息历史
+               （协议异常受 max_tool_protocol_retries 独立修正上限约束）
+            8. 追加有效 assistant 消息（纯空轮不追加）
+            9. 根据 finish_reason 决定下一步
                - "tool_calls" → final_answer 检测 → 停滞检测（连续相同超限硬终止）→ 执行工具，追加结果，继续循环
                - "stop"       → 生成最终结果，结束循环
                - "length"     → 生成部分结果，结束循环
                - 空输出       → 连续计数 +1；超过 max_empty_retries 硬终止，否则错误分发重试
-            9. 循环耗尽 → MAX_TURNS 分发（默认兜底）
-            10. 类型化终止异常 / 外层真实超时 → 统一护栏优先级后分发
-            11. 未捕获异常 → UNKNOWN 分发（默认保留部分进度）；
-                AgentRunError（RAISE 决策）前置 re-raise
+            10. 循环耗尽 → MAX_TURNS 分发（默认兜底）
+            11. 各类异常处理
 
         实现：主循环仅保留骨架，各终止/错误分支拆分为职责单一的方法
         （_finalize_* / _handle_*），以 `outcome is not None` 作为终止信号。
@@ -281,6 +283,10 @@ class ReActStrategy:
                 N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏）；达上限走
                 LLM_FAILED 分发硬终止——即使 handler 返回 CONTINUE 也不继续（防
                 handler 配置失误 / LLM 持续失败时无限重试烧钱）
+            max_tool_protocol_retries: 工具调用协议修正上限——信号不一致、final_answer
+                校验失败、工具参数 JSON 解析失败共享连续计数；最多修正 N 次，第 N+1
+                次仍异常则硬终止（0=首次异常即终止）。合法工具协议轮清零；LLM 失败
+                或空输出不代表协议恢复，不清零
             max_same_action_turns: 循环停滞检测——连续相同工具调用（工具+参数）
                 超过 N 轮后，下一轮仍相同则终止（默认 3）；达上限走 STALLED
                 分发硬终止（防死循环烧钱/重复副作用）
@@ -323,6 +329,8 @@ class ReActStrategy:
         self._empty_retries = 0
         # LLM 失败重试计数：execute 每次独立（成功轮清零 / 失败轮 +1，见主循环；
         self._llm_fail_retries = 0
+        # 工具协议修正计数：三类协议异常共享，合法工具协议轮才清零。
+        self._tool_protocol_retries = 0
         # 循环停滞检测：execute 每次独立（相同动作指纹 + 连续计数，见主循环）
         self._last_action_fp = None
         self._stall_count = 0
@@ -494,8 +502,33 @@ class ReActStrategy:
 
                     full_reasoning = stream_result.reasoning_content
                     full_content = stream_result.content
+                    finish_reason = stream_result.finish_reason or ""
 
-                    # ----- 7. 将 LLM 回复追加到消息历史 -----
+                    # ----- 7. 工具调用协议异常：finish_reason=tool_calls 但无 tool_calls / 无工具可用 -----
+                    # 工具调用信号与数据/能力不一致时，整条 assistant 响应无效。
+                    # 必须先校验再写历史，否则无工具场景会留下无法配对的 tool_calls，
+                    # 下一轮请求可能被 OpenAI 兼容网关以 400 拒绝。
+                    if finish_reason == "tool_calls" and (
+                        not stream_result.tool_calls or not has_tools
+                    ):
+                        detail = (
+                            "finish_reason=tool_calls 但未返回工具调用（协议异常）"
+                            if not stream_result.tool_calls
+                            else "模型返回 tool_calls 但当前无可用工具（协议异常）"
+                        )
+                        for e in await self._handle_tool_protocol_error(
+                            detail,
+                            full_reasoning,
+                            iteration,
+                            total_usage,
+                            max_tool_protocol_retries,
+                        ):
+                            yield e
+                        if self.outcome is not None:
+                            return
+                        continue
+
+                    # ----- 8. 将 LLM 回复追加到消息历史 -----
                     # 纯空轮（无 content / 无 reasoning / 无 tool_calls / 无 has_reasoning
                     # 信号）不追加——空 assistant 消息无信息量，空输出重试累积会污染上下文
                     # （模型下轮看不到空消息也无影响；对齐工业级不把空输出轮写进历史）。
@@ -521,91 +554,66 @@ class ReActStrategy:
                             assistant_msg["tool_calls"] = stream_result.tool_calls
                         messages.append(assistant_msg)
 
-                    # ----- 8. 根据 finish_reason 决定下一步 -----
-                    finish_reason = stream_result.finish_reason or ""
+                    # ----- 9. 根据 finish_reason 决定下一步 -----
                     if finish_reason == "tool_calls":
-                        # ----- （1）调用工具 → 协议异常重试或协议正常继续调用大模型
-                        if not stream_result.tool_calls or not has_tools:
-                            # 协议异常：信号与数据/工具可用性不一致
-                            # 两类不一致：
-                            # ① 声明调工具却没给出 tool_calls（服务端异常/被截断）；
-                            # ② 要调工具但系统未注册任何工具（has_tools=False——模型选了工具而
-                            #    注册表为空，协议不一致）。
-                            # - 均非「空输出」（有调用意图）、非「工具失败」（无工具可执行）。
-                            # - 短路为 PARSE_FAILED 分发
-                            # - 不入空输出计数（与 max_empty_retries 独立，
-                            #   避免 tool_calls 为真清零计数后无上限空转）
-                            # - 不进 execute_tool_calls 空转。
-                            # - 默认 CONTINUE 重试，handler 可 STOP/RAISE。
-                            for e in await self._handle_tool_protocol_error(
-                                full_reasoning, iteration, total_usage
+                        # ----- （1）协议正常的工具调用 → 执行或 final_answer 修正
+                        self._empty_retries = 0
+                        yield build_info_event(
+                            f"检测到 {len(stream_result.tool_calls)} 个工具调用"
+                        )
+
+                        # ----- Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续 -----
+                        # （注入工具非注册工具，识别在主循环，不进 execute_tool_calls）
+                        if output_schema is not None and any(
+                            tc["function"]["name"] == _FINAL_ANSWER_TOOL
+                            for tc in stream_result.tool_calls
+                        ):
+                            for e in await self._handle_final_answer(
+                                stream_result.tool_calls,
+                                messages,
+                                iteration,
+                                output_schema,
+                                total_usage,
+                                full_reasoning,
+                                max_tool_protocol_retries,
                             ):
                                 yield e
                             if self.outcome is not None:
                                 return
-                            continue  # CONTINUE（默认）：重试下一轮
+                            continue  # final_answer CONTINUE：回喂后继续
+
+                        # ----- 循环停滞检测：相同工具 + 参数连续重复 → STALLED 分发硬终止 -----
+                        fp = _action_fingerprint(stream_result.tool_calls)
+                        if fp and fp == self._last_action_fp:
+                            self._stall_count += 1
                         else:
-                            # 协议正常：继续调用大模型
-                            self._empty_retries = (
-                                0  # 本轮有产出（正常工具调用） → 空输出连续计数清零；
-                            )
-                            yield build_info_event(
-                                f"检测到 {len(stream_result.tool_calls)} 个工具调用"
-                            )
-
-                            # ----- Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续 -----
-                            # （注入工具非注册工具，识别在主循环，不进 execute_tool_calls）
-                            if output_schema is not None and any(
-                                tc["function"]["name"] == _FINAL_ANSWER_TOOL
-                                for tc in stream_result.tool_calls
-                            ):
-                                for e in await self._handle_final_answer(
-                                    stream_result.tool_calls,
-                                    messages,
-                                    iteration,
-                                    output_schema,
-                                    total_usage,
-                                    full_reasoning,
-                                ):
-                                    yield e
-                                if self.outcome is not None:
-                                    return
-                                continue  # final_answer CONTINUE：回喂后继续
-
-                            # ----- 循环停滞检测：相同工具 + 参数连续重复 → STALLED 分发硬终止 -----
-                            # 动作指纹 = 本轮 tool_calls 的（名, 规范化参数）序列化；连续相同
-                            # 超过 max_same_action_turns 轮判死循环（对齐 SMOL same_action_llm_turn_limit）。
-                            # 停滞判定后不执行本轮工具：执行无意义 + 防重复副作用 / 烧钱。
-                            fp = _action_fingerprint(stream_result.tool_calls)
-                            if fp and fp == self._last_action_fp:
-                                self._stall_count += 1
-                            else:
-                                self._stall_count = 1
-                                self._last_action_fp = fp
-                            if self._stall_count > max_same_action_turns:
-                                for e in await self._finalize_stalled(
-                                    stream_result.tool_calls,
-                                    iteration,
-                                    total_usage,
-                                    full_reasoning,
-                                    self._stall_count,
-                                ):
-                                    yield e
-                                return
-
-                            async for event in self._handle_tool_calls(
+                            self._stall_count = 1
+                            self._last_action_fp = fp
+                        if self._stall_count > max_same_action_turns:
+                            for e in await self._finalize_stalled(
                                 stream_result.tool_calls,
-                                messages,
                                 iteration,
                                 total_usage,
                                 full_reasoning,
-                                tool_timeout,
-                                tool_max_retries,
+                                self._stall_count,
                             ):
-                                yield event
-                            if self.outcome is not None:
-                                return
-                            continue
+                                yield e
+                            return
+
+                        async for event in self._handle_tool_calls(
+                            stream_result.tool_calls,
+                            messages,
+                            iteration,
+                            total_usage,
+                            full_reasoning,
+                            tool_timeout,
+                            tool_max_retries,
+                            max_tool_protocol_retries,
+                        ):
+                            yield event
+                        if self.outcome is not None:
+                            return
+                        continue
                     elif finish_reason in ("stop", "length") or full_content.strip():
                         # ----- （2）stop / length / 有内容 → 正常结束
                         self._empty_retries = 0  # 本轮有产出（stop / length / 有内容）→ 空输出连续计数清零
@@ -629,12 +637,12 @@ class ReActStrategy:
                             return
                         # CONTINUE（默认）：重试（_handle_empty_output 已产出重试信息）
 
-                # ----- 9. 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
+                # ----- 10. 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
                 for e in await self._finalize_max_turns(
                     last_visible_result, max_iterations, total_usage
                 ):
                     yield e
-
+        # ----- 11. 异常处理 -----
         except AgentRunError:
             # 异常来源：本方法内各 `_finalize_*` / `_handle_*` 经 `_dispatch` →
             # `dispatch_error` 调用错误处理器；处理器返回 RAISE 时，后者构造并抛出
@@ -642,8 +650,7 @@ class ReActStrategy:
             # 不能再被下方 Exception 兜底改写为 UNKNOWN。
             raise
         except TimeoutError as exc:
-            # ----- 10. 区分外层硬超时与内部普通 TimeoutError -----
-            # 异常来源有两类：
+            # TimeoutError 异常来源有两类：
             # ① 本方法的 `asyncio.timeout_at` 到期，取消当前 task，
             # scope 退出时将自身触发的 CancelledError 转为内置 TimeoutError；
             # ② LLMGateway 及其流读取/close/settle/log 等内部组件，或其他被调用端口，
@@ -690,7 +697,6 @@ class ReActStrategy:
             ):
                 yield e
             return
-
         except (
             ContextWindowExceededError,
             LLMCancelledError,
@@ -727,9 +733,7 @@ class ReActStrategy:
             ):
                 yield event
             return
-
         except Exception as e:  # noqa: BLE001
-            # ----- 11. 未捕获异常 → UNKNOWN 分发（默认保留部分进度）-----
             # 异常来源：try 范围内 ContextBudgetPort 裁剪、LLMGateway 调用、工具处理、
             # 消息/结果组装及其他策略内部代码抛出的、未被前面专用分支分类的 Exception。
             #   - AgentRunError、内置 TimeoutError 和三类 LLM 终结信号已被前置分支接管；
@@ -1081,20 +1085,46 @@ class ReActStrategy:
             info_message=error,
         )
 
+    async def _dispatch_tool_protocol_failure(
+        self,
+        kind: AgentErrorKind,
+        message: str,
+        iteration: int,
+        max_tool_protocol_retries: int,
+    ) -> tuple[AgentErrorAction, str | None]:
+        """登记一次连续协议异常并分发，返回（动作，硬终止原因）。
+
+        三类会触发新 LLM 修正轮的错误共享此预算。超过上限时仍调用当前 kind
+        的处理器，让 RAISE 保持可观察；STOP/CONTINUE 统一折算为 STOP。
+        """
+        self._tool_protocol_retries += 1
+        if self._tool_protocol_retries > max_tool_protocol_retries:
+            hard_error = (
+                f"连续工具调用协议异常（{self._tool_protocol_retries} 轮），已终止"
+            )
+            await self._dispatch(kind, hard_error, iteration)
+            return AgentErrorAction.STOP, hard_error
+        return await self._dispatch(kind, message, iteration), None
+
     async def _handle_tool_protocol_error(
         self,
+        message: str,
         full_reasoning: str,
         iteration: int,
         total_usage: dict,
+        max_tool_protocol_retries: int,
     ) -> list[str]:
-        """协议异常（finish_reason=tool_calls 但未返回工具调用）→ PARSE_FAILED 分发。
+        """工具调用信号/能力不一致 → PARSE_FAILED 分发并受协议修正上限约束。
 
-        模型声明要调工具却没给出 tool_calls——协议信号不一致（服务端异常/被截断），
-        非「空输出」（有调用意图）、非「工具失败」（无工具可执行）。默认 CONTINUE
-        重试下一轮（不参与空输出计数 / 停滞检测）；handler 可 STOP 终止 / RAISE 上抛。
+        无效响应不进入消息历史，也不参与空输出计数或停滞检测。默认 CONTINUE
+        修正下一轮；达到硬上限时 STOP/CONTINUE 均终止，RAISE 仍可上抛。
         """
-        msg = "finish_reason=tool_calls 但未返回工具调用（协议异常）"
-        action = await self._dispatch(AgentErrorKind.PARSE_FAILED, msg, iteration)
+        action, hard_error = await self._dispatch_tool_protocol_failure(
+            AgentErrorKind.PARSE_FAILED,
+            message,
+            iteration,
+            max_tool_protocol_retries,
+        )
         if action == AgentErrorAction.STOP:
             return self._finalize_outcome(
                 success=False,
@@ -1102,10 +1132,11 @@ class ReActStrategy:
                 reasoning=full_reasoning.strip(),
                 iteration=iteration,
                 total_usage=total_usage,
-                error=msg,
+                error=hard_error or message,
+                info_message=hard_error,
             )
 
-        return [build_info_event(f"{msg}，按错误处理策略重试")]
+        return [build_info_event(f"{message}，按错误处理策略重试")]
 
     async def _handle_final_answer(
         self,
@@ -1115,6 +1146,7 @@ class ReActStrategy:
         output_schema: dict,
         total_usage: dict,
         full_reasoning: str,
+        max_tool_protocol_retries: int,
     ) -> list[str]:
         """final_answer 工具：成功提取终止 / 校验失败分发（CONTINUE 回喂）。
 
@@ -1126,6 +1158,7 @@ class ReActStrategy:
         ]
         structured, err = _extract_final_answer(final_tcs[0], output_schema)
         if structured is not None:
+            self._tool_protocol_retries = 0
             # 成功：终止循环，结构化进 outcome
             return self._finalize_outcome(
                 success=True,
@@ -1139,8 +1172,11 @@ class ReActStrategy:
 
         # 校验失败 → 错误分发（默认 CONTINUE 回喂；handler 可终止/上抛）
         fa_msg = f"final_answer 参数{err}"
-        action = await self._dispatch(
-            AgentErrorKind.STRUCTURED_INVALID, fa_msg, iteration
+        action, hard_error = await self._dispatch_tool_protocol_failure(
+            AgentErrorKind.STRUCTURED_INVALID,
+            fa_msg,
+            iteration,
+            max_tool_protocol_retries,
         )
         if action == AgentErrorAction.STOP:
             return self._finalize_outcome(
@@ -1149,7 +1185,8 @@ class ReActStrategy:
                 reasoning=full_reasoning.strip(),
                 iteration=iteration,
                 total_usage=total_usage,
-                error="final_answer 参数校验失败（按错误处理策略终止）",
+                error=hard_error or "final_answer 参数校验失败（按错误处理策略终止）",
+                info_message=hard_error,
             )
 
         # CONTINUE（默认）：回喂错误文本，模型下轮自纠
@@ -1186,11 +1223,7 @@ class ReActStrategy:
         CONTINUE 被忽略（同 TIMEOUT / COST_EXCEEDED），RAISE 由 _dispatch 抛出。
         检测点在工具执行前：本方法返回即终止，本轮工具不执行。
         """
-        names = "、".join(
-            tc["function"]["name"]
-            for tc in tool_calls
-            if tc["function"]["name"] != _FINAL_ANSWER_TOOL
-        )
+        names = "、".join(tc["function"]["name"] for tc in tool_calls)
         error = f"连续 {count} 轮相同工具调用（{names}），已终止"
         # 停机组装 outcome（本轮无工具执行，content 空，保留 reasoning）
         return await self._finalize_terminal(
@@ -1214,6 +1247,7 @@ class ReActStrategy:
         full_reasoning: str,
         tool_timeout: int | None,
         tool_max_retries: int | None,
+        max_tool_protocol_retries: int,
     ) -> AsyncGenerator[str]:
         """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。
 
@@ -1236,6 +1270,12 @@ class ReActStrategy:
         new_failures = [
             r for r in self._tool_call_records[before:] if not r.get("success")
         ]
+        parse_failures = [
+            r for r in new_failures if r.get("error_code") == ErrorCode.JSON_PARSE.value
+        ]
+        # 工具参数可被正确解析即说明工具调用协议已恢复；业务失败属于另一语义。
+        if not parse_failures:
+            self._tool_protocol_retries = 0
         if new_failures:
             grouped: dict[AgentErrorKind, list[dict]] = {}
             for r in new_failures:
@@ -1248,12 +1288,36 @@ class ReActStrategy:
             # 同 kind 的多个失败聚合为一条 message；RAISE 在分发时立即传播，
             # 因此 decisions 只包含 STOP / CONTINUE。
             decisions: list[tuple[AgentErrorKind, str, AgentErrorAction]] = []
+            hard_protocol_error: str | None = None
             for kind, fails in grouped.items():
                 fail_msg = "；".join(
                     f"{f.get('tool', '?')}: {f.get('error', '')}" for f in fails
                 )
-                action = await self._dispatch(kind, fail_msg, iteration)
+                if kind == AgentErrorKind.PARSE_FAILED:
+                    (
+                        action,
+                        hard_protocol_error,
+                    ) = await self._dispatch_tool_protocol_failure(
+                        kind,
+                        fail_msg,
+                        iteration,
+                        max_tool_protocol_retries,
+                    )
+                else:
+                    action = await self._dispatch(kind, fail_msg, iteration)
                 decisions.append((kind, fail_msg, action))
+            if hard_protocol_error is not None:
+                for e in self._finalize_outcome(
+                    success=False,
+                    content="",
+                    reasoning=full_reasoning.strip(),
+                    iteration=iteration,
+                    total_usage=total_usage,
+                    error=hard_protocol_error,
+                    info_message=hard_protocol_error,
+                ):
+                    yield e
+                return
             # RAISE 已在 _dispatch 中传播；剩余决策中任何 STOP 都终止。
             for kind, fail_msg, action in decisions:
                 if action == AgentErrorAction.STOP:

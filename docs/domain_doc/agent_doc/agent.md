@@ -103,6 +103,7 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | `max_context_tokens` | `int \| None = None` | 上下文预算：消息总 token 上限；None=不裁剪 |
 | `max_empty_retries` | `int = 2` | 连续空输出重试上限（0=首次空输出即终止，生产值 `agent_max_empty_retries`） |
 | `max_llm_fail_retries` | `int = 2` | LLM 失败重试上限：连续失败超过上限硬终止（0=首次失败即终止；防 handler CONTINUE 无限重试，生产值 `agent_max_llm_fail_retries`） |
+| `max_tool_protocol_retries` | `int = 2` | 工具调用协议修正上限：连续异常超过上限硬终止（0=首次异常即终止，生产值 `agent_max_tool_protocol_retries`） |
 | `max_same_action_turns` | `int = 3` | 循环停滞检测：连续相同工具调用（工具+参数）上限（生产值 `agent_max_same_action_turns`） |
 | `max_refine_rounds` | `int = 2` | 修复尝试上限：Reflection 修正（初稿 1 + 至多 N-1 次修正）与 Planner replan（步骤失败重规划）共用，经 `max_replan_rounds` 语义注入（生产值 `agent_max_refine_rounds`） |
 | `stream_mode` | `bool = True` | LLM 通道开关：True=流式 `async_generate`（默认，chat SSE 订阅者）；False=非流式 `generate()`（后台子 Agent 无人逐 token 订阅，Phase C 编排按需置 False）。当前无对应 settings 项（YAGNI；勿与仅作元数据出口的 `agent_streaming` 混淆，后者无行为接线） |
@@ -269,6 +270,7 @@ Agent 模块与 `settings.py` 配置项关联（完整表见 [config 文档](../
 | `agent_max_context_rounds` | 8 | `AgentContext.max_context_rounds` 生产值（上下文预算保留轮数） |
 | `agent_max_empty_retries` | 2 | `AgentContext.max_empty_retries` 生产值（连续空输出重试上限） |
 | `agent_max_llm_fail_retries` | 2 | `AgentContext.max_llm_fail_retries` 生产值（LLM 失败重试上限） |
+| `agent_max_tool_protocol_retries` | 2 | `AgentContext.max_tool_protocol_retries` 生产值（三策略内嵌 ReAct 的协议修正上限） |
 | `agent_max_same_action_turns` | 3 | `AgentContext.max_same_action_turns` 生产值（循环停滞检测上限） |
 | `agent_max_refine_rounds` | 2 | `AgentContext.max_refine_rounds` 生产值（Reflection 修正 / Planner replan 共用修复尝试上限） |
 | `agent_max_concurrent_tools` | 3 | 单任务工具级并发（ToolGateway） |

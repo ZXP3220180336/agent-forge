@@ -928,7 +928,7 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
         async def execute(self, **kwargs) -> ToolResult:
             self.calls += 1
             if self.calls == 2:
-                await asyncio.sleep(0.3)
+                await asyncio.Event().wait()
             return await super().execute(**kwargs)
 
     llm = _ScriptedLLM(
@@ -956,7 +956,7 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
         max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=0.05,
+        max_execution_time=0.2,
     ):
         pass
 
@@ -2729,7 +2729,7 @@ async def test_react_protocol_error_retry_then_success():
 
 @pytest.mark.asyncio
 async def test_react_protocol_error_not_counted_as_empty_output():
-    """协议异常不入空输出计数：连续 3 轮协议异常 → max_iterations 兜底（非 EMPTY_OUTPUT 终止）。"""
+    """协议异常不入空输出计数，默认第 3 轮由独立协议修正上限终止。"""
     llm = _ScriptedLLM(
         [
             {"finish_reason": "tool_calls"},
@@ -2745,9 +2745,9 @@ async def test_react_protocol_error_not_counted_as_empty_output():
     ):
         pass
 
-    # max_empty_retries=2：若协议异常误入空输出计数，第 3 轮会 EMPTY_OUTPUT 硬终止
+    # 两种预算默认均为 2，但错误归因必须是协议异常而非空输出。
     assert strategy.outcome is not None
-    assert "最大迭代次数" in (strategy.outcome.error or "")
+    assert "连续工具调用协议异常" in (strategy.outcome.error or "")
     assert "连续空输出" not in (strategy.outcome.error or "")
 
 
@@ -2850,9 +2850,10 @@ async def test_react_protocol_error_no_tools_with_tool_calls():
     )
     strategy = ReActStrategy(llm=llm, tools=None)  # 未注册任何工具
 
+    messages = [{"role": "user", "content": "hi"}]
     events = []
     async for event in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi", messages,
         max_iterations=3, temperature=0.2, max_tokens=1024,
     ):
         events.append(event)
@@ -2867,6 +2868,248 @@ async def test_react_protocol_error_no_tools_with_tool_calls():
     assert any("协议异常" in e for e in events)
     assert not any("LLM 未生成有效输出" in e for e in events)
     assert strategy.outcome.tool_calls == []
+    # 无工具可用时该 tool_calls 响应无从配对，不能写入下一轮请求历史。
+    assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistant_msgs) == 1
+    assert assistant_msgs[0]["content"] == "完成"
+
+
+@pytest.mark.asyncio
+async def test_react_tool_protocol_retry_limit_hard_stops():
+    """持续协议异常只允许 N 次修正，第 N+1 次硬终止。"""
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls"}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=10,
+        temperature=0.2,
+        max_tokens=1024,
+        max_tool_protocol_retries=2,
+    ):
+        pass
+
+    assert llm.calls == 3
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "连续工具调用协议异常（3 轮）" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_tool_protocol_retry_limit_zero_stops_first_failure():
+    """协议修正上限为 0 时，首次异常即终止。"""
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls"}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=10,
+        temperature=0.2,
+        max_tokens=1024,
+        max_tool_protocol_retries=0,
+    ):
+        pass
+
+    assert llm.calls == 1
+    assert strategy.outcome is not None
+    assert "连续工具调用协议异常（1 轮）" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_tool_protocol_retry_count_resets_after_valid_tool_round():
+    """合法工具协议轮证明协议恢复，连续异常计数随即清零。"""
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls"},
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "tool_calls"},
+            {"finish_reason": "stop", "content": "完成"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=6,
+        temperature=0.2,
+        max_tokens=1024,
+        max_tool_protocol_retries=1,
+    ):
+        pass
+
+    assert llm.calls == 4
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+
+
+@pytest.mark.asyncio
+async def test_react_llm_failure_does_not_reset_tool_protocol_retry_count():
+    """传输失败没有证明工具协议恢复，不能清零协议修正计数。"""
+
+    async def continue_llm_failure(
+        ctx: AgentErrorContext,
+    ) -> AgentErrorAction:
+        return AgentErrorAction.CONTINUE
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.LLM_FAILED, continue_llm_failure)
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls"},
+            {"error": "临时传输失败"},
+            {"finish_reason": "tool_calls"},
+        ]
+    )
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=6,
+        temperature=0.2,
+        max_tokens=1024,
+        max_tool_protocol_retries=1,
+    ):
+        pass
+
+    assert llm.calls == 3
+    assert strategy.outcome is not None
+    assert "连续工具调用协议异常（2 轮）" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_invalid_final_answer_obeys_tool_protocol_retry_limit():
+    """final_answer 持续校验失败与工具协议异常共享修正上限。"""
+    bad_final = {
+        "id": "fa_bad",
+        "type": "function",
+        "function": {"name": "final_answer", "arguments": "{}"},
+    }
+    llm = _ScriptedLLM(
+        [{"finish_reason": "tool_calls", "tool_calls": [bad_final]}]
+    )
+    strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=10,
+        temperature=0.2,
+        max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA,
+        max_tool_protocol_retries=1,
+    ):
+        pass
+
+    assert llm.calls == 2
+    assert strategy.outcome is not None
+    assert "连续工具调用协议异常（2 轮）" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_invalid_tool_arguments_obey_tool_protocol_retry_limit():
+    """变化的非法 JSON 参数不能靠改变指纹绕过协议修正上限。"""
+    scripts = []
+    for index in range(3):
+        scripts.append(
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": f"bad_{index}",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": f"{{bad-{index}",
+                        },
+                    }
+                ],
+            }
+        )
+    llm = _ScriptedLLM(scripts)
+    strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=10,
+        temperature=0.2,
+        max_tokens=1024,
+        max_tool_protocol_retries=1,
+    ):
+        pass
+
+    assert llm.calls == 2
+    assert strategy.outcome is not None
+    assert "连续工具调用协议异常（2 轮）" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_final_answer_name_does_not_bypass_stall_limit():
+    """未启用 output_schema 时同名工具只是普通名称，同参数重复调用仍受停滞上限约束。"""
+    call = {
+        "id": "unknown_fa",
+        "type": "function",
+        "function": {"name": "final_answer", "arguments": "{}"},
+    }
+    llm = _ScriptedLLM(
+        [{"finish_reason": "tool_calls", "tool_calls": [call]}] * 3
+    )
+    strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=5,
+        temperature=0.2,
+        max_tokens=1024,
+        max_same_action_turns=1,
+    ):
+        pass
+
+    assert llm.calls == 2
+    assert strategy.outcome is not None
+    assert "相同工具调用" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_final_answer_arguments_enter_stall_fingerprint():
+    """同名 final_answer 的参数参与指纹：参数各异的连续轮次不得被误判为同一动作。
+
+    旧实现按名排除该调用，整轮仅它时指纹恒为 "[]"，参数不同的轮次会被提前判定停滞。
+    """
+    scripts = [
+        {
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": f"unknown_fa_{index}",
+                    "type": "function",
+                    "function": {"name": "final_answer", "arguments": f'{{"i": {index}}}'},
+                }
+            ],
+        }
+        for index in range(3)
+    ]
+    llm = _ScriptedLLM(scripts)
+    strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+        max_same_action_turns=1,
+    ):
+        pass
+
+    assert llm.calls == 3, "参数不同的同名调用不应触发停滞硬终止"
+    assert strategy.outcome is not None
+    assert "相同工具调用" not in (strategy.outcome.error or "")
 
 
 # ======================================================================

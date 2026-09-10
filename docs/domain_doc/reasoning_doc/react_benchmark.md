@@ -90,7 +90,7 @@
 | 4 | 超限降级 | ✅ | 迭代超限用 `last_result` 兜底，error 记录「已达到最大迭代次数(N)」——等价 LangChain `force` 语义，不抛裸异常（`_finalize_max_turns`） |
 | 5 | 工具异常回喂 | ✅ | 失败回喂 `str(result)`（`"错误: <error>"`），模型可感知失败自愈；`error`/`error_code` 进证据链记录（`execute_tool_calls`） |
 | 6 | 无效工具名处理 | ✅ | NOT_REGISTERED 失败走同一失败回喂分支，模型可见「工具未注册」；证据链记录 `error_code`（同 #5） |
-| 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂——模型可见原因自纠，错误码进证据链（`execute_tool_calls` 参数解析分支） |
+| 7 | 解析 / JSON 失败降级 | ✅ | 解析失败不执行工具，构造失败 ToolResult（JSON_PARSE）走失败回喂；与工具协议信号不一致、final_answer 校验失败共享 `max_tool_protocol_retries` 连续预算，防止修正循环只靠总迭代兜底 |
 | 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（`execute` LLM error 分支） |
 | 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（`execute_tool_calls`），模型可知结果不完整 |
 | 10 | 上下文预算管理 | ✅ | context_manager 统一提供（经 ContextBudgetPort 注入 Agent）：轮次滑动窗口（保 assistant/tool 配对）+ token 预算硬上限（经 LLMGateway.count_* 计数），模型调用前作为 gatekeeper |
@@ -112,7 +112,7 @@
 | 21 | 沙箱 / 安全执行 | ⚠️ | 本项目工具为注册式（非任意代码执行），风险形态不同，无需 AST 沙箱；以风险分级 + 审批替代 |
 | 22 | 最终答案校验 | ❌ | 无 `final_answer_checks`（证据链报告的答案校验是后续产物层的事） |
 | 23 | 错误处理策略可扩展 | ✅ | `ErrorHandlerRegistry`（共享内核）：AgentErrorKind 12 类 + Handler 协议（CONTINUE/STOP/RAISE）+ BaseAgent 横切注入；可恢复默认回喂、终结性默认终止，按 kind 注册覆盖 |
-| 24 | 循环停滞检测 | ✅ | 动作指纹（工具名 + 规范化参数）+ 连续计数：`max_same_action_turns`（默认 3）超限走 STALLED 分发硬终止（不执行本轮工具）；参数 key 顺序/空白规范化指纹一致；升级路径：result_hash 防轮询误判 / 周期模式检测 |
+| 24 | 循环停滞检测 | ✅ | 动作指纹（工具名 + 规范化参数）+ 连续计数：`max_same_action_turns`（默认 3）超限走 STALLED 分发硬终止（不执行本轮工具）；未启用 output_schema 时名为 `final_answer` 的未知工具也参与指纹；升级路径：result_hash 防轮询误判 / 周期模式检测 |
 | 25 | 空输出重试上限 | ✅ | `max_empty_retries`（默认 2）：连续空输出超过上限走 EMPTY_OUTPUT 分发硬终止（有产出轮计数清零，非连续不累计；0=首次空输出即终止） |
 | 26 | refusal 显式处理 | ✅ | ReAct 主循环消费显式拒答信号（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，不误判为成功、不空转重试）；拒答文本截断（LLM-008） |
 
