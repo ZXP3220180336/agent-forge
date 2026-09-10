@@ -15,7 +15,6 @@ import time
 import pytest
 
 from app.domain.reasoning import ReflectionOutcome, ReflectionStrategy
-from app.domain.reasoning._common import guard_exceeded
 from app.domain.reasoning.reflection import CRITIQUE_SCHEMA, REFLECTION_SCHEMA
 from app.domain.prompts.templates.reflection import CRITIQUE_PROMPT
 from app.integration.tools.base import BaseTool, ToolResult
@@ -584,7 +583,7 @@ async def test_reflect_suppresses_react_done_event():
 
 @pytest.mark.asyncio
 async def test_reflect_cost_limit_stops():
-    """成本护栏：自查/修正累计超限 → 停机降级采用当前稿（error 记录成本超限）。"""
+    """自查归账后成本超限 → 不再修正，采用调用前的最近稿。"""
     llm = _ReflectionLLM(
         react_scripts=_react_scripts_with_draft(DRAFT),
         structured_scripts=[
@@ -604,50 +603,13 @@ async def test_reflect_cost_limit_stops():
     assert strategy.outcome is not None
     assert strategy.outcome.degraded is True
     assert "成本超限" in strategy.outcome.error
-    assert strategy.outcome.structured == REFINED  # 采用最近修正稿
-
-
-# ── P3：反思循环终止护栏（用户取消 / 总时长超限 → 停机降级采用最近稿）──
-
-
-def test_guard_exceeded_cancel_event():
-    """用户取消 → 终止（终止原因「用户取消」，成本未超限）。"""
-    cancel = asyncio.Event()
-    cancel.set()
-    abort_reason, cost_msg = guard_exceeded(cancel, 0.0, None, None, {})
-    assert abort_reason == "用户取消"
-    assert cost_msg == ""
-
-
-def test_guard_exceeded_timeout():
-    """总时长超限（start 在过去）→ 终止（终止原因「执行超时」）。"""
-    import time as _time
-
-    abort_reason, cost_msg = guard_exceeded(
-        None,
-        start_time=_time.monotonic() - 100,
-        max_execution_time=5,
-        cost_limiter=None,
-        running_usage={},
-    )
-    assert abort_reason == "执行超时"
-    assert cost_msg == ""
-
-
-def test_guard_exceeded_ok():
-    """无取消 + 未超时 + 无 cost_limiter → 双空原因（可继续）。"""
-    abort_reason, cost_msg = guard_exceeded(None, 0.0, None, None, {})
-    assert abort_reason == ""
-    assert cost_msg == ""
+    assert strategy.outcome.structured == DRAFT
+    assert llm.structured_calls == 1
 
 
 @pytest.mark.asyncio
 async def test_reflect_cancel_event_stops_degrades_to_draft():
-    """循环中取消（自查后置位）→ 停机降级采用最近稿（degraded=True，error 标注用户取消）。
-
-    注：cancel 检查在迭代顶部——自查返回 issues 后进入修正（本迭代内不再检查），
-    修正成功 current=refined，下一迭代顶部检测到取消 → 采用 refined（最近稿）。
-    """
+    """自查返回时取消 → 立即停机，不能再发起修正调用。"""
     cancel_event = asyncio.Event()
 
     class _CancelOnCritiqueLLM(_ReflectionLLM):
@@ -683,10 +645,12 @@ async def test_reflect_cancel_event_stops_degrades_to_draft():
         events.append(ev)
 
     assert strategy.outcome is not None
-    assert strategy.outcome.structured == REFINED  # 采用最近修正稿
+    assert strategy.outcome.structured == DRAFT
     assert strategy.outcome.degraded is True
-    assert strategy.outcome.refine_rounds == 1
+    assert strategy.outcome.refine_rounds == 0
     assert "用户取消" in strategy.outcome.error
+    assert llm.structured_calls == 1
+    assert len([event for event in events if '"type": "done"' in event]) == 1
     assert any("降级" in e for e in events)
 
 

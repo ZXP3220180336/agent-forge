@@ -42,7 +42,7 @@
 
 **决策**：
 
-1. **ReAct 识别取消**：`ReActStrategy.execute` 加 `cancel_event: asyncio.Event | None = None`，传给 `self._llm.async_generate(cancel_event=...)`。主循环两处识别取消 → 新 `_finalize_cancelled`（复用 `_finalize_terminal(CANCELLED, ...)`，保留部分进度）：
+1. **ReAct 识别取消**：`ReActStrategy.execute` 加 `cancel_event: asyncio.Event | None = None`，传给 `self._llm.async_generate(cancel_event=...)`。主循环两处识别取消 → `_finalize_guard_result(CANCELLED)`（复用 `_finalize_terminal`，保留部分进度）：
    - **循环顶部**（每轮 LLM 调用前）：`cancel_event.is_set()` → 取消（快速响应，即使不在 LLM 调用中，如工具执行后）
    - **error 分支**（`stream_result.error` 非空时）：`cancel_event.is_set()` → CANCELLED（**不重试**），否则 LLM_FAILED
 2. **透传链路**：`ReActAgent.__init__` 加 `cancel_event`（对齐 cost_limiter 构造注入）→ `_strategy_cycle` 传 `execute(cancel_event=...)`。每次请求新建 agent 实例，cancel_event 随请求独立。
@@ -62,7 +62,7 @@
 
 | 文件 | 改动 | 回归测试 |
 | --- | --- | --- |
-| `app/domain/reasoning/react.py` | `execute()` 加 `cancel_event` 参数（传给 LLM 层）；主循环顶部 + error 分支取消识别 → `_finalize_cancelled`；`_dispatch` docstring 11→12 处 | `tests/unit/test_react_strategy.py` 新增 3 例：置位取消 / LLM error+置位 → CANCELLED（非 LLM_FAILED）/ 未置位正常 |
+| `app/domain/reasoning/react.py` | `execute()` 加 `cancel_event` 参数（传给 LLM 层）；主循环顶部 + error 分支取消识别 → `_finalize_guard_result(CANCELLED)`；`_dispatch` docstring 11→12 处 | `tests/unit/test_react_strategy.py` 新增 3 例：置位取消 / LLM error+置位 → CANCELLED（非 LLM_FAILED）/ 未置位正常 |
 | `app/domain/agent/executor.py` | `ReActAgent.__init__` 加 `cancel_event` → `_strategy_cycle` 传 `execute(cancel_event=...)` | 经 chat_flow 间接覆盖 |
 | `app/application/task/task_service.py` | 会话级取消事件注册表（create/get/clear/cancel_session） | `tests/unit/test_task_service.py` 新增注册表生命周期测试 |
 | `app/api/routes/chat.py` | send 创建 cancel_event + `ReActAgent(cancel_event=...)` + `finally` 清理；stop_chat 调 `cancel_session` 真实置位（返回 `cancelled` 布尔） | `tests/integration/test_chat_flow.py` 新增 stop 取消（置位 → 流带取消事件结束，LLM 未调用，注册表清理） |

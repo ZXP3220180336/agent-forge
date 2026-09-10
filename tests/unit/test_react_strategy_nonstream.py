@@ -242,7 +242,7 @@ async def test_nonstream_none_maps_to_llm_failed():
 
 
 async def test_nonstream_cancel_after_return_cancels():
-    """成功响应与 cancel 同时完成时，generate 返回前复查并按 CANCELLED 收尾。"""
+    """成功响应后 cancel 与成本同时命中时，CANCELLED 优先且 usage 不丢。"""
 
     class _CancelOnFirstGenerate(_NonStreamingScriptedLLM):
         def __init__(self, scripts, cancel_event):
@@ -260,7 +260,14 @@ async def test_nonstream_cancel_after_return_cancels():
     llm = _CancelOnFirstGenerate(
         [{"finish_reason": "stop", "content": "答案", "usage": usage}], cancel_event
     )
-    strategy = ReActStrategy(llm=llm, tools=None)
+    class _UsageCostLimiter:
+        def check(self, current_usage):
+            exceeded = bool(current_usage.get("total_tokens", 0))
+            return exceeded, 1.0 if exceeded else 0.0
+
+    strategy = ReActStrategy(
+        llm=llm, tools=None, cost_limiter=_UsageCostLimiter()
+    )
     messages = [{"role": "user", "content": "hi"}]
 
     events = await _run(

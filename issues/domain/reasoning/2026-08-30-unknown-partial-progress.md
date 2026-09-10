@@ -31,7 +31,7 @@ ReAct 主循环只有 `except TimeoutError` 捕获超时；**其他未捕获异�
 | --- | --- |
 | LangChain AgentExecutor | 异常时 `intermediate_steps`（已执行工具轨迹）保留在 AgentFinish 输出，部分进度不丢 |
 | OpenAI Agent SDK / SMOLagents | 异常 / 中断时 Result 携带已完成的步骤与工具输出 |
-| 本项目 `_finalize_timeout` / `_finalize_cost_exceeded` / `_finalize_stalled` | 均用 `last_result` 组装降级 outcome 保留部分进度 + `_tool_call_records` 进证据链（内部已确立的先例） |
+| 本项目 `_finalize_guard_result` / `_finalize_stalled` | 均用可见的当前或上一轮结果组装降级 outcome，保留部分进度 + `_tool_call_records` 进证据链（内部已确立的先例） |
 
 **核心**：终结性兜底路径应统一保留部分进度，异常路径不应是例外。
 

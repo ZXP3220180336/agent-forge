@@ -42,7 +42,7 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError
 
-from ._common import dispatch_error, guard_exceeded, merge_usage
+from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -247,9 +247,7 @@ class ReflectionStrategy:
         # E：结构化调用（自查/修正）的绝对截止——与循环顶部护栏同一时间预算（monotonic
         # 绝对时刻，不逐级重计），随 generate_structured 下沉到降级链每笔子调用前。
         deadline = (
-            start_time + max_execution_time
-            if max_execution_time is not None
-            else None
+            start_time + max_execution_time if max_execution_time is not None else None
         )
 
         # ── 阶段一：收集 + 初稿（复用 ReAct，工具证据链 + final_answer 结构化）──
@@ -319,24 +317,15 @@ class ReflectionStrategy:
         while True:
             # 终止/成本护栏（P3）：发起新付费调用前检查——取消/超时/成本超限
             # → 停机降级采用最近稿（保留进度）
-            abort_reason, cost_msg = guard_exceeded(
-                cancel_event,
-                start_time,
-                max_execution_time,
-                self._cost_limiter,
-                merge_usage(react_outcome.usage, self._structured_usage),
+            guard = evaluate_guard(
+                cancel_event=cancel_event,
+                deadline=deadline,
+                cost_limiter=self._cost_limiter,
+                running_usage=merge_usage(react_outcome.usage, self._structured_usage),
             )
-            if abort_reason or cost_msg:
-                for e in self._finalize(
-                    react_outcome,
-                    draft=draft,
-                    structured=current,
-                    critique=None,
-                    refine_rounds=refine_round,
-                    success=bool(current),
-                    degraded=True,
-                    error=f"{abort_reason or cost_msg}，采用最近稿（降级）",
-                    info=f"{abort_reason or cost_msg}，采用最近稿（降级）",
+            if guard is not None:
+                for e in self._finalize_guard(
+                    guard, react_outcome, draft, current, refine_round
                 ):
                     yield e
                 return
@@ -349,8 +338,23 @@ class ReflectionStrategy:
                 cancel_event=cancel_event,
                 deadline=deadline,
             )
+
             if crit_usage:
                 self._structured_usage = merge_usage(self._structured_usage, crit_usage)
+
+            guard = evaluate_guard(
+                cancel_event=cancel_event,
+                deadline=deadline,
+                cost_limiter=self._cost_limiter,
+                running_usage=merge_usage(react_outcome.usage, self._structured_usage),
+            )
+            if guard is not None:
+                for e in self._finalize_guard(
+                    guard, react_outcome, draft, current, refine_round
+                ):
+                    yield e
+                return
+
             if critique is None:
                 # 自查失败 → 降级采用当前稿（best-effort，不抛错）
                 suffix = "（STOP）" if crit_action == AgentErrorAction.STOP else ""
@@ -413,8 +417,28 @@ class ReflectionStrategy:
                 cancel_event=cancel_event,
                 deadline=deadline,
             )
+
             if ref_usage:
                 self._structured_usage = merge_usage(self._structured_usage, ref_usage)
+
+            completed_rounds = refine_round - 1
+            if refined is not None:
+                current = refined
+                completed_rounds = refine_round
+
+            guard = evaluate_guard(
+                cancel_event=cancel_event,
+                deadline=deadline,
+                cost_limiter=self._cost_limiter,
+                running_usage=merge_usage(react_outcome.usage, self._structured_usage),
+            )
+            if guard is not None:
+                for e in self._finalize_guard(
+                    guard, react_outcome, draft, current, completed_rounds
+                ):
+                    yield e
+                return
+
             if refined is None:
                 # 修正失败 → 降级采用当前稿（best-effort）
                 suffix = "（STOP）" if ref_action == AgentErrorAction.STOP else ""
@@ -431,10 +455,31 @@ class ReflectionStrategy:
                 ):
                     yield e
                 return
-            current = refined
             # 回到循环顶部 → 重新自查修正稿（真迭代的关键：新反馈驱动下一轮）
 
     # ── 内部辅助 ──
+
+    def _finalize_guard(
+        self,
+        guard: GuardResult,
+        react_outcome: ReActOutcome,
+        draft: dict[str, Any],
+        current: dict[str, Any],
+        refine_rounds: int,
+    ) -> list[str]:
+        """护栏终止时保留最近完整稿，并由统一判定提供原因。"""
+        message = f"{guard.message}，采用最近稿（降级）"
+        return self._finalize(
+            react_outcome,
+            draft=draft,
+            structured=current,
+            critique=None,
+            refine_rounds=refine_rounds,
+            success=bool(current),
+            degraded=True,
+            error=message,
+            info=message,
+        )
 
     async def _critique(
         self,

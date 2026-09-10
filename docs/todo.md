@@ -1,3 +1,51 @@
+# 2026-09-10 审核遗留：Slice 2 共享护栏统一（REASON-016 复审）
+
+> 状态：待修复。REASON-016 主链路已在本次提交落地，以下是复审发现但本次未修的遗留项。不影响已通过的验收点，其中前两项涉及对外元数据契约与步骤成功判据。
+
+- [ ] **`PlannerOutcome.plan` 契约破坏**：`planner.py:375` 的降级收尾在 `_normalize_steps` 之前执行，传入 PLAN_SCHEMA 原始结构（`steps` 无 `id`、含 `depends_on`），与 `{goal, steps:[{id, description}]}` 契约不符；按 `steps[i]["id"]` 消费的编排 / 证据链报告会 KeyError。修法：拆为「`plan is None`」与「plan 成功但已不能开工」两处，后者移至 `plan_result` 构造之后。
+- [ ] **步骤成功判据新增维度未同源**：`planner.py:469` 的 `not sub.error` 使「达到最大迭代次数但有产出」的子跑从成功改判失败，从而触发至多 `max_replan_rounds` 次付费 replan 与替换步重跑；该行为变更未见于同处注释、`planner.md`、planner ADR 与 REASON-016 修复方案。需先定意图：改判则同步四处口径，不改判则按子跑终态 kind 显式判定护栏终止。
+- [ ] **Reflection 成功稿被标降级**：`reflection.py:342-356` 的复查落在 `critique["ok"]` 判定之前，`ok=True`（不再发起付费调用）时命中成本超限仍走 `_finalize_guard`，产出 `success=True` + `degraded=True` + `error="成本超限…"` 的矛盾信号。修法：复查移至 `critique["ok"]` 之后，或在 `reflection.md` 降级表写明该取舍。
+- [ ] **文档同步缺口**：`docs/domain_doc/README.md:66,167` 仍写已重命名的 `guard_exceeded` 且状态为 `🔶`（ALIGNMENT 已 ✅）；`docs/todo.md` 第 2 节基线与 `issues/integration/llm/2026-09-08-structured-cancel-deadline.md:10` 同引旧名与旧口径。
+- [ ] **测试缺口与覆盖声明不符**：`reflection.md:186` 声称覆盖「修正成功后先接管新稿再终止」，但无对应用例（现有两例均为自查后终止，`structured == DRAFT`）；`test_reasoning_common.py` 参数矩阵漏「limiter 已注入未超限且无 `context_error` → None」与「仅 deadline 命中」两条分支。
+- [ ] **REASON-016 记录补节**：新 issue 缺 `## 工业级参照` 与 `## 实施记录`（同目录惯例）。
+- [ ] **注释一致性**：`react.py:462` 段横幅仍写「取消判定 / LLM_FAILED 分发」，取消判定已迁至第 4 步护栏（同函数 docstring 已改）；`react.py:324` 注释括号未闭合。
+- [ ] **测试稳定性**：`test_react_strategy.py:921` 依赖真实墙钟（要求 `max_execution_time=0.05` 内跑完两轮脚本 LLM + 一次 echo），慢机器 / CI 抖动下 `tool.calls == 2` 会假失败。
+- [ ] **`.gitignore` 收窄**：`*-learn.md` 通配偏宽（会静默忽略 `docs/xxx-learn.md` 等），可限定目录；文件补尾换行。
+
+---
+
+# 2026-09-10 ReAct 工具调用协议异常重试上限（REASON-017）
+
+> 状态：实施中。目标是让可恢复的工具调用协议异常具备独立、可配置且跨三策略一致的硬重试上限，避免 PARSE_FAILED handler 持续 CONTINUE 时只能依赖全局 max_iterations 停机。
+
+- [ ] **红测**：持续协议异常在 `max_tool_protocol_retries + 1` 轮硬终止；0 表示首次即停；正常协议轮重置连续计数；达到硬上限时 handler RAISE 仍可上抛；无工具却返回 tool_calls 的异常响应不写入消息历史。
+- [ ] **ReAct 实现**：新增每次 execute 独立的 `_protocol_error_retries`；协议异常分支先计数，再由 `_handle_tool_protocol_error` 执行软分发或硬终止；有效协议响应清零；硬终止继续使用 `PARSE_FAILED`，不新增重复错误类型。
+- [ ] **配置与透传**：新增 `agent_max_protocol_error_retries=2` 及非负校验，经 container、API、AgentContext、ReAct/Reflection/Planner 包装器和内部 ReAct 调用完整透传。
+- [ ] **消息一致性**：协议无效的 assistant/tool_calls 不进入 history，保证下一次真实请求不存在未配对工具调用。
+- [ ] **文档与问题记录**：同步配置、Agent、三策略接口、ReAct 行为说明、benchmark、ALIGNMENT 和 REASON-017；记录本次教训。
+- [ ] **验证**：运行协议异常、配置、容器、Agent、三策略定向测试，再执行全量 pytest、alignment 与 diff check。
+
+> **可选升级（本次不做）**：按 provider/model_key 配置不同协议异常上限；引入多轮周期模式识别。当前产品缺少实际差异化证据，先保持单一 Agent 级整数配置。
+
+---
+
+# 2026-09-10 第二阶段：完成上下文预算跨策略闭环 Slice 2
+
+> 状态：✅ 已完成。范围限定为领域层类型化执行护栏、三策略 cancel/deadline/cost 判定统一、ReAct 终止成果规则和四类护栏组合测试；Reflection/Planner 的语义缩减仍分别归 Slice 3/4。
+
+- [x] **契约红测**：为类型化 guard 结果、绝对 deadline 和 `cancel > deadline > cost > context` 优先级补直接测试。
+- [x] **共享实现**：在 `reasoning/_common.py` 以不可变结果对象替换字符串二元组；复用既有 `AgentErrorKind`，不新增重复枚举。
+- [x] **三策略迁移**：ReAct、Reflection、Planner 的付费调用前后统一消费 guard 结果；保留各策略私有的降级内容和事件文案。
+- [x] **ReAct 收尾审计**：所有 cancel/deadline/cost/context/UNKNOWN 出口统一 current/last-visible 选择和 usage 单计；补组合竞态测试。
+- [x] **ReAct 可读性复核**：删除 `_handle_tool_calls` 中不可达的二次 RAISE 判断；注释明确 RAISE 由 `_dispatch` 立即传播、其余决策按 STOP > CONTINUE；同步 execute、终态方法和模块文档的当前名称与执行控制语义。
+- [x] **文档与问题记录**：同步 reasoning 组件说明、ALIGNMENT、REASON-016 索引和 lessons；复核 context-budget ADR 后确认架构决策未变，无需修改；未提前实现 Slice 3/4 的 prompt 语义缩减。
+- [x] **验证与评审**：运行 `_common`、ReAct、Reflection、Planner 定向测试，全量 pytest、alignment、diff check，并填写评审结果。
+
+> **评审结果**：第二阶段通过。共享 `GuardResult` / `evaluate_guard` 固定四类优先级；三策略完成付费调用前准入和成功归账后复查。ReAct 基线超成本时零请求，流式/非流式取消与成本竞态均保留当前成果及 usage；Reflection 自查后终止不再多发修正；Planner 先吸收子 ReAct 成果、usage 与迭代再终止。ReAct 仅以非空 content/reasoning 更新 `last_visible_result`，当前轮只有未执行 tool_calls 时不会覆盖上一轮可见结果；调用后成本终止与工具执行期超时均有回归测试。
+> **验证结果**：核心策略定向 **165 passed**；策略桥接与异常契约 **33 passed**；全量 **930 passed**（1 个既存 StarletteDeprecationWarning）；`verify_alignment` 与 `git diff --check` 通过。
+
+---
+
 # 2026-09-10 第一阶段：收紧 P1/P2 验收边界
 
 > 状态：实现、审查与验证已完成；独立提交待执行。范围以 2026-09-10 总体审核路线为准；LLM-044～047、REASON-012～015 当前保留在工作区。
@@ -38,7 +86,7 @@
 > 状态：✅ 已完成。问题 4 为当前轮流式内容在类型化 deadline 出口丢失；问题 5 为 Integration 内部 deadline 与 ReAct 外层 timeout 同刻竞争，可能打断 close/settle/log 清理。
 
 - [x] **问题 4 红测**：当前轮写入 content/reasoning 后抛 `LLMDeadlineExceededError`，TIMEOUT outcome 必须保留当前轮部分成果；当前轮尚无成果时仍保留上一轮结果。
-- [x] **问题 4 实现**：显式维护未完成的 `current_result`，终止收尾按“当前轮有用户可见进度则优先，否则沿用 last_result”选择；异常 usage 只累计一次。
+- [x] **问题 4 实现**：显式维护未完成的 `current_result` 与最近可见的 `last_visible_result`，终止收尾按“当前轮有用户可见进度则优先，否则沿用最近可见结果”选择；异常 usage 只累计一次。
 - [x] **问题 5 红测**：内部 deadline 到期后进入延迟清理，清理耗时小于 grace 时不得被外层 task 取消打断；忽略内部 deadline、但配合取消的调用仍必须在 timeout 触发点停止。
 - [x] **问题 5 实现**：`max_execution_time` 是业务循环的 timeout 取消触发点；内部 LLM deadline 提前 `min(1s, 总时长×10%)`，让 close/settle/log 有机会在 task 取消前完成。
 - [x] **回归与文档**：同步 ReAct ADR/组件文档、分别登记问题记录与 lessons；运行 ReAct 定向测试、全量 pytest、alignment 和 diff check。
@@ -582,7 +630,7 @@ git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forg
 - [x] `domain/ports/llm_gateway.py`：LLMGateway 加 `calculate_cost`（成本估算归 LLM 能力，Facade 结构实现）
 - [x] `application/context/cost_limiter.py`：CostLimiter（ceiling + llm 端口注入 + model 配置）
 - [x] `error_handling.py`：AgentErrorKind.COST_EXCEEDED（10 类，默认 STOP）+ 默认表 + 测试
-- [x] react.py：构造注入 + 每轮 usage 累加后检查（error 判断前）+ `_finalize_cost_exceeded` 降级
+- [x] react.py：构造注入 + 每轮 usage 累加后检查（error 判断前）+ `_finalize_guard_result(COST_EXCEEDED)` 降级
 - [x] 注入链：settings `agent_max_cost` → container.cost_limiter 单例（llm=llm_service Facade）→ deps.get_cost_limiter → chat → ReActAgent；AgentContext 不改
 - [x] 测试：test_cost_limiter 7 例 + react 6 例 + error_handling/container/settings/agent 同步
 - [x] 文档：react.md / react_benchmark（#20 ✅）/ ports.md / context.md / config / .env.example / ALIGNMENT / cost_tracker.md
@@ -596,7 +644,7 @@ git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forg
 > 审查发现：预算原放 `_handle_tool_calls` 尾部，仅覆盖「工具调用 → 回喂」路径；LLM 失败重试 / final_answer 回喂重试 / 空输出重试三条非工具继续路径漏裁，上下文无限增长、护栏失效。根因：护栏放置点锚定「工具调用后」而非「LLM 调用前」（横切护栏应锚定其约束的调用点）。
 
 - [x] 测试驱动：新增 `test_react_context_budget_trims_on_no_tool_retry`（空输出重试路径，修复前 assistant=6 失败 → 修复后 ≤3）
-- [x] 修复：预算移至主循环顶部（第 0 步，每次 LLM 调用前裁剪，所有继续路径共用）；`_handle_tool_calls` 移除预算与 `max_context_rounds`/`max_context_tokens` 参数
+- [x] 修复：预算移至主循环顶部（每次 LLM 调用前裁剪，所有继续路径共用）；`_handle_tool_calls` 移除预算与 `max_context_rounds`/`max_context_tokens` 参数
 - [x] 文档：react.md（上下文预算节 / 行为边界 / `_handle_tool_calls` 行 / 测试节 30→31）+ [REASON-001 问题记录](../issues/domain/reasoning/2026-08-30-context-budget-placement.md)
 - [x] 验证：react 31 passed + 全量 pytest + verify_alignment
 

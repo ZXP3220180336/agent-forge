@@ -18,7 +18,9 @@ import time
 import pytest
 
 from app.config import settings
+from app.domain.ports.llm_gateway import StreamResult
 from app.domain.reasoning import ReActStrategy
+from app.domain.reasoning.react import _terminal_result
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.tool_service import ToolService
 from app.shared.error_handling import (
@@ -142,6 +144,14 @@ class _ScriptedLLM:
                 setattr(result, key, value)
         yield build_message_event(spec.get("content", ""))
         return
+
+
+class _UsageCostLimiter:
+    """仅在已有真实 usage 时超限，便于验证调用后护栏优先级。"""
+
+    def check(self, usage):
+        exceeded = bool(usage.get("total_tokens", 0))
+        return exceeded, 1.0 if exceeded else 0.0
 
 
 class _ErrorLLM:
@@ -305,7 +315,7 @@ async def test_react_execute_empty_output_retries_then_stops():
 
 @pytest.mark.asyncio
 async def test_react_execute_max_iterations_fallback():
-    """持续空输出 → 达到 max_iterations 强制结束（用 last_result 兜底）。"""
+    """持续空输出 → 达到 max_iterations 强制结束（用最近可见结果兜底）。"""
     strategy = ReActStrategy(llm=_EmptyLLM(), tools=None)
 
     async for _ in strategy.execute(
@@ -853,6 +863,110 @@ async def test_react_unknown_exception_handler_raise():
 # ---------------------------------------------------------------
 
 
+def test_terminal_result_ignores_unexecuted_current_tool_calls() -> None:
+    """当前轮只有未执行工具调用时，终止结果应保留上一轮可见内容。"""
+    previous = StreamResult()
+    previous.content = "上一轮内容"
+    current = StreamResult()
+    current.tool_calls = [_echo_call()]
+
+    assert _terminal_result(current, previous) is previous
+
+
+async def test_post_call_cost_with_tool_calls_only_keeps_previous_visible_result():
+    """当前轮仅有未执行工具调用时，调用后成本终止应保留上一轮可见成果。"""
+
+    class _SecondUsageExceedsCost:
+        def check(self, usage):
+            total_tokens = usage.get("total_tokens", 0)
+            return total_tokens >= 2, float(total_tokens)
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "content": "上一轮阶段成果",
+                "finish_reason": "tool_calls",
+                "tool_calls": [_echo_call("first")],
+                "usage": {"total_tokens": 1},
+            },
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [_echo_call("second")],
+                "usage": {"total_tokens": 1},
+            },
+        ]
+    )
+    strategy = ReActStrategy(
+        llm=llm,
+        tools=_make_registry(tools=[_EchoTool()]),
+        cost_limiter=_SecondUsageExceedsCost(),
+    )
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.content == "上一轮阶段成果"
+    assert "成本超限" in (strategy.outcome.error or "")
+    assert llm.calls == 2
+    assert len(strategy.outcome.tool_calls) == 1, "第二轮未执行工具不能进入证据链"
+
+
+async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result():
+    """当前轮仅有未执行工具调用时，工具执行期超时应保留上一轮可见成果。"""
+
+    class _SecondCallSlowEcho(_EchoTool):
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, **kwargs) -> ToolResult:
+            self.calls += 1
+            if self.calls == 2:
+                await asyncio.sleep(0.3)
+            return await super().execute(**kwargs)
+
+    llm = _ScriptedLLM(
+        [
+            {
+                "content": "上一轮阶段成果",
+                "finish_reason": "tool_calls",
+                "tool_calls": [_echo_call("first")],
+            },
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [_echo_call("second")],
+            },
+        ]
+    )
+    tool = _SecondCallSlowEcho()
+    strategy = ReActStrategy(
+        llm=llm,
+        tools=_make_registry(tools=[tool]),
+    )
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+        max_execution_time=0.05,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.content == "上一轮阶段成果"
+    assert "超时" in (strategy.outcome.error or "")
+    assert tool.calls == 2
+    assert len(strategy.outcome.tool_calls) == 1, "第二轮未完成工具不能进入证据链"
+
+
 @pytest.mark.asyncio
 async def test_react_context_window_exceeded_is_terminal():
     """预算闸拒绝（异常从 async_generate 上抛）→ CONTEXT_EXCEEDED 终结，保留进度语义。"""
@@ -878,6 +992,40 @@ async def test_react_context_window_exceeded_is_terminal():
     assert "Agent 运行异常" not in (strategy.outcome.error or "")  # 未误归 UNKNOWN
     assert llm.calls == 1  # 终结性错误不重试
     assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_cancel_wins_when_context_error_arrives() -> None:
+    """上下文异常与取消同时可见时，统一优先级必须选择 CANCELLED。"""
+    cancel_event = asyncio.Event()
+
+    class _CancelThenContextLLM(_RaisingLLM):
+        async def async_generate(self, *args, **kwargs):
+            cancel_event.set()
+            async for event in super().async_generate(*args, **kwargs):
+                yield event
+
+    llm = _CancelThenContextLLM(
+        [{"finish_reason": "stop", "content": "不会到达"}],
+        exc=ContextWindowExceededError(
+            model_key="main", input_tokens=1000, input_budget=100, max_tokens=1024
+        ),
+    )
+    strategy = ReActStrategy(llm=llm, tools=None)
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+        cancel_event=cancel_event,
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.error == "Agent 已被取消"
+    assert "请求上下文超限" not in strategy.outcome.error
 
 
 @pytest.mark.asyncio
@@ -983,6 +1131,43 @@ async def test_react_cancel_event_untouched_normal():
     assert strategy.outcome.success is True
     assert strategy.outcome.content == "完成"
     assert strategy.outcome.error is None
+
+
+@pytest.mark.asyncio
+async def test_react_post_call_cancel_wins_over_cost_and_keeps_usage():
+    """流式响应归账时取消与成本同时命中，按 CANCELLED 收尾并保留本轮成果。"""
+    cancel_event = asyncio.Event()
+    usage = {"prompt_tokens": 6, "completion_tokens": 2, "total_tokens": 8}
+
+    class _CancelAfterResponseLLM(_ScriptedLLM):
+        async def async_generate(self, *args, **kwargs):
+            async for event in super().async_generate(*args, **kwargs):
+                yield event
+            cancel_event.set()
+
+    llm = _CancelAfterResponseLLM(
+        [{"finish_reason": "stop", "content": "当前轮答案", "usage": usage}]
+    )
+    strategy = ReActStrategy(
+        llm=llm, tools=None, cost_limiter=_UsageCostLimiter()
+    )
+
+    events = []
+    async for event in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+        cancel_event=cancel_event,
+    ):
+        events.append(event)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.error == "Agent 已被取消"
+    assert strategy.outcome.content == "当前轮答案"
+    assert strategy.outcome.usage == usage
+    assert len([e for e in events if '"type": "done"' in e]) == 1
 
 
 @pytest.mark.asyncio
@@ -1399,6 +1584,30 @@ def _cost_limiter(ceiling: float | None = 0.05, model: str = "gpt-4"):
             return CostTracker.calculate(usage, model)
 
     return CostLimiter(ceiling=ceiling, llm=_FakeLLM(), model=model)
+
+
+@pytest.mark.asyncio
+async def test_react_baseline_cost_exceeded_stops_before_llm_call():
+    """调用方累计基线已超成本时，首轮付费调用不得发出。"""
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "不会调用"}])
+    strategy = ReActStrategy(
+        llm=llm, tools=None, cost_limiter=_cost_limiter(ceiling=0.01)
+    )
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        max_iterations=3,
+        temperature=0.2,
+        max_tokens=1024,
+        baseline_usage={"prompt_tokens": 1000, "completion_tokens": 0},
+    ):
+        pass
+
+    assert llm.calls == 0
+    assert strategy.outcome is not None
+    assert "成本超限" in (strategy.outcome.error or "")
+    assert strategy.outcome.usage is None
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ Python `asyncio.Timeout.expired()` 专门用于检查 timeout 上下文是否实
 ## 修复方案
 
 - 保存 `asyncio.timeout_at()` 返回的 `Timeout` 对象，并在退出上下文后的 `except TimeoutError` 中检查 `expired()`。
-- 仅当该对象确实到期时走 `_finalize_timeout`；普通 `TimeoutError` 走 `_finalize_unknown`。
+- 仅当该对象确实到期时走 `_finalize_guard_result(TIMEOUT)`；普通 `TimeoutError` 走 `_finalize_unknown`。
 - 普通 `TimeoutError` 与其他 UNKNOWN 异常均优先选择有可见进度的 `current_result`，并合并尚未正常归账的 usage；当前轮为空时回退 `last_result`。
 - 保留原有生成器关闭判别；外部 `task.cancel()` 继续传播 `CancelledError`，异 task `aclose()` 不生成伪终态。
 

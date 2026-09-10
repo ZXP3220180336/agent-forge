@@ -47,7 +47,7 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError
 
-from ._common import dispatch_error, guard_exceeded, merge_usage
+from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -282,13 +282,22 @@ class PlannerStrategy:
         # E：结构化调用（规划/汇总）的绝对截止——与各阶段 guard 同一时间预算（monotonic
         # 绝对时刻，不逐级重计），随 generate_structured 下沉到降级链每笔子调用前。
         deadline = (
-            start_time + max_execution_time
-            if max_execution_time is not None
-            else None
+            start_time + max_execution_time if max_execution_time is not None else None
         )
         executed: list[dict] = []  # 步骤审计记录（含失败步）
         completed: set[int] = set()  # 成功步骤 id（depends_on 守卫）
         tool_catalog = self._tool_catalog()
+
+        def _current_guard() -> GuardResult | None:
+            """按 Planner 全阶段累计 usage 判定是否允许继续副作用。"""
+            return evaluate_guard(
+                cancel_event=cancel_event,
+                deadline=deadline,
+                cost_limiter=self._cost_limiter,
+                running_usage=merge_usage(
+                    self._react_total_usage, self._structured_usage
+                ),
+            )
 
         # 每步/兜底的 ReAct 子跑：护栏参数透传本 execute，仅输入（任务文本 + 消息）不同。
         # 收敛为局部闭包，避免两处 19 行参数重复（改护栏只需改一处）；事件透传并抑制
@@ -334,18 +343,9 @@ class PlannerStrategy:
         # ── 阶段 A：规划（进度事件前置，发起付费调用前统一终止/成本护栏）──
         yield build_info_event("进入规划阶段")
 
-        running_usage = merge_usage(
-            getattr(self, "_react_total_usage", None), self._structured_usage
-        )
-        abort_reason, cost_msg = guard_exceeded(
-            cancel_event,
-            start_time,
-            max_execution_time,
-            self._cost_limiter,
-            running_usage,
-        )
-        if abort_reason or cost_msg:
-            msg = f"{abort_reason or cost_msg}，未开始规划"
+        guard = _current_guard()
+        if guard is not None:
+            msg = f"{guard.message}，未开始规划"
             for e in self._finalize(
                 plan=None,
                 steps_executed=[],
@@ -360,38 +360,38 @@ class PlannerStrategy:
         plan, plan_action, plan_usage = await self._plan(
             user_input, tool_catalog, cancel_event=cancel_event, deadline=deadline
         )
+
         if plan_usage:
             self._structured_usage = merge_usage(self._structured_usage, plan_usage)
+
+        guard = _current_guard()
+        if guard is not None:
+            suffix = (
+                "规划失败后中止，未降级兜底"
+                if plan is None
+                else "规划后中止，未开始执行"
+            )
+            msg = f"{guard.message}，{suffix}"
+            for e in self._finalize(
+                plan=plan,
+                steps_executed=[],
+                success=False,
+                degraded=True,
+                error=msg,
+                info=msg,
+            ):
+                yield e
+            return
+
         if plan is None:
             # 规划失败（None=结构化降级耗尽；AppError 已分发 PLAN_FAILED）→ 降级全量 ReAct 兜底。
             # 兜底也是付费调用：发起前终止/成本护栏——取消/超成本不再兜底，直接失败收尾。
-            running_usage = merge_usage(
-                getattr(self, "_react_total_usage", None), self._structured_usage
-            )
-            abort_reason, cost_msg = guard_exceeded(
-                cancel_event,
-                start_time,
-                max_execution_time,
-                self._cost_limiter,
-                running_usage,
-            )
-            if abort_reason or cost_msg:
-                msg = f"{abort_reason or cost_msg}，规划失败后中止，未降级兜底"
-                for e in self._finalize(
-                    plan=None,
-                    steps_executed=[],
-                    success=False,
-                    degraded=True,
-                    error=msg,
-                    info=msg,
-                ):
-                    yield e
-                return
-
             suffix = "（STOP）" if plan_action == AgentErrorAction.STOP else ""
             yield build_info_event(f"规划失败{suffix}，降级为直接 ReAct")
+
             async for event in _run_react(user_input, list(messages)):
                 yield event
+
             rb = self._react.outcome
             self._absorb_react(rb)
             for e in self._finalize(
@@ -438,18 +438,9 @@ class PlannerStrategy:
 
         # ── 阶段 B：执行（串行；ready 守卫 depends_on ⊆ completed）──
         while pending:
-            running_usage = merge_usage(
-                getattr(self, "_react_total_usage", None), self._structured_usage
-            )
-            abort_reason, cost_msg = guard_exceeded(
-                cancel_event,
-                start_time,
-                max_execution_time,
-                self._cost_limiter,
-                running_usage,
-            )
-            if abort_reason or cost_msg:
-                msg = f"{abort_reason or cost_msg}，采用已完成步骤（部分进度）"
+            guard = _current_guard()
+            if guard is not None:
+                msg = f"{guard.message}，采用已完成步骤（部分进度）"
                 for e in self._finalize(
                     structured=None,
                     plan=plan_result,
@@ -468,27 +459,14 @@ class PlannerStrategy:
             async for event in _run_react(step["description"], sub_messages):
                 yield event
 
-            # cancel 在步骤 react 调用中置位 → 立即终止（防被误判步骤失败而 replan）；
-            # 置于 sub/absorb 前：被中断步不入 executed/累计，对齐 react「取消轮不累计 usage」。
-            if cancel_event is not None and cancel_event.is_set():
-                for e in self._finalize_partial(
-                    plan_result,
-                    executed,
-                    degraded=True,
-                    error="用户取消，采用已完成步骤（部分进度）",
-                    info="用户取消，采用已完成步骤（部分进度）",
-                ):
-                    yield e
-                return
-
+            # 子跑返回后先吸收其真实成果、usage 与迭代，再按统一优先级决定是否继续。
             sub = self._react.outcome
             self._absorb_react(sub)
-
             # 步骤判成功 = react success 且产出非空（无产出工件视为失败）
             if sub is None:
                 ok, fail_reason = False, "ReAct 子跑未产出结果"
             else:
-                ok = sub.success and bool(sub.content.strip())
+                ok = sub.success and not sub.error and bool(sub.content.strip())
                 fail_reason = sub.error or ("" if ok else "步骤产出为空")
             executed.append(
                 {
@@ -503,54 +481,69 @@ class PlannerStrategy:
                     "total_tokens": (sub.total_tokens if sub else 0),
                 }
             )
+
+            guard = _current_guard()
+            if guard is not None:
+                for e in self._finalize_partial(
+                    plan_result,
+                    executed,
+                    degraded=True,
+                    error=f"{guard.message}，采用已完成步骤（部分进度）",
+                    info=f"{guard.message}，采用已完成步骤（部分进度）",
+                ):
+                    yield e
+                return
+
             if ok:
                 completed.add(step["id"])
                 continue
 
             # ── 步骤失败 → replan（限 max_replan_rounds）──
             yield build_info_event(f"步骤 {step['id']} 失败，进入重规划")
+
             failed_step = executed[-1]
             pending = await self._replan_loop(
                 goal,
                 tool_catalog,
                 executed,
                 failed_step,
-                start_time,
-                max_execution_time,
+                deadline,
                 cancel_event,
                 max_replan_rounds,
             )
+
             if pending is None:
                 # replan 耗尽/失败：有成功步尝试结构化汇总产部分报告；否则纯失败
                 if any(r["success"] for r in executed):
                     # 发起汇总前终止/成本护栏：取消/成本超限 → 直接降级采用已完成步骤
-                    running_usage = merge_usage(
-                        getattr(self, "_react_total_usage", None),
-                        self._structured_usage,
-                    )
-                    abort_reason, cost_msg = guard_exceeded(
-                        cancel_event,
-                        start_time,
-                        max_execution_time,
-                        self._cost_limiter,
-                        running_usage,
-                    )
-                    if abort_reason or cost_msg:
+                    guard = _current_guard()
+                    if guard is not None:
                         for e in self._finalize_partial(
                             plan_result,
                             executed,
                             degraded=True,
-                            error=f"{abort_reason or cost_msg}，采用已完成步骤（部分进度）",
+                            error=f"{guard.message}，采用已完成步骤（部分进度）",
                         ):
                             yield e
                         return
+
                     sub_result, _, sub_usage = await self._summarize(
                         goal, executed, cancel_event=cancel_event, deadline=deadline
                     )
+
                     if sub_usage:
                         self._structured_usage = merge_usage(
                             self._structured_usage, sub_usage
                         )
+
+                    guard = _current_guard()
+                    if guard is not None:
+                        for e in self._finalize_guarded_summary(
+                            guard, sub_result, plan_result, executed
+                        ):
+                            yield e
+                        return
+
                     if sub_result is not None:
                         for e in self._finalize(
                             structured=sub_result,
@@ -563,6 +556,7 @@ class PlannerStrategy:
                         ):
                             yield e
                         return
+
                 for e in self._finalize_partial(
                     plan_result,
                     executed,
@@ -576,22 +570,14 @@ class PlannerStrategy:
 
         # ── 阶段 C：汇总（进度事件前置，发起付费调用前统一终止/成本护栏）──
         yield build_info_event("执行完成，进入汇总")
-        running_usage = merge_usage(
-            getattr(self, "_react_total_usage", None), self._structured_usage
-        )
-        abort_reason, cost_msg = guard_exceeded(
-            cancel_event,
-            start_time,
-            max_execution_time,
-            self._cost_limiter,
-            running_usage,
-        )
-        if abort_reason or cost_msg:
+
+        guard = _current_guard()
+        if guard is not None:
             for e in self._finalize_partial(
                 plan_result,
                 executed,
                 degraded=True,
-                error=f"{abort_reason or cost_msg}，采用已完成步骤（部分进度）",
+                error=f"{guard.message}，采用已完成步骤（部分进度）",
             ):
                 yield e
             return
@@ -599,8 +585,18 @@ class PlannerStrategy:
         result, action, result_usage = await self._summarize(
             goal, executed, cancel_event=cancel_event, deadline=deadline
         )
+
         if result_usage:
             self._structured_usage = merge_usage(self._structured_usage, result_usage)
+
+        guard = _current_guard()
+        if guard is not None:
+            for e in self._finalize_guarded_summary(
+                guard, result, plan_result, executed
+            ):
+                yield e
+            return
+
         if result is None:
             # 汇总失败（None / AppError 分发）→ 纯文本拼装降级
             suffix = "（STOP）" if action == AgentErrorAction.STOP else ""
@@ -617,6 +613,7 @@ class PlannerStrategy:
             ):
                 yield e
             return
+
         for e in self._finalize(
             structured=result,
             plan=plan_result,
@@ -636,8 +633,7 @@ class PlannerStrategy:
         tool_catalog: str,
         executed: list[dict],
         failed_step: dict,
-        start_time: float,
-        max_execution_time: float | None,
+        deadline: float | None,
         cancel_event: asyncio.Event | None,
         max_replan_rounds: int,
     ) -> list[dict] | None:
@@ -646,27 +642,20 @@ class PlannerStrategy:
         Returns:
             归一化后的新尾步骤列表（继续执行）；None = replan 耗尽/失败 → 调用方降级。
         """
-        # E：重规划结构化调用的绝对截止（同 execute 时间预算）
-        deadline = (
-            start_time + max_execution_time
-            if max_execution_time is not None
-            else None
-        )
         while self._replan_used < max_replan_rounds:
             # 每轮 replan 也是付费结构化调用：发起前终止/成本护栏（对齐每步 react）——
             # 超限 → 返回 None 由调用方降级，不再发起付费 replan（不消耗 replan 预算）
-            running_usage = merge_usage(
-                getattr(self, "_react_total_usage", None), self._structured_usage
+            guard = evaluate_guard(
+                cancel_event=cancel_event,
+                deadline=deadline,
+                cost_limiter=self._cost_limiter,
+                running_usage=merge_usage(
+                    self._react_total_usage, self._structured_usage
+                ),
             )
-            abort_reason, cost_msg = guard_exceeded(
-                cancel_event,
-                start_time,
-                max_execution_time,
-                self._cost_limiter,
-                running_usage,
-            )
-            if abort_reason or cost_msg:
+            if guard is not None:
                 return None
+
             self._replan_used += 1
             new_tail, _action, _usage = await self._replan(
                 goal,
@@ -676,10 +665,24 @@ class PlannerStrategy:
                 cancel_event=cancel_event,
                 deadline=deadline,
             )
+
             if _usage:
                 self._structured_usage = merge_usage(self._structured_usage, _usage)
+
+            guard = evaluate_guard(
+                cancel_event=cancel_event,
+                deadline=deadline,
+                cost_limiter=self._cost_limiter,
+                running_usage=merge_usage(
+                    self._react_total_usage, self._structured_usage
+                ),
+            )
+            if guard is not None:
+                return None
+
             if not new_tail:
                 return None  # replan 失败 / 空计划 → 无补救
+
             # 新尾 id 续接已执行步最大 id 之后（单调计数，防依赖错位）
             completed_ids = {r["id"] for r in executed if r["success"]}
             start_no = max([r["id"] for r in executed], default=0) + 1
@@ -907,6 +910,33 @@ class PlannerStrategy:
             error=error,
             content=plain,
             info=info,
+        )
+
+    def _finalize_guarded_summary(
+        self,
+        guard: GuardResult,
+        result: dict | None,
+        plan_result: dict | None,
+        executed: list[dict],
+    ) -> list[str]:
+        """汇总调用后护栏命中：保留已返回汇总，否则采用步骤纯文本。"""
+        if result is None:
+            return self._finalize_partial(
+                plan_result,
+                executed,
+                degraded=True,
+                error=f"{guard.message}，采用已完成步骤（部分进度）",
+            )
+        message = f"{guard.message}，保留已生成汇总"
+        return self._finalize(
+            structured=result,
+            plan=plan_result,
+            steps_executed=executed,
+            success=True,
+            degraded=True,
+            error=message,
+            content=str(result.get("summary", ""))[:200],
+            info=message,
         )
 
     def _plain_summary(self, executed: list[dict]) -> str:

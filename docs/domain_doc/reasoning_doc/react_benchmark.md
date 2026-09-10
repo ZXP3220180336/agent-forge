@@ -85,7 +85,7 @@
 | # | 特性 | 状态 | 本项目实现 |
 | --- | --- | --- | --- |
 | 1 | 迭代上限 | ✅ | `max_iterations`（默认 10），`for` 循环 + 超限兜底（`execute` 主循环），量级与工业级一致 |
-| 2 | 时间上限 | ✅ | `asyncio.timeout` 包 `execute` 整个循环实现总时长上限，超时对齐 `max_iterations` 兜底降级（`_finalize_timeout`）；生产值由 `agent_timeout=300` 注入 |
+| 2 | 时间上限 | ✅ | `asyncio.timeout` 包 `execute` 整个循环实现总时长上限，超时对齐 `max_iterations` 兜底降级（`_finalize_guard_result(TIMEOUT)`）；生产值由 `agent_timeout=300` 注入 |
 | 3 | 正常终止判定 | ✅ | `finish_reason` 分支（tool_calls / stop / length），OpenAI 协议直接判定，比 LangChain 正则解析 `Finish[...]` 更稳（`execute` 主循环） |
 | 4 | 超限降级 | ✅ | 迭代超限用 `last_result` 兜底，error 记录「已达到最大迭代次数(N)」——等价 LangChain `force` 语义，不抛裸异常（`_finalize_max_turns`） |
 | 5 | 工具异常回喂 | ✅ | 失败回喂 `str(result)`（`"错误: <error>"`），模型可感知失败自愈；`error`/`error_code` 进证据链记录（`execute_tool_calls`） |

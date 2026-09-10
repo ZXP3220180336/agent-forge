@@ -3,19 +3,30 @@
 react / reflection / planner 三策略共用、不 import 任何策略的无状态纯函数（策略间零环依赖）。
 文件名带 `_` 前缀 = 层内私有共享（非对外导出）。
 
+> **更新日期**：2026-09-10
+
 ## 共享小工具
 
 - `merge_usage(*usages)`：usage dict 累加合并（prompt/completion/total；空入参跳过）——
   reflection 自查/修正阶段与 planner 全阶段共用
-- `guard_exceeded(cancel_event, start_time, max_execution_time, cost_limiter, running_usage) -> (str, str)`：
-  阶段/付费调用前护栏——终止（取消/超时）或成本超限（cost_limiter.check(running_usage)）检查合一，
-  返回双空原因；running_usage 由调用方按策略累计口径现算（planner / reflection 各传各自累计 usage）。
-  **成本分工**：本函数的 cost 检查是「阶段准入闸」（结构化调用 / 阶段边界发起前拦）；react 子跑**内部每轮**
-  的累计成本检查经 `ReActStrategy.execute(baseline_usage)` 贯通（跨阶段复用方如 planner 步骤子跑注入调用方
-  累计用量）——两层各管各粒度、非重复（见 [react.md](react.md) 成本上限节 / [planner.md](planner.md) 设计要点 #2）
+- `GuardResult`：不可变、带 slots 的类型化护栏结果，字段为 `kind: AgentErrorKind`、`message`、
+  可选 `cost_usd`；`None` 表示允许继续。
+- `evaluate_guard(*, cancel_event, deadline, cost_limiter, running_usage, cancelled=False,
+  deadline_exceeded=False, context_error=None) -> GuardResult | None`：使用 monotonic 绝对
+  deadline，并固定按 `CANCELLED > TIMEOUT > COST_EXCEEDED > CONTEXT_EXCEEDED` 判定。
+  `cancelled` / `deadline_exceeded` 接收 LLM Facade 已识别的类型化信号；`context_error` 只由捕获
+  `ContextWindowExceededError` 的策略传入。成本检查仅在更高优先级信号未命中时执行。
 
-使用方式：`from ._common import dispatch_error, guard_exceeded, merge_usage`。
+`running_usage` 由调用方按本策略累计口径现算，函数不修改 usage。三个策略都在付费调用前准入、
+调用成功并归账后复查；ReAct 子跑通过 `baseline_usage` 把 Planner 已累计用量带入每轮判定。
+
+使用方式：`from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage`。
 策略不再各持本地定义；error_handlers 等生命周期仍由各策略自行管理。
+
+## 测试
+
+`tests/unit/test_reasoning_common.py` 直接锁定结果不可变性、绝对 deadline 边界以及四类护栏优先级；
+三策略测试负责验证判定结果对应的降级内容、usage 归并和调用次数。
 
 ## 错误分发统一入口（dispatch_error）
 

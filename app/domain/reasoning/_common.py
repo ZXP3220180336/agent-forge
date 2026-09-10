@@ -6,6 +6,7 @@
 
 import asyncio
 import time
+from dataclasses import dataclass
 
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.shared.error_handling import (
@@ -15,6 +16,16 @@ from app.shared.error_handling import (
     AgentRunError,
     ErrorHandlerRegistry,
 )
+from app.shared.exceptions import ContextWindowExceededError
+
+
+@dataclass(frozen=True, slots=True)
+class GuardResult:
+    """领域执行护栏的类型化判定；None 表示允许继续。"""
+
+    kind: AgentErrorKind
+    message: str
+    cost_usd: float | None = None
 
 
 def merge_usage(*usages: dict | None) -> dict:
@@ -28,32 +39,40 @@ def merge_usage(*usages: dict | None) -> dict:
     return merged
 
 
-def guard_exceeded(
+def evaluate_guard(
+    *,
     cancel_event: asyncio.Event | None,
-    start_time: float,
-    max_execution_time: float | None,
+    deadline: float | None,
     cost_limiter: CostLimiterPort | None,
     running_usage: dict,
-) -> tuple[str, str]:
-    """阶段/付费调用前护栏：返回 (终止原因, 成本超限原因)，均空串 = 可继续。
+    cancelled: bool = False,
+    deadline_exceeded: bool = False,
+    context_error: ContextWindowExceededError | None = None,
+) -> GuardResult | None:
+    """按固定优先级判定取消、绝对期限、累计成本与上下文超限。
 
-    终止（取消 / 总时长超限）优先于成本检查；成本 = cost_limiter.check(running_usage)
-    超限（cost_limiter 注入时）。running_usage 由调用方按策略累计口径现算（如 planner 的
-    react 各步 + 结构化全阶段；reflection 的 react 收集 + 自查/修正累计）。planner
-    三阶段入口与 reflection 自查循环共用。
+    优先级是 CANCELLED > TIMEOUT > COST_EXCEEDED > CONTEXT_EXCEEDED。最终请求
+    上下文是否可容纳只有 Integration 掌握；策略捕获其类型化异常后通过
+    context_error 参与同一次判定。
+
+    running_usage 由调用方按策略累计口径现算，本函数不修改它。cancelled 与
+    deadline_exceeded 用于把 LLM Facade 已判定的类型化终止信号纳入同一决策。
     """
-    if cancel_event is not None and cancel_event.is_set():
-        return "用户取消", ""
-    if (
-        max_execution_time is not None
-        and time.monotonic() - start_time > max_execution_time
-    ):
-        return "执行超时", ""
+    if cancelled or (cancel_event is not None and cancel_event.is_set()):
+        return GuardResult(AgentErrorKind.CANCELLED, "用户取消")
+    if deadline_exceeded or (deadline is not None and time.monotonic() >= deadline):
+        return GuardResult(AgentErrorKind.TIMEOUT, "执行超时")
     if cost_limiter is not None:
         exceeded, cost = cost_limiter.check(running_usage)
         if exceeded:
-            return "", f"成本超限（累计 ${cost}）"
-    return "", ""
+            return GuardResult(
+                AgentErrorKind.COST_EXCEEDED,
+                f"成本超限（累计 ${cost}）",
+                cost_usd=cost,
+            )
+    if context_error is not None:
+        return GuardResult(AgentErrorKind.CONTEXT_EXCEEDED, str(context_error))
+    return None
 
 
 async def dispatch_error(

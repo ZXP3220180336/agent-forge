@@ -20,7 +20,7 @@ Python `asyncio.timeout` 通过取消当前 task 实现超时，并在上下文�
 - 内部 LLM deadline 设为该触发点前 `min(1s, 总时长 × 10%)`，窗口仅供 Integration 终止清理使用。
 - 外层使用事件循环时钟计算 `timeout_at`；Integration 的 deadline 继续按 `time.monotonic()` 契约计算，避免混用时钟域。
 - 不识别内部 deadline、但配合 task 取消的 LLM 仍在原 timeout 时刻收到取消。
-- `_finalize_timeout`、错误 handler 与 done 事件生成位于 timeout scope 外，是不再发起 LLM/工具副作用的领域尾部；本实现不对同步阻塞或吞取消扩展点承诺绝对返回时限。
+- `_finalize_guard_result(TIMEOUT)`、错误 handler 与 done 事件生成位于 timeout scope 外，是不再发起 LLM/工具副作用的领域尾部；本实现不对同步阻塞或吞取消扩展点承诺绝对返回时限。
 
 ## 决策取舍
 

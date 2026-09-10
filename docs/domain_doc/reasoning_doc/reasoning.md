@@ -1,7 +1,7 @@
 # 推理策略模块对外接口文档
 
 > **对应代码**：`app/domain/reasoning/`
-> **更新日期**：2026-09-06
+> **更新日期**：2026-09-10
 > **文档定位**：推理策略模块对外接口文档——策略类契约 + 内部组件导航；服务对象为 agent/ 层编排（ReActAgent / PlannerAgent / ReflectionAgent）
 > **实现状态**：✅ 已实现（react.py ✅；reflection.py ✅；planner.py ✅；chain_of_thought 预留）
 
@@ -40,7 +40,7 @@
 ```text
 app/domain/reasoning/
 ├── __init__.py          # 子包导出（ReAct / Reflection / Planner 策略 + Outcome）
-├── _common.py           # 策略共享小工具（dispatch_error / guard_exceeded / merge_usage / 常量）
+├── _common.py           # 策略共享小工具（GuardResult / evaluate_guard / dispatch_error / merge_usage）
 ├── react.py             # ReAct 推理（ReActStrategy + ReActOutcome，✅）
 ├── reflection.py        # Reflection 推理（ReflectionStrategy + ReflectionOutcome，✅）
 ├── planner.py           # Planner 推理（PlannerStrategy + PlannerOutcome，✅）
@@ -90,7 +90,7 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 | [react.md](react.md) | `react.py` | ReAct 推理（ReActStrategy + ReActOutcome） | ✅ |
 | [reflection.md](reflection.md) | `reflection.py` | Reflection 推理（生成 → 自查 → 修正） | ✅ |
 | [planner.md](planner.md) | `planner.py` | Planner 推理（规划 → 逐步骤执行 → 汇总，Plan-then-Execute） | ✅ |
-| [_common.md](_common.md) | `_common.py` | 策略共享小工具（dispatch_error / guard_exceeded / merge_usage / 常量） | 🔶 |
+| [_common.md](_common.md) | `_common.py` | 类型化执行护栏、错误分发与 usage 合并（无状态共享） | ✅ |
 | chain_of_thought.py | `chain_of_thought.py` | CoT 推理（纯推理引导） | ⬜ 预留 |
 
 ---

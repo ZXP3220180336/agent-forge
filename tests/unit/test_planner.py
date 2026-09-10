@@ -167,6 +167,42 @@ async def test_plan_execute_summarize_ok():
     assert len(_typed(events, "done")) == 1  # 每步 ReAct done 被抑制，收尾仅 1
 
 
+async def test_cancel_after_successful_summary_keeps_summary_and_usage():
+    """汇总成功返回时取消命中，先接管结构化结果与 usage 再终止。"""
+    cancel_event = asyncio.Event()
+
+    class _CancelAfterSummaryLLM(_PlannerLLM):
+        async def generate_structured(self, *args, **kwargs):
+            result = await super().generate_structured(*args, **kwargs)
+            if self.structured_calls == 2:
+                cancel_event.set()
+            return result
+
+    llm = _CancelAfterSummaryLLM(
+        react_scripts=[_stop_script("步骤结果")],
+        structured_scripts=[PLAN, SUMMARY],
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    )
+    strategy = PlannerStrategy(llm=llm, tools=None)
+
+    events = await _run(
+        strategy,
+        [{"role": "user", "content": "hi"}],
+        cancel_event=cancel_event,
+    )
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == SUMMARY
+    assert strategy.outcome.content == SUMMARY["summary"]
+    assert strategy.outcome.usage == {
+        "prompt_tokens": 20,
+        "completion_tokens": 10,
+        "total_tokens": 30,
+    }
+    assert "用户取消" in (strategy.outcome.error or "")
+    assert len(_typed(events, "done")) == 1
+
+
 async def test_usage_accumulated_react_and_structured():
     """每步 react usage + plan/summarize structured usage 合并到 outcome。"""
     llm = _PlannerLLM(
@@ -378,7 +414,17 @@ async def test_cancel_after_plan_stops_partial():
                 yield e
 
     llm = _CancelLLM(
-        react_scripts=[_stop_script("步骤结果")],
+        react_scripts=[
+            {
+                "finish_reason": "stop",
+                "content": "步骤结果",
+                "usage": {
+                    "prompt_tokens": 6,
+                    "completion_tokens": 2,
+                    "total_tokens": 8,
+                },
+            }
+        ],
         structured_scripts=[PLAN, SUMMARY],
     )
     strategy = PlannerStrategy(llm=llm, tools=None)
@@ -388,6 +434,15 @@ async def test_cancel_after_plan_stops_partial():
 
     assert strategy.outcome is not None
     assert strategy.outcome.error == "用户取消，采用已完成步骤（部分进度）"
+    assert strategy.outcome.usage == {
+        "prompt_tokens": 6,
+        "completion_tokens": 2,
+        "total_tokens": 8,
+    }
+    assert len(strategy.outcome.steps_executed) == 1
+    assert strategy.outcome.steps_executed[0]["success"] is False
+    assert strategy.outcome.steps_executed[0]["content"] == "步骤结果"
+    assert len(_typed(events, "done")) == 1
 
 
 async def test_replan_new_steps_renumbered():

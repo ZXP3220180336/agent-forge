@@ -33,3 +33,6 @@ logs/
 
 # 临时完整计划文件（各层规划，不提交入库；如 domain-layer-plan-tmp.md）
 *plan-tmp.md
+
+# 学习知识文件（一些不清楚不明白的知识性文件，不提交入库；如side-effect-learn.md）
+*-learn.md
