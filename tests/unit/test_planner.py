@@ -404,7 +404,11 @@ async def test_schema_strict():
 
 
 async def test_cancel_after_plan_stops_partial():
-    """规划成功后执行中取消 → 降级采用已完成步骤（若有）。"""
+    """规划成功后执行中取消 → 降级采用已完成步骤（若有）。
+
+    步骤判据是二维（react success 且产出非空），被取消的子跑只要有产出即记 success=True；
+    sub.error 只记录停机原因、不参与判据，故该步的 error 记录为 None。
+    """
     cancel_event = asyncio.Event()
 
     class _CancelLLM(_PlannerLLM):
@@ -440,8 +444,58 @@ async def test_cancel_after_plan_stops_partial():
         "total_tokens": 8,
     }
     assert len(strategy.outcome.steps_executed) == 1
-    assert strategy.outcome.steps_executed[0]["success"] is False
+    assert strategy.outcome.steps_executed[0]["success"] is True
     assert strategy.outcome.steps_executed[0]["content"] == "步骤结果"
+    assert len(_typed(events, "done")) == 1
+
+
+async def test_guard_after_plan_returns_contract_plan_snapshot():
+    """规划后护栏命中 → plan 仍为契约形状快照 {goal, steps:[{id, description}]}。
+
+    触发：plan 这笔付费调用返回后立即置位 cancel_event（模拟运行中用户取消）→ 段首护栏
+    拦下，plan is not None 分支生效（文案「规划后中止，未开始执行」），零步骤 ReAct 调用。
+    断言重点：快照由 _normalize_steps 赋 id、不含 depends_on（raw plan 的 depends_on 只作
+    顺序纪律断言），与 plan_result 同源——消费方 PlannerAgent.metadata["plan"] 口径唯一。
+    """
+    cancel_event = asyncio.Event()
+
+    class _CancelAfterPlanLLM(_PlannerLLM):
+        async def generate_structured(self, *args, **kwargs):
+            result = await super().generate_structured(*args, **kwargs)
+            if self.structured_calls == 1:  # plan 归账后取消（第 2 笔尚未发起）
+                cancel_event.set()
+            return result
+
+    llm = _CancelAfterPlanLLM(
+        react_scripts=[_stop_script("不应执行")],
+        structured_scripts=[PLAN],
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    )
+    strategy = PlannerStrategy(llm=llm, tools=None)
+    messages = [{"role": "user", "content": "hi"}]
+
+    events = await _run(strategy, messages, cancel_event=cancel_event)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.degraded is True
+    assert strategy.outcome.error == "用户取消，规划后中止，未开始执行"
+    assert strategy.outcome.plan == {
+        "goal": PLAN["goal"],
+        "steps": [
+            {"id": 1, "description": PLAN["steps"][0]["description"]},
+            {"id": 2, "description": PLAN["steps"][1]["description"]},
+        ],
+    }
+    assert all("depends_on" not in s for s in strategy.outcome.plan["steps"])
+    assert strategy.outcome.steps_executed == []
+    assert llm.structured_calls == 1  # 仅 plan 一笔付费调用（未 summarize）
+    assert llm.react_calls == 0  # 未发起任何步骤 ReAct
+    assert strategy.outcome.usage == {
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 15,
+    }
     assert len(_typed(events, "done")) == 1
 
 

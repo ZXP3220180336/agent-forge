@@ -368,6 +368,8 @@ class PlannerStrategy:
 
         guard = _current_guard()
         if guard is not None:
+            # plan 非 None（规划已产出但未开工）：给出契约形状快照，与 plan_result 同源——
+            # PlannerOutcome.plan 恒为 {goal, steps:[{id, description}]}，消费方口径唯一。
             suffix = (
                 "规划失败后中止，未降级兜底"
                 if plan is None
@@ -375,7 +377,14 @@ class PlannerStrategy:
             )
             msg = f"{guard.message}，{suffix}"
             for e in self._finalize(
-                plan=plan,
+                plan=(
+                    self._plan_payload(
+                        plan["goal"],
+                        self._normalize_steps(plan["steps"], completed=completed),
+                    )
+                    if plan
+                    else None
+                ),
                 steps_executed=[],
                 success=False,
                 degraded=True,
@@ -431,12 +440,7 @@ class PlannerStrategy:
             ):
                 yield e
             return
-        plan_result = {
-            "goal": goal,
-            "steps": [
-                {"id": s["id"], "description": s["description"]} for s in pending
-            ],
-        }
+        plan_result = self._plan_payload(goal, pending)
 
         # ── 阶段 B：执行（串行；ready 守卫 depends_on ⊆ completed）──
         while pending:
@@ -464,11 +468,13 @@ class PlannerStrategy:
             # 子跑返回后先吸收其真实成果、usage 与迭代，再按统一优先级决定是否继续。
             sub = self._react.outcome
             self._absorb_react(sub)
-            # 步骤判成功 = react success 且产出非空（无产出工件视为失败）
+            # 步骤判成功 = react success 且产出非空（无产出工件视为失败）。
+            # sub.error 只记录子跑停机原因，不参与判据：MAX_TURNS / UNKNOWN 等终态可以有产出；
+            # 取消 / 超时 / 成本类终态由下方 _current_guard() 先行接管，不落到本判据。
             if sub is None:
                 ok, fail_reason = False, "ReAct 子跑未产出结果"
             else:
-                ok = sub.success and not sub.error and bool(sub.content.strip())
+                ok = sub.success and bool(sub.content.strip())
                 fail_reason = sub.error or ("" if ok else "步骤产出为空")
             executed.append(
                 {
@@ -950,6 +956,19 @@ class PlannerStrategy:
                 f"步骤 {rec['id']}（{status}）：{rec['summary'] or rec['content'] or ''}"
             )
         return "\n".join(parts)
+
+    @staticmethod
+    def _plan_payload(goal: str, steps: list[dict]) -> dict:
+        """对外生效计划的契约形状：{goal, steps:[{id, description}]}。
+
+        normalize 后的步骤只取 id + description：depends_on（normalize 输出为 deps）是
+        normalize 期的顺序纪律断言，不属对外契约。护栏分支与 plan_result 共用本方法，
+        保证 PlannerOutcome.plan 形状唯一。
+        """
+        return {
+            "goal": goal,
+            "steps": [{"id": s["id"], "description": s["description"]} for s in steps],
+        }
 
     def _normalize_steps(
         self,

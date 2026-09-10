@@ -198,6 +198,8 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 | 总时长超限（全局墙钟） | 每步 ReAct 转剩余预算（全局墙钟差额，下界 0.05s）；阶段顶部超限 → 采用已完成步骤 |
 | 成本超限（cost_limiter） | 每步 react 子跑带 planner 累计 `baseline_usage`；plan/replan/summarize 调用前和归账后经 `evaluate_guard` 复查；超限后不空转 fallback/replan/summarize |
 | 结构化降级链内取消/超时（E） | plan/replan/summarize 透传 `cancel_event` + 绝对 `deadline`；信号约束每笔 reserve/create/retry，并在 extract 最外层收敛 None；`plan is None` 后 guard 复查拦截 ReAct 兜底 |
+| 规划后护栏命中（plan 已产出但未开工） | 仍给出契约形状 plan 快照（`_plan_payload` + normalize 赋 id、不含 `depends_on`），`steps_executed=[]`；文案区分「规划后中止」与「规划失败后中止」 |
+| 子跑达迭代上限但有产出 | 判步骤成功（二维判据：react success 且产出非空），`sub.error` 只记录停机原因；不进入 replan |
 | 每步隔离前提被破坏（需上一步数值未带进摘要） | 步骤自包含约束要求；未覆盖应合并成一步（提示层纪律） |
 | 同一实例并发 / 多次 execute | 不并发复用——outcome 与累计态在每次 execute 覆盖，每次运行新建或串行读取 |
 | 步骤产出为空 / react 子跑无结果 | 判步骤失败（无产出工件视为失败），走 replan |
