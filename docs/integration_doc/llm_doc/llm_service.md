@@ -1,15 +1,15 @@
 # LLMService 编排设计文档
 
 > **模块**：`app/integration/llm/llm_service.py`
-> **更新日期**：2026-09-02
-> **职责**：LLM 网关统一 Facade——组织 9 组件协作完成一次 LLM 调用（可靠性链 +
+> **更新日期**：2026-09-10
+> **职责**：LLM 网关统一 Facade——组织 11 个内部组件协作完成一次 LLM 调用（可靠性链 +
 > 配额结算闭环 + 事件日志）
 > **状态**：✅ 已实现
 > **定位**：对外接口契约见 [llm.md](llm.md)（模块对外接口文档）；本文档解释
 > `LLMService` **内部如何组织组件工作**（编排机制，供内部维护者 / 集成方）
 > **配套**：实现领域端口 `LLMGateway`；依赖 `ClientManager` / `RetryHandler` /
 > `StreamingRectifier` / `StreamParser` / `ReservationLimiter` / `StructuredOutput` /
-> `CostTracker` / `errors`（`decide_downstream_error` 下游决策）；复用 `token_counter` 的
+> `RequestBudgetManager` / `execution_control` / `CostTracker` / `errors`（下游决策与执行终止翻译）；复用 `token_counter` 的
 > `get_encoder` / `content_to_text` / `TiktokenTokenCounter`（tiktoken 计数组件）
 
 ---
@@ -28,6 +28,7 @@
     - [TPM 估算](#tpm-估算)
   - [架构总览](#架构总览)
   - [组件详解](#组件详解)
+    - [\_CallContext — 已就绪请求上下文（主/fallback/续接共享）](#_callcontext--已就绪请求上下文主fallback续接共享)
     - [\_build\_chat\_kwargs — 请求参数构建](#_build_chat_kwargs--请求参数构建)
     - [\_build\_event\_fields — 事件字段构建](#_build_event_fields--事件字段构建)
     - [\_budget\_guarded\_call — 真实请求入口](#_budget_guarded_call--真实请求入口)
@@ -49,7 +50,7 @@
 ## 设计目标
 
 1. **Facade 统一编排**：`async_generate` / `generate` / `generate_structured` 是唯一对外
-   入口，调用方不直接触碰 9 组件；内部组织组件协作的细节对调用方透明
+   入口，调用方不直接触碰 11 个内部组件；内部组织组件协作的细节对调用方透明
 2. **可靠性链闭环**：限流（事前排队）→ 重试/熔断/降级（保护 create 阶段）→ 整流/续接
    （流式）→ 解析 → 事件日志，一次调用走完整链路
 3. **配额结算闭环**：每个 `reserve` 必配结算，`finally` 兜底防泄漏——create 失败
@@ -66,7 +67,9 @@
 一次 LLM 调用依次经过（各组件设计见对应子文档）：
 
 ```text
-ReservationLimiter（事前限流：reserve 排队，配额不足等待而非请求）
+execution_control（取消/deadline 快检与受控等待）
+    → RequestBudgetManager（最终 provider 请求上下文准入）
+    → ReservationLimiter（事前限流：reserve 排队，配额不足等待而非请求）
     → RetryHandler（重试/熔断/fallback：保护 create 阶段，NON_RETRYABLE 上抛）
     → StreamingRectifier（流式：整流循环） 或  StreamParser（非流式：parse_non_stream）
     → fill_llm_event_fields（llm_call 事件日志：model/tokens/duration/success）
@@ -257,8 +260,9 @@ success / error / duration / tokens（经 `fill_llm_event_fields` 落盘）。
 
 每次真实请求的**单一入口**（见「核心概念·真实请求入口」），共享请求件经 `_CallContext` 传入
 （`budget_guard` / `limiter` 由调用点按 guard_key 解析），按序两段：① 请求预算闸校验
-（`reserve` 之前，超限抛 `ContextWindowExceededError`、不占配额）；② 限流闭环 `reserve`
-（或 `reserve_adaptive`）预留配额 → `create` → 失败/取消 `cancel()` 全额退并 re-raise。
+（`reserve` 之前，超限抛 `ContextWindowExceededError`、不占配额）；② 执行控制约束下的
+`reserve`（或 `reserve_adaptive`）→ reserve 后复查 → 受控 `create`。create 前终止全额
+退款；create 调度后取消/期限/硬取消以 `settle(None)` 保守结算；自然传输失败才 `cancel()`。
 `ctx.active["res"]` 记录当前 reservation，供 create 成功后的 settle 读取（跨 create 与结算传递）。
 
 ### LLMService 编排方法
@@ -278,16 +282,16 @@ success / error / duration / tokens（经 `fill_llm_event_fields` 落盘）。
 ### async_generate（流式全链路）
 
 ```text
-async_generate(messages, tools, temperature, max_tokens, result, model_key, cancel_event)
+async_generate(messages, tools, temperature, max_tokens, result, model_key, cancel_event, deadline)
   └─ _plan_request（流式/非流式共用编排）：
        ├─ _build_chat_kwargs 组装 provider 请求 kwargs（stream=True 补 include_usage）
        ├─ client / retry 解析 + TPM 预留量估算（adaptive → prompt_tokens；否则 estimated = prompt + max_tokens）
        └─ ctx 就绪后内联构造 call_fn / fallback_fn（启用备用模型时 "fallback" 键）/ continue_fn（流式且配置开启时），
             各闭包按各自 guard_key 直接走 _budget_guarded_call 发起真实请求；产物见 _RequestPlan
   └─ rectified_stream（整流/续接循环，见 streaming_rectifier.md）：
-       每 attempt：_budget_guarded_call（预算准入 → reserve → 取消复查 → create，经 retry.execute 保护）
-         ├─ create 失败/取消 → cancel() 全额退 → 可整流则重试，否则放弃
-         ├─ 迭代：_drain 逐 chunk 看门狗 + _apply_chunk 累积 StreamResult + 产出 SSE 事件
+        每 attempt：_budget_guarded_call（执行快检 → 预算 → 受控 reserve → 复查 → 受控 create，经 retry.execute 保护）
+          ├─ create 自然失败 → cancel()；执行终止/硬取消 → settle(None)
+          ├─ 迭代：_drain 竞争 chunk/cancel/deadline/idle + 累积 StreamResult + 产出 SSE 事件
          ├─ 中断：_should_rectify？ 是（首 token 前）→ 退避重试（重新 reserve）
          │                    否（已产出 content）→ 续接？ 是 → continue_fn(prefix) 续写
          │                                             否 / 续接失败 → 放弃（熔断 feeding + 部分保留）
@@ -297,13 +301,14 @@ async_generate(messages, tools, temperature, max_tokens, result, model_key, canc
 ### generate（非流式全链路）
 
 ```text
-generate(messages, tools, temperature=0, max_tokens=1024, response_format, model_key="fast")
+generate(messages, tools, temperature=0, max_tokens=1024, response_format, model_key="fast", cancel_event=None, deadline=None)
   ├─ _plan_request（同 async_generate 共用编排，无续接闭包）：build kwargs → 估算 + active + call_fn / fallback_fn 一次就绪
   ├─ retry.execute(call_fn=call_fn, fallback_fn=fallback_fn)
   │    ├─ 可恢复错误（超时/5xx/429）重试耗尽 → fill 事件(error) → 返回 None
   │    └─ 不可恢复错误（NON_RETRYABLE）→ fill 事件(error) → 统一决策（见 [error.md](error.md)）：openai 归一 LLMAPIError（from 原异常）；其余 raise
   ├─ try: StreamParser.parse_non_stream(response) → 填 StreamResult
   └─ finally: active.res → settle(usage.total_tokens)；settle 被取消 → settle(None) 兜底 + re-raise
+  ├─ 结算后返回前复查 cancel/deadline；命中时携 usage 抛 shared 类型化终止异常
   └─ fill_llm_event_fields(success=True, usage, finish_reason) → 返回 StreamResult
 ```
 
@@ -314,7 +319,7 @@ generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=N
   └─ StructuredOutput.extract(llm_service=self, ...)   # 三级降级见 structure.md
        第一级 JSON Schema(strict) → 第二级 JSON Mode → 第三级 正则提取
        截断短路返回 None；拒答/工具调用抛异常
-       cancel_event/deadline：每条子调用前检查，命中返回 None（与降级耗尽同出口）
+       cancel_event/deadline：每条子调用透传到 reserve/create/retry；命中类型化短路，extract 最外层返回 None
 ```
 
 ---
@@ -384,6 +389,8 @@ settings 后调用）：
 - 间接覆盖（经 Facade 全链路）：`test_stream_rectify.py`（23 用例，async_generate 整流/续接 /
   结算 / 事件 / 熔断 feeding，含续接请求追加 assistant 前缀消息 + 重新 reserve）、
   `test_generate_structured.py`（50 用例，generate_structured 三级降级）
+- LLM-044 执行控制：`test_llm_request_budget.py` 与 `test_streaming_rectifier.py` 覆盖 reserve/create、
+  retry/续接退避、chunk 竞态、流关闭和终止 usage。
 
 ---
 
@@ -408,6 +415,7 @@ settings 后调用）：
 - [非流式配额结算兜底（LLM-002）](../../../issues/integration/llm/2026-08-16-generate-quota-settle-fallback.md)
 - [流式硬取消保留配额（LLM-003）](../../../issues/integration/llm/2026-08-16-hard-cancel-rpm-refund.md)
 - [fallback 同 provider 约束（LLM-012）](../../../issues/integration/llm/2026-08-16-fallback-same-provider.md)
+- [执行控制贯穿每笔真实请求（LLM-044）](../../../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)
 - [配额缺口：重试/降级不计入限流申请（LLM-034）](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)
 - [generate_structured 参数名契约（LLM-036）](../../../issues/integration/llm/2026-08-16-generate-structured-model-key-param.md)
 

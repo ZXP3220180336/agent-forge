@@ -175,7 +175,7 @@ Authorization: Bearer <token>
 **处理流程**：
 
 1. **会话验证与授权**：`session_manager.get_session(session_id)`，不存在 → `404 会话不存在`；`session["user_id"] != user_id` → `403 无权访问`
-2. **保存用户消息**：`session_manager.add_message(role="user", content=message, token_count=context_manager.count_tokens(message))`，token 数由 ContextManager 经 TokenCounter 端口统计（见 [token_counter.md](../../integration_doc/llm_doc/token_counter.md)）
+2. **保存用户消息**：`session_manager.add_message(role="user", content=message, token_count=context_manager.count_tokens(message))`，token 数由 ContextManager 经 `LLMGateway` 的计数能力统计（实现细节见 [token_counter.md](../../integration_doc/llm_doc/token_counter.md)）
 3. **构建上下文**：`context_manager.build_messages(session_id, user_message)` 组装发送给 LLM 的消息序列
 4. **定义流式生成器 `generate()`**：
    - 新建 `AgentContext`（8 字段：`session_id` / `user_id` / `max_iterations` / `temperature` / `max_tokens` / `max_execution_time` / `max_context_rounds` / `max_context_tokens`，运行参数来自 `get_agent_params` 注入，`max_iterations` 可被请求体覆盖）与 `ReActAgent(llm=llm_service, tools=tool_service, context_budget=context_manager)` —— **Agent 无状态**，每次请求新建实例

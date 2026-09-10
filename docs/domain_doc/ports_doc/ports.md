@@ -79,8 +79,8 @@ LLM 调用契约（流式 / 非流式 / 结构化 / 成本估算 / Token 计量�
 
 | 方法 | 签名 | 返回 | 说明 |
 | --- | --- | --- | --- |
-| `async_generate` | `(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None)` | `AsyncGenerator[str]` | 流式生成：yield reasoning / message SSE 事件，增量结果写入 `result` |
-| `generate` | `(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast")` | `StreamResult \| None` | 非流式生成（简单任务） |
+| `async_generate` | `(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None, deadline=None)` | `AsyncGenerator[str]` | 流式生成：yield SSE 事件，增量结果写入 `result`；执行期限为 monotonic 绝对时刻 |
+| `generate` | `(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast", cancel_event=None, deadline=None)` | `StreamResult \| None` | 非流式生成；取消/期限约束真实请求等待并以 shared 类型化异常终止 |
 | `generate_structured` | `(messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None)` | `dict \| None` | 结构化输出（非 Agent 提取场景）；`usage` 可变引用回填**全程累计** token 用量（含降级/截断重试/回喂的所有成功调用，供成本计量）；`cancel_event` 置位 / `deadline`（monotonic 绝对）到期 → 返回 None（不再发起后续子调用） |
 | `calculate_cost` | `(usage, model="")` | `dict[str, float]` | 成本估算（LLM 能力）：按 model 定价折算 usage 为 `{cost_usd, input_cost, output_cost}`（round 6）；供成本上限护栏经同一端口接入 |
 | `count_tokens` | `(text)` | `int` | 单段文本 token 数（主模型编码） |

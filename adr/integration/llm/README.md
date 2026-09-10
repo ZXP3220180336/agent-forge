@@ -1,7 +1,7 @@
 # LLM 模块决策记录（ADR）
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/`）的结构性/契约性设计决策，记录 Context → Decision → Consequences 完整前因后果，供追溯与复用。
-> **更新日期**：2026-09-06
+> **更新日期**：2026-09-10
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [问题追踪](../../../issues/integration/llm/README.md)
 
 ## 状态图例

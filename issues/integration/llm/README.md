@@ -1,7 +1,7 @@
 # LLM 模块问题追踪
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/` 及其跨模块关联方）审查/审核发现的问题，追踪从发现 → 分析 → 修复 → 验证的完整生命周期。
-> **更新日期**：2026-09-02
+> **更新日期**：2026-09-10
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [领域端口契约](../../../docs/domain_doc/README.md)
 
 ## 状态图例
@@ -61,6 +61,10 @@
 | [LLM-041](2026-09-06-fallback-window-and-quota.md) | fallback 备用链路沿用主窗口且绕过限流闭环 | P2 | ✅ 已修复 | llm_service / request_budget / retry / streaming_rectifier | 2026-09-06 | 2026-09-06 |
 | [LLM-042](2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md) | reserve R5 兜底退款被二次取消时 RPM 配额泄漏 | P2 | ✅ 已修复 | reservation_limiter（_acquire R5） | 2026-09-07 | 2026-09-07 |
 | [LLM-043](2026-09-08-structured-cancel-deadline.md) | generate_structured 降级链无取消/期限检查点（终止后仍空烧付费调用） | P2 | ✅ 已修复 | structured / llm_service / reflection / planner | 2026-09-08 | 2026-09-08 |
+| [LLM-044](2026-09-08-execution-control-through-every-call.md) | 执行控制未贯穿单次 generate/整流内部（取消/期限后仍发真实 SDK 请求） | P1 | ✅ 已修复 | llm_service / execution_control / retry / streaming_rectifier / structured / react | 2026-09-08 | 2026-09-08 |
+| [LLM-045](2026-09-09-execution-control-late-result-drop.md) | await_with_execution_control abort 判赢后丢弃迟回值（reserve/create 资源泄漏） | P1 | ✅ 已修复 | execution_control / llm_service / streaming_rectifier | 2026-09-09 | 2026-09-09 |
+| [LLM-046](2026-09-09-continuation-finish-guard.md) | 半流续接缺完成态守卫：EOF 后结算/日志异常被当续接中断重发（重复计费） | P1 | ✅ 已修复 | streaming_rectifier（_try_continuations） | 2026-09-09 | 2026-09-09 |
+| [LLM-047](2026-09-09-deadline-usage-propagation-closed-loop.md) | 流式 deadline 已获 usage 传播闭环不完整（整流/续接退避部分出口漏传、无用量出口误传） | P2 | ✅ 已修复 | streaming_rectifier / llm_service / errors / structured | 2026-09-09 | 2026-09-09 |
 
 ## 新问题登记规范
 

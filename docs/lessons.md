@@ -1,5 +1,34 @@
 # 研发教训
 
+## 2026-09-09 TimeoutError 跨层来源判定（REASON-014）
+
+- **异常类型不能证明控制信号来源**（REASON-014）：`asyncio.timeout_at` 的硬墙、provider 传输、结算和日志都可能抛内置 `TimeoutError`。创建 timeout 范围的一层应保留上下文对象，并以 `expired()` 确认本次硬墙是否实际到期；仅比较当前时钟或只看异常类名都会误分类。
+- **异常分类修正必须连同部分状态所有权一起审查**（REASON-014）：把内部 `TimeoutError` 从 TIMEOUT 改为 UNKNOWN 只修了标签；若 UNKNOWN 仍只读取上一完成轮，当前续接已产出的内容和 usage 依然丢失。跨可中断 await 的 `current_result` 必须在所有异常终态统一接管。
+
+## 2026-09-09 ReAct deadline 部分成果与清理窗口（REASON-012/013）
+
+- **部分成果的所有权要在可中断 await 前交接**（REASON-012）：流式 `StreamResult` 在 `async_generate` 返回前就会被逐步填充；只在正常返回后赋值 `last_result` 会让 deadline 出口看不到当前轮。显式区分 `current_result` 和 `last_result`，终止时优先有可见内容的当前轮，空当前轮则保留上一轮。
+- **usage 异常载体与部分结果是候选来源，不是两笔消耗**（REASON-012）：异常已携带 usage 时优先采用，否则回退 `current_result.usage`；两者叠加会双计同一请求。
+- **协作式 deadline 和强制式 timeout 必须有时序层次**（REASON-013）：同刻触发会让硬取消打断 close/settle。在既有总硬上限内为内部 deadline 预留有界清理窗口，既保留资源收尾时间，也不放宽对外执行契约。
+
+## 2026-09-09 流式 deadline 出口 usage 口径（LLM-047）
+
+- **usage 传递判据 = 「该出口是否可能携已获用量」，不是「统一带或统一裸」**（LLM-047）：流已读 / 已结算的终止出口（整流/续接退避、放弃/续接链、读取期）必须携带 `result.usage`——漏带 = 已耗 token 不进成本总账；请求未发 / 未读流的出口（attempt 入口、create/reserve 段）不带——防御性携带是恒 None 噪音，且掩盖判据。原语层（无 usage 来源）一律裸抛，由最近的读取捕获点统一补全。详见 [LLM-047](../issues/integration/llm/2026-09-09-deadline-usage-propagation-closed-loop.md)。
+- **对称出口必须同一口径，修复一个就镜像检查另一个**（LLM-047）：整流退避「被 deadline 中断」重建携 usage、同一退避「睡满复查」却裸抛即缺陷——两者共享同一 usage 来源与取值窗口。
+- **usage 会被 `_reset_dead_meta` 清空，判据要对着清空点想**（LLM-047）：整流 continue 前 / 续接 create 前会清 usage——整流 attempt≥1 的 create 段恒 None（裸抛正确），上一 attempt 已读 usage 只在 reset 前的整流退避段可带。跨层 deadline 测试另须给 attempt0 整链前置（tiktoken 估算等）留 deadline 缓冲、固定整流退避参数，否则命中点漂到 attempt 入口裸抛（测不到退避段）。
+
+## 2026-09-09 执行控制迟回值接管（LLM-045）
+
+- **abort 决定业务终态、迟回值决定资源所有权，两者正交、不互斥**（LLM-045）：factory 吞掉取消、以值正常收尾时，helper 不得丢弃该值——迟回值是「请求实际已发生 / 资源已取得」的所有权凭证；调用方须**先接管**（settle/cancel/close）**再完成 abort 收尾**，迟回值**不是业务成功**，不能当成功结果返回。
+- **helper 返回 ≠ 业务未终止，调用方必须自带 abort 复查**（LLM-045）：`await_with_execution_control` 的返回值也可能出现在 abort 判赢之后——消费该原语的调用方都须在产生外部副作用前复查 cancel/deadline，否则会把迟回资源当成功泄漏。详见 [LLM-045](../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md)。
+
+## 2026-09-08 执行控制贯穿每笔真实 SDK 调用（LLM-044）
+
+- **执行控制检查点锚定「每次真实 SDK attempt 共用入口 + 每次等待」，而非编排层**（LLM-044）：E 把检查放 `_call_generate` 门口一次，generate 内部 retry/fallback/reserve 整流读取仍是黑盒——取消/期限后仍发真实请求。与 REASON-001/LLM-043 同一教训：护栏落真实调用点（`_budget_guarded_call`）与每次等待（reserve 排队/退避/chunk）。
+- **结算按「请求是否已开始」划分，不靠调度假设**（LLM-044）：create 调度后请求可能已达 provider——终止须 `settle(None)` 保守而非 cancel 全额退（防配额虚增→429）；内部 deadline 与外层 asyncio.timeout 到期时间近似，须显式 `create_started` 状态而非赌"内部总先触发"。
+- **整体期限不得以内置 `TimeoutError` 表现**（LLM-044）：它会被 classify RETRYABLE 当网络超时重试/整流/续接；终止用类型化私有信号并在 Facade 边界翻译 shared 领域出口（Domain 不依赖 integration 私有）。
+- **新增控制参数要沿所有再调用分支逐点核验**（LLM-044 审查补充）：入口签名有 `deadline` 不代表内部闭环完整；首次流式 `retry.execute`、整流、半流续接、fallback 都是独立再调用边。测试应分别让期限落在退避与读取竞态中，并断言 SDK 调用次数，而不只断言最终异常。
+
 ## 2026-09-08 generate_structured 取消/期限闭环（LLM-043）
 
 - **执行护栏锚定「真实请求前」而非「策略阶段入口」**（LLM-043）：结构化三级降级链是单次 Facade 调用内的多条真实请求——reflection/planner 的阶段入口 guard 覆盖不到链内部，取消/超时后仍空烧降级/回喂/扩容。护栏粒度与 REASON-001 同一教训在集成层重现：凡「一次编排内多次真实请求」的组件（降级链/重试），护栏检查点必须落在每次请求的统一入口，而非编排层入口。
@@ -73,3 +102,7 @@
 - **markdown 中文表格 lint**：markdownlint 的 MD060 按字符宽度（中文算 2 格）校验表格对齐，手写中文表格极易误报。用脚本按 east_asian_width 计算列宽自动对齐。**新改表格后重跑对齐脚本。**
 - **文档移动后必须同步交叉链接**：文档目录重组后，`architecture.md` 的「相关文档」链接已同步修正，但**检查其他文档中是否仍有指向旧路径的链接**（如曾引用 `config.md` 旧位置）。
 - **路由导入路径与文件结构不一致**：`api/routes/` 文件名与实际导入名不一致会 ImportError；路由内引用应匹配 `app/` 下的真实模块位置。**`__init__.py` 的导入名要匹配实际文件名，跨层导入用绝对导入 `from app.xxx import ...`。**
+# 2026-09-10 续接准入失败与超时契约边界
+
+- **下一阶段资源未取得前，不清理上一阶段的终止状态**：半流续接在预算闸、取消或 deadline 处可能尚未取得新流；此时旧流的 content/usage 仍是当前运行的有效成果。元数据复位必须放在 `continue_fn` 成功返回之后。
+- **超时触发点不等于绝对返回时限**：`asyncio.timeout` 到期会取消 task，但同步阻塞或吞取消代码仍可能延迟返回；timeout scope 外的领域收尾也形成尾部。文档必须明确 scope、取消协作前提和尾部是否允许新副作用。

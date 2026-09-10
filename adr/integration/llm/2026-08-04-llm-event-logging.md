@@ -10,7 +10,7 @@
 ## Context
 
 - LLM 调用需记录元数据（模型、Token、耗时、是否成功）供可观测性/成本审计。
-- 早期 `LLMLogger`（`app/integration/llm/logger.py`）是 LLM 层私有实现。
+- 早期私有 `LLMLogger` 是 LLM 层的局部实现，已由全局日志框架承接。
 - 日志格式与归属有两种选择：JSON 结构化（全局）vs 纯文本（私有）；消费端（ELK/Datadog/Graylog）需可解析。
 
 ## Decision

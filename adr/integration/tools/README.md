@@ -1,8 +1,8 @@
 # 工具模块决策记录（ADR）
 
 > **用途**：登记 Integration 层工具模块（`app/integration/tools/`）的结构性/契约性设计决策，记录 Context → Decision → Consequences 完整前因后果，供追溯与复用。
-> **更新日期**：2026-08-17
-> **关联**：[工具模块接口文档](../../../docs/integration_doc/tools_doc/tools.md) · [问题追踪](../../../issues/domain/agent/README.md)
+> **更新日期**：2026-09-10
+> **关联**：[工具模块接口文档](../../../docs/integration_doc/tools_doc/tools.md) · [问题追踪](../../../issues/integration/tools/README.md)
 
 ## 状态图例
 

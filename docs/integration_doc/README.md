@@ -43,17 +43,19 @@
 app/integration/
 ├── embedding/                     ← EmbeddingService 文本向量化
 │   └── embedding_service.py       ← EmbeddingService（embed / embed_batch / 缓存）
-├── llm/                          ← LLM 网关（LLMService Facade + 9 组件）
+├── llm/                          ← LLM 网关（LLMService Facade + 11 组件）
 │   ├── llm_service.py            ← LLMService（统一 Facade，对外入口）
 │   ├── client.py                 ← ClientManager 连接池管理
 │   ├── errors.py                 ← 传输错误处理（分类/归一/降级判定/下游决策）
+│   ├── execution_control.py      ← 取消/deadline 受控等待原语
 │   ├── retry.py                  ← RetryHandler + CircuitBreaker
 │   ├── streaming.py              ← StreamParser 流式解析
 │   ├── streaming_rectifier.py    ← StreamingRectifier 流式整流重试
 │   ├── structured.py             ← StructuredOutput 结构化输出
 │   ├── reservation_limiter.py    ← ReservationLimiter 客户端限流
 │   ├── cost_tracker.py           ← CostTracker 成本计算
-│   └── token_counter.py          ← tiktoken 计数实现
+│   ├── token_counter.py          ← tiktoken 计数实现
+│   └── request_budget.py         ← 最终请求上下文预算闸
 ├── tools/                        ← 工具系统（ToolService Facade + 六大子组件 + 内置工具）
     ├── base.py                   ← BaseTool / ToolResult（元数据 + 校验委托 + 生命周期钩子）
     ├── tool_service.py           ← ToolService（统一 Facade，对外入口）
@@ -114,7 +116,7 @@ app/integration/
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
 | LLM Facade | `llm/llm_service.py` | ✅ | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost` |
-| LLM 子包 | `llm/`（8 组件） | ✅ | ClientManager / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token_counter（tiktoken 计数） |
+| LLM 子包 | `llm/`（11 组件） | ✅ | ClientManager / errors / execution_control / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token_counter / request_budget |
 | 工具 Facade | `tools/tool_service.py` | ✅ | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
 | 工具子包 | `tools/`（六大子组件） | ✅ | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler / Loader |
 | 内置工具 | `tools/builtin/` | ✅ | search / readFile / writeFile / code_exec / web_browse + RCA 5 工具（query_batch_yield 等） |
@@ -129,12 +131,13 @@ app/integration/
 
 **代码**：`app/integration/llm/` · **文档**：[LLM 层详解](llm_doc/llm.md) · [LLMService 编排](llm_doc/llm_service.md)
 
-负责所有与大语言模型的交互，是系统的**模型通信基础设施**。`LLMService` 是唯一外部入口，内部 9 组件各司其职：
+负责所有与大语言模型的交互，是系统的**模型通信基础设施**。`LLMService` 是唯一外部入口，内部 11 组件各司其职：
 
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
 | `ClientManager` | client.py | 全局共享 AsyncOpenAI 连接池，main / reasoning / fast 三档模型懒加载 |
 | 传输错误处理 | errors.py | 传输异常分类/归一/降级判定/下游决策（retry/llm_service/structured/streaming_rectifier 消费） |
+| 执行控制 | execution_control.py | 取消/deadline 快检与可中断等待，供 retry/整流/llm_service 共用 |
 | `RetryHandler` | retry.py | 指数退避 + 抖动 + CircuitBreaker 熔断 + fallback 降级链 |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式响应（纯函数，无状态） |
 | `StreamingRectifier` | streaming_rectifier.py | 流式整流重试：首 token 前中断才重试（防重复输出 / 双倍计费） |
@@ -142,6 +145,7 @@ app/integration/
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流，双 Token Bucket（RPM + TPM），reserve/settle 形态 |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配） |
 | `token_counter` | token_counter.py | tiktoken 计数实现：编码器解析 / content 归一化 / 消息计数（经 `LLMService.count_*` 对外） |
+| `request_budget` | request_budget.py | 每次最终 SDK 请求前按目标模型校验上下文窗口与输出预留 |
 
 四个对外入口：`generate()`（非流式，简单任务）/ `async_generate()`（流式，用户交互 SSE）/ `generate_structured()`（结构化输出）/ `calculate_cost()`（成本）。
 
@@ -208,7 +212,7 @@ app/integration/
 - [架构设计](../architecture.md)（集成层在 7 层架构中的位置与演进路径）
 - [应用层说明](../application_doc/README.md)
 - [领域层说明](../domain_doc/README.md)
-- [LLM 层详解](llm_doc/llm.md) · [传输错误处理](llm_doc/error.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md) · [TokenCounter](llm_doc/token_counter.md)
+- [LLM 层详解](llm_doc/llm.md) · [传输错误处理](llm_doc/error.md) · [执行控制](llm_doc/execution_control.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md) · [TokenCounter](llm_doc/token_counter.md) · [请求预算](llm_doc/request_budget.md)
 - [ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md) · [外部工具热加载](tools_doc/external.md) · [执行调度](tools_doc/executor.md) · [注册中心](tools_doc/registry.md) · [校验](tools_doc/validator.md) · [结果处理](tools_doc/result_processor.md) · [安全审计](tools_doc/security.md) · [选择器](tools_doc/selector.md) · [统计](tools_doc/stats.md)
 - [Embedding 详解](embedding_doc/embedding.md)
 - [配置说明](../config_doc/config.md)

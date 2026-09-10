@@ -1,8 +1,8 @@
 # llm/errors.py 传输错误处理设计文档
 
 > **模块**：`app/integration/llm/errors.py`
-> **更新日期**：2026-09-01
-> **职责**：LLM 传输异常的统一理解与决策——分类（`classify_error`）/ 归一（`normalize_transport_error`）/ 降级判定（`is_unsupported_response_format_error`）/ 下游决策（`decide_downstream_error`），llm 模块错误处理单一归属
+> **更新日期**：2026-09-10
+> **职责**：LLM 传输异常的统一理解与决策——分类（`classify_error`）/ 归一（`normalize_transport_error`）/ 降级判定（`is_unsupported_response_format_error`）/ 下游决策（`decide_downstream_error`），以及执行终止私有信号到 shared 异常的边界翻译
 > **状态**：✅ 已实现
 > **配套**：分类契约（`ErrorCategory` / `ErrorClassifier`）与实现同属本模块；归一目标 `LLMAPIError` 在 `app/shared/exceptions.py`（AppError 树）；与 `AgentErrorKind`（Agent 编排分发，error_handling.py）、工具层 `ErrorCode` 正交
 
@@ -35,6 +35,7 @@
 2. **统一下游决策**：`generate` 下游异常（可恢复耗尽 → 降级 / openai 不可恢复 → 归一上抛 / 非 openai → 原样上抛）由 `decide_downstream_error` 统一产出，llm_service / structured 只消费结果，消除重复决策分支
 3. **契约与实现同层**：`ErrorCategory` 是 LLM 传输层分类语言，仅集成层 LLM 消费（领域/应用层不引用），故契约随实现归本模块，不入 shared（shared 是被所有层引用的零依赖核心库，单一消费方的契约不属其列）
 4. **领域层可兜底**：openai 不可恢复异常归一为 `LLMAPIError`（AppError 树），领域层 `except AppError` 统一接住——Reflection 自查/修正降级闭环（REASON-010）
+5. **执行终止不进入传输分类**：`_StreamCancel` / `_DeadlineExceeded` 只表示业务取消或整体期限耗尽，不得被 `classify_error` 当作网络超时重试；Facade 通过 `translate_abort` 把它们翻译为 `LLMCancelledError` / `LLMDeadlineExceededError` 后交给领域层
 
 ## 核心概念解释
 
@@ -91,7 +92,7 @@ llm/errors.py（传输错误理解与决策）
 | `structured.py` | 降级链决策 + 400 unsupported 特判 | `_call_generate` |
 | `streaming_rectifier.py` | 流式整流重试判定（RETRYABLE / RATE_LIMITED 才整流） | `_should_rectify` |
 
-**依赖方向**：本模块只依赖 `shared`（`LLMAPIError`）+ openai SDK，被 llm 包内各组件引用，不反向依赖。
+**依赖方向**：本模块只依赖 `shared`（`LLMAPIError`、`LLMCancelledError`、`LLMDeadlineExceededError`）+ openai SDK，被 llm 包内各组件引用，不反向依赖。
 
 ## 组件详解
 
@@ -132,6 +133,7 @@ class DownstreamDecision:
 | `normalize_transport_error(exc: Exception) -> LLMAPIError \| None` | 是 | openai 不可恢复异常 → `LLMAPIError`（status_code 保留） |
 | `is_unsupported_response_format_error(exc: Exception) -> bool` | 是 | 400 + response_format/json_schema 关键词判定 |
 | `decide_downstream_error(exc: Exception) -> DownstreamDecision` | 是 | 下游异常统一决策（归一上抛 / 原样上抛 / 降级） |
+| `translate_abort(exc: _ExecutionAbort) -> LLMCancelledError \| LLMDeadlineExceededError` | 是 | Facade 边界翻译私有执行终止信号，并保留已取得的 `usage` |
 | `ErrorCategory`（枚举） | — | 分类值（`RETRYABLE` / `RATE_LIMITED` / `NON_RETRYABLE`） |
 | `DownstreamDecision`（数据类） | — | 决策结果（`to_raise` / `normalized`） |
 
@@ -142,6 +144,7 @@ class DownstreamDecision:
 3. **编程错误不吞（fail-fast）**：`decide_downstream_error` 对非 openai 编程错误原样上抛（`to_raise=原样`）——吞掉会掩盖真实 bug（REASON-010 边界）
 4. **可恢复错误重试耗尽 → 降级**：`RETRYABLE` / `RATE_LIMITED` 由可靠性层重试耗尽后 `to_raise=None`，调用方 return None（业务无结果）
 5. **未知异常默认 NON_RETRYABLE**：无法分类的异常不盲目重试，直接上抛
+6. **执行终止不可重试**：`_StreamCancel` / `_DeadlineExceeded` 不交给传输分类、重试、整流或 fallback；仅由 `translate_abort` 在 Facade 边界转换为 shared 类型化终止异常
 
 ## 测试状态
 

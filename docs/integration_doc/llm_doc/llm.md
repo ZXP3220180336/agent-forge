@@ -1,7 +1,7 @@
 # LLM 网关对外接口文档
 
 > **对应代码**：`app/integration/llm/`
-> **更新日期**：2026-09-06
+> **更新日期**：2026-09-10
 > **文档定位**：LLM 模块（`app/integration/llm/`）对外接口文档——`LLMService` Facade
 > 的接口契约 + 内部组件导航；服务对象为 LLM 网关的**外部调用方**（领域层 / 应用层 /
 > API 层）
@@ -46,6 +46,7 @@ app/integration/llm/
 ├── llm_service.py             ← LLMService（唯一对外 Facade，实现 LLMGateway）
 ├── client.py                  ← ClientManager 连接池管理
 ├── errors.py                  ← 传输错误处理（分类/归一/降级判定/下游决策）
+├── execution_control.py       ← 取消/deadline 受控等待原语
 ├── retry.py                   ← RetryHandler + CircuitBreaker
 ├── streaming.py               ← StreamParser 流式/非流式解析
 ├── streaming_rectifier.py     ← StreamingRectifier 流式整流/续接重试
@@ -101,8 +102,8 @@ app/integration/llm/
 | --- | --- | --- |
 | `register_config(*, fallback_model_id, adaptive_reserve, stream_max_retries)` | 同步类方法 | 注入运行期配置（装配根 `container.initialize()` 调用，零 settings 依赖） |
 | `__init__(api_key="", model="", base_url="")` | 构造 | 空构造走 `ClientManager`（需先注册配置）；手动构造须 api_key / model / base_url 齐备 |
-| `async_generate(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None)` | 异步生成器 | 流式生成，yield SSE 事件字符串（Agent 专用）；`cancel_event` 置位优雅终止 |
-| `generate(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast") -> StreamResult \| None` | 异步方法 | 非流式单轮生成（简单任务）；可恢复失败返回 None，不可恢复错误上抛 |
+| `async_generate(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None, deadline=None)` | 异步生成器 | 流式生成，yield SSE 事件字符串；取消约束 reserve/create/读取，整体期限耗尽抛 `LLMDeadlineExceededError` |
+| `generate(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast", cancel_event=None, deadline=None) -> StreamResult \| None` | 异步方法 | 非流式单轮生成；可恢复失败返回 None，不可恢复错误上抛；取消/期限抛 shared 类型化终止异常 |
 | `generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None) -> dict \| None` | 异步方法 | 结构化输出三级降级（JSON Schema → JSON Mode → 正则）；拒答/工具调用抛异常；`usage` 可变引用回填**全程累计** token 用量（含多级降级 / 截断重试 / 回喂的所有成功调用，供成本计量）；`cancel_event` 置位 / `deadline`（monotonic 绝对）到期 → 返回 None（与降级耗尽同出口，不再发起后续子调用） |
 | `calculate_cost(usage, model="") -> dict` | 同步静态 | 按模型用量估算成本（代理 `CostTracker`） |
 | `count_tokens(text) -> int` | 同步 | 单段文本 token 数（主模型编码，委托 tiktoken） |
@@ -133,6 +134,8 @@ app/integration/llm/
 | `StructuredTruncationError` | 结构化输出截断（扩 token 重试后仍不完整） | 扩大预算重试 / 降级处理 |
 | `LLMAPIError` | `generate` 下游不可恢复（openai 4xx/认证/响应校验归一，携带 status_code） | 领域层 `except AppError` 统一兜底（如 Reflection 降级） |
 | `ContextWindowExceededError` | 最终请求超过模型窗口（网络调用前本地预检拒绝，`NonRetryableError` 分支） | 终结当前调用（`CONTEXT_EXCEEDED` 语义，流式/非流式均上抛）；策略层保留部分结果；API 层映射 422 |
+| `LLMCancelledError` | `cancel_event` 在 reserve、create、重试、整流读取或结构化调用中触发 | 终结当前执行并按取消语义收尾；异常携带的 `usage` 计入当前运行，不能当作 LLM 失败重试 |
+| `LLMDeadlineExceededError` | 单次调用的 monotonic 绝对 `deadline` 到期 | 终结当前执行并按超时语义收尾；保留异常或流结果中已取得的 `usage`，不将其归为可重试传输超时 |
 | 不可恢复错误（非 openai 原样上抛） | 熔断开启 / 编程错误（`NON_RETRYABLE`） | 修复调用参数 / 返回错误响应 |
 
 ### 最小调用示例
@@ -177,7 +180,7 @@ cost = LLMService.calculate_cost(
 
 ## 内部实现组织
 
-> 内部 9 组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
+> 内部 11 组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
 > 本文展开——双处维护必然漂移，Rule 1「一个事实一个家」）。
 
 | 组件 | 文件 | 职责 | 设计文档 |
@@ -190,10 +193,11 @@ cost = LLMService.calculate_cost(
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流（RPM + TPM 双桶，reserve/settle + 自适应预留） | [limiter.md](limiter.md) |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配 + 会话级累计） | [cost_tracker.md](cost_tracker.md) |
 | 传输错误处理 | errors.py | 传输异常分类/归一/降级判定/下游决策（retry/llm_service/structured/streaming_rectifier 消费） | [error.md](error.md) |
+| 执行控制 | execution_control.py | 取消/deadline 快检、受控退避与 reserve/create 等待 | [execution_control.md](execution_control.md) |
 | `token_counter` | token_counter.py | tiktoken 计数实现（编码器解析 / content 归一化 / 消息计数，经 `LLMService.count_*` 对外） | [token_counter.md](token_counter.md) |
 | `request_budget` | request_budget.py | 最终请求预算校验（窗口、输出预留、tools/schema） | [request_budget.md](request_budget.md) |
 
-**组件间协作**（可靠性链）：`ReservationLimiter`（事前限流）→ `RetryHandler`
+**组件间协作**（可靠性链）：执行控制（取消/deadline）约束 `ReservationLimiter`（事前限流）与 `RetryHandler`
 （重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流/续接）→
 `StreamParser`（解析）→ 全局日志框架 `fill_llm_event_fields("llm_call")`
 （事件记录，见 [logging.md](../../platform_doc/observability/logging.md)）。Facade 如何组织这些组件
@@ -217,9 +221,9 @@ cost = LLMService.calculate_cost(
 ## 相关文档
 
 - [集成层说明](../README.md)（层总览：LLM 网关在集成层中的位置）
-- 组件子文档：client / retry / errors / streaming / streaming_rectifier / structure /
-  limiter / cost_tracker / token_counter / request_budget（见「内部实现组织」）
+- 组件子文档：client / retry / errors / execution_control / streaming / streaming_rectifier /
+  structure / limiter / cost_tracker / token_counter / request_budget（见「内部实现组织」）
 - [架构设计](../../architecture.md)（分层与演进路径）
 - [全局日志框架](../../platform_doc/observability/logging.md)（`llm_call` 业务事件）
 - 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~016）
-- 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~040）
+- 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~047）

@@ -160,7 +160,7 @@ ReflectionStrategy.execute()（三阶段）
 | 自查/修正抛非 AppError 编程错误（TypeError 等） | 不吞，向上冒泡（fail fast） |
 | 循环中用户取消（cancel_event 置位） | 停机降级采用最近稿（degraded=True，error 标注用户取消） |
 | 总时长超限（elapsed > max_execution_time） | 停机降级采用最近稿（degraded=True，error 标注执行超时） |
-| 结构化调用中取消/超时（E） | `_critique`/`_refine` 的 `generate_structured` 透传 `cancel_event` + 绝对 `deadline`（现算 `start_time + max_execution_time`）——降级链每条子调用前命中即返回 None（与降级耗尽同出口，不空转降级/回喂/扩容），外层照既有 None 路径停机降级 |
+| 结构化调用中取消/超时（E） | `_critique`/`_refine` 的 `generate_structured` 透传 `cancel_event` + 绝对 `deadline`；信号约束每笔 reserve/create/retry，并在 extract 最外层收敛 None，外层按既有路径停机降级 |
 | critique/refine 结构化输出超预算 | 走 generate_structured 默认预算（settings.llm_structured_max_tokens）；截断由集成层短路返回 None → 走 None 降级（不崩溃，P4） |
 | 同一实例并发 / 多次 execute | 不并发复用——outcome/_structured_usage 被覆盖，每次运行新建或串行读取（P4） |
 | 证据链含 final_answer 条目（校验失败留痕，非真实证据） | critique 序列化时经 `prompts/manager._serialize_evidence` 剔除（以字面量实现——prompts 不依赖 reasoning，规避环） |

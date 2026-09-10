@@ -1,6 +1,6 @@
 # 架构设计文档
 
-> **更新日期**：2026-08-24
+> **更新日期**：2026-09-10
 > **文档定位**：系统整体架构的**工业级目标蓝图** + 现状对照 + 演进路线。以目标架构为主线；现状耦合作为对照依据；演进路径标注「已实现 / 进行中 / 待规划」。模块级细节见各模块说明文档（见文末「相关文档」）。
 > **状态徽标**：✅ 已实现 ｜ 🔶 进行中 ｜ ⬜ 待规划
 
@@ -110,7 +110,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
                                   ▼
 ┌───────────────────────────────────────────────────────────────────────────────┐
 │ ④ 端口层 Ports · app/domain/ports/   —— 领域拥有的抽象协议（typing.Protocol）    │
-│  LLMGateway │ ToolGateway │ TokenCounter │ Session/Message/TaskRepository     │
+│  LLMGateway（含 token 计数）│ ToolGateway │ Session/Message/TaskRepository     │
 │  CachePort │ VectorStorePort │ EmbeddingPort │ EventPublisher │ IdGenerator  │
 └───────────────────────────────────────────────────────────────────────────────┘
                      ▲ 实现（Adapter，向端口注入）
@@ -120,7 +120,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 │ ⑤ 能力 / 集成层 Capability     │      │ ⑥ 基础设施层 Infrastructure            │
 │   app/integration/             │      │   app/infrastructure/（由空转实）       │
 │  LLM 网关：LLMService +        │      │  db/engine.py + db/repos/              │
-│   llm/ 8 组件（实现 LLMGateway）│      │   （SqlSession/Message/Task Repo）     │
+│   llm/ 11 组件（实现 LLMGateway）│     │   （SqlSession/Message/Task Repo）     │
 │  工具：ToolService（拆分 Facade）│      │  redis/client + redis/cache.py        │
 │   + builtin 10 工具（含 RCA 5）  │      │   （RedisCache + NullCache 真降级）    │
 │  嵌入：EmbeddingService         │      │  mq/ 队列 · store/ 存储 · http/       │
@@ -183,7 +183,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
-| LLMGateway / ToolGateway / TokenCounter | 领域依赖的 LLM / 工具 / token 抽象 | ✅ 三者均已实现（TokenCounter 含 get_encoder/content_to_text 单一事实源） | ✅ | — |
+| LLMGateway / ToolGateway | 领域依赖的 LLM / 工具抽象；token 计数是 LLMGateway 能力 | ✅ 均已实现（tiktoken 实现封装在集成层 `token_counter.py`） | ✅ | — |
 | Session / Message / Task Repository | 持久化抽象 | ⬜ 未实现 | 🔶 | Phase A |
 | CachePort / VectorStorePort | 缓存 / 向量抽象 | ⬜ 未实现 | 🔶 | Phase A/D |
 | EmbeddingPort | 嵌入抽象 | ✅ `app/domain/ports/embedding_port.py`（EmbeddingService 结构实现） | ✅ | — |
@@ -193,7 +193,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 
 | 目标模块 | 职责 | 现状 | 目标状态 | 演进阶段 |
 | --- | --- | --- | --- | --- |
-| LLMService + llm/ 7 组件 | LLM 网关（实现 LLMGateway） | ✅ 已实现 | ✅ | 归位 integration |
+| LLMService + llm/ 11 组件 | LLM 网关（实现 LLMGateway） | ✅ 已实现 | ✅ | 归位 integration |
 | 可靠性链（重试 / 熔断 / 限流 / 整流 / 结构化降级） | 外部调用可靠性 | ✅ 已实现（llm/ 子包） | ✅ | — |
 | ToolService（拆分 Facade）+ builtin 10 工具 | 工具执行（实现 ToolGateway） | ✅ Facade 聚合六大子组件（Registry/Selector/Validator/Executor/ResultProcessor/Auditor） | ✅ | — |
 | RCA 工具（良率 / 告警 / FDC / wafer / 历史检索） | 良率分析工具链 | ✅ 已实现（builtin/rca 5 工具） | ✅ | — |
@@ -249,7 +249,7 @@ POST /api/chat/send
   → deps.py 注入容器组件
   → ChatUseCase（用例编排）
       → SessionRepository 校验会话 + 存用户消息（CachePort 热缓存）
-      → ContextManager 组装 messages（TokenCounter 计数/截断）
+      → ContextManager 经 LLMGateway 计数并组装 messages/截断
       → TaskScheduler 提交任务（优先级/并发闸门）
           → AgentFactory 创建 Agent（注入 LLMGateway/ToolGateway）
           → BaseAgent.run()（ReAct 循环）
@@ -323,10 +323,10 @@ flowchart TB
         LG["LLMGateway"]; TG["ToolGateway"]
         RP["Session/Message/Task Repository"]
         CP["CachePort"]; VP["VectorStorePort"]
-        EP["EmbeddingPort"]; TKP["TokenCounter"]; EBP["EventPublisher"]
+        EP["EmbeddingPort"]; EBP["EventPublisher"]
     end
     subgraph L5["⑤ 集成层 app/integration"]
-        LLM["LLMService + llm/7 组件"]
+        LLM["LLMService + llm/11 组件"]
         TOOL["ToolService + builtin"]
         EMB["EmbeddingService"]; VEC["VectorStore"]
     end
@@ -421,7 +421,7 @@ def build_agent(llm: LLMGateway, tools: ToolGateway) -> BaseAgent:
 | 端口层 | 标准库（`typing.Protocol`） | 一切外部框架 |
 | 共享内核 | 标准库（可选 Pydantic dataclass） | 业务依赖 |
 
-tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Repository / CachePort 在基础设施层实现。
+tiktoken 计数由集成层 `token_counter.py` 实现，并经 `LLMGateway.count_*` 提供给应用层；ORM / Redis 经 Repository / CachePort 在基础设施层实现。
 
 ### 装配根
 
@@ -490,12 +490,12 @@ tiktoken 计数经 `TokenCounter` 端口在集成层实现；ORM / Redis 经 Rep
 目标：C3、C4、C5、C6、C7、C8。
 
 - `shared/events.py`：events 迁入 + 拆分
-- `domain/ports/llm_gateway.py` + `tool_gateway.py` + `token_counter.py`（StreamResult 迁入）
+- `domain/ports/llm_gateway.py` + `tool_gateway.py`（StreamResult 迁入；token 计数并入 LLMGateway）
 - core/agent 构造签名改抽象（`BaseAgent(llm: LLMGateway, tools: ToolGateway)`）
 - LLMService / ToolService 实现端口；配置注入推广（AgentContext / 内置工具 / TaskService / LLMService Facade）
 - ToolService 拆分（Registry/Executor/Stats/Hooks/Assembler）；dependencies.py 薄化；EmbeddingService 补 getter
 
-架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；TokenCounter 端口落地（tiktoken 隔离到集成层，应用层经端口计数）；统一异常体系落地（shared/exceptions.py，7 异常收敛 + 错误码）；通用类型落地（shared/types.py，标识与消息别名）；Embedding 端口化（领域层嵌入抽象 EmbeddingPort，RAG 接线待 Phase D）；DI 统一（C7 部分）；C10 范例升级为全局规范。`✅ Phase B 目标全部达成`
+架构达成：core ⇄ services 双向耦合切断（C3 / C4 ✅）；settings 收敛到 container（C5 ✅）；events 迁 shared（C6 ✅）；ToolService 拆分（C8 ✅）；tiktoken 隔离在集成层并经 `LLMGateway.count_*` 提供给应用层；统一异常体系落地（`shared/exceptions.py` + 错误码）；通用类型落地（`shared/types.py`，标识与消息别名）；Embedding 端口化（领域层嵌入抽象 EmbeddingPort，RAG 接线待 Phase D）；DI 统一（C7 部分）；C10 范例升级为全局规范。`✅ Phase B 目标全部达成`
 
 ### Phase C 应用与编排层
 

@@ -50,7 +50,7 @@
 | --- | --- | --- | --- |
 | **可恢复（重试型）** | 超时、5xx、429 | 可靠性层重试/退避/降级；重试耗尽才向上抛 | `APITimeoutError`、`httpx.TimeoutException`、`RateLimitError` |
 | **不可恢复（调用方错误）** | 4xx、认证、熔断开启、配置错误 | **直接向上抛**，调用方决定换模型/修参数/告警 | `LLMAPIError`（openai 4xx/认证归一）、`BadRequestError`（400）、`AuthenticationError`（401）、`CircuitBreakerOpenError`、`ValueError("未注册")` |
-| **业务边界（非传输错误）** | 截断、拒答、工具调用 | 转成**具名异常**短路，调用方差异化处理 | `StructuredTruncationError` / `StructuredRefusalError` / `StructuredToolCallError` |
+| **业务边界（非传输错误）** | 截断、拒答、工具调用、业务取消、整体期限耗尽 | 转成**具名异常**短路，调用方差异化处理 | `StructuredTruncationError` / `StructuredRefusalError` / `StructuredToolCallError` / `LLMCancelledError` / `LLMDeadlineExceededError` |
 
 ### 关键：不可恢复错误必须能穿透到调用方
 
@@ -86,8 +86,8 @@
     ⑦ 熔断 OPEN（无 fallback）→ raise CircuitBreakerOpenError
         ↓
 [llm_service.py]  （流式整流策略在 streaming_rectifier.py）
-    ⑧ async_generate()：编排 StreamingRectifier——迭代异常转 build_error_event()（错误进事件流）
-    ⑨ generate()：      except Exception → 记日志；NON_RETRYABLE → openai 归一 LLMAPIError 上抛 / 可恢复 return None
+    ⑧ async_generate()：普通传输异常转错误事件；上下文超限/整体期限以类型化异常终止
+    ⑨ generate()：      NON_RETRYABLE → openai 归一 LLMAPIError；可恢复 → None；取消/期限 → shared 类型化异常
         ↓
 [structured.py]  StructuredOutput.extract()
     ⑩ StructuredTruncationError → extract 顶层捕获 → return None（截断短路，不降级）
@@ -121,16 +121,17 @@
 ```text
 调用方 async for ... in async_generate()
   ├─ create 预算闸拒绝（ContextWindowExceededError）→ 原样上抛（不折 error 事件），领域层终结为 CONTEXT_EXCEEDED
+  ├─ cancel_event / deadline → 中断 reserve/create/读取；取消走取消事件，deadline 抛 LLMDeadlineExceededError
   ├─ create 失败（阶段1）  → except Exception → yield build_error_event(f"LLM 调用失败: {e!s}") + return
   ├─ 迭代中断（阶段2）     → except Exception → 可整流则重试，不可整流 yield build_error_event(f"流式响应中断: {e!s}") + return
-  └─ 硬取消（CancelledError）→ finally 兜底 cancel reservation，异常向上传播
+  └─ 硬取消（CancelledError）→ 关闭未读完的流 + settle(None) 保守结算，异常向上传播
 ```
 
 > 整流/错误事件/finally 兜底逻辑封装在 `StreamingRectifier`（见 [streaming_rectifier.md](../integration_doc/llm_doc/streaming_rectifier.md)），`async_generate` 只做编排。
 
 **关键**：async_generate 是 **async generator**，异常被捕获后**不是静默吞掉**，而是转成 SSE 错误事件产出。错误通过事件流（`build_error_event`）传达给调用方，错误文案携带异常信息。调用方（Agent 层）收到错误事件即可感知失败。
 
-**例外——预算闸拒绝（`ContextWindowExceededError`）**：请求在 create 阶段网络调用前即被本地预算闸拒绝，属业务边界短路——整流/续接/重试/降级均无意义（消息不变则必然再次超限），整流器识别后**原样上抛**而非折成「LLM 调用失败」事件，供领域层（react 主循环）映射为终结性 `CONTEXT_EXCEEDED`。这与 `generate()` 非流式边界对该异常原样 re-raise 一致——两通道对上下文超限的语义已对齐。
+**类型化终止例外**：预算闸拒绝以 `ContextWindowExceededError` 原样上抛；整体期限以 `LLMDeadlineExceededError` 上抛。两者都不折成可重试传输失败。业务取消在流式通道保留 SSE 取消出口，非流式通道抛 `LLMCancelledError`；ReAct 将两条通道统一映射为 CANCELLED/TIMEOUT。
 
 ### `structured.py` —— 业务边界短路
 
@@ -144,7 +145,8 @@ extract()
           │                        → extract 顶层捕获 → return None（截断短路，不降级）
           ├─ 拒答（refusal）      → raise StructuredRefusalError → 向上抛（调用方安全兜底）
           ├─ 工具调用（tool_calls）→ raise StructuredToolCallError → 向上抛（调用方按工具调用处理）
-          ├─ 下游异常（generate 返回 None / 抛异常）→ 降级到下一级
+          ├─ 下游可恢复失败（generate 返回 None）→ 降级到下一级
+          ├─ 取消/整体期限 → 抛到 extract 最外层一次性收敛 None，不再进入后续级
           └─ 正常 → 解析 + Schema 校验
 ```
 
@@ -172,9 +174,9 @@ extract()
 | 异常来源 | 表现 | 说明 |
 | --- | --- | --- |
 | generator 内部 `yield build_error_event(...)` | 正常产出错误事件，循环**不抛异常** | 错误以数据（事件字符串）形式传达 |
-| generator 内部 `raise`（业务边界短路 `ContextWindowExceededError` / `CancelledError`） | `async for` 循环抛出异常 | 需终结语义、无法以可重试失败表达时才走这条路 |
+| generator 内部 `raise`（`ContextWindowExceededError` / `LLMDeadlineExceededError` / `CancelledError`） | `async for` 循环抛出异常 | 需终结语义、无法以可重试失败表达时才走这条路 |
 
-**约定**：LLM 流式调用优先用「错误事件」传达失败（符合 SSE 语义）；只有取消、以及预算闸拒绝（`ContextWindowExceededError`，需领域层终结为 `CONTEXT_EXCEEDED` 而非重试）这类无法以「可重试 LLM 失败」表达的异常才向上抛。新增流式接口应遵循此模式。
+**约定**：LLM 流式调用优先用错误事件传达普通失败；预算闸拒绝、整体期限和硬任务取消等终结语义以类型化异常向上抛，业务 cancel_event 走取消事件。新增流式接口须保持该路由。
 
 ---
 
@@ -235,6 +237,8 @@ AppError（根，code 默认 INTERNAL）
 ├── NonRetryableError    不可恢复：向上抛，调用方决策
 │   ├── CircuitBreakerOpenError     code=CIRCUIT_OPEN
 │   └── ParameterValidationError    code=VALIDATION（多重继承 ValueError）
+│   ├── LLMCancelledError           code=LLM_CANCELLED
+│   └── LLMDeadlineExceededError    code=LLM_DEADLINE
 ├── BusinessError        业务边界：具名短路，调用方差异化处理
 │   ├── StructuredExtractionError   中间基类
 │   │   ├── StructuredTruncationError   code=LLM_TRUNCATED
@@ -262,8 +266,10 @@ AppError（根，code 默认 INTERNAL）
 | `ForbiddenError` | `BusinessError` | `FORBIDDEN` | API 已认证但无权访问 | error_handler 转 403 |
 | `NotFoundError` | `BusinessError` | `NOT_FOUND` | API 目标资源不存在 | error_handler 转 404 |
 | `LLMAPIError` | `NonRetryableError` | `LLM_API_ERROR` | LLM 下游不可恢复（openai APIStatusError 归一：4xx/认证/响应校验，携带 status_code） | 领域层 `except AppError` 统一兜底（Reflection 自查/修正降级）；error_handler 转 502 |
+| `LLMCancelledError` | `NonRetryableError` | `LLM_CANCELLED` | `cancel_event` 在 LLM 调用内部触发；Facade 翻译私有取消信号并携带已取得的 `usage` | 领域层终结当前执行为 CANCELLED，不按传输失败重试 |
+| `LLMDeadlineExceededError` | `NonRetryableError` | `LLM_DEADLINE` | LLM monotonic 绝对 deadline 耗尽；Facade 翻译私有期限信号并携带已取得的 `usage` | 领域层终结当前执行为 TIMEOUT，不归类为可重试网络超时 |
 
-> **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。`LLMAPIError` 由集成层 `llm_service.generate` 边界经 `normalize_transport_error`（retry.py）包装 openai 不可恢复异常产生（`raise ... from e` 保留原始异常）。
+> **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。`LLMAPIError` 由集成层 `llm_service.generate` 边界经 `normalize_transport_error` 包装 openai 不可恢复异常产生（`raise ... from e` 保留原始异常）；`LLMCancelledError` / `LLMDeadlineExceededError` 由同一 Facade 经 `errors.translate_abort` 翻译私有执行终止信号产生。
 > **对外边界**：`app/api/middleware/error_handler.py` 把 `AppError` 翻译为 HTTP 状态 + 统一 `{code, message, details}` 信封（业务码与 HTTP 状态解耦，映射表见该模块）——API 层不抛 `HTTPException`，全走统一树。
 > **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类，契约与实现同属 `app/integration/llm/errors.py`）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，14 类：终结性默认 STOP / 可恢复默认 CONTINUE，ErrorHandlerRegistry 消费；含 Reflection `CRITIQUE_FAILED` 与 Planner `PLAN_FAILED` 两个策略专属 kind）。
 

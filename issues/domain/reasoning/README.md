@@ -1,7 +1,7 @@
 # 领域层 Reasoning 模块问题追踪
 
 > **用途**：登记 Domain 层 Reasoning 模块（`app/domain/reasoning/`）的问题记录（发现 → 分析 → 修复 → 验证 → 教训）。
-> **更新日期**：2026-09-01
+> **更新日期**：2026-09-10
 > **关联**：[推理策略说明文档](../../../docs/domain_doc/reasoning_doc/reasoning.md) · [ADR context-budget](../../../adr/domain/reasoning/2026-08-28-context-budget.md)
 
 ## 状态图例
@@ -23,7 +23,13 @@
 | [REASON-005](2026-08-30-unknown-error-redaction.md) | UNKNOWN error 拼接完整异常文本：内部细节（路径/敏感值）泄漏到产品侧 | ✅ 已修复 | reasoning/react | 2026-08-30 |
 | [REASON-007](2026-08-31-llm-fail-retry-limit.md) | LLM 失败重试无独立上限：handler CONTINUE 可无限重试烧钱 | ✅ 已修复 | reasoning/react · agent · settings | 2026-08-31 |
 | [REASON-008](2026-08-31-empty-output-blank-assistant.md) | 空输出重试轮向历史追加空 assistant 消息：累积污染上下文 | ✅ 已修复 | reasoning/react | 2026-08-31 |
+| [REASON-009](2026-09-01-reflect-refine-loop.md) | Reflection 修正循环复用同一批 issues，未形成重新自查的真迭代 | ✅ 已修复 | reasoning/reflection | 2026-09-01 |
 | [REASON-010](2026-09-01-reflection-degradation-coverage.md) | 自查/修正阶段不可恢复错误未降级：AppError 家族冒泡（熔断等）；openai 4xx/认证未归一 → 集成层 LLMAPIError 闭环 | ✅ 已修复 | reasoning/reflection · integration/llm | 2026-09-01 |
+| [REASON-011](2026-09-01-reflect-done-token-caliber.md) | Reflection done 事件 total_tokens 与最终 outcome 口径不一致 | ✅ 已修复 | reasoning/reflection | 2026-09-01 |
+| [REASON-012](2026-09-09-deadline-current-round-progress.md) | ReAct deadline 终止丢失当前轮部分成果与可得 usage | ✅ 已修复 | reasoning/react | 2026-09-09 |
+| [REASON-013](2026-09-09-deadline-cleanup-grace.md) | ReAct 内部 deadline 与外层 timeout 同刻竞争，清理可被二次取消 | ✅ 已修复 | reasoning/react | 2026-09-09 |
+| [REASON-014](2026-09-09-internal-timeout-misclassified-as-deadline.md) | LLM 内部 TimeoutError 穿透后被 ReAct 误判为总执行超时 | ✅ 已修复 | reasoning/react · integration/llm | 2026-09-09 |
+| [REASON-015](2026-09-10-continuation-context-overflow-progress.md) | 续接前缀上下文超限时丢失当前轮内容与旧请求 usage | ✅ 已修复 | reasoning/react · integration/llm | 2026-09-10 |
 
 ## 新问题登记规范
 

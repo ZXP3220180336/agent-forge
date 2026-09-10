@@ -19,7 +19,7 @@
 
 ## Decision
 
-**落地 `TokenCounter` 端口：`app/domain/ports/token_counter.py` 定义协议，`app/integration/llm/token_counter.py` 唯一实现（tiktoken 唯一使用点），`ContextManager` 构造注入。**
+**本决策原先采用独立 `TokenCounter` 端口，由集成层 token 计数组件实现并注入 `ContextManager`。该端口已被 `LLMGateway.count_tokens` / `count_messages_tokens` 替代；当前有效结构见上方「演进」。**
 
 1. **端口契约**：`@runtime_checkable Protocol`，`count_tokens(text)` / `count_messages_tokens(messages)` 两个方法。
 2. **集成实现**：`TiktokenTokenCounter(model)` 构造时经 `get_encoder` 解析编码器（进程缓存 + 未知模型回退 cl100k_base）；`count_messages_tokens` 内建 `content_to_text` 防御（None / 多模态 list 不崩）。

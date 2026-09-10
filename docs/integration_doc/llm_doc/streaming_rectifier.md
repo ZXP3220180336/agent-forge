@@ -1,7 +1,7 @@
 # StreamingRectifier 设计文档
 
 > **模块**：`app/integration/llm/streaming_rectifier.py`
-> **更新日期**：2026-09-02
+> **更新日期**：2026-09-09
 > **职责**：流式整流/半流续接策略——「首 token 前中断 → 重新 create + 重新迭代（整流）」；「已产出 content 中断 → 带前缀续写（半流续接，[LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）」；其余已产出中断则放弃
 > **状态**：✅ 已实现
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
@@ -173,6 +173,7 @@ async for event in StreamingRectifier.rectified_stream(
     fallback_fn=fallback_fn,
     continue_fn=continue_fn,                    # 半流续接请求构造（LLM-ADR-015；None=禁用）
     continuation_max_retries=continuation_max,  # 续接轮次上限（llm_stream_max_continuations 配置值）
+    deadline=deadline,                          # monotonic 绝对执行期限（LLM-044）
 ):
     yield event
 ```
@@ -216,7 +217,7 @@ StreamingRectifier.register_config(
 
 退避公式与 create 阶段一致：`base_delay × 2^attempt`，上限 `max_delay`，可选随机抖动。**Retry-After 叠加**：RATE_LIMITED（429）中断整流时，提取服务端 `Retry-After` 参与退避，且与 create 阶段同样封顶到 `max_delay`——合理区间 `0 < retry_after ≤ max_delay` 内尊重，超出忽略回退指数退避（防异常大值挂死，对齐 retry.py 的 `_calculate_delay` 语义）。
 
-**首包/空闲双阈值看门狗**（LLM-ADR-014）：迭代改为逐 chunk `asyncio.wait_for(anext(stream), 阈值)`——首 chunk 用宽阈值 `first_token_timeout`（区分「模型思考慢」，不误杀），其后每 chunk 用窄阈值 `chunk_idle_timeout`（判「流已断」，不等 httpx read 整档）。超时 `TimeoutError` 走既有整流/放弃分支：首 token 前超时整流（不重复输出）、已产出后超时放弃（保留部分内容 + 失败信号）。看门狗超时的空串 `TimeoutError` 经 `_describe_exception` 回退类型名——`result.error` 以非空为失败信号（react 短路依赖），空串会把失败误当成功空回。
+**首包/空闲双阈值看门狗**（LLM-ADR-014）：`_drain` 让 `anext(stream)` 与 cancel/deadline 触发任务竞争，并用 wait timeout 表示 idle 上限——首 chunk 用宽阈值 `first_token_timeout`（区分「模型思考慢」，不误杀），其后每 chunk 用窄阈值 `chunk_idle_timeout`（判「流已断」，不等 httpx read 整档）。idle 先到抛传输 `TimeoutError`，走既有整流/放弃分支；cancel/deadline 先到则即时终止并禁止新 attempt。同刻已有 chunk 时先吸收 chunk（包括 usage），再执行终止复查。看门狗超时的空串 `TimeoutError` 经 `_describe_exception` 回退类型名——`result.error` 以非空为失败信号（react 短路依赖），空串会把失败误当成功空回。
 
 ---
 
@@ -225,9 +226,9 @@ StreamingRectifier.register_config(
 ```text
 async_generate → rectified_stream（整流/续接循环）
     for attempt in 0..stream_max_retries：
-        ├─ 整流入口守卫：cancel_event 置位 → 不再发起 reserve + create（不发新副作用）
+        ├─ 整流入口守卫：cancel_event / deadline 命中 → 不再发起 reserve + create（不发新副作用）
         ├─ create_fn()（重新 reserve + create，经 retry.execute 保护 create 阶段）
-        ├─ 迭代：_drain 逐 chunk wait_for 看门狗（首包宽/空闲窄）+ 累积 + 产出事件
+        ├─ 迭代：_drain 逐 chunk 做 anext/cancel/deadline/idle 竞争 + 累积 + 产出事件
         │    └─ 异常/看门狗超时 → _should_rectify？
         │         ├─ 是（首 token 前 + 可恢复 + 未取消）→ 退避（含 Retry-After）→ 下一 attempt 整流
         │         └─ 否（不整流）→ _abandon_path（整流不适用收尾）
@@ -251,7 +252,7 @@ async_generate → rectified_stream（整流/续接循环）
 
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
-| `rectified_stream(create_fn, retry, cancel_event, stream_max_retries, context, fallback_fn, *, continue_fn=None, continuation_max_retries=0)` | 静态异步生成器 | 整流/续接循环：首 token 前中断重新 create（整流），已产出 content 中断带前缀续写（续接，尽力而为），产出 SSE 事件字符串 |
+| `rectified_stream(create_fn, retry, cancel_event, stream_max_retries, context, fallback_fn, *, continue_fn=None, continuation_max_retries=0, deadline=None)` | 静态异步生成器 | 整流/续接循环：首 token 前中断重新 create（整流），已产出 content 中断带前缀续写（续接，尽力而为）；cancel/deadline 覆盖退避、create 与读取期，产出 SSE 事件字符串 |
 | `register_config(*, base_delay, max_delay, use_jitter, first_token_timeout, chunk_idle_timeout)` | 同步类方法 | 注入整流/续接退避 + 首包/空闲看门狗配置（keyword-only，复用 create 阶段配置，零 settings 依赖） |
 | `RectifierContext(result, active, event_fields)` | dataclass | 整流会话共享状态（由调用方构造并持有） |
 
@@ -273,6 +274,8 @@ async_generate → rectified_stream（整流/续接循环）
 12. **续接再断**：预算内（`cont_attempt < llm_stream_max_continuations`）→ 带增长后的新前缀（`result.content` 最新值）再续；超预算 → 放弃（喂熔断 + 失败信号照旧）
 13. **接缝重叠剥离**：续接流首部与已产 content 尾部重叠（窗口 ≤ `_SEAM_OVERLAP_LIMIT`=64 字符）剥离后再产出/累积；流自然结束仍全命中重叠视为纯重放丢弃
 14. **续接成功**：`error` 保持 `None`；`usage` 取末次完成流（断流 attempt 数据不可得不计，LLM-039）
+15. **续接 EOF 后收尾异常（完成态守卫）**：续接流 drain 读完 EOF 后 `cont_stream_done=True`，`_finish_success`（settle/日志）异常**原样上抛**——非续接流中断，不再续接（成功流绝不重发），与整流主流路径 `stream_done` 守卫同语义（[LLM-046](../../../issues/integration/llm/2026-09-09-continuation-finish-guard.md)）
+16. **续接 create 前终止或预算拒绝**：旧死流的 content/usage 继续保留；只有 `continue_fn` 成功返回新流后才复位旧 `finish_reason`/`usage`/`refusal`。因此前缀扩大触发上下文超限时，领域层仍能保留当前成果并正确归账（[REASON-015](../../../issues/domain/reasoning/2026-09-10-continuation-context-overflow-progress.md)）
 
 ---
 
@@ -290,7 +293,7 @@ async_generate → rectified_stream（整流/续接循环）
 
 ## 测试状态
 
-- `tests/unit/test_streaming_rectifier.py`（20 用例，直接覆盖整流/续接策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / 整流上限耗尽 + 熔断 feeding / 成功 settle / **硬取消 finally settle(None) 保留配额（LLM-003）** / **settle 中途取消 finally settle(None) 收尾** / 429 整流尊重 Retry-After（封顶到 max_delay）/ **整流清理复位 refusal（拒绝类死流不残留元数据）** / **半流续接成功合并 / 续接 create 失败退化放弃 / 接缝重叠剥离 / max=0 禁用 / reasoning 不续接 / tool 半成品不续接 / 续接再断预算内再续成功 / 续接再断预算尽放弃 + 熔断 feeding（LLM-ADR-015）**
+- `tests/unit/test_streaming_rectifier.py`（31 用例，直接覆盖整流/续接策略）：首 token 前中断整流 / 已产出不整流 / cancel 不整流 / cancel/deadline 与退避、chunk 读取竞争 / 同刻 chunk usage 先吸收 / 整流上限耗尽 + 熔断 feeding / 成功 settle / **硬取消 finally settle(None) 保留配额（LLM-003）** / **settle 中途取消 finally settle(None) 收尾** / 429 整流尊重 Retry-After（封顶到 max_delay）/ **整流清理复位 refusal（拒绝类死流不残留元数据）** / **半流续接成功合并 / 续接 create 失败退化放弃 / 接缝重叠剥离 / max=0 禁用 / reasoning 不续接 / tool 半成品不续接 / 续接再断预算内再续成功 / 续接再断预算尽放弃 + 熔断 feeding / 续接 EOF 后收尾异常不再续接（LLM-046 完成态守卫，LLM-ADR-015）**
 - `tests/unit/test_stream_rectify.py`（23 用例，经 `LLMService.async_generate` 间接覆盖）：整流/续接/结算/事件/日志/熔断 feeding 全链路断言，含**续接请求追加 assistant 前缀消息（`prefix:True`）+ 重新 reserve 结算**
 - **LLM-001 失败信号透传**：`test_stream_rectify.py` 四个失败出口补 `result.error` 断言（create 失败 / 迭代放弃 / 用户取消）；`test_agent.py` 新增 ReActAgent 遇 LLM 失败第 1 轮短路返回失败结果用例
 
@@ -314,6 +317,7 @@ async_generate → rectified_stream（整流/续接循环）
 - [流式迭代异常无保护（熔断观察盲区，LLM-024）](../../../issues/integration/llm/2026-08-07-streaming-iteration-unprotected.md)
 - [流式/非流式解析健壮性（整流幂等，LLM-030）](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)
 - [emitted_any 累积语义（LLM-035）](../../../issues/integration/llm/2026-08-10-rectify-emitted-any-marker-reset.md)
+- [续接完成态守卫缺失——EOF 后收尾异常被当续接中断重发（LLM-046）](../../../issues/integration/llm/2026-09-09-continuation-finish-guard.md)
 
 ---
 
