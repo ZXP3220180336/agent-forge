@@ -63,7 +63,7 @@ app/domain/
 │   ├── manager.py             ← PromptManager 管理器
 │   └── templates/             ← system.py / tools.py / planning.py / reflection.py 模板
 └── reasoning/                 ← 原子推理策略库
-    ├── _common.py             ← 共享小工具（dispatch_error / guard_exceeded / merge_usage / 常量）
+    ├── _common.py             ← 共享执行护栏与工具（GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量）
     ├── react.py               ← ReActStrategy（✅）
     ├── reflection.py          ← ReflectionStrategy（✅）
     ├── planner.py             ← PlannerStrategy（✅）
@@ -164,7 +164,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | `ReActStrategy` | react.py | 推理 ↔ 工具循环算法（含工具并行原语） | ✅ |
 | `ReflectionStrategy` | reflection.py | 生成 → 自查 → 修正（证据链语义自查） | ✅ |
 | `PlannerStrategy` | planner.py | Plan-then-Execute 三阶段（规划 → 逐步骤执行 → 汇总，每步复用 ReAct） | ✅ |
-| 共享小工具 | _common.py | dispatch_error / guard_exceeded / merge_usage / 常量 | 🔶 |
+| 共享执行护栏与工具 | _common.py | GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量 | ✅ |
 | CoT | chain_of_thought.py | 纯推理引导 | ⬜ 预留 |
 
 ---

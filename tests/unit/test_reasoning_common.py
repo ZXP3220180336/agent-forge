@@ -95,6 +95,36 @@ def test_explicit_abort_flags_follow_the_same_priority() -> None:
     assert result.kind is AgentErrorKind.CANCELLED
 
 
+def test_guard_returns_none_on_the_healthy_path() -> None:
+    """limiter 已注入且未超限、无其他信号 → None（生产最常走的热路径）。"""
+    cost_limiter = Mock()
+    cost_limiter.check.return_value = (False, 0.0)
+
+    result = evaluate_guard(
+        cancel_event=None,
+        deadline=time.monotonic() + 60,
+        cost_limiter=cost_limiter,
+        running_usage={"total_tokens": 10},
+    )
+
+    assert result is None
+    cost_limiter.check.assert_called_once_with({"total_tokens": 10})
+
+
+def test_explicit_deadline_flag_alone_yields_timeout() -> None:
+    """仅 deadline_exceeded=True（无 cancel、deadline 未到）→ TIMEOUT。"""
+    result = evaluate_guard(
+        cancel_event=asyncio.Event(),  # 未置位
+        deadline=time.monotonic() + 60,
+        cost_limiter=None,
+        running_usage={},
+        deadline_exceeded=True,
+    )
+
+    assert result is not None
+    assert result.kind is AgentErrorKind.TIMEOUT
+
+
 def test_context_result_uses_the_same_typed_contract() -> None:
     error = _context_error()
     result = evaluate_guard(

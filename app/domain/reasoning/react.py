@@ -210,6 +210,8 @@ class ReActStrategy:
         self._tool_call_records: list[dict[str, Any]] = []
         # 连续空输出重试计数（execute 每次开头重置；本轮有产出清零、空输出 +1）
         self._empty_retries = 0
+        # 连续 LLM 失败重试计数（execute 每次开头重置；成功轮清零、失败轮 +1）
+        self._llm_fail_retries = 0
         # 连续工具调用协议异常计数（execute 开头重置；合法工具协议轮清零）。
         self._tool_protocol_retries = 0
         # 循环停滞检测状态：上一轮动作指纹 + 连续相同计数（execute 开头重置）
@@ -327,7 +329,7 @@ class ReActStrategy:
         # 防 handler CONTINUE 无限重试烧钱：连续空输出 / LLM 失败 / 循环停滞计数，超过上限硬终止
         # 连续空输出重试计数：execute 每次独立（有产出清零 / 空输出 +1，见主循环）
         self._empty_retries = 0
-        # LLM 失败重试计数：execute 每次独立（成功轮清零 / 失败轮 +1，见主循环；
+        # LLM 失败重试计数：execute 每次独立（成功轮清零 / 失败轮 +1，见主循环）
         self._llm_fail_retries = 0
         # 工具协议修正计数：三类协议异常共享，合法工具协议轮才清零。
         self._tool_protocol_retries = 0
@@ -467,7 +469,7 @@ class ReActStrategy:
                             yield e
                         return
 
-                    # ----- 5. LLM 失败（stream_result.error 非空）→ 取消判定 / LLM_FAILED 分发 -----
+                    # ----- 5. LLM 失败（stream_result.error 非空）→ LLM_FAILED 分发 -----
                     # 短路返回失败结果，不把「失败」当「空输出」继续空转重试（浪费 LLM 调用 + 错误信息不准确）。
                     # 正常空回（stop + 空 content）error 为 None，仍走下方「空输出重试」逻辑。
                     if stream_result.error:

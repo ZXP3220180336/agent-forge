@@ -7,7 +7,7 @@
 
 `StructuredOutput.extract` 三级降级链（JSON Schema → JSON mode → prompt 正则），每级内还有**截断扩 2 倍 token 重试 + Schema 校验回喂**——单次 `generate_structured` 最坏 ~9 次真实 SDK 请求。**整条链无任何取消/期限检查点**：
 
-- `cancel_event` / `max_execution_time` 只被 reflection/planner 在「阶段入口」自查（`guard_exceeded`）；一旦进入 `_critique`/`_refine`/plan/replan/summarize 的 `generate_structured`，内部 1~9 次调用跑满为止——用户取消/总时长耗尽后仍继续付费调用。
+- `cancel_event` / `max_execution_time` 只被 reflection/planner 在「阶段入口」自查（当时为 `guard_exceeded`，现 `evaluate_guard`）；一旦进入 `_critique`/`_refine`/plan/replan/summarize 的 `generate_structured`，内部 1~9 次调用跑满为止——用户取消/总时长耗尽后仍继续付费调用。
 - 全仓仅 `react.py` 一处 `asyncio.timeout`（包 react 主循环），reflection/planner 的 structured 调用不在任何硬超时内，全靠自查——缺口是真实的。
 
 ## 分析

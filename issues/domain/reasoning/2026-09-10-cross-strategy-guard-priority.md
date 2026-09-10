@@ -16,6 +16,12 @@ ReAct 的终止成果选择还把当前轮未执行的 `tool_calls` 当作用户
 - 各策略自行决定检查时点，没有统一遵守“调用前准入；成功后先接管结果和 usage，再复查”的生命周期规则。
 - `current_result` 的可见性判断混合了模型意图和已经可交付的内容。
 
+## 工业级参照
+
+- LangGraph 用类型化状态与 `interrupt` 表达「图在何处、因何暂停」，调用方按类型恢复或终止，不靠展示文案判别；本项目对应不可变 `GuardResult` + 复用既有 `AgentErrorKind`，终止类型可直接断言。
+- OpenAI Agents SDK 为取消、超时、预算类终止提供不同的异常/结果类型，调用方按类型分派收尾；本项目对应 `GuardResult.kind` 与三策略各自的终态映射（保留各策略差异化的降级内容与文案）。
+- 「调用前准入 + 成功后先接管成果与用量再复查」是异步编排的通用生命周期：只做调用前检查会漏掉 await 期间发生的取消与超限，只做调用后检查会丢已返回的成果与 usage。本项目把这条规则收敛到共享函数，由三策略统一遵守。
+
 ## 修复方案
 
 - 在 `_common.py` 定义不可变 `GuardResult`，复用 `AgentErrorKind`，不新增平行枚举。
@@ -30,6 +36,16 @@ ReAct 的终止成果选择还把当前轮未执行的 `tool_calls` 当作用户
 类型定义保留在 Domain reasoning 的 `_common.py`，因为它表达策略执行语义，并只依赖 Domain ports 与 shared 类型。Integration 的最终请求预算闸仍独立负责模型窗口准入；Domain 只消费其 `ContextWindowExceededError`，没有把两类上下文管理合并。
 
 没有修改 `CostLimiterPort` 或 `LLMGateway` 契约。共享函数不保存累计状态，usage 口径仍由各策略负责，避免引入跨运行可变状态。
+
+## 实施记录
+
+| 范围 | 实施内容 |
+| --- | --- |
+| `_common.py` | 文案二元组 → 不可变 `GuardResult` + `evaluate_guard`（monotonic 绝对 deadline、四类固定优先级、成本懒检查） |
+| ReAct | 每笔付费调用前准入、调用成功归账后复查；删除非流式轮末的取消补查；终止成果按 current / last-visible 规则选择 |
+| Reflection | 自查前与修正前准入、修正归账后复查（复查挂载点由 [REASON-020](2026-09-11-reflection-guard-checkpoint.md) 收敛） |
+| Planner | 子 ReAct 返回后先吸收 outcome / usage / 迭代再终止；汇总成功后保留已返回的 structured 与 usage |
+| 测试 | 新增 `tests/unit/test_reasoning_common.py`（不可变性、优先级、短路成本检查）；三策略补组合竞态与状态迁移用例 |
 
 ## 验证
 

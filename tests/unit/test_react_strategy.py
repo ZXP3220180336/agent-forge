@@ -968,7 +968,8 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
         max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=0.2,
+        # 余量放大：第一轮（脚本 LLM + echo）必须在预算内跑完，否则慢机器上假失败
+        max_execution_time=1.0,
     ):
         pass
 

@@ -1,16 +1,16 @@
 # 2026-09-10 审核遗留：Slice 2 共享护栏统一（REASON-016 复审）
 
-> 状态：待修复。REASON-016 主链路已提交落地，以下是复审发现但未修的遗留项。不影响已通过的验收点，其中前两项涉及对外元数据契约与步骤成功判据。行号按 REASON-017 批次落地后的代码重新核对。
+> 状态：✅ 已完成。REASON-016 主链路已提交落地；以下是复审发现的问题，已逐项修复并各有问题记录（REASON-018/019/020）。
 
-- [ ] **`PlannerOutcome.plan` 契约破坏**：`planner.py:377` 的降级收尾在 `_normalize_steps` 之前执行，传入 PLAN_SCHEMA 原始结构（`steps` 无 `id`、含 `depends_on`），与 `{goal, steps:[{id, description}]}` 契约不符；按 `steps[i]["id"]` 消费的编排 / 证据链报告会 KeyError。修法：拆为「`plan is None`」与「plan 成功但已不能开工」两处，后者移至 `plan_result` 构造之后。
-- [ ] **步骤成功判据新增维度未同源**：`planner.py:471` 的 `not sub.error` 使「达到最大迭代次数但有产出」的子跑从成功改判失败，从而触发至多 `max_replan_rounds` 次付费 replan 与替换步重跑；该行为变更未见于同处注释、`planner.md`、planner ADR 与 REASON-016 修复方案。需先定意图：改判则同步四处口径，不改判则按子跑终态 kind 显式判定护栏终止。
-- [ ] **Reflection 成功稿被标降级**：`reflection.py:347-358` 的复查落在 `critique["ok"]` 判定之前，`ok=True`（不再发起付费调用）时命中成本超限仍走 `_finalize_guard`，产出 `success=True` + `degraded=True` + `error="成本超限…"` 的矛盾信号。修法：复查移至 `critique["ok"]` 之后，或在 `reflection.md` 降级表写明该取舍。
-- [ ] **文档同步缺口**：`docs/domain_doc/README.md:66,167` 仍写已重命名的 `guard_exceeded` 且状态为 `🔶`（ALIGNMENT 已 ✅）；`docs/todo.md` 第 2 节基线与 `issues/integration/llm/2026-09-08-structured-cancel-deadline.md:10` 同引旧名与旧口径。
-- [ ] **测试缺口与覆盖声明不符**：`reflection.md:187` 声称覆盖「修正成功后先接管新稿再终止」，但无对应用例（现有两例均为自查后终止，`structured == DRAFT`）；`test_reasoning_common.py` 参数矩阵漏「limiter 已注入未超限且无 `context_error` → None」与「仅 deadline 命中」两条分支。
-- [ ] **REASON-016 记录补节**：新 issue 缺 `## 工业级参照` 与 `## 实施记录`（同目录惯例）。
-- [ ] **注释一致性**：`react.py:470` 段横幅仍写「取消判定 / LLM_FAILED 分发」，取消判定已迁至第 4 步护栏（同函数 docstring 已改）；`react.py:330` 注释括号未闭合。
-- [ ] **测试稳定性**：`test_react_strategy.py:933` 依赖真实墙钟（要求第一轮脚本 LLM + 一次 echo 在 `max_execution_time=0.2` 内跑完），慢机器 / CI 抖动下 `tool.calls == 2` 会假失败。无界等待已改有界（见上一节收尾记录），但该墙钟依赖仍在。
-- [ ] **`.gitignore` 收窄**：`*-learn.md` 通配偏宽（会静默忽略 `docs/xxx-learn.md` 等），可限定目录；文件补尾换行。
+- [x] **`PlannerOutcome.plan` 契约破坏**：护栏分支改走新增的 `_plan_payload`（`_normalize_steps` 赋 id、不含 `depends_on`），与 `plan_result` 同源；新增用例断言契约形状（修复前实测失败）。记录：`issues/domain/reasoning/2026-09-11-planner-plan-contract-shape.md`（REASON-018）。
+- [x] **步骤成功判据多出一维**：移除 `not sub.error`，判据回到文档既有的二维口径——「达到迭代上限但有产出」的步骤不再被改判失败触发付费 replan；注释写明 `sub.error` 只记录停机原因。记录：`issues/domain/reasoning/2026-09-11-planner-step-success-extra-dimension.md`（REASON-019）。
+- [x] **Reflection 成功稿被标降级**：护栏复查从「自查归账后」移到两条早退之后、修正调用之前，成为纯粹的付费调用前准入；自查通过 + 累计超限现在产出干净成功并保留 `critique`。记录：`issues/domain/reasoning/2026-09-11-reflection-guard-checkpoint.md`（REASON-020）。
+- [x] **文档同步缺口**：`docs/domain_doc/README.md:66,167` 改为 `GuardResult / evaluate_guard` 且状态升 `✅`；`issues/integration/llm/2026-09-08-structured-cancel-deadline.md:10` 的旧名标注现名；`docs/todo.md` 第 2 节基线行改为现状。
+- [x] **测试缺口与覆盖声明不符**：新增 `test_reflect_refined_adopted_on_cost_limit_after_refine` 兑现 `reflection.md` 的覆盖声明；`test_reasoning_common.py` 补「热路径返回 None」与「仅 `deadline_exceeded` 命中」两条分支。
+- [x] **REASON-016 记录补节**：补 `## 工业级参照` 与 `## 实施记录`，与同目录模板一致。
+- [x] **注释一致性**：`react.py` 第 5 步段横幅去掉「取消判定 /」；重试计数注释补右括号；`_llm_fail_retries` 在 `__init__` 初始化（与另两个计数器对齐）。
+- [x] **测试稳定性**：`test_react_strategy.py` 的 `max_execution_time` 0.2 → 1.0，消除「第一轮必须在预算内跑完」的墙钟假失败。
+- [x] **`.gitignore` 收窄**：`*-learn.md` → `docs/*-learn.md` 并补文件末尾换行；`docs/side-effect-learn.md` 仍被忽略，无误伤被跟踪文件。
 
 ---
 
@@ -159,7 +159,7 @@
 | `app/shared/exceptions.py` | `ContextWindowExceededError` 当前属于 `NonRetryableError`，携带 model_key/input_tokens/input_budget/max_tokens。 |
 | `app/api/middleware/error_handler.py` | 已有上下文超限 → 422 映射；这只是当前实现，不能据此证明所有策略均有正确降级。 |
 | `app/domain/reasoning/react.py` | 流式和非流式已有 CONTEXT_EXCEEDED 收尾；非流式完成响应会先结算并携 usage 传播取消/deadline。deadline、cancel、UNKNOWN、硬 timeout 与续接上下文超限均按统一 current/last 规则保留部分成果和未归账 usage。 |
-| `app/domain/reasoning/_common.py` | `guard_exceeded` 仍返回文案二元组；取消/时间/成本尚未演进为类型化无状态判断。 |
+| `app/domain/reasoning/_common.py` | `evaluate_guard` + 不可变 `GuardResult`：固定 `CANCELLED > TIMEOUT > COST_EXCEEDED > CONTEXT_EXCEEDED`，三策略共用（REASON-016）。 |
 | `app/domain/reasoning/reflection.py`、`planner.py` | 自查/修正/规划/重规划/汇总共 5 处 except AppError 会把上下文超限按普通失败处理；需要具名终止与成果保留。Planner 剩余时长仍有 0.05 秒下限，取消前子步骤 usage 吸收顺序需修正。 |
 | `app/domain/prompts/manager.py` | evidence/step results 有字符切片；draft/issues/schema 等缺少阶段语义预算。应保留原始审计证据，只缩减发给模型的视图并显式标记省略。 |
 | `app/application/context/context_manager.py` | 当前实际路径；负责历史语义裁剪，不能移入 provider 最终请求准入或向 Integration 反向注入实现对象。 |
