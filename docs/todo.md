@@ -91,6 +91,21 @@
 
 ---
 
+## 2026-09-09 ReAct deadline 部分成果与清理宽限（问题 4 / 5）
+
+> 状态：✅ 已完成。问题 4 为当前轮流式内容在类型化 deadline 出口丢失；问题 5 为 Integration 内部 deadline 与 ReAct 外层 timeout 同刻竞争，可能打断 close/settle/log 清理。
+
+- [x] **问题 4 红测**：当前轮写入 content/reasoning 后抛 `LLMDeadlineExceededError`，TIMEOUT outcome 必须保留当前轮部分成果；当前轮尚无成果时仍保留上一轮结果。
+- [x] **问题 4 实现**：显式维护未完成的 `current_result` 与最近可见的 `last_visible_result`，终止收尾按“当前轮有用户可见进度则优先，否则沿用最近可见结果”选择；异常 usage 只累计一次。
+- [x] **问题 5 红测**：内部 deadline 到期后进入延迟清理，清理耗时小于 grace 时不得被外层 task 取消打断；忽略内部 deadline、但配合取消的调用仍必须在 timeout 触发点停止。
+- [x] **问题 5 实现**：`max_execution_time` 是业务循环的 timeout 取消触发点；内部 LLM deadline 提前 `min(1s, 总时长×10%)`，让 close/settle/log 有机会在 task 取消前完成。
+- [x] **回归与文档**：同步 ReAct ADR/组件文档、分别登记问题记录与 lessons；运行 ReAct 定向测试、全量 pytest、alignment 和 diff check。
+
+> **评审结果**：两项缺口已闭环。类型化 deadline 与外层 timeout 均优先保留当前轮可见成果，无当前成果时回退上一轮；usage 以异常携带值优先并仅归账一次。清理窗口不延后 timeout 触发点；忽略内部 deadline、但配合 task 取消的 LLM 会在该时刻停止。领域终态组装位于 scope 外，不承诺整个调用绝对按秒返回。
+> **验证结果**：ReAct 定向 100 passed；全量 905 passed（1 个第三方 StarletteDeprecationWarning）；`verify_alignment` 与 `git diff --check` 通过。
+
+---
+
 # 2026-09-09 ReAct 区分硬超时与内部 TimeoutError（LLM-046 跨层补强）
 
 > 状态：✅ 已完成。LLM-046 已阻止续接 EOF 后收尾异常触发新请求；ReAct 现按 timeout scope 的实际到期状态区分硬超时与内部普通 `TimeoutError`。
@@ -105,20 +120,80 @@
 
 ---
 
+# 2026-09-08 执行控制贯穿每笔真实 SDK 调用及等待（LLM-044）
+
+> LLM-043 覆盖边界修正（E 只在 generate 门口检查一次）。Issue：[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)。当前实现位于工作区。
+
+- [x] **统一语义**：主副、流式/非流式共享准入与终止（每 attempt 入口 → 预算 → 受控 reserve → reserve 后复查 → deadline 约束 create → 结算/读取期竞争）；覆盖 retry/整流/续接退避 + reserve 排队 + chunk 读取。
+- [x] **终止信号双层**：integration 私有 `_ExecutionAbort`/`_StreamCancel`(升格)/`_DeadlineExceeded` + shared 领域出口 `LLMCancelledError`/`LLMDeadlineExceededError`（NonRetryableError 携 usage）——Facade 翻译，Domain 不依赖私有；react 收编 CANCELLED/TIMEOUT。
+- [x] **_budget_guarded_call create_started 状态机**：create 调度后主动终止且任务配合取消时 `settle(None)`；若任务吞取消迟回 response，则返回值先接管所有权，调用方按实际 usage 结算/关闭后再抛终止。自然传输异常维持 cancel。
+- [x] **等待统一原语**：wait/await_with_execution_control（直接抛类型化 + 收协程工厂）；retry 退避/整流续接退避/reserve 排队走同一控制。
+- [x] **整流四方竞争**：_drain（anext×cancel×deadline×idle，确定性判定序）取消即时响应；attempt/迭代 deadline 类型化终止（不整流/续接）。
+- [x] **structured 整链终止一次**：_call_generate 累计 usage + raise；extract 外层 return None。
+- [x] 审查补强：修复流式 create retry 与续接 deadline 漏传、chunk 同时完成 usage 丢失、未关闭流、structured 入口空转、ReAct 终止 usage 丢失；执行控制组件更名为 `execution_control.py`。
+- [x] 全量 **878 passed**；`verify_alignment` 与 `git diff --check` 通过。
+- [ ] 遗留：F（Slice 2-4 / 6-7）仍待续。
+
+---
+
+# 2026-09-08 generate_structured 降级链取消/期限闭环（LLM-043）
+
+> 对应交接 §6-E / Slice 5（"结构化内部调用闭环"）。Issue：[LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)。
+
+- [x] **发现**：StructuredOutput 三级降级链（每级含截断扩容 + 回喂，单次 generate_structured 最坏 ~9 次真实请求）无任何取消/期限检查点；reflection/planner 只在阶段入口 guard，一旦进入 generate_structured 内部跑满为止。
+- [x] **信号下沉**：`generate_structured`/`StructuredOutput.extract` 增加可选 `cancel_event` + `deadline`（monotonic 绝对，调用方现算 start_time+max_execution_time）；检查点单点放 `_call_generate` 入口（三级初始/截断扩容/回喂/fallback 全部真实请求必经），命中返回 None（与降级耗尽同出口）。
+- [x] **TimeoutError 防御**：`_call_generate` except 对内置 `TimeoutError` 直抛（整体期限终止不得被 decide_downstream_error 当 RETRYABLE 吞成降级再调用）；`APITimeoutError`/`httpx.TimeoutException` 仍走可恢复路径。
+- [x] **领域层透传**：reflection/planner execute 现算 deadline，`_critique`/`_refine`/`_plan`/`_replan`/`_summarize` 加形参透传；usage 上抛路径保留（except AppError 返回 `usage or None`）。
+- [x] **测试**：7 红转绿（cancel/deadline/TimeoutError 集成）+ reflection 透传/usage 保留 2 + planner 透传 1；既有 recoverable 用例改 `httpx.ReadTimeout`（内置 TimeoutError 不再冒充网络超时）。
+- [x] **验证**：全量 **867 passed**（857 + 10）；verify_alignment 通过。
+
+---
+
+# 2026-09-07 reserve R5 兜底退款二次取消 RPM 泄漏（LLM-042）
+
+> 独立问题（一个问题一个文件）。发现 → 分析 → 修复 → 验证 → 教训见 [LLM-042](../issues/integration/llm/2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md)。
+
+- [x] **发现（探针红）**：`_acquire` R5 兜底 `res.cancel()` 退款 await 被二次取消时 RPM 桶不回满（探针 `test_reserve_r5_refund_interrupted_by_cancel_leaks_rpm` 修复前 4≠5）。
+- [x] **根因**：reserve 的 res 不外传 `_acquire`、无外层续退——「未终态供外层续退」契约的适用前提（Reservation 被外层持有）在 reserve 内不成立。
+- [x] **方案取舍**：A（shield 进 `Reservation.cancel`）改动共享契约面大；B（采用）R5 就地循环补齐退款到终态再传播取消，只改无外层续退死角。
+- [x] **修复**：`reservation_limiter.py` `_acquire` R5 分支 `while not res.settled: try cancel except CancelledError: continue; raise`。
+- [x] **验证**：reservation_limiter 39 passed + 集成组 109 passed + 全量 856 passed；既有未终态契约测试零改动通过。
+- [x] **登记**：issue LLM-042 + issues/integration/llm/README 索引；LLM-041 与本节不再挂靠。
+
+---
+
+# 2026-09-06 主副模型请求守卫：fallback 独立键 + 独立池限流 + 取消/收尾闭环（LLM-041）
+
+> 对应交接 §6 B+C+D。ADR：请求准入 Decision 3/7/9 修订（fallback 独立键、否决端口扩展、副模型生命周期）。Issue：[LLM-041](../issues/integration/llm/2026-09-06-fallback-window-and-quota.md)。
+
+- [x] **§3 冲突处置**：①同 provider≠同窗口 → fallback 独立键（修订）；②ADR Decision 7 否决端口扩展（修订）；③流式超限上抛核验通过不撤销；④测试绿灯不验收（原共享主窗口用例实际测的是 HALF_OPEN 主链路探针，未真走 fallback，已修正）；⑤估算非精确 → config/request_budget 补窗口一致性责任句。
+- [x] **B 配置接线**：settings `llm_fallback_context_window_tokens/rpm/tpm` + container 注册 `fallback` 键（RequestBudget/ReservationLimiter）+ .env.example/config 文档。
+- [x] **B/D fallback 进统一入口**：`_build_fallback_fn` → async 闭包经 `_budget_guarded_call`（fallback 键窗口 + fallback 独立池 reserve → create）；Reservation 写入共享 `active` 由调用方统一 settle/cancel；`active` 构造前移（async_generate/generate）；过时注释同步。
+- [x] **C1 预算超限直抛**：`retry.execute` 两处 fallback 失败分支对 `ContextWindowExceededError` 直抛（不 `raise last_exc from ...`），防下游把终结信号当可恢复错误触发再调主。
+- [x] **C2 取消复查**：`_budget_guarded_call` 预留后 create 前复查业务 `cancel_event` → `cancel()` 退款 + 抛 `_StreamCancel`，整流器映射用户取消出口（拿到预留但已取消不发起请求）。
+- [x] **测试**：fallback 独立键拒绝（model_key=="fallback"）、主窗可容/备用窗拒正反例、CLOSED/HALF_OPEN fallback 超限直抛、fallback 成功走独立池 settle 恰一次、reserve 排队期间业务取消退款零 SDK；`_open_circuit` helper 置 `_last_failure_time` 向未来保证真走 fallback。
+- [x] **文档/ADR/issue**：ADR Decision 3/7/9 + Consequences；llm_service.md（fallback 参与闭环/约束边界/流程 ②.5）/ request_budget.md（fallback 窗口/测试状态）/ config.md（字段 + 窗口一致性责任）；issue LLM-041 + README 登记。
+- [x] **验证**：受影响 223 passed；全量 **855 passed**；verify_alignment 通过；git diff --check（见下）。
+
+---
+
+# 2026-09-06 上下文预算闸对齐收尾（Slice 1 落地收尾 + 流式穿透）
+
+> 目标：请求预算闸按 llm 模块子组件纪律收尾——流式/非流式一致终结、request_budget 对齐规范、异常树与 API 语义自洽、全量测试与文档同步。ADR：`adr/integration/llm/2026-09-06-request-context-budget.md`。
+
+- [x] **Slice 1 实现收尾**：request_budget.py 补 `RequestBudgetConfig` 非法组合校验（`ParameterValidationError`）/ `RequestBudgetManager.reset()` / `validate` 的 max_tokens 正整数校验——test_request_budget 3 组红转绿；意外 2 组红揭示规格：sampling/metadata 不计入窗口（序列化从黑名单剔除改**内容白名单**，贴合 ADR Decision 4）、特殊 token 拼写（`<|endoftext|>`）不得使估算崩溃（`disallowed_special=()`）
+- [x] **流式契约对齐**：`ContextWindowExceededError` 在整流器 create 阶段与半流续接链识别后**原样上抛**（不折「LLM 调用失败」error 事件、不置 result.error）→ react 流式主循环也走 `CONTEXT_EXCEEDED` 终结（与非流式一致，落 ADR Decision 5）；test_llm_request_budget stream 分支改 `pytest.raises`，整流器两穿透用例 + react 流式终结回归新增
+- [x] **异常树**：`ContextWindowExceededError` 改挂 `NonRetryableError`（不可重试语义，与 CircuitBreakerOpenError 同位；无 except BusinessError 消费方，行为零变化）；test_exceptions 补父类断言
+- [x] **API 层**：error_handler 登记 `CONTEXT_WINDOW_EXCEEDED → 422`（原误落 500，区别于 LLM_API_ERROR 502 / CIRCUIT_OPEN 503）+ 映射测试
+- [x] **fallback 预算裁定**：fallback 共享主模型窗口（同 provider 同端点 LLM-012，不单独注入配置）；test_open_circuit_fallback 改向为「熔断 OPEN 走 fallback 时预算闸仍生效（主 key 窗口）」
+- [x] 顺带修复 react.py:133 except 逗号语法（AGENT-001 元组约定）；test_container 补 `RequestBudgetManager` 全局快照与装配断言、LLMService `_continuation_max_retries` 既有遗漏
+- [x] 文档：error_handling（async_generate「错误转事件」例外）/ streaming_rectifier（失败信号表外上抛通道）/ llm（双通道上抛）/ **init** 组件枚举 / request_budget 契约与测试状态 同步
+- [x] 验证：受影响 197 passed；全量 pytest + verify_alignment（见下）
+- [ ] 遗留：reflection/planner 结构化调用超限被 `except AppError` 吞（顶部阻塞标注）；Slice 2 取消/成本护栏类型化与 ReAct 收尾其余项；Slice 3/4 阶段上下文缩减
+
+---
+
 # 2026-09-06 会话交接：主副模型请求守卫与上下文预算跨策略闭环
-
-## 2026-09-09 ReAct deadline 部分成果与清理宽限（问题 4 / 5）
-
-> 状态：✅ 已完成。问题 4 为当前轮流式内容在类型化 deadline 出口丢失；问题 5 为 Integration 内部 deadline 与 ReAct 外层 timeout 同刻竞争，可能打断 close/settle/log 清理。
-
-- [x] **问题 4 红测**：当前轮写入 content/reasoning 后抛 `LLMDeadlineExceededError`，TIMEOUT outcome 必须保留当前轮部分成果；当前轮尚无成果时仍保留上一轮结果。
-- [x] **问题 4 实现**：显式维护未完成的 `current_result` 与最近可见的 `last_visible_result`，终止收尾按“当前轮有用户可见进度则优先，否则沿用最近可见结果”选择；异常 usage 只累计一次。
-- [x] **问题 5 红测**：内部 deadline 到期后进入延迟清理，清理耗时小于 grace 时不得被外层 task 取消打断；忽略内部 deadline、但配合取消的调用仍必须在 timeout 触发点停止。
-- [x] **问题 5 实现**：`max_execution_time` 是业务循环的 timeout 取消触发点；内部 LLM deadline 提前 `min(1s, 总时长×10%)`，让 close/settle/log 有机会在 task 取消前完成。
-- [x] **回归与文档**：同步 ReAct ADR/组件文档、分别登记问题记录与 lessons；运行 ReAct 定向测试、全量 pytest、alignment 和 diff check。
-
-> **评审结果**：两项缺口已闭环。类型化 deadline 与外层 timeout 均优先保留当前轮可见成果，无当前成果时回退上一轮；usage 以异常携带值优先并仅归账一次。清理窗口不延后 timeout 触发点；忽略内部 deadline、但配合 task 取消的 LLM 会在该时刻停止。领域终态组装位于 scope 外，不承诺整个调用绝对按秒返回。
-> **验证结果**：ReAct 定向 100 passed；全量 905 passed（1 个第三方 StarletteDeprecationWarning）；`verify_alignment` 与 `git diff --check` 通过。
 
 > 本节保留后续 Slice 的执行交接信息；当前事实以代码、独立 issue 和顶部第一阶段评审为准。
 > 最近进展：主副模型请求守卫 **A-E 已落地并提交，第一阶段 P1/P2 验收已落地并通过验证、待提交**——B+C+D 见 [LLM-041](../issues/integration/llm/2026-09-06-fallback-window-and-quota.md)，E 见 [LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)，每笔真实 SDK 调用及等待的执行控制见 [LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)；**F（Slice 2-4 / 6-7）仍待续**。
@@ -290,7 +365,7 @@ git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forg
 
 ---
 
-# 上下文预算跨策略闭环（Slice 1 / 5 已落地 · Slice 2-4 / 6-7 待续）
+# 2026-09-06 上下文预算跨策略闭环（Slice 1 / 5 已落地 · Slice 2-4 / 6-7 待续）
 
 > 目标：在不破坏半导体良率 RCA 证据链的前提下，使 ReAct、Reflection、Plan-then-Execute 的每一次实际 LLM 请求均受上下文窗口保护；请求无法容纳时阻止网络调用，并按策略保留可用的部分结果。
 > 进度：集成层预算闸（Slice 1，2026-09-06）与结构化调用取消/期限闭环（Slice 5，2026-09-08，见 [LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)）已实现；Slice 2-4 / 6-7 待续。
@@ -347,79 +422,6 @@ git -c safe.directory=E:/MyWorkSpace/Agent/VSCodeDemo/PersonalProject/agent-forg
 - [ ] 三种策略在超限时均保留定义好的部分进度，且不将上下文超限误归类为临时 LLM 故障。
 - [ ] 取消、总时长、成本、上下文四类护栏的优先级和 usage 口径有单测覆盖。
 - [ ] 全量测试和文档对齐校验通过；未新增未登记模块。
-
----
-
-# 2026-09-06 主副模型请求守卫：fallback 独立键 + 独立池限流 + 取消/收尾闭环（LLM-041）
-
-> 对应交接 §6 B+C+D。ADR：请求准入 Decision 3/7/9 修订（fallback 独立键、否决端口扩展、副模型生命周期）。Issue：[LLM-041](../issues/integration/llm/2026-09-06-fallback-window-and-quota.md)。
-
-- [x] **§3 冲突处置**：①同 provider≠同窗口 → fallback 独立键（修订）；②ADR Decision 7 否决端口扩展（修订）；③流式超限上抛核验通过不撤销；④测试绿灯不验收（原共享主窗口用例实际测的是 HALF_OPEN 主链路探针，未真走 fallback，已修正）；⑤估算非精确 → config/request_budget 补窗口一致性责任句。
-- [x] **B 配置接线**：settings `llm_fallback_context_window_tokens/rpm/tpm` + container 注册 `fallback` 键（RequestBudget/ReservationLimiter）+ .env.example/config 文档。
-- [x] **B/D fallback 进统一入口**：`_build_fallback_fn` → async 闭包经 `_budget_guarded_call`（fallback 键窗口 + fallback 独立池 reserve → create）；Reservation 写入共享 `active` 由调用方统一 settle/cancel；`active` 构造前移（async_generate/generate）；过时注释同步。
-- [x] **C1 预算超限直抛**：`retry.execute` 两处 fallback 失败分支对 `ContextWindowExceededError` 直抛（不 `raise last_exc from ...`），防下游把终结信号当可恢复错误触发再调主。
-- [x] **C2 取消复查**：`_budget_guarded_call` 预留后 create 前复查业务 `cancel_event` → `cancel()` 退款 + 抛 `_StreamCancel`，整流器映射用户取消出口（拿到预留但已取消不发起请求）。
-- [x] **测试**：fallback 独立键拒绝（model_key=="fallback"）、主窗可容/备用窗拒正反例、CLOSED/HALF_OPEN fallback 超限直抛、fallback 成功走独立池 settle 恰一次、reserve 排队期间业务取消退款零 SDK；`_open_circuit` helper 置 `_last_failure_time` 向未来保证真走 fallback。
-- [x] **文档/ADR/issue**：ADR Decision 3/7/9 + Consequences；llm_service.md（fallback 参与闭环/约束边界/流程 ②.5）/ request_budget.md（fallback 窗口/测试状态）/ config.md（字段 + 窗口一致性责任）；issue LLM-041 + README 登记。
-- [x] **验证**：受影响 223 passed；全量 **855 passed**；verify_alignment 通过；git diff --check（见下）。
-
----
-
-# 2026-09-08 执行控制贯穿每笔真实 SDK 调用及等待（LLM-044）
-
-> LLM-043 覆盖边界修正（E 只在 generate 门口检查一次）。Issue：[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)。当前实现位于工作区。
-
-- [x] **统一语义**：主副、流式/非流式共享准入与终止（每 attempt 入口 → 预算 → 受控 reserve → reserve 后复查 → deadline 约束 create → 结算/读取期竞争）；覆盖 retry/整流/续接退避 + reserve 排队 + chunk 读取。
-- [x] **终止信号双层**：integration 私有 `_ExecutionAbort`/`_StreamCancel`(升格)/`_DeadlineExceeded` + shared 领域出口 `LLMCancelledError`/`LLMDeadlineExceededError`（NonRetryableError 携 usage）——Facade 翻译，Domain 不依赖私有；react 收编 CANCELLED/TIMEOUT。
-- [x] **_budget_guarded_call create_started 状态机**：create 调度后主动终止且任务配合取消时 `settle(None)`；若任务吞取消迟回 response，则返回值先接管所有权，调用方按实际 usage 结算/关闭后再抛终止。自然传输异常维持 cancel。
-- [x] **等待统一原语**：wait/await_with_execution_control（直接抛类型化 + 收协程工厂）；retry 退避/整流续接退避/reserve 排队走同一控制。
-- [x] **整流四方竞争**：_drain（anext×cancel×deadline×idle，确定性判定序）取消即时响应；attempt/迭代 deadline 类型化终止（不整流/续接）。
-- [x] **structured 整链终止一次**：_call_generate 累计 usage + raise；extract 外层 return None。
-- [x] 审查补强：修复流式 create retry 与续接 deadline 漏传、chunk 同时完成 usage 丢失、未关闭流、structured 入口空转、ReAct 终止 usage 丢失；执行控制组件更名为 `execution_control.py`。
-- [x] 全量 **878 passed**；`verify_alignment` 与 `git diff --check` 通过。
-- [ ] 遗留：F（Slice 2-4 / 6-7）仍待续。
-
----
-
-# 2026-09-08 generate_structured 降级链取消/期限闭环（LLM-043）
-
-> 对应交接 §6-E / Slice 5（"结构化内部调用闭环"）。Issue：[LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)。
-
-- [x] **发现**：StructuredOutput 三级降级链（每级含截断扩容 + 回喂，单次 generate_structured 最坏 ~9 次真实请求）无任何取消/期限检查点；reflection/planner 只在阶段入口 guard，一旦进入 generate_structured 内部跑满为止。
-- [x] **信号下沉**：`generate_structured`/`StructuredOutput.extract` 增加可选 `cancel_event` + `deadline`（monotonic 绝对，调用方现算 start_time+max_execution_time）；检查点单点放 `_call_generate` 入口（三级初始/截断扩容/回喂/fallback 全部真实请求必经），命中返回 None（与降级耗尽同出口）。
-- [x] **TimeoutError 防御**：`_call_generate` except 对内置 `TimeoutError` 直抛（整体期限终止不得被 decide_downstream_error 当 RETRYABLE 吞成降级再调用）；`APITimeoutError`/`httpx.TimeoutException` 仍走可恢复路径。
-- [x] **领域层透传**：reflection/planner execute 现算 deadline，`_critique`/`_refine`/`_plan`/`_replan`/`_summarize` 加形参透传；usage 上抛路径保留（except AppError 返回 `usage or None`）。
-- [x] **测试**：7 红转绿（cancel/deadline/TimeoutError 集成）+ reflection 透传/usage 保留 2 + planner 透传 1；既有 recoverable 用例改 `httpx.ReadTimeout`（内置 TimeoutError 不再冒充网络超时）。
-- [x] **验证**：全量 **867 passed**（857 + 10）；verify_alignment 通过。
-
----
-
-# 2026-09-07 reserve R5 兜底退款二次取消 RPM 泄漏（LLM-042）
-
-> 独立问题（一个问题一个文件）。发现 → 分析 → 修复 → 验证 → 教训见 [LLM-042](../issues/integration/llm/2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md)。
-
-- [x] **发现（探针红）**：`_acquire` R5 兜底 `res.cancel()` 退款 await 被二次取消时 RPM 桶不回满（探针 `test_reserve_r5_refund_interrupted_by_cancel_leaks_rpm` 修复前 4≠5）。
-- [x] **根因**：reserve 的 res 不外传 `_acquire`、无外层续退——「未终态供外层续退」契约的适用前提（Reservation 被外层持有）在 reserve 内不成立。
-- [x] **方案取舍**：A（shield 进 `Reservation.cancel`）改动共享契约面大；B（采用）R5 就地循环补齐退款到终态再传播取消，只改无外层续退死角。
-- [x] **修复**：`reservation_limiter.py` `_acquire` R5 分支 `while not res.settled: try cancel except CancelledError: continue; raise`。
-- [x] **验证**：reservation_limiter 39 passed + 集成组 109 passed + 全量 856 passed；既有未终态契约测试零改动通过。
-- [x] **登记**：issue LLM-042 + issues/integration/llm/README 索引；LLM-041 与本节不再挂靠。
-
----
-
-# 2026-09-06 上下文预算闸对齐收尾（Slice 1 落地收尾 + 流式穿透）
-
-> 目标：请求预算闸按 llm 模块子组件纪律收尾——流式/非流式一致终结、request_budget 对齐规范、异常树与 API 语义自洽、全量测试与文档同步。ADR：`adr/integration/llm/2026-09-06-request-context-budget.md`。
-
-- [x] **Slice 1 实现收尾**：request_budget.py 补 `RequestBudgetConfig` 非法组合校验（`ParameterValidationError`）/ `RequestBudgetManager.reset()` / `validate` 的 max_tokens 正整数校验——test_request_budget 3 组红转绿；意外 2 组红揭示规格：sampling/metadata 不计入窗口（序列化从黑名单剔除改**内容白名单**，贴合 ADR Decision 4）、特殊 token 拼写（`<|endoftext|>`）不得使估算崩溃（`disallowed_special=()`）
-- [x] **流式契约对齐**：`ContextWindowExceededError` 在整流器 create 阶段与半流续接链识别后**原样上抛**（不折「LLM 调用失败」error 事件、不置 result.error）→ react 流式主循环也走 `CONTEXT_EXCEEDED` 终结（与非流式一致，落 ADR Decision 5）；test_llm_request_budget stream 分支改 `pytest.raises`，整流器两穿透用例 + react 流式终结回归新增
-- [x] **异常树**：`ContextWindowExceededError` 改挂 `NonRetryableError`（不可重试语义，与 CircuitBreakerOpenError 同位；无 except BusinessError 消费方，行为零变化）；test_exceptions 补父类断言
-- [x] **API 层**：error_handler 登记 `CONTEXT_WINDOW_EXCEEDED → 422`（原误落 500，区别于 LLM_API_ERROR 502 / CIRCUIT_OPEN 503）+ 映射测试
-- [x] **fallback 预算裁定**：fallback 共享主模型窗口（同 provider 同端点 LLM-012，不单独注入配置）；test_open_circuit_fallback 改向为「熔断 OPEN 走 fallback 时预算闸仍生效（主 key 窗口）」
-- [x] 顺带修复 react.py:133 except 逗号语法（AGENT-001 元组约定）；test_container 补 `RequestBudgetManager` 全局快照与装配断言、LLMService `_continuation_max_retries` 既有遗漏
-- [x] 文档：error_handling（async_generate「错误转事件」例外）/ streaming_rectifier（失败信号表外上抛通道）/ llm（双通道上抛）/ **init** 组件枚举 / request_budget 契约与测试状态 同步
-- [x] 验证：受影响 197 passed；全量 pytest + verify_alignment（见下）
-- [ ] 遗留：reflection/planner 结构化调用超限被 `except AppError` 吞（顶部阻塞标注）；Slice 2 取消/成本护栏类型化与 ReAct 收尾其余项；Slice 3/4 阶段上下文缩减
 
 ---
 
