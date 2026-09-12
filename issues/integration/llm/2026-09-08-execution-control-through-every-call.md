@@ -1,7 +1,7 @@
 # LLM-044 执行控制未贯穿单次 generate/整流内部（取消/期限后仍发真实 SDK 请求）
 
 > 发现：2026-09-08 ｜ 状态：✅ 已修复 ｜ 模块：llm_service / execution_control / retry / reservation（经执行控制外置）/ streaming_rectifier / structured / react + shared exceptions
-> 关联：E [LLM-043](./2026-09-08-structured-cancel-deadline.md) 覆盖边界修正；ADR [request-context-budget](../../../adr/integration/llm/2026-09-06-request-context-budget.md) Decision 8；后置修正见 [LLM-045](./2026-09-09-execution-control-late-result-drop.md)（abort 判赢后迟回值接管）
+> 关联：E [LLM-043](2026-09-08-structured-cancel-deadline.md) 覆盖边界修正；ADR [request-context-budget](../../../adr/integration/llm/2026-09-06-request-context-budget.md) Decision 8；后置修正见 [LLM-045](2026-09-09-execution-control-late-result-drop.md)（abort 判赢后迟回值接管）
 
 ## 发现
 

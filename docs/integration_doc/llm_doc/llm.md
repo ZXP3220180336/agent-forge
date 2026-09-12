@@ -5,7 +5,7 @@
 > **文档定位**：LLM 模块（`app/integration/llm/`）对外接口文档——`LLMService` Facade
 > 的接口契约 + 内部组件导航；服务对象为 LLM 网关的**外部调用方**（领域层 / 应用层 /
 > API 层）
-> **实现状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：实现领域端口 `LLMGateway`（`app/domain/ports/llm_gateway.py`，领域层
 > 对模型调用的唯一依赖面）；`LLMService` 为唯一对外 Facade，内部组件不对外暴露
 
@@ -223,7 +223,7 @@ cost = LLMService.calculate_cost(
 - [集成层说明](../README.md)（层总览：LLM 网关在集成层中的位置）
 - 组件子文档：client / retry / errors / execution_control / streaming / streaming_rectifier /
   structure / limiter / cost_tracker / token_counter / request_budget（见「内部实现组织」）
-- [架构设计](../../architecture.md)（分层与演进路径）
+- [架构设计](../../project/architecture.md)（分层与演进路径）
 - [全局日志框架](../../platform_doc/observability/logging.md)（`llm_call` 业务事件）
 - 设计决策归档：[ADR](../../../adr/integration/llm/README.md)（LLM-ADR-001~016）
 - 问题记录归档：[issues](../../../issues/integration/llm/README.md)（LLM-001~047）

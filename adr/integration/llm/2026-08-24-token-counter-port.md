@@ -3,7 +3,7 @@
 > **状态**：🔶 已替代（独立端口结构被 LLM 能力并入 LLMGateway 替代；tiktoken 隔离核心经 LLMGateway 承载保持生效，见下方「演进」）
 > **决策日期**：2026-08-24
 > **涉及模块**：`app/integration/llm/token_counter.py` · `app/application/context/context_manager.py` · `app/integration/llm/llm_service.py` · `app/domain/ports/llm_gateway.py`
-> **关联文档**：[token_counter.md](../../../docs/integration_doc/llm_doc/token_counter.md) · [context.md](../../../docs/application_doc/context_doc/context.md) · [architecture.md](../../../docs/architecture.md)
+> **关联文档**：[token_counter.md](../../../docs/integration_doc/llm_doc/token_counter.md) · [context.md](../../../docs/application_doc/context_doc/context.md) · [architecture.md](../../../docs/project/architecture.md)
 
 ---
 

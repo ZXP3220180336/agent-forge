@@ -3,7 +3,7 @@
 > **对应代码**：`app/config/`（[settings.py](../../app/config/settings.py)）
 > **更新日期**：2026-08-29
 > **文档定位**：配置模块对外接口契约（`settings` 单例 + 聚合属性）与全项目配置项参考手册
-> **实现状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。
 
 ---
 
@@ -497,7 +497,7 @@ REDIS_URL="redis://localhost:6379/0"
 
 ## 相关文档
 
-- [architecture.md](../architecture.md)（分层与演进）
-- [deployment.md](../deployment.md)（部署与启动）
+- [architecture.md](../project/architecture.md)（分层与演进）
+- [deployment.md](../project/deployment.md)（部署与启动）
 - 各层 README：`domain` / `application` / `integration` / `api`
 - 各消费模块文档（见 [配置消费导航](#配置消费导航)）

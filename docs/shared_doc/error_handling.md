@@ -34,8 +34,8 @@
 
 ## 核心原则
 
-1. **可恢复 vs 不可恢复必须区分**：偶发的、可重试的运行时错误（超时/5xx/429）由可靠性层重试消化；不可恢复错误（4xx/认证/熔断/配置错误）必须向上抛，让调用方感知并决策。
-2. **有结果才返回，有错误就抛**：facade 层的「返回 None」只用于「业务上无结果」（如解析不出内容），**不用于「发生错误」**——把失败抹平成 None 会让调用方无法区分「超时要不要重试」「key 失效要不要换」「模型就是没说话」。
+1. **可恢复 vs 不可恢复必须区分**：偶发的、可重试的运行时错误（超时/5xx/429）由对应可靠性层处理；不可恢复错误（非可重试 4xx/认证/熔断/配置错误）必须按接口契约向上抛或转成调用方可识别的业务信号，不得无差别吞掉。429 等分类以错误分类器和接口契约为准。
+2. **失败出口遵循具体接口契约**：`generate()` 允许可恢复错误在可靠性层耗尽后返回 None；不可恢复错误向上抛。`async_generate()` 允许普通失败转错误事件，并保留类型化终止出口。不得用“有错必抛”的总纲推翻这些已确认契约；None 的具体含义由接口说明限定，调用方不能从 None 反推出具体失败原因。新增接口须明确结果、可恢复失败与不可恢复错误的可区分方式。
 3. **确定性错误不捕获，快速失败**：配置错误、参数错误、程序员错误（未注册的 key、非法参数）这类「修复配置即消失」的错误，捕获无意义——应该让它抛出暴露，而不是掩盖。
 4. **CancelledError 永不吞**：协程取消（`asyncio.CancelledError`）必须向上传播，不得被 `except Exception` 捕获（它是 `BaseException` 子类，`except Exception` 天然不捕获，这点不能靠侥幸——新增代码必须显式确认）。
 5. **资源清理用 finally，不用 except 兜底**：预留配额（reservation）等资源的释放放 `finally`，与异常处理分离；`except` 只做「要不要重试/降级」的决策。
@@ -48,8 +48,8 @@
 
 | 类别 | 典型 | 处理策略 | 例子 |
 | --- | --- | --- | --- |
-| **可恢复（重试型）** | 超时、5xx、429 | 可靠性层重试/退避/降级；重试耗尽才向上抛 | `APITimeoutError`、`httpx.TimeoutException`、`RateLimitError` |
-| **不可恢复（调用方错误）** | 4xx、认证、熔断开启、配置错误 | **直接向上抛**，调用方决定换模型/修参数/告警 | `LLMAPIError`（openai 4xx/认证归一）、`BadRequestError`（400）、`AuthenticationError`（401）、`CircuitBreakerOpenError`、`ValueError("未注册")` |
+| **可恢复（重试型）** | 超时、5xx、429 | 可靠性层重试/退避/降级；耗尽后向 Facade 传播，Facade 按接口约定抛出、返回 None 或转错误事件 | `APITimeoutError`、`httpx.TimeoutException`、`RateLimitError` |
+| **不可恢复（当前调用不重试）** | 非可重试 4xx、认证、熔断开启、配置错误 | 下层直接抛出，Facade 按具体接口传播或翻译；调用方感知后决定换模型/修参数/告警 | `LLMAPIError`（openai 非可重试 4xx/认证归一）、`BadRequestError`（400）、`AuthenticationError`（401）、`CircuitBreakerOpenError`、`ValueError("未注册")` |
 | **业务边界（非传输错误）** | 截断、拒答、工具调用、业务取消、整体期限耗尽 | 转成**具名异常**短路，调用方差异化处理 | `StructuredTruncationError` / `StructuredRefusalError` / `StructuredToolCallError` / `LLMCancelledError` / `LLMDeadlineExceededError` |
 
 ### 关键：不可恢复错误必须能穿透到调用方
@@ -64,7 +64,7 @@
 | --- | --- | --- |
 | **SDK/网关层**（openai SDK） | 发起请求、网络传输 | **抛异常**（`APIStatusError`/`APITimeoutError`/`APIConnectionError`），永不静默吞掉 |
 | **可靠性层**（`retry.py`） | 重试/退避/熔断/fallback | 可恢复错误内部重试消化；重试耗尽 `raise last_exc`（fallback 也失败时主调用异常为主、fallback 异常链 `__cause__`）；不可恢复错误直接 `raise`；熔断开启 `raise CircuitBreakerOpenError` |
-| **facade 层**（`llm_service.py`） | 组装请求、编排 | 传输可靠性内部消化；**不可恢复错误向上抛**（或转业务信号）；配置错误在 try 外自然传播 |
+| **facade 层**（`llm_service.py`） | 组装请求、编排 | 传输可靠性内部处理；耗尽后的可恢复错误在 `generate()` 可返回 None；不可恢复错误抛出或按具体流契约转业务信号；配置错误在 try 外自然传播 |
 | **调用方**（Agent/业务/structured） | 业务决策 | 捕获具名异常按业务处理；未捕获异常记日志/告警 |
 
 **核心约束**：每一层只消化「自己该负责的错误」，不把「上层该知道的错误」吞掉。
@@ -111,7 +111,7 @@
        ├─ retry.execute()           ← try 块内：可恢复错误已内部重试耗尽
        └─ except Exception
             ├─ classify_error == NON_RETRYABLE（4xx/认证/熔断开启/未知）→ openai 归一 LLMAPIError（`from` 原异常）；其余 raise（向上抛）
-            └─ 可恢复（超时/5xx/429）→ return None（调用方按「业务无结果」降级）
+            └─ 可恢复（超时/5xx/429）→ return None（契约约定的可恢复失败出口，调用方按允许的降级处理）
 ```
 
 **设计意图**（B3 契约）：`generate()` 对**可恢复错误**（超时/5xx/429）可靠性层已重试耗尽后返回 None，调用方（structured）按降级处理；对**不可恢复错误**（4xx/认证/熔断开启/未知异常）向上抛——这些是调用方问题或下游拒绝，降级无意义（会白打降级请求），调用方需感知并决策（修参数/换 key/告警）。**注意**：这个契约是 `generate()` 独有；`async_generate()` 走「错误转事件」契约（见下），两者刻意不同。
@@ -159,7 +159,7 @@ extract()
 1. **`except Exception` 只捕获该层该处理的错误**：`generate()`/`async_generate()` 的 `except Exception` 覆盖 `retry.execute` 的调用——配置错误（`_build_chat_kwargs` 内的 `get_model`）在 **try 块外**，能自然穿透不被吞。
 2. **请求构建阶段异常永不吞**：`_build_chat_kwargs`、TPM 预留量估算等「请求组装」代码若产生异常（未注册 key、编码器缺失），应在 try 外 fail fast，而不是被 facade 的 `except Exception` 吞掉。
 3. **structured 的 `except Exception` 防什么**：`generate()` 已把可恢复错误转 None、不可恢复错误 re-raise，structured 的 `except Exception` 再做一次分类——`NON_RETRYABLE` re-raise、可恢复降级（兜底防御）。作为兜底合理；真正区分靠 `classify_error`。
-4. **可靠性层已重试的异常，上层不要重复处理**：`retry.execute` 内部完成重试/退避/熔断，抛出的就是「最终状态」异常；上层只需决策「要不要降级/短路」，不要再重试。
+4. **同一失败域不叠加重试**：`retry.execute` 拥有传输重试；上层不得仅因收到其耗尽结果，再套一轮相同传输重试。流式整流、结构化截断修复、工具参数修复等属于不同失败域，只有具备明确触发条件、责任方、独立次数上限且共享整体期限与成本预算时才可执行；取消、期限耗尽及不可恢复错误不得作为续试理由。降级是否会产生新请求也纳入同一总体预算。
 5. **限流模块（reserve/settle/cancel）异常不被吞**：`generate()`/`async_generate()` 的 `except Exception` 只覆盖 `retry.execute` 的调用；限流三阶段都在捕获范围外——
    - **reserve（预留）**：在 `_budget_guarded_call` 限流段的 try 之前，异常直接传播（CancelledError 穿透 BaseException；普通异常被 `classify_error` 归 NON_RETRYABLE re-raise）
    - **cancel（create 失败退款）**：在内层 `except BaseException` 中 re-raise 原异常，不吞
@@ -176,7 +176,7 @@ extract()
 | generator 内部 `yield build_error_event(...)` | 正常产出错误事件，循环**不抛异常** | 错误以数据（事件字符串）形式传达 |
 | generator 内部 `raise`（`ContextWindowExceededError` / `LLMDeadlineExceededError` / `CancelledError`） | `async for` 循环抛出异常 | 需终结语义、无法以可重试失败表达时才走这条路 |
 
-**约定**：LLM 流式调用优先用错误事件传达普通失败；预算闸拒绝、整体期限和硬任务取消等终结语义以类型化异常向上抛，业务 cancel_event 走取消事件。新增流式接口须保持该路由。
+**约定**：LLM 流式调用优先用错误事件传达普通失败；预算闸拒绝、整体期限和硬任务取消等终结语义以类型化异常向上抛，业务 cancel_event 走取消事件。该约定适用于上述 LLM 接口；其他新增流式接口应明确自身契约，不能仅因采用 async generator 就强制套用 SSE 路由。
 
 ---
 
@@ -217,7 +217,7 @@ encoder = tiktoken.encoding_for_model(model)  # 若抛异常，直接向上传�
 
 | 场景 | 该怎么做 | 例子 |
 | --- | --- | --- |
-| 捕获后清理/记录再重抛 | 显式 raise（`except ...: log(...); raise`） | facade 层 `except Exception: log_event(...); return None` |
+| 捕获后清理/记录再重抛 | 显式 raise（`except ...: log(...); raise`） | 记录后保留原异常；Facade 按契约 `return None` 属于失败翻译，不是重抛 |
 | 转换异常类型 | `except KeyError: raise ConfigError(...) from e` | 下层 SDK 异常 → 上层业务异常 |
 | 主动触发业务边界 | `raise StructuredRefusalError(...)` | structured 拒答短路 |
 | **异常自然传播即可满足需求** | **不捕获，让它往上走** | 硬依赖缺失（`ImportError`）、配置错误（`ValueError`）、未知模型编码器异常 |
@@ -279,12 +279,12 @@ AppError（根，code 默认 INTERNAL）
 
 写代码时对照：
 
-- [ ] **可恢复错误**是否交给了可靠性层重试？（不要在上层重复重试）
+- [ ] **可恢复错误**是否交给对应责任方？同一传输失败是否叠加重试；不同失败域的重试/整流/修复是否有独立上限并共享总体预算？
 - [ ] **不可恢复错误**是否向上抛？有没有被 `except Exception → return None` 意外吞掉？
 - [ ] **配置错误**是否在 try 块外 fail fast？（不要在调用点 catch 它）
 - [ ] **业务边界**（截断/拒答/工具调用）是否用具名异常短路，而非吞成通用失败？
 - [ ] **CancelledError** 是否确认不被 `except Exception` 吞掉？资源释放是否在 `finally`？
-- [ ] **async generator** 的错误是否优先转成错误事件，而不是靠抛异常？
+- [ ] **async generator** 是否遵循具体接口出口？LLM 普通流式失败可转错误事件；预算、期限、硬取消等类型化终止是否保留？
 - [ ] 吞异常时是否记了日志？（至少 `logger.warning`，丢失错误信息 = 无法排查）
 
 ---

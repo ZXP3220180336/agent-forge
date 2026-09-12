@@ -3,7 +3,7 @@
 > **状态**：✅ 已采纳
 > **决策日期**：2026-08-24
 > **涉及模块**：`app/shared/types.py` · `app/application/session/session_manager.py` · `app/application/context/context_manager.py` · `app/domain/agent/base.py` · `app/domain/ports/llm_gateway.py`
-> **关联文档**：[types.md](../../../docs/shared_doc/types.md) · [architecture.md](../../../docs/architecture.md)
+> **关联文档**：[types.md](../../../docs/shared_doc/types.md) · [architecture.md](../../../docs/project/architecture.md)
 
 ---
 

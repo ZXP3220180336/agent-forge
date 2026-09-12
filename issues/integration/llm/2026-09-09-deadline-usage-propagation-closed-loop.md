@@ -1,7 +1,7 @@
 # LLM-047 流式 deadline 已获 usage 传播闭环不完整（部分出口漏传/误传）
 
 > 状态：✅ 已修复 ｜ 优先级：P2（成本归账边界缺口，非功能故障） ｜ 发现：2026-09-09（usage 传递口径审查） ｜ 模块：streaming_rectifier / llm_service / errors / structured
-> 关联：上承 [LLM-044](./2026-09-08-execution-control-through-every-call.md)（执行终止信号双层 + 保留已获 usage）· [LLM-045](./2026-09-09-execution-control-late-result-drop.md)（迟回值不丢）· [LLM-038](./2026-09-02-usage-accounting.md)（usage 成本累计）
+> 关联：上承 [LLM-044](2026-09-08-execution-control-through-every-call.md)（执行终止信号双层 + 保留已获 usage）· [LLM-045](2026-09-09-execution-control-late-result-drop.md)（迟回值不丢）· [LLM-038](2026-09-02-usage-accounting.md)（usage 成本累计）
 
 ## 发现
 

@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/retry.py`
 > **更新日期**：2026-09-02
 > **职责**：LLM API 调用的重试、熔断与降级
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
 
@@ -544,21 +544,24 @@ T3 + 30s 后 → 请求 H（探针 #1）
 
 ## 配置项清单
 
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
 所有配置项集中在 `app/config/settings.py`，通过 `.env` 覆盖：
 
-| 配置项 | 默认值 | 说明 | 关联组件 |
-| --- | --- | --- | --- |
-| `LLM_MAX_RETRIES` | `2` | 最大重试次数 | `RetryConfig.max_retries` |
-| `LLM_BASE_DELAY` | `1.0` | 退避基数（秒） | `RetryConfig.base_delay` |
-| `LLM_MAX_DELAY` | `30.0` | 退避上限（秒） | `RetryConfig.max_delay` |
-| `LLM_USE_JITTER` | `True` | 是否启用随机抖动 | `RetryConfig.use_jitter` |
-| `LLM_CIRCUIT_WINDOW_SECONDS` | `10.0` | 滑动时间窗口长度（秒） | `CircuitBreakerConfig.window_seconds` |
-| `LLM_CIRCUIT_ERROR_THRESHOLD` | `0.5` | 窗口内错误率熔断阈值（50%） | `CircuitBreakerConfig.error_threshold` |
-| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD` | `20` | 窗口内最小请求量，不足则不做错误率评估 | `CircuitBreakerConfig.request_volume_threshold` |
-| `LLM_CIRCUIT_ALL_FAILED_MIN` | `3` | 低流量纯失败保护：全部失败且达此样本量才熔断 | `CircuitBreakerConfig.all_failed_min` |
-| `LLM_CIRCUIT_RECOVERY_TIMEOUT` | `30.0` | 熔断恢复到半开的时间（秒） | `CircuitBreakerConfig.recovery_timeout` |
-| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | `3` | 半开状态最大探针数 | `CircuitBreakerConfig.half_open_max_requests` |
-| `LLM_FALLBACK_MODEL_ID` | `""` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `LLMService.register_config` 注入；`_plan_request` 内联生成 `fallback_fn`（"fallback" 键窗口 + 独立池） |
+| 配置项 | 说明 | 关联组件 |
+| --- | --- | --- |
+| `LLM_MAX_RETRIES` | 最大重试次数 | `RetryConfig.max_retries` |
+| `LLM_BASE_DELAY` | 退避基数（秒） | `RetryConfig.base_delay` |
+| `LLM_MAX_DELAY` | 退避上限（秒） | `RetryConfig.max_delay` |
+| `LLM_USE_JITTER` | 是否启用随机抖动 | `RetryConfig.use_jitter` |
+| `LLM_CIRCUIT_WINDOW_SECONDS` | 滑动时间窗口长度（秒） | `CircuitBreakerConfig.window_seconds` |
+| `LLM_CIRCUIT_ERROR_THRESHOLD` | 窗口内错误率熔断阈值（50%） | `CircuitBreakerConfig.error_threshold` |
+| `LLM_CIRCUIT_REQUEST_VOLUME_THRESHOLD` | 窗口内最小请求量，不足则不做错误率评估 | `CircuitBreakerConfig.request_volume_threshold` |
+| `LLM_CIRCUIT_ALL_FAILED_MIN` | 低流量纯失败保护：全部失败且达此样本量才熔断 | `CircuitBreakerConfig.all_failed_min` |
+| `LLM_CIRCUIT_RECOVERY_TIMEOUT` | 熔断恢复到半开的时间（秒） | `CircuitBreakerConfig.recovery_timeout` |
+| `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | 半开状态最大探针数 | `CircuitBreakerConfig.half_open_max_requests` |
+| `LLM_FALLBACK_MODEL_ID` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `LLMService.register_config` 注入；`_plan_request` 内联生成 `fallback_fn`（"fallback" 键窗口 + 独立池） |
 
 ---
 

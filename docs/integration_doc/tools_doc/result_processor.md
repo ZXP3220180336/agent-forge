@@ -3,7 +3,7 @@
 > **更新日期**：2026-08-17
 > **模块**：`app/integration/tools/result_processor.py`
 > **职责**：工具执行结果的统一 head+tail 截断 + 错误归一化
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **工业级对照**：head+tail 截断策略 + 截断标记（AgentScope / pydantic-ai-harness），避免各工具各自内联截断的分散实现
 
 ---

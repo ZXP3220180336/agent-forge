@@ -4,13 +4,6 @@
 > **更新日期**：2026-09-10
 > **关联**：[推理策略说明文档](../../../docs/domain_doc/reasoning_doc/reasoning.md) · [ADR context-budget](../../../adr/domain/reasoning/2026-08-28-context-budget.md)
 
-## 状态图例
-
-| 状态 | 含义 |
-| --- | --- |
-| ✅ 已修复 | 问题已修复并验证 |
-| 🔶 分析中 | 根因分析中，未修复 |
-| ⬜ 待处理 | 已发现，未分析 |
 
 ## 问题索引
 
@@ -36,9 +29,5 @@
 | [REASON-019](2026-09-11-planner-step-success-extra-dimension.md) | Planner 步骤成功判据多出一维，异常收尾的有产出步骤被误判失败 | ✅ 已修复 | reasoning/planner | 2026-09-11 |
 | [REASON-020](2026-09-11-reflection-guard-checkpoint.md) | Reflection 护栏复查挂在自查 ok 判定之前，合格报告被改判降级 | ✅ 已修复 | reasoning/reflection | 2026-09-11 |
 
-## 新问题登记规范
 
-1. **命名**：`<日期>-<短横线描述>.md`——日期为问题确立日（`YYYY-MM-DD`），描述为该问题的短 slug
-2. **编号（索引 ID）**：REASON-XXX 递增，仅用于索引表展示；**文件名不含编号**
-3. **模板**：元信息块（状态/优先级/来源/涉及模块）→ 问题描述（现象/影响/根因）→ 工业级参照 → 修复方案（含决策取舍）→ 实施记录 → 验证 → 教训沉淀
-4. **登记**：新建文件后同步更新上方索引表
+登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

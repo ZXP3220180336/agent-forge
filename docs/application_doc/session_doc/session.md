@@ -201,4 +201,4 @@ sessions, total = await container.session_manager.list_sessions_v2(
 - [ContextManager 上下文管理](../context_doc/context.md)（下游依赖方：经 `get_session` / `get_messages` 组装上下文）
 - [路由模块](../../api_doc/routes_doc/routes.md)（`session.py` / `chat.py` 路由，本模块上游调用方）
 - [配置说明](../../config_doc/config.md)
-- [架构设计](../../architecture.md)
+- [架构设计](../../project/architecture.md)

@@ -3,7 +3,7 @@
 > **对应代码**：`app/application/`
 > **更新日期**：2026-08-29
 > **文档定位**：应用层（`app/application/`）—— 会话、上下文、任务调度三个服务，是 API 层与核心层（Agent）之间的用例调度层。
-> **实现状态**：Session（✅ 已实现）· Context（✅ 已实现）· Task（✅ 并发闸门已实现，队列/编排规划中）
+> 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。
 
 ---
 
@@ -80,9 +80,9 @@ LLMService / ToolService（app/integration/）
 
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
-| Session | `session/session_manager.py` | ✅ | 会话生命周期 + Redis 热缓存 + DB 持久化 + 分页/搜索/统计 |
-| Context | `context/context_manager.py` | ✅ | messages 组装 + token 计数/截断 + 运行中上下文预算（ContextBudgetPort） |
-| Task | `task/task_service.py` | ✅ | 任务级并发信号量 + `run_agent()` 流式包装（队列/编排规划中） |
+| Session | `session/session_manager.py` | [见对齐表](../ALIGNMENT.md) | 会话生命周期 + Redis 热缓存 + DB 持久化 + 分页/搜索/统计 |
+| Context | `context/context_manager.py` | [见对齐表](../ALIGNMENT.md) | messages 组装 + token 计数/截断 + 运行中上下文预算（ContextBudgetPort） |
+| Task | `task/task_service.py` | [见对齐表](../ALIGNMENT.md) | 任务级并发信号量 + `run_agent()` 流式包装（队列/编排规划中） |
 
 ---
 
@@ -152,7 +152,7 @@ POST /api/chat/send
 
 ## 相关文档
 
-- [架构设计](../architecture.md)（分层与核心链路）
+- [架构设计](../project/architecture.md)（分层与核心链路）
 - [Session 模块](session_doc/session.md)（会话管理详解）
 - [Context 模块](context_doc/context.md)（上下文管理详解）
 - [Task 模块](task_doc/task.md)（任务调度说明与规划）
@@ -160,4 +160,4 @@ POST /api/chat/send
 - [领域层说明](../domain_doc/README.md)（ReActAgent 与端口，本层下游调用方）
 - [API 层说明](../api_doc/README.md)（本层上游调用方）
 - [配置说明](../config_doc/config.md)
-- [部署](../deployment.md)
+- [部署](../project/deployment.md)

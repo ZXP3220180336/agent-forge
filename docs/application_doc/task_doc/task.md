@@ -3,7 +3,7 @@
 > **对应代码**：`app/application/task/task_service.py`
 > **更新日期**：2026-08-30
 > **职责**：任务级并发调度（当前实现）；队列 / 状态追踪 / 多 Agent 编排（规划蓝图）
-> **实现状态**：🔶 进行中——并发闸门（✅ 已实现），队列 / 状态机 / 编排（⬜ 规划）
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
 
@@ -218,18 +218,21 @@ submit_task(user_request, priority="normal")
 
 ## 配置项清单
 
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
 TaskService 相关配置（`app/config/settings.py`）：
 
-| 配置项 | 默认值 | 说明 | 使用 |
-| --- | --- | --- | --- |
-| `agent_max_concurrent_tasks` | 10 | 最大并发任务数 | ✅ 已用（信号量） |
-| `agent_task_queue_size` | 50 | 任务队列大小 | 🔶 规划 |
-| `agent_worker_pool_size` | 5 | worker 池大小 | 🔶 规划 |
-| `agent_priority_levels` | [low/normal/high/urgent] | 优先级等级 | 🔶 规划 |
-| `agent_default_priority` | normal | 默认优先级 | 🔶 规划 |
-| `agent_high_priority_timeout` | 600 | 高优先级超时 | 🔶 规划 |
-| `agent_low_priority_timeout` | 180 | 低优先级超时 | 🔶 规划 |
-| `agent_priority_queue_size` | 100 | 优先级队列容量 | 🔶 规划 |
+| 配置项 | 说明 | 使用 |
+| --- | --- | --- |
+| `agent_max_concurrent_tasks` | 最大并发任务数 | ✅ 已用（信号量） |
+| `agent_task_queue_size` | 任务队列大小 | 🔶 规划 |
+| `agent_worker_pool_size` | worker 池大小 | 🔶 规划 |
+| `agent_priority_levels` | 优先级等级 | 🔶 规划 |
+| `agent_default_priority` | 默认优先级 | 🔶 规划 |
+| `agent_high_priority_timeout` | 高优先级超时 | 🔶 规划 |
+| `agent_low_priority_timeout` | 低优先级超时 | 🔶 规划 |
+| `agent_priority_queue_size` | 优先级队列容量 | 🔶 规划 |
 
 ---
 

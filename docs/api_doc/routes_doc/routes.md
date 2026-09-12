@@ -3,7 +3,7 @@
 > **对应代码**：`app/api/routes/`
 > **更新日期**：2026-08-29
 > **文档定位**：路由模块对外接口文档——端点契约（请求 / 响应模型 / 认证 / 异常）+ 内部组件导航；服务对象为路由的外部调用方（客户端 / 前端）
-> **实现状态**：chat / session ✅ 已实现 · admin / agent / tool ⬜ 预留
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：错误信封经 [middleware.md](../middleware_doc/middleware.md)（error_handler）；SSE 帧格式见 [events.md](../../shared_doc/events.md)；层总览见 [README.md](../README.md)
 
 ---
@@ -225,11 +225,11 @@ Authorization: Bearer <token>
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| 聊天路由 | chat.py | SSE 流式发送（ReAct 闭环）+ 停止（优雅取消） | ✅ |
-| 会话路由 | session.py | 会话创建 / 详情 / 历史 / 列表 / 删除 | ✅ |
-| 管理路由 | admin.py | 管理接口（系统状态、统计、运维；鉴权需高于普通用户） | ⬜ 预留 |
-| 任务路由 | agent.py | 异步任务受理（规划 `POST /api/tasks/submit` + `GET /api/tasks/{id}`，承接 TaskService 调度，演进见 [architecture Phase C](../../architecture.md)） | ⬜ 预留 |
-| 工具路由 | tool.py | 工具管理（可基于 ToolService 能力实现） | ⬜ 预留 |
+| 聊天路由 | chat.py | SSE 流式发送（ReAct 闭环）+ 停止（优雅取消） | [见对齐表](../../ALIGNMENT.md) |
+| 会话路由 | session.py | 会话创建 / 详情 / 历史 / 列表 / 删除 | [见对齐表](../../ALIGNMENT.md) |
+| 管理路由 | admin.py | 管理接口（系统状态、统计、运维；鉴权需高于普通用户） | [见对齐表](../../ALIGNMENT.md) |
+| 任务路由 | agent.py | 异步任务受理（规划 `POST /api/tasks/submit` + `GET /api/tasks/{id}`，承接 TaskService 调度，演进见 [architecture Phase C](../../project/architecture.md)） | [见对齐表](../../ALIGNMENT.md) |
+| 工具路由 | tool.py | 工具管理（可基于 ToolService 能力实现） | [见对齐表](../../ALIGNMENT.md) |
 
 ---
 
@@ -269,5 +269,5 @@ Authorization: Bearer <token>
 - [中间件模块](../middleware_doc/middleware.md)（统一错误信封 / auth / rate_limit）
 - [SSE 事件格式](../../shared_doc/events.md)（事件类型与帧格式）
 - [异常体系](../../shared_doc/error_handling.md)（统一异常树）
-- [架构设计](../../architecture.md)（演进路径：Phase C 异步任务 / Phase D 中间件）
+- [架构设计](../../project/architecture.md)（演进路径：Phase C 异步任务 / Phase D 中间件）
 - 服务层：Session / Context / Task 模块（`app/application/`，见 [应用层说明](../../application_doc/README.md)）

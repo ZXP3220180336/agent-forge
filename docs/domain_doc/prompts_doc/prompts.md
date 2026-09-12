@@ -3,7 +3,7 @@
 > **对应代码**：`app/domain/prompts/`
 > **更新日期**：2026-09-06
 > **文档定位**：提示词模块对外接口文档——`PromptManager` 接口契约 + 内部模板导航；服务对象为领域层 Agent 编排（ReActAgent / PlannerAgent / ReflectionAgent）
-> **实现状态**：✅ 已实现（system / tools / reflection / planning 模板 + manager builder 全覆盖；planning 三模板随 Planner 落地）
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
 
@@ -121,11 +121,11 @@ messages = [{"role": "system", "content": system_prompt}]
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| `SYSTEM_PROMPT` | templates/system.py | 系统提示词：核心能力 / 工作方式 / 原则 | ✅ |
-| `TOOL_FORMAT_PROMPT` | templates/tools.py | 工具格式说明（`format(tools=...)` 注入工具列表 + 截断提示） | ✅ |
-| `CRITIQUE_PROMPT` / `REFINE_PROMPT` / `REFLECTION_SYSTEM_PROMPT` | templates/reflection.py | Reflection 自查 / 修正提示词 + 生成阶段 system 约束（`REFLECTION_SYSTEM_PROMPT` 可选注入，非 PromptManager 消费，见 [reflection.md](../reasoning_doc/reflection.md)） | ✅ |
-| `PLANNING_PROMPT` / `REPLAN_PROMPT` / `SUMMARIZE_PROMPT` | templates/planning.py | Planner 规划 / 重规划 / 汇总提示词（见 [planner.md](../reasoning_doc/planner.md)） | ✅ |
-| `PromptManager`（builder + 序列化） | manager.py | 组装入口 + 证据/步骤序列化（方法见「PromptManager 方法表」） | ✅ |
+| `SYSTEM_PROMPT` | templates/system.py | 系统提示词：核心能力 / 工作方式 / 原则 | [见对齐表](../../ALIGNMENT.md) |
+| `TOOL_FORMAT_PROMPT` | templates/tools.py | 工具格式说明（`format(tools=...)` 注入工具列表 + 截断提示） | [见对齐表](../../ALIGNMENT.md) |
+| `CRITIQUE_PROMPT` / `REFINE_PROMPT` / `REFLECTION_SYSTEM_PROMPT` | templates/reflection.py | Reflection 自查 / 修正提示词 + 生成阶段 system 约束（`REFLECTION_SYSTEM_PROMPT` 可选注入，非 PromptManager 消费，见 [reflection.md](../reasoning_doc/reflection.md)） | [见对齐表](../../ALIGNMENT.md) |
+| `PLANNING_PROMPT` / `REPLAN_PROMPT` / `SUMMARIZE_PROMPT` | templates/planning.py | Planner 规划 / 重规划 / 汇总提示词（见 [planner.md](../reasoning_doc/planner.md)） | [见对齐表](../../ALIGNMENT.md) |
+| `PromptManager`（builder + 序列化） | manager.py | 组装入口 + 证据/步骤序列化（方法见「PromptManager 方法表」） | [见对齐表](../../ALIGNMENT.md) |
 
 ---
 
@@ -134,4 +134,4 @@ messages = [{"role": "system", "content": system_prompt}]
 - [领域层说明](../README.md)
 - [Agent 模块对外接口文档](../agent_doc/agent.md)
 - [推理策略模块](../reasoning_doc/reasoning.md)（ReAct / Reflection / Planner 策略消费本模块提示词）
-- [架构设计](../../architecture.md)
+- [架构设计](../../project/architecture.md)

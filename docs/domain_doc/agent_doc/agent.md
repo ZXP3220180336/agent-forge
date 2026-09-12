@@ -4,7 +4,7 @@
 > **更新日期**：2026-09-06
 > **文档定位**：Agent 模块对外接口文档——`BaseAgent` 统一入口的接口契约 + 内部组件导航；
 > 服务对象为 Agent 模块的**外部调用方**（应用层 / API 层）
-> **实现状态**：✅ 已实现（BaseAgent + ReActAgent + ReflectionAgent + PlannerAgent）
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：实现依赖领域端口 `LLMGateway` / `ToolGateway`（可选 `ContextBudgetPort`）；推理策略实现见
 > [reasoning 模块](../reasoning_doc/reasoning.md)（ReAct 策略在 `reasoning/react.py`）
 
@@ -226,18 +226,18 @@ print(result.content, result.tool_calls, result.usage)
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| [executor.md](executor.md) | `executor.py` | ReActAgent：桥接 ReActStrategy 到 BaseAgent 生命周期 | ✅ |
-| planner.py | `planner.py` | PlannerAgent：Plan-then-Execute 编排（规划→执行→汇总，桥接 reasoning/planner.py 的 PlannerStrategy） | ✅ |
-| reflection.py | `reflection.py` | ReflectionAgent：Reflection 编排（生成→自查→修正，桥接 reasoning/reflection.py 的 ReflectionStrategy） | ✅ |
+| [executor.md](executor.md) | `executor.py` | ReActAgent：桥接 ReActStrategy 到 BaseAgent 生命周期 | [见对齐表](../../ALIGNMENT.md) |
+| planner.py | `planner.py` | PlannerAgent：Plan-then-Execute 编排（规划→执行→汇总，桥接 reasoning/planner.py 的 PlannerStrategy） | [见对齐表](../../ALIGNMENT.md) |
+| reflection.py | `reflection.py` | ReflectionAgent：Reflection 编排（生成→自查→修正，桥接 reasoning/reflection.py 的 ReflectionStrategy） | [见对齐表](../../ALIGNMENT.md) |
 
 **配套策略库**（[reasoning 模块](../reasoning_doc/reasoning.md)）：
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| [react.md](../reasoning_doc/react.md) | `reasoning/react.py` | ReActStrategy：推理 ↔ 工具循环原子算法 | ✅ |
-| reflection | `reasoning/reflection.py` | Reflection 策略（见 [reflection.md](../reasoning_doc/reflection.md)） | ✅ |
-| planner | `reasoning/planner.py` | Planner 策略（见 [planner.md](../reasoning_doc/planner.md)） | ✅ |
-| chain_of_thought | `reasoning/chain_of_thought.py` | CoT 策略 | ⬜ 预留 |
+| [react.md](../reasoning_doc/react.md) | `reasoning/react.py` | ReActStrategy：推理 ↔ 工具循环原子算法 | [见对齐表](../../ALIGNMENT.md) |
+| reflection | `reasoning/reflection.py` | Reflection 策略（见 [reflection.md](../reasoning_doc/reflection.md)） | [见对齐表](../../ALIGNMENT.md) |
+| planner | `reasoning/planner.py` | Planner 策略（见 [planner.md](../reasoning_doc/planner.md)） | [见对齐表](../../ALIGNMENT.md) |
+| chain_of_thought | `reasoning/chain_of_thought.py` | CoT 策略 | [见对齐表](../../ALIGNMENT.md) |
 
 ---
 
@@ -283,7 +283,7 @@ Agent 模块与 `settings.py` 配置项关联（完整表见 [config 文档](../
 - [ReActAgent 桥接组件](executor.md)
 - [推理策略模块](../reasoning_doc/reasoning.md)（含 [react.md](../reasoning_doc/react.md)）
 - [领域端口契约](../ports_doc/ports.md)
-- [架构设计](../../architecture.md)
+- [架构设计](../../project/architecture.md)
 - [配置管理模块](../../config_doc/config.md)
 - [工具模块说明](../../integration_doc/tools_doc/tools.md)
 - [ADR agent-error-handling](../../../adr/domain/agent/2026-08-28-agent-error-handling.md)（错误处理横切入口）

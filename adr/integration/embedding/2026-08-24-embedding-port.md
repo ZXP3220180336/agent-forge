@@ -3,7 +3,7 @@
 > **状态**：✅ 已采纳
 > **决策日期**：2026-08-24
 > **涉及模块**：`app/domain/ports/embedding_port.py` · `app/integration/embedding/embedding_service.py`
-> **关联文档**：[embedding.md](../../../docs/integration_doc/embedding_doc/embedding.md) · [architecture.md](../../../docs/architecture.md)
+> **关联文档**：[embedding.md](../../../docs/integration_doc/embedding_doc/embedding.md) · [architecture.md](../../../docs/project/architecture.md)
 
 ---
 

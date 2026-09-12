@@ -262,7 +262,7 @@ CREATE TABLE trace_steps (
 
 ## 相关文档
 
-- [架构文档](../../../docs/architecture.md)（分层与端口）
+- [架构文档](../../../docs/project/architecture.md)（分层与端口）
 - [端口契约](../../../docs/domain_doc/ports_doc/ports.md)（LLMGateway / ToolGateway / ContextBudgetPort / CostLimiterPort 先例）
 - [Agent 模块对外接口](../../../docs/domain_doc/agent_doc/agent.md)（BaseAgent 生命周期 / 错误处理横切注入先例）
 - [ReActStrategy 设计](../../../docs/domain_doc/reasoning_doc/react.md)（`_tool_call_records` / `_finalize_outcome`）

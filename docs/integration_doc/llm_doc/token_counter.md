@@ -3,7 +3,7 @@
 > **更新日期**：2026-09-02
 > **模块**：`app/integration/llm/token_counter.py`
 > **文档定位**：LLM 模块内部 tiktoken 计数组件（经 `LLMService.count_tokens` / `count_messages_tokens` 对外，经 `LLMGateway` 端口接入）——tiktoken 编码器解析、content 归一化、消息计数。
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
 

@@ -36,4 +36,4 @@
   - **串行单 Agent**：依赖并行排查价值在 Phase C Orchestrator 释放；单 Agent 层 `depends_on` 是顺序纪律断言，不承担 DAG 调度（见 benchmark 取舍表）。
   - **replan 仅失败触发**：成功路径不付出重规划检查的额外调用成本，但失败恢复能力上限 = max_replan_rounds（默认 2）——耗尽后走部分汇总 / 纯失败降级。
   - **规划失败也付费一次**：规划是结构化付费调用，失败即进入兜底；降级不抛错（best-effort），error 保留原 AppError 文本供诊断。
-- 📌 关联：本决策修正领域层计划原文「PlannerAgent 整体归 agent/ + 执行复用 execute_tool_calls」的实现路径（落地为两层结构 + 每步复用 ReActStrategy.execute），见 [domain-layer-plan-tmp](../../../docs/domain_doc/domain-layer-plan-tmp.md)（该文为计划原文，以代码为准）。
+- 📌 关联：本决策修正领域层计划原文「PlannerAgent 整体归 agent/ + 执行复用 execute_tool_calls」的实现路径（落地为两层结构 + 每步复用 ReActStrategy.execute），见 [domain-layer-plan-tmp](../../../docs/history/domain-layer-plan.md)（该文为计划原文，以代码为准）。

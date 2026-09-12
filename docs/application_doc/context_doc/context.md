@@ -207,5 +207,5 @@ context_manager.trim_messages(messages, max_rounds=10, max_tokens=80000)
 - [领域层说明](../../domain_doc/README.md)（`ContextBudgetPort` 端口，Agent 消费方）
 - [集成层说明](../../integration_doc/README.md)（`LLMGateway` 端口实现 / tiktoken）
 - [路由模块](../../api_doc/routes_doc/routes.md)（`chat.py` 路由，本模块上游调用方）
-- [架构设计](../../architecture.md)
+- [架构设计](../../project/architecture.md)
 - [配置说明](../../config_doc/config.md)

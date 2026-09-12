@@ -4,7 +4,7 @@
 
 基于 FastAPI + OpenAI API 协议（兼容 DeepSeek），实现完整 ReAct 循环 Agent（推理 ↔ 工具调用 ↔ 推理），并配套工业级 LLM 可靠性链（熔断 / 限流 / 降级 / 结构化输出）。
 
-**核心能力**：多 Agent 任务执行引擎 + 半导体良率异常根因分析场景（Yield RCA）。产品方向与决策详见 [docs/product.md](docs/product.md)。
+**核心能力**：多 Agent 任务执行引擎 + 半导体良率异常根因分析场景（Yield RCA）。产品方向与决策详见 [docs/project/product.md](docs/project/product.md)。
 
 ## 功能特性
 
@@ -42,7 +42,7 @@
 配置层（app/config）→ Pydantic Settings，从 .env 加载
 ```
 
-完整架构分层、核心调用链路与模块实现状态见 [docs/architecture.md](docs/architecture.md)。
+完整架构分层、核心调用链路与模块实现状态见 [docs/project/architecture.md](docs/project/architecture.md)。
 
 ## 快速开始
 
@@ -118,10 +118,13 @@ pytest 已配置 `asyncio_mode = "auto"`，测试函数无需手动标记 `@pyte
 
 项目在 `docs/` 建立完整中文文档体系：
 
-- [architecture](docs/architecture.md) — 架构蓝图 + 演进路径
+- [AI 协作入口](AGENTS.md) — 规范与技能路由
+- [文档导航](docs/README.md) · [治理规范](docs/engineering/README.md) · [迁移说明](docs/migration.md)
+
+- [architecture](docs/project/architecture.md) — 架构蓝图 + 演进路径
 - [ALIGNMENT](docs/ALIGNMENT.md) — 代码 ↔ 文档 ↔ 测试对齐表
-- [product](docs/product.md) — 产品定位与方向（Yield RCA / 工业 RAG / EDA）
-- [deployment](docs/deployment.md) — 部署说明（运行方式 / 环境 / 依赖基础设施）
+- [product](docs/project/product.md) — 产品定位与方向（Yield RCA / 工业 RAG / EDA）
+- [deployment](docs/project/deployment.md) — 部署说明（运行方式 / 环境 / 依赖基础设施）
 - LLM 层：[integration_doc/llm_doc/](docs/integration_doc/llm_doc/)（llm 总览 / client / retry / streaming / structure / limiter）
 - 各模块：[domain_doc](docs/domain_doc/) / [application_doc](docs/application_doc/) / [integration_doc](docs/integration_doc/) / [infrastructure_doc](docs/infrastructure_doc/) / [shared_doc](docs/shared_doc/) / [api_doc](docs/api_doc/) / [config_doc](docs/config_doc/) / [platform_doc](docs/platform_doc/)
 
@@ -129,7 +132,7 @@ pytest 已配置 `asyncio_mode = "auto"`，测试函数无需手动标记 `@pyte
 
 - 已完成：分层架构 + 装配根（container 唯一组装）、ReAct Agent 闭环、LLM 可靠性链、工具系统
 - 进行中/预留：基础设施落地（Phase A）、TaskService 编排（Phase C）、MemoryService、admin/agent/tool 路由、中间件
-- 当前进度与遗留问题见 [architecture](docs/architecture.md) 演进路径与 [ALIGNMENT](docs/ALIGNMENT.md) 逐模块状态
+- 当前进度与遗留问题见 [architecture](docs/project/architecture.md) 演进路径与 [ALIGNMENT](docs/ALIGNMENT.md) 逐模块状态
 
 ## 许可证
 

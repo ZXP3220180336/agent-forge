@@ -3,7 +3,7 @@
 > **对应代码**：`app/domain/reasoning/`
 > **更新日期**：2026-09-10
 > **文档定位**：推理策略模块对外接口文档——策略类契约 + 内部组件导航；服务对象为 agent/ 层编排（ReActAgent / PlannerAgent / ReflectionAgent）
-> **实现状态**：✅ 已实现（react.py ✅；reflection.py ✅；planner.py ✅；chain_of_thought 预留）
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。边界：（react.py ✅；reflection.py ✅；planner.py ✅；chain_of_thought 预留）
 
 ---
 
@@ -87,11 +87,11 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| [react.md](react.md) | `react.py` | ReAct 推理（ReActStrategy + ReActOutcome） | ✅ |
-| [reflection.md](reflection.md) | `reflection.py` | Reflection 推理（生成 → 自查 → 修正） | ✅ |
-| [planner.md](planner.md) | `planner.py` | Planner 推理（规划 → 逐步骤执行 → 汇总，Plan-then-Execute） | ✅ |
-| [_common.md](_common.md) | `_common.py` | 类型化执行护栏、错误分发与 usage 合并（无状态共享） | ✅ |
-| chain_of_thought.py | `chain_of_thought.py` | CoT 推理（纯推理引导） | ⬜ 预留 |
+| [react.md](react.md) | `react.py` | ReAct 推理（ReActStrategy + ReActOutcome） | [见对齐表](../../ALIGNMENT.md) |
+| [reflection.md](reflection.md) | `reflection.py` | Reflection 推理（生成 → 自查 → 修正） | [见对齐表](../../ALIGNMENT.md) |
+| [planner.md](planner.md) | `planner.py` | Planner 推理（规划 → 逐步骤执行 → 汇总，Plan-then-Execute） | [见对齐表](../../ALIGNMENT.md) |
+| [_common.md](_common.md) | `_common.py` | 类型化执行护栏、错误分发与 usage 合并（无状态共享） | [见对齐表](../../ALIGNMENT.md) |
+| chain_of_thought.py | `chain_of_thought.py` | CoT 推理（纯推理引导） | [见对齐表](../../ALIGNMENT.md) |
 
 ---
 
@@ -113,4 +113,4 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 - [共享小工具 _common](_common.md)
 - [领域层说明](../README.md)
 - [Agent 模块对外接口文档](../agent_doc/agent.md)（含 [ReActAgent 桥接组件](../agent_doc/executor.md)）
-- [架构设计](../../architecture.md)
+- [架构设计](../../project/architecture.md)

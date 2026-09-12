@@ -4,7 +4,7 @@
 > **更新日期**：2026-09-10
 > **职责**：LLM 网关统一 Facade——组织 11 个内部组件协作完成一次 LLM 调用（可靠性链 +
 > 配额结算闭环 + 事件日志）
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **定位**：对外接口契约见 [llm.md](llm.md)（模块对外接口文档）；本文档解释
 > `LLMService` **内部如何组织组件工作**（编排机制，供内部维护者 / 集成方）
 > **配套**：实现领域端口 `LLMGateway`；依赖 `ClientManager` / `RetryHandler` /
@@ -53,8 +53,7 @@
    入口，调用方不直接触碰 11 个内部组件；内部组织组件协作的细节对调用方透明
 2. **可靠性链闭环**：限流（事前排队）→ 重试/熔断/降级（保护 create 阶段）→ 整流/续接
    （流式）→ 解析 → 事件日志，一次调用走完整链路
-3. **配额结算闭环**：每个 `reserve` 必配结算，`finally` 兜底防泄漏——create 失败
-   `cancel()` 全额退、create 成功后 `settle(actual)` 退差 / `settle(None)` 保留
+3. **配额结算闭环**：每个 `reserve` 必有结算或补偿责任；按 create 调度阶段、终止类型与已获响应选择 `cancel()`、`settle(actual)` 或 `settle(None)`，不能将所有 create 异常都全额退款（见「真实请求入口」阶段表）
 4. **流式整流/续接与限流协作**：整流与半流续接的每轮 attempt 都重新进入 call_fn =
    重新 `reserve` + `create`（新请求语义，见 [LLM-034](../../../issues/integration/llm/2026-08-02-quota-gap-retry-degradation-not-limited.md)；续接另见 [LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）
 
@@ -90,42 +89,26 @@ _budget_guarded_call
   ├─ ① 请求预算闸 RequestBudgetManager.validate   先于 reserve：超限请求不预留配额、不触网络
   ├─ ② 限流闭环 reserve：主/副/整流/续接每次真实请求重新 reserve（fallback 用独立池）
   ├─ ②.5 预留后取消复查 cancel_event：命中 → cancel 退款，不发起 SDK 请求（覆盖取消竞态）
-  └─ ③ create → 失败/取消 cancel() 全额退 / 成功 settle（按「请求是否已发出」分界，见下表）
+  └─ ③ create 调度 → 按调度状态、终止类型与已获响应接管退款/结算/关流（见下表）
 ```
 
 预算校验是入口的**独立第一步**，不混入限流步骤内部；超限（`ContextWindowExceededError`）
 在网络调用前上抛，由整流器/领域层终结（见 [request_budget.md](request_budget.md)）。
 fallback 备用链路与主请求共享同一请求生命周期（fallback 键窗口 + 独立配额池），见「fallback 同 provider」。
 
-```python
-async def _budget_guarded_call(budget_guard, limiter, ctx: _CallContext, kwargs):
-    # ① 预算准入（独立步骤，先于 reserve）
-    budget_guard.validate(kwargs["model"], kwargs)
-    # ② 限流闭环：reserve → （取消复查）→ create → cancel 兜底
-    res = (await limiter.reserve_adaptive(ctx.prompt_tokens, ctx.max_tokens)
-           if ctx.adaptive else await limiter.reserve(ctx.estimated))
-    ctx.active["res"] = res
-    if ctx.cancel_event and ctx.cancel_event.is_set():   # ②.5 预留后、create 前取消复查
-        await res.cancel()                               # 已取得配额但外层已取消 → 退款
-        ctx.active.pop("res", None)
-        raise _StreamCancel()                            # 整流器映射为用户取消出口
-    try:
-        return await ctx.client.chat.completions.create(**kwargs)
-    except BaseException:      # 含 CancelledError
-        await res.cancel()     # 请求未确认发出 → 全额退（RPM+TPM）
-        ctx.active.pop("res", None)
-        raise
-```
+**阶段说明（非生产代码复制）**：执行控制围绕入口、reserve 返回后、create 调度及响应接管建立检查点。`create_started` 用于区分“尚未启动副作用”与“请求可能已到 provider”；受控等待返回迟回值时仍需由调用方接管资源并复查终止。
 
-**闭环语义**（按「请求是否已发出」分界）：
+| 出口 / 已知事实 | 责任与行为 |
+| --- | --- |
+| 预算准入拒绝，尚未 reserve | 直接抛预算错误，不申请配额或调用 provider |
+| reserve 内部已部分扣减但尚未移交 Reservation | reserve 本层负责补偿已扣条目，完成必要清理后传播终止 |
+| 已得 Reservation，create 尚未启动即取消/到期 | `cancel()` 全额退 RPM/TPM；不发起 create |
+| create 已调度后业务取消、期限或外层硬取消，未获得可用响应 | `settle(None)` 保守保留预留并标记终态；请求可能已到 provider，不声明远端未执行 |
+| create 自然传输失败 | 维持当前项目的 `cancel()` 退款策略并传播错误；本地退款不证明供应商实际费用为零 |
+| create 成功，或吞取消后以响应/流迟回 | 调用方接管返回值；有实际 usage 则 `settle(actual)`，无则 `settle(None)`；未读完的流由责任方关闭 |
+| 迟回结果接管后仍命中终止 | 保留已获 usage，按公开契约终止，不将迟回值作为业务成功继续执行 |
 
-| 出口 | 方法 | 行为 |
-| --- | --- | --- |
-| create 失败 / 取消（请求未发出） | `cancel()` | 退 RPM + TPM 全额 |
-| create 成功后一切出口（整流/取消/成功） | `settle(actual)` | 退 TPM 差（`max(0, est-actual)`），RPM 不退 |
-
-> 为何 settle 不退 RPM：请求已真实发生，RPM 配额是真实消耗，退回会让客户端以为有配额
-> 而服务端已超（触发 429）。
+`settle(actual)` 只退未用 TPM 差，RPM 不退。以上阶段契约由 [LLM-044](../../../issues/integration/llm/2026-09-08-execution-control-through-every-call.md) 与 [LLM-045](../../../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md) 说明；不能用宽泛的 `except BaseException` 全退伪代码取代这些分支。
 
 ### 结算闭环（finally 兜底）
 
@@ -134,8 +117,7 @@ async def _budget_guarded_call(budget_guard, limiter, ctx: _CallContext, kwargs)
 | 流式（`async_generate`） | `rectified_stream` 迭代 `finally`：create 成功后的中断/取消统一 `settle(actual)`；**硬取消 `settle(None)` 保留配额 + 标记终态**（[LLM-003](../../../issues/integration/llm/2026-08-16-hard-cancel-rpm-refund.md)） |
 | 非流式（`generate`） | `try/finally` 解析 + 结算：解析抛异常 → `settle(None)` 保留；`settle` 被硬取消 → 未终态 res `settle(None)` 兜底 + re-raise（[LLM-002](../../../issues/integration/llm/2026-08-16-generate-quota-settle-fallback.md)） |
 
-**统一原则**：已发出的请求是不可回滚的已提交副作用——`cancel()` 退回 RPM 导致客户端配额
-虚增 → 服务端 429 风暴，故请求发出后一切出口 `settle`，`cancel` 只用于「请求未确认发出」。
+**统一原则**：终止不能撤销可能已经到达 provider 的请求。create 已调度后的业务终止保守结算，尚未启动的预留可以补偿；自然传输失败按上方独立分支处理。不能把收到取消、没有成功响应或本地退款解释为远端副作用已回滚。
 
 ### 整流 × 限流协作
 
@@ -148,8 +130,8 @@ async def _budget_guarded_call(budget_guard, limiter, ctx: _CallContext, kwargs)
 
 fallback（备用模型）**参与 reserve/settle**：fallback 闭包在 `_plan_request` 内联构造
 （与主 `call_fn` 同构），走与主请求相同的 `_budget_guarded_call` 闭环，但用 fallback
-**独立配额池**（fallback 键），Reservation 写入同一 `active` 由调用方统一结算（成功 settle 一次、
-流中断 settle(None) 兜底，不双结算）。
+**独立配额池**（fallback 键），Reservation 写入本次请求链同一 `active` 由调用方统一结算（成功 settle 一次、
+流中断按已获 usage 或 None 结算，不双结算）。`active` 是当前请求链的结算责任位置，不是全局并发上限。
 
 ### fallback 同 provider
 
@@ -364,6 +346,9 @@ generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=N
 ---
 
 ## 配置项清单
+
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
 
 `LLMService` 运行期配置（`register_config` 注入，装配根 `container.initialize()` 读
 settings 后调用）：

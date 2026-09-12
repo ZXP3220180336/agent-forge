@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/errors.py`
 > **更新日期**：2026-09-10
 > **职责**：LLM 传输异常的统一理解与决策——分类（`classify_error`）/ 归一（`normalize_transport_error`）/ 降级判定（`is_unsupported_response_format_error`）/ 下游决策（`decide_downstream_error`），以及执行终止私有信号到 shared 异常的边界翻译
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：分类契约（`ErrorCategory` / `ErrorClassifier`）与实现同属本模块；归一目标 `LLMAPIError` 在 `app/shared/exceptions.py`（AppError 树）；与 `AgentErrorKind`（Agent 编排分发，error_handling.py）、工具层 `ErrorCode` 正交
 
 ---
@@ -158,7 +158,7 @@ class DownstreamDecision:
 > 设计决策已归档至 ADR，完整决策（Context → Decision → Consequences）见：
 
 - [openai 异常归一（LLMAPIError）](../../../adr/integration/llm/2026-09-01-openai-error-normalization.md)：集成层 `generate` 边界把 openai 不可恢复异常归一进 AppError 树，领域层 `except AppError` 统一兜底；`raise ... from e` 保留原始异常；`async_generate` 流式不归一
-- **契约归属（ErrorCategory 不入 shared）**：ErrorCategory 是 LLM 传输层分类，单一消费方（集成层 LLM），契约随实现归本模块——上移 shared 的决策已修正（见 [todo.md](../../../docs/todo.md) 顶部「契约归属修正」）
+- **契约归属（ErrorCategory 不入 shared）**：ErrorCategory 是 LLM 传输层分类，单一消费方（集成层 LLM），契约随实现归本模块——上移 shared 的决策已修正（见 [todo.md](../../todo.md) 顶部「契约归属修正」）
 
 ## 问题记录
 

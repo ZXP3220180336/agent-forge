@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/execution_control.py`
 > **更新日期**：2026-09-10
 > **职责**：llm 层内部共享的执行控制等待辅助（等待原语）
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
 

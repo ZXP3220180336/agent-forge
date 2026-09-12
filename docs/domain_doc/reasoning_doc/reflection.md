@@ -3,7 +3,7 @@
 > **模块**：`app/domain/reasoning/reflection.py`
 > **更新日期**：2026-09-10
 > **职责**：Reflection 原子推理策略——生成 → 自查 → 修正三阶段，模型自我评估输出质量并改进
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/reflection.py](../agent_doc/agent.md)；工业级对标见 [reflection_benchmark.md](reflection_benchmark.md)
 
 ---
@@ -170,10 +170,12 @@ ReflectionStrategy.execute()（三阶段）
 
 ## 配置项清单
 
-| 配置 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `agent_max_refine_rounds` | int | 2 | Reflection 报告生成最大尝试轮数（初稿 1 + 至多 N-1 次修正）；经 `AgentContext.max_refine_rounds` 注入 |
-| `agent_max_tool_protocol_retries` | int | 2 | 初稿 ReAct 的工具调用协议修正上限；三类协议错误共享连续预算 |
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
+| 配置 | 说明 |
+| --- | --- |
+| `agent_max_refine_rounds` | Reflection 报告生成最大尝试轮数（初稿 1 + 至多 N-1 次修正）；经 `AgentContext.max_refine_rounds` 注入 |
+| `agent_max_tool_protocol_retries` | 初稿 ReAct 的工具调用协议修正上限；三类协议错误共享连续预算 |
 
 ## 测试状态
 

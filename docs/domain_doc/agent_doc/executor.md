@@ -3,7 +3,7 @@
 > **模块**：`app/domain/agent/executor.py`
 > **更新日期**：2026-09-06
 > **职责**：`ReActAgent`——把 ReAct 推理策略编排进 `BaseAgent` 生命周期的具体 Agent 类型
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：算法实现见 [react.md](../reasoning_doc/react.md)（`ReActStrategy`）
 
 ---

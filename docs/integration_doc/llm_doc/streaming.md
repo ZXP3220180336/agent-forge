@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/streaming.py`
 > **更新日期**：2026-09-02
 > **职责**：流式 / 非流式 LLM 响应解析（逐 chunk 提取 reasoning / message / tool_calls / usage / refusal）
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **工业级对照**：增量累积 + 完成后解析（决策见 [设计决策](#设计决策)）
 
 ---

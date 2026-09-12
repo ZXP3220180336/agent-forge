@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/streaming_rectifier.py`
 > **更新日期**：2026-09-09
 > **职责**：流式整流/半流续接策略——「首 token 前中断 → 重新 create + 重新迭代（整流）」；「已产出 content 中断 → 带前缀续写（半流续接，[LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）」；其余已产出中断则放弃
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
 > **配套**：`StreamParser`（chunk 解析）、`LLMService.async_generate`（编排，构造 `continue_fn`）、`RetryHandler`（create 阶段重试/熔断）、`llm/errors.py`（`classify_error` 整流/续接可恢复判定）
 
@@ -281,11 +281,14 @@ async_generate → rectified_stream（整流/续接循环）
 
 ## 配置项清单
 
-| 配置 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `llm_stream_max_retries` | int | `1` | 流式整流重试次数（首 token 前中断才整流；`0`=禁用） |
-| `llm_stream_max_continuations` | int | `1` | 半流续接轮次上限（已产出 content 中断带前缀续写；`0`=禁用，LLM-ADR-015） |
-| `llm_base_delay` / `llm_max_delay` / `llm_use_jitter` | — | — | 整流/续接退避（经 `register_config` 注入，与 create 阶段共用） |
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
+| 配置 | 说明 |
+| --- | --- |
+| `llm_stream_max_retries` | 流式整流重试次数（首 token 前中断才整流；`0`=禁用） |
+| `llm_stream_max_continuations` | 半流续接轮次上限（已产出 content 中断带前缀续写；`0`=禁用，LLM-ADR-015） |
+| `llm_base_delay` / `llm_max_delay` / `llm_use_jitter` | 整流/续接退避（经 `register_config` 注入，与 create 阶段共用） |
 
 `llm_stream_max_retries` 独立于 `llm_max_retries`：create 重试（HTTP 请求级）与整流重试（已开始流式后重启）属不同故障阶段，需独立调优。`llm_stream_max_continuations` 又独立于整流上限——整流只处理「首 token 前」、续接只处理「已产出 content 后」，故障区间不同，需独立调优（`0` 各自禁用）。
 

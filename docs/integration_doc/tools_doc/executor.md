@@ -3,7 +3,7 @@
 > **更新日期**：2026-08-30
 > **模块**：`app/integration/tools/executor.py`
 > **职责**：工具执行编排 —— 信号量 / 参数校验接入 / 超时 / 重试 / 结果截断 / 审计 / 统计 / 钩子 / per-tool 串行化
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **工业级对照**：对齐工业界「执行调度器」（网关统一分发、并发池 concurrency-safe/exclusive 屏障、超时重试）；本组件在信号量内完成全部执行期横切关注点
 
 ---
@@ -128,11 +128,14 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 
 ## 配置项清单
 
-| 配置 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `max_concurrent_tools` | int | 3 | 工具级并发信号量（`agent_max_concurrent_tools` 注入） |
-| `tool_timeout` | int | 30 | 单次执行超时（秒）；优先级：调用方显式 > 工具自声明 `timeout` > 本配置 |
-| `tool_max_retries` | int | 3 | 最大执行次数（含首次） |
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
+| 配置 | 说明 |
+| --- | --- |
+| `max_concurrent_tools` | 工具级并发信号量（`agent_max_concurrent_tools` 注入） |
+| `tool_timeout` | 单次执行超时（秒）；优先级：调用方显式 > 工具自声明 `timeout` > 本配置 |
+| `tool_max_retries` | 最大执行次数（含首次） |
 
 ## 测试状态
 

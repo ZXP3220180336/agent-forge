@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/client.py`
 > **更新日期**：2026-08-16
 > **职责**：全局共享 `AsyncOpenAI` client 实例，支持多模型 key 隔离
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
 
@@ -102,7 +102,7 @@ _OPENAI_CLIENT_KWARGS = {
 - **有运行事件循环**：后台异步关闭（`asyncio.ensure_future(old.close())`），task 记录到 `_closing_tasks`，由 `close_all()` 统一等待
 - **无运行事件循环**（纯注册阶段）：无法创建 task，旧 client 登记到 `_pending_closes`，由 `close_all()` 统一关闭
 
-两条路径最终都会被 `close_all()` 等待，区别是「关闭动作何时开始」。二者都不会自我关闭，必须由 `close_all()` 显式触发，否则旧连接池泄漏。
+有运行事件循环时，后台 close 任务已经启动，`close_all()` 负责等待尚未完成的任务并统一收尾；任务须保持追踪并消费异常。无运行事件循环时，`_pending_closes` 仅登记旧 client，没有启动关闭动作，必须由 `close_all()` 显式关闭。不能把“总关闭统一收尾”理解为所有关闭任务都要等它才开始。
 
 ---
 
@@ -277,6 +277,8 @@ close_all()
 ---
 
 ## 配置项清单
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
 
 `register_config` 的参数（来自 `Container.initialize()` 读 settings 后调用）：
 

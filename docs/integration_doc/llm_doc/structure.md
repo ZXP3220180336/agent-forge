@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/structured.py`
 > **更新日期**：2026-09-02
 > **职责**：从 LLM 输出中提取结构化数据（三级降级：JSON Schema → JSON Mode → 正则提取）
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **定位**：内部实现载体，对外唯一入口为 `LLMService.generate_structured()`（接收完整 messages，委托 `extract` 三级降级）
 > **配套**：集成于 `LLMService.generate_structured()`（`app/integration/llm/llm_service.py`），底层复用 `LLMService.generate()`（重试/熔断/限流）
 
@@ -460,14 +460,17 @@ generate_structured(messages, schema, model_key="fast")
 
 ## 配置项清单
 
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
 structured.py 的调用参数（无独立配置节，max_tokens 由 `register_config` 注入）：
 
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `temperature` | `0` | 结构化输出确定性（禁采样随机） |
-| `max_tokens` | `StructuredOutput.register_config()` 注入（Container 注入 `settings.llm_structured_max_tokens`，默认 2048） | 输出预算；调用方经 `generate_structured(max_tokens=...)` 覆盖；截断时扩 2 倍重试 1 次 |
-| `model_key` | `fast`（可传参覆盖） | 默认用廉价快速模型，必要时传 reasoning/main（参数名契约见 [LLM-036](../../../issues/integration/llm/2026-08-16-generate-structured-model-key-param.md)） |
-| `response_format` | 级内构造 | 第一级 json_schema / 第二级 json_object / 第三级无 |
+| 参数 | 说明 |
+| --- | --- |
+| `temperature` | 结构化输出确定性（禁采样随机） |
+| `max_tokens` | 输出预算；调用方经 `generate_structured(max_tokens=...)` 覆盖；截断时扩 2 倍重试 1 次 |
+| `model_key` | 默认用廉价快速模型，必要时传 reasoning/main（参数名契约见 [LLM-036](../../../issues/integration/llm/2026-08-16-generate-structured-model-key-param.md)） |
+| `response_format` | 第一级 json_schema / 第二级 json_object / 第三级无 |
 
 > **与限流的关系**：结构化模块不直接接触限流配置（RPM/TPM 由 generate 内部按 model_key 读取），但其每次调用都按 `model_key` 扣配额——`max_tokens` 参数会直接影响 `_plan_request` 内 TPM 预留量估算（调用方传更大预算，限流预留随之增大），见 [limiter.md](limiter.md)。
 

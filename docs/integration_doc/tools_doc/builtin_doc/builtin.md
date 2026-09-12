@@ -2,7 +2,7 @@
 
 > **更新日期**：2026-08-30
 > **文档定位**：工具层 `app/integration/tools/builtin/` 子模块 —— 内置工具的定义、自动发现机制与各工具实现详解。
-> **实现状态**：SearchTool（✅）/ ReadFileTool（✅）/ WriteFileTool（✅）/ CodeExecTool（✅）/ WebBrowseTool（✅）/ RCA 5 工具（✅，见 [rca.md](rca.md)）
+> 状态与验证见 [ALIGNMENT](../../../ALIGNMENT.md)。
 > **前置阅读**：[工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试机制在此说明，本文不重复）
 
 ---
@@ -393,7 +393,7 @@ _http_client = httpx.AsyncClient(
 - **跳过 `<script>` / `<style>` 内容**（`_skip_tag` 标志），只保留正文
 - 提取 `<title>` 页面标题；`pre` 标签保留原始空白（不 strip）
 - 块级元素（`BLOCK_TAGS`：p, div, br, h1-h6, li, tr, td, th, blockquote, pre）自动换行
-- 收集 `<a>` 链接：过滤 `#` 与 `javascript:` 开头 href；链接显示文本截断 80 字符；`get_links_formatted(max_links=20)` 用 `urljoin(base_url, url)` 转绝对地址并**去重**，按 Markdown `[text](url)` 格式输出（无显示文本的链接输出裸地址）；链接数超过 `max_links`（20）时追加 `...（还有 N 个链接）` 提示
+- 收集 `<a>` 链接：过滤 `#` 与 `javascript:` 开头 href；链接显示文本截断 80 字符；`get_links_formatted(max_links=20)` 用 `urljoin(base_url, url)` 转绝对地址并**去重**，按 Markdown ``[text](url)`` 格式输出（无显示文本的链接输出裸地址）；链接数超过 `max_links`（20）时追加 `...（还有 N 个链接）` 提示
 - HTML 实体解码用 `html.unescape()`（Python 3.9+ 移除了 `HTMLParser.unescape`，注释中已注明）
 
 **返回内容结构（多行拼接）：**
@@ -405,7 +405,7 @@ _http_client = httpx.AsyncClient(
 {纯文本正文（截断由 ResultProcessor 统一处理）}
 
 页面链接：
-  - [text](url)
+  - `[text](url)`
   ...
 ```
 
@@ -458,7 +458,7 @@ _http_client = httpx.AsyncClient(
 - [工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试、统计、配置关联）
 - [RCA 工具说明](rca.md)（良率根因分析场景工具，模拟数据源）
 - [service 模块](../../../application_doc/README.md)（ToolService 所在的服务层）
-- [架构设计](../../../architecture.md)（工具层在整体架构中的定位）
+- [架构设计](../../../project/architecture.md)（工具层在整体架构中的定位）
 - [配置管理](../../../config_doc/config.md)（`TAVILY_API_KEY`、`TOOL_MAX_OUTPUT_LENGTH` 等配置项）
 - [核心层](../../../domain_doc/README.md)（Agent 推理循环如何消费工具）
 - [API 层说明](../../../api_doc/README.md)

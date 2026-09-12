@@ -3,7 +3,7 @@
 > **对应代码**：`app/api/middleware/`
 > **更新日期**：2026-08-29
 > **文档定位**：中间件模块对外接口文档——统一错误信封契约 + 内部组件导航；服务对象为 API 层调用方（路由 / 客户端）
-> **实现状态**：error_handler ✅ 已实现 · auth / rate_limit ⬜ 预留
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：路由端点契约见 [routes.md](../routes_doc/routes.md)；层总览见 [README.md](../README.md)
 
 ---
@@ -159,9 +159,9 @@ API 层所有 `AppError` 异常经 error_handler 翻译为统一信封（`code` 
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| 统一异常处理 | error_handler.py | `AppError` → HTTP 状态 + `{code, message, details}` 信封（main.py 已注册） | ✅ |
-| 认证鉴权 | auth.py | JWT 认证、请求鉴权（当前由 deps.get_current_user 模拟） | ⬜ 预留 |
-| API 限流 | rate_limit.py | 按用户 / IP / 全局维度限流（可复用 LLM 层 reserve/settle 思路） | ⬜ 预留 |
+| 统一异常处理 | error_handler.py | `AppError` → HTTP 状态 + `{code, message, details}` 信封（main.py 已注册） | [见对齐表](../../ALIGNMENT.md) |
+| 认证鉴权 | auth.py | JWT 认证、请求鉴权（当前由 deps.get_current_user 模拟） | [见对齐表](../../ALIGNMENT.md) |
+| API 限流 | rate_limit.py | 按用户 / IP / 全局维度限流（可复用 LLM 层 reserve/settle 思路） | [见对齐表](../../ALIGNMENT.md) |
 
 ---
 
@@ -171,4 +171,4 @@ API 层所有 `AppError` 异常经 error_handler 翻译为统一信封（`code` 
 - [路由模块](../routes_doc/routes.md)（端点契约 / 认证方式 / 业务状态码）
 - [异常体系](../../shared_doc/error_handling.md)（统一异常树 `AppError` / `AppErrorCode`，error_handler 的上游）
 - [LLM 限流](../../integration_doc/llm_doc/limiter.md)（reserve/settle + TokenBucket，rate_limit 参考）
-- [架构设计](../../architecture.md)（演进路径：Phase D 中间件）
+- [架构设计](../../project/architecture.md)（演进路径：Phase D 中间件）

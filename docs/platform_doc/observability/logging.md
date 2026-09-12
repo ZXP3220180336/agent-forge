@@ -131,11 +131,13 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 
 ## 配置项清单
 
-| 配置项 | 默认值 | 说明 | 使用 |
-| --- | --- | --- | --- |
-| `LOG_LEVEL` | `INFO` | 日志级别（DEBUG/INFO/WARNING/ERROR/CRITICAL） | ✅ 已用 |
-| `LOG_FORMAT` | `json` | 文件输出格式（json/text） | ✅ 已用 |
-| `LOG_FILE` | `logs/app.log` | 日志文件路径 | ✅ 已用 |
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
+| 配置项 | 说明 | 使用 |
+| --- | --- | --- |
+| `LOG_LEVEL` | 日志级别（DEBUG/INFO/WARNING/ERROR/CRITICAL） | ✅ 已用 |
+| `LOG_FORMAT` | 文件输出格式（json/text） | ✅ 已用 |
+| `LOG_FILE` | 日志文件路径 | ✅ 已用 |
 
 ---
 
@@ -165,5 +167,5 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 - [配置管理模块](../../config_doc/config.md)（`LOG_*` 配置项）
 - [LLM 服务层说明](../../integration_doc/llm_doc/llm.md)（LLM 调用业务事件）
 - [服务层说明](../../application_doc/README.md)（各模块日志归属）
-- [架构设计](../../architecture.md)
+- [架构设计](../../project/architecture.md)
 - [TOOLS-018 问题记录](../../../issues/integration/tools/2026-08-19-hooks-logger-name.md)（hooks logger 名修正）

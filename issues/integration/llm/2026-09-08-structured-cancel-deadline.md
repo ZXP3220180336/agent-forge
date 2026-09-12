@@ -1,7 +1,7 @@
 # LLM-043 generate_structured 降级链无取消/期限检查点（终止后仍空烧付费调用）
 
 > 发现：2026-09-08 ｜ 状态：✅ 已修复 ｜ 模块：structured（`StructuredOutput`）/ llm_service / reflection / planner
-> 关联：预算闸 Slice-1 [LLM-041](./2026-09-06-fallback-window-and-quota.md) 之后「所有真实请求取消/期限覆盖」的最后一环（todo §6-E / Slice 5）；ADR [request-context-budget](../../../adr/integration/llm/2026-09-06-request-context-budget.md) Decision 8 的 structured 兑现
+> 关联：预算闸 Slice-1 [LLM-041](2026-09-06-fallback-window-and-quota.md) 之后「所有真实请求取消/期限覆盖」的最后一环（todo §6-E / Slice 5）；ADR [request-context-budget](../../../adr/integration/llm/2026-09-06-request-context-budget.md) Decision 8 的 structured 兑现
 
 ## 发现
 

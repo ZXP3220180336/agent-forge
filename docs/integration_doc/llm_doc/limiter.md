@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/reservation_limiter.py`（reserve/settle 形态，生产唯一）
 > **更新日期**：2026-08-30
 > **职责**：LLM API 调用的客户端限流（RPM + TPM 双 Token Bucket）
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **参考实现**：生产形态为 reserve/settle；acquire 形态限流（`RateLimiter`/`RateLimiterManager`）与 5 类参考算法（LeakyBucket/FixedWindow/SlidingWindowLog/SlidingWindowCounter/GCRA）未接入生产，代码作为参考实现完整保留在本文档「组件详解」一栏
 > **配套**：集成于 `LLMService.async_generate()` / `generate()`，见 `llm_service.py`
 
@@ -349,7 +349,7 @@ class Reservation:  # 完整实现见 reservation_limiter.py
         # 终态标记在全部退款完成后置位（取消中断时保持未终态，外层可续退）
         # actual 非 None 且挂回调时 → 触发 settle_callback(actual)（喂估算器样本）
     async def cancel(self) -> None:
-        # 所有桶全额退还（请求未确认发出时用）；终态标记在退款完成后置位
+        # 所有桶全额退还；调用方按阶段契约决定何时可退款，终态标记在退款完成后置位
     @property
     def settled(self) -> bool: ...
 ```
@@ -358,9 +358,9 @@ class Reservation:  # 完整实现见 reservation_limiter.py
 
 - `settle(actual)`：请求完成后按实际消耗结算，对按量桶退 `max(0, reserved - actual)`；按次桶不退
 - `settle(None)`：无 usage 时的保守路径——保留全部预留，但**标记终态**（闭环不泄漏）
-- `cancel()`：请求未发出（create 失败/取消）时**所有桶全额退还**
+- `cancel()`：对需要回退的预留退还全部桶；哪些调用出口可以退款，由 LLMService 的阶段契约决定，不能把全部 create 取消都当作请求尚未发出（见下方「组合 Reservation 语义」）
 - **终态幂等**：settle/cancel 任一调用后，再次调用为 no-op
-- **取消泄漏防护**：终态标记 `_settled` 在**全部退款完成后**才置位——若退款循环中途被取消（`CancelledError` 向上传播），保持未终态，外层兜底（`llm_service` 的 `cancel`/`finally`）可续退剩余条目，避免部分桶配额永久泄漏。`TokenBucket.refund` 的 capacity 封顶保证重复退款不超发，兜底续退安全幂等
+- **取消与退款责任**：终态标记 `_settled` 在全部退款完成后置位；退款中途取消时保持未终态，由持有 Reservation 的责任方接管收尾。settle/cancel 的终态检查与退款临界区须互斥，且应核对已退款条目的实际效果；capacity 封顶只限制桶余额不超过容量，不能证明容量以下没有重复退款或虚增。不得仅凭封顶宣称中断后的多桶续退安全；相关语义需由副作用断言验证（[LLM-010](../../../issues/integration/llm/2026-08-16-settle-cancel-concurrent-race.md)）。
   - **例外（reserve 内部，无外层续退）**：`_acquire` 的 R5 兜底（TPM 预留被取消 → 退 RPM）中 res 不外传、无外层兜底——退款再被二次取消会永久泄漏 RPM，故 R5 就地循环补齐退款到终态再传播取消（[LLM-042](../../../issues/integration/llm/2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md)）
 
 ### ReservationLimiter — 双桶组合（reserve/settle 形态）
@@ -393,7 +393,12 @@ class ReservationLimiter:  # 完整实现见 reservation_limiter.py
         try:
             await self._token_bucket.acquire(est)            # TPM 扣 est（已截断）
         except BaseException:
-            await res.cancel()                               # 防 R5：TPM 预留前取消 → 回退 RPM
+            # R5：Reservation 尚未外传，本层补齐退款；示意，完整实现见源码。
+            while not res.settled:
+                try:
+                    await res.cancel()
+                except asyncio.CancelledError:
+                    continue
             raise
         res.add(self._token_bucket, est)                     # 按量条目
         return res
@@ -401,14 +406,7 @@ class ReservationLimiter:  # 完整实现见 reservation_limiter.py
 
 **组合实现**：`reserve`（固定形态）与 `reserve_adaptive`（自适应形态）都委托 `_acquire`。核心逻辑：空构造 `Reservation()`，RPM 桶 `acquire(1.0)` 扣减后 `res.add(req_bucket, 1.0)` 追加为首条目（按次桶），TPM 桶 `acquire(est)` 扣减后 `res.add(token_bucket, est)` 追加为按量条目。组合 Reservation 的 `settle` 只命中非首条目、`cancel` 命中全部条目。**防 R5（组合两步间硬取消）**：TPM 预留被取消时，`except BaseException` 回退已扣的 RPM。
 
-**组合 Reservation 语义（按「请求是否已发出」分界）**：
-
-| 出口 | 方法 | 行为 |
-| --- | --- | --- |
-| create 失败/取消（请求未确认发出） | `cancel()` | 退 RPM 1 + TPM 全额 |
-| create 成功后一切出口（整流/取消/成功） | `settle(actual)` | 退 TPM 差（`max(0, est-actual)`），RPM 不退 |
-
-> **为何 settle 不退 RPM**：请求已真实发生，RPM 配额是真实消耗，退掉会让客户端以为自己有配额而服务端已超（触发 429）。cancel 只在「请求未确认发出」时退 RPM。
+**组合 Reservation 的调用方责任**：`settle(actual)` 退 TPM 差而不退 RPM；`settle(None)` 保留预留并收敛终态；`cancel()` 全退。调用方依据 create 是否已经调度、终止类型及是否取得迟回响应选择操作，完整阶段表统一见 [LLMService 闭环语义](llm_service.md#真实请求入口_budget_guarded_call)。不能从“尚未收到响应”推出远端没有执行，也不能把本地 quota 退款当作供应商未计费。
 
 ### OutputTokenEstimator — 自适应输出估算器
 
@@ -952,34 +950,24 @@ TAT = 上次请求的理论到达时间
 
 ## 执行流程
 
-`llm_service.py` 集成的是 reserve/settle 形态（`ReservationLimiterManager`）：
+`llm_service.py` 集成的是 reserve/settle 形态（`ReservationLimiterManager`）。下图是职责示意，实际执行控制与异常分派以 [LLMService 阶段说明](llm_service.md#真实请求入口_budget_guarded_call) 为准：
 
 ```text
 async_generate() / generate()
-    │
-    ├─ limiter = ReservationLimiterManager.get(model_key)
-    ├─ active: dict[str, Reservation] = {}
-    │
-    ├─ retry.execute(call_fn=_budget_guarded_call)
-    │     └─ 每次 call_fn（原始 + retry 内部重试）：
-    │           if llm_adaptive_reserve:                     # 自适应形态（默认关）
-    │               res = await limiter.reserve_adaptive(prompt_tokens, max_tokens)
-    │           else:                                        # 固定形态（默认）
-    │               res = await limiter.reserve(estimated_tokens=estimated)
-    │           active["res"] = res
-    │           try:  await create(**kwargs)
-    │           except BaseException:  res.cancel(); active.pop; raise   # 失败全额退
-    │     fallback（备用模型）：不参与 reserve，直接降级调用
-    │
-    ├─ 各出口闭环（按"请求是否已发出"分界）：
-    │     ├─ 成功 / 整流 / 取消 → res.settle(usage 的 total 或 None)     # 退 TPM 差 + 喂估算器样本
-    │     └─ 硬取消（finally 兜底）→ res.cancel()                        # 全额退
-    └─ 整流重试 → 重新进入 retry.execute → 再次 reserve（自适应每轮重新评估）
+    ├─ 每次真实调用进入 _budget_guarded_call
+    │    ├─ 取消/deadline 快检 → 最终目标模型窗口准入
+    │    ├─ 目标模型配额池 reserve / reserve_adaptive
+    │    ├─ Reservation 写入本次调用 active → 副作用前复查
+    │    └─ create 调度 → 按阶段及已获响应移交结算/关闭责任
+    ├─ 主模型 retry：每次真实尝试重新预算与 reserve
+    ├─ fallback：目标窗口 + 独立 fallback 池，同一 active 接管与结算
+    ├─ 整流：新 attempt 重新进入 retry.execute
+    └─ 半流续接：新 attempt 重新预算与 reserve，不再套 retry/fallback
 ```
 
-**统一闭环**：每个 reserve 必配结算——create 失败 `cancel()` 全额退，create 成功后一切出口 `settle(actual)` 退 TPM 差；迭代硬取消由 `finally` 兜底，无 reservation 泄漏。
+**统一闭环**：每个 reserve 都有结算或补偿责任。create 尚未调度时终止可取消预留；create 已调度后的业务取消、期限或硬取消按现有契约保守 `settle(None)`，迟回响应有真实 usage 时由调用方接管后按 actual 结算。自然传输失败另按当前阶段契约处理，不能使用统一的 `except BaseException: cancel()` 代替状态判断。
 
-**关键点**：reserve 位于 call_fn 内部，**每次真实请求**（原始调用、retry 内部重试、整流重试）都重新 reserve。整流重试每轮重新进入 `retry.execute`，再次 reserve；测试已断言 `calls["reserve"] == 2`（整流 2 轮）。fallback 不参与 reserve（备用模型防突发无意义，独立于主模型配额）。
+**目标模型与所有权**：fallback 不是不限流的例外；它使用备用模型的窗口和独立 `fallback` 配额池，Reservation 进入本次请求链同一 `active` 位置，由调用方统一结算。`active` 表达结算责任，不是全局并发限额，也不为并行未结算请求共用一个槽位提供保证。真实供应商主/副模型共享配额时须另行核对配置范围。依据：[请求预算 ADR Decision 9](../../../adr/integration/llm/2026-09-06-request-context-budget.md)、[LLM-044](../../../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)、[LLM-045](../../../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md)。
 
 **acquire 形态流程**（参考实现，未接入生产）：
 
@@ -1005,7 +993,7 @@ async_generate() / generate()
 | `ReservationLimiter.reserve(estimated_tokens=0, retry_after=None) -> Reservation` | 异步方法 | 预留配额（RPM+TPM，排队等待） |
 | `ReservationLimiter.reserve_adaptive(prompt_tokens, max_tokens, retry_after=None) -> Reservation` | 异步方法 | 自适应预留（高分位估算输出，clamp 到上限） |
 | `Reservation.settle(actual: int \| None)` | 异步方法 | 按实际消耗结算（退 TPM 差 / None 保留配额） |
-| `Reservation.cancel()` | 异步方法 | 全额退还（请求未确认发出时） |
+| `Reservation.cancel()` | 异步方法 | 全额退还；适用调用阶段见 LLMService 阶段契约 |
 | `TokenBucket.acquire(tokens=1.0) -> float` | 异步方法 | 获取 token（返回桶内等待秒数） |
 | `TokenBucket.refund(tokens=1.0)` | 异步方法 | 退还 token（capacity 封顶） |
 | `ReservationLimiterManager.get(model_key="main") -> ReservationLimiter` | 同步类方法 | 获取/懒创建共享限流器 |
@@ -1026,31 +1014,34 @@ async_generate() / generate()
 
 ## 配置项清单
 
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
 以下配置集中在 `app/config/settings.py`，由 `Container.initialize()` 读 settings 组装 `RateLimiterConfig`/`ReservationLimiterConfig` 后经 `register_config()` 注入（子模块不直接依赖 settings）：
 
 ### RPM / TPM（双 Token Bucket）
 
-| 配置 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `llm_main_rpm` | int | `60` | 主模型每分钟请求数 |
-| `llm_reasoning_rpm` | int | `30` | 推理模型每分钟请求数 |
-| `llm_fast_rpm` | int | `100` | 快速模型每分钟请求数 |
-| `llm_main_tpm` | int | `2000000` | 主模型每分钟 Token 消耗量 |
-| `llm_reasoning_tpm` | int | `2000000` | 推理模型每分钟 Token 消耗量 |
-| `llm_fast_tpm` | int | `2000000` | 快速模型每分钟 Token 消耗量 |
+| 配置 | 说明 |
+| --- | --- |
+| `llm_main_rpm` | 主模型每分钟请求数 |
+| `llm_reasoning_rpm` | 推理模型每分钟请求数 |
+| `llm_fast_rpm` | 快速模型每分钟请求数 |
+| `llm_main_tpm` | 主模型每分钟 Token 消耗量 |
+| `llm_reasoning_tpm` | 推理模型每分钟 Token 消耗量 |
+| `llm_fast_tpm` | 快速模型每分钟 Token 消耗量 |
 
 > TPM 默认值参考 DeepSeek 官方限额（2M tokens/分钟）。RPM/TPM 均需配合 Manager 使用。
 
 ### 自适应预留（Fenic 式，开关默认关）
 
-| 配置 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `llm_adaptive_reserve` | bool | `false` | 自适应预留开关（开启用高分位估算输出，减少占桶） |
-| `llm_reserve_quantile` | float | `0.95` | 普通模型输出分位数（p95） |
-| `llm_reserve_reasoning_quantile` | float | `0.99` | 推理模型分位数（p99，推理输出有相关性突发尖峰） |
-| `llm_reserve_safety_margin` | float | `1.15` | 安全系数（1.0~4.0，越高越保守） |
-| `llm_reserve_min_samples` | int | `30` | 冷启动阈值（样本不足回退静态上限） |
-| `llm_reserve_window` | int | `256` | 滚动样本窗口（deque 上限） |
+| 配置 | 说明 |
+| --- | --- |
+| `llm_adaptive_reserve` | 自适应预留开关（开启用高分位估算输出，减少占桶） |
+| `llm_reserve_quantile` | 普通模型输出分位数（p95） |
+| `llm_reserve_reasoning_quantile` | 推理模型分位数（p99，推理输出有相关性突发尖峰） |
+| `llm_reserve_safety_margin` | 安全系数（1.0~4.0，越高越保守） |
+| `llm_reserve_min_samples` | 冷启动阈值（样本不足回退静态上限） |
+| `llm_reserve_window` | 滚动样本窗口（deque 上限） |
 
 ---
 

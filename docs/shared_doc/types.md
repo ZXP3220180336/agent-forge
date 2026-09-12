@@ -91,5 +91,5 @@ async def generate(self, messages: Messages, ...) -> StreamResult | None: ...
 ## 相关文档
 
 - [class-design.md](class-design.md)（类的类型体系与实例形态）
-- [架构设计](../architecture.md)（共享内核 types.py 定位）
+- [架构设计](../project/architecture.md)（共享内核 types.py 定位）
 - [SessionManager 会话管理](../application_doc/session_doc/session.md)（SessionId/UserId 消费方）

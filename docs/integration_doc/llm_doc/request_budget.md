@@ -3,7 +3,7 @@
 > **对应代码**：`app/integration/llm/request_budget.py`
 > **更新日期**：2026-09-06
 > **职责**：在 provider 网络调用前，依据最终请求与模型窗口配置拒绝无法容纳的请求
-> **实现状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：由 `LLMService` 的真实请求入口（`_budget_guarded_call`，预算准入 → 限流闭环，职责独立于限流）调用；模型窗口配置由装配根注入
 
 ## 定位与职责
@@ -39,20 +39,23 @@ context_window_tokens - max_tokens - safety_margin_tokens
 | `input_tokens > input_budget` 或额度为负 | 在网络调用前抛 `ContextWindowExceededError`，不会调用 provider |
 | `tools` / `response_format` 存在 | 与 messages 一并进入序列化估算（sampling / metadata 等非输入字段不计） |
 | 流式整流、fallback、结构化降级或扩大输出重试 | 每次实际调用重新进入校验 |
-| 未注册的 `model_key` | 使用 128000 token 窗口与 1024 token 安全余量的默认配置 |
+| 未注册的 `model_key` | 采用配置参考中定义的默认窗口和安全余量 |
 | `max_tokens` 非正整数（None/负数/0/bool/str/float） | 抛 `ParameterValidationError`，不发起计数 |
 | 流式 create / 续接链命中超限 | 异常上抛（不折「LLM 调用失败」事件），由领域层终结为 `CONTEXT_EXCEEDED` |
 | 会话历史需要裁剪或摘要 | 不在本组件处理，交由 `ContextManager` 的语义预算策略 |
 
 ## 配置项
 
-| 配置 | 默认值 | 说明 |
-| --- | --- | --- |
-| `LLM_MAIN_CONTEXT_WINDOW_TOKENS` | 128000 | `main` 模型窗口 |
-| `LLM_REASONING_CONTEXT_WINDOW_TOKENS` | 128000 | `reasoning` 模型窗口 |
-| `LLM_FAST_CONTEXT_WINDOW_TOKENS` | 128000 | `fast` 模型窗口 |
-| `LLM_FALLBACK_CONTEXT_WINDOW_TOKENS` | 128000 | `fallback`（备用模型）窗口：启用 `LLM_FALLBACK_MODEL_ID` 时按该模型官方窗口填写 |
-| `LLM_CONTEXT_SAFETY_MARGIN_TOKENS` | 1024 | 所有模型键共用的保守余量 |
+
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
+| 配置 | 说明 |
+| --- | --- |
+| `LLM_MAIN_CONTEXT_WINDOW_TOKENS` | `main` 模型窗口 |
+| `LLM_REASONING_CONTEXT_WINDOW_TOKENS` | `reasoning` 模型窗口 |
+| `LLM_FAST_CONTEXT_WINDOW_TOKENS` | `fast` 模型窗口 |
+| `LLM_FALLBACK_CONTEXT_WINDOW_TOKENS` | `fallback`（备用模型）窗口：启用 `LLM_FALLBACK_MODEL_ID` 时按该模型官方窗口填写 |
+| `LLM_CONTEXT_SAFETY_MARGIN_TOKENS` | 所有模型键共用的保守余量 |
 
 > 默认窗口值不宣称适配所有模型：更改任一档 `model_id` 时须同步其 `_CONTEXT_WINDOW_TOKENS`
 > （禁止按模型名猜测窗口）。完整配置说明见 [config.md](../../config_doc/config.md)。

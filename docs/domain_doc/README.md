@@ -3,7 +3,7 @@
 > **对应代码**：`app/domain/`
 > **更新日期**：2026-09-06
 > **文档定位**：领域层（`app/domain/`）—— Agent 内核、提示词、记忆与推理策略；是系统的**决策与行动核心**，只依赖领域端口与共享内核，零外部框架依赖。
-> **实现状态**：Agent（✅）· Prompts（✅ manager + 模板；base 待补测试）· Reasoning（✅ react / reflection / planner；CoT 预留）· Memory（⬜ 预留）· Ports（✅）
+> 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。边界：（✅ react / reflection / planner；CoT 预留）（⬜ 预留）
 > **配套**：事件系统位于共享层 `app/shared/events.py`（见 [events.md](../shared_doc/events.md)）
 
 ---
@@ -99,17 +99,17 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
-| Agent | base.py | ✅ | BaseAgent / AgentContext / AgentResult / AgentState |
-| Agent | executor.py | ✅ | ReActAgent（桥接 ReActStrategy，见 [executor.md](agent_doc/executor.md)） |
-| Agent | planner.py | ✅ | PlannerAgent（桥接 PlannerStrategy，见 [agent.md](agent_doc/agent.md)） |
-| Agent | reflection.py | ✅ | ReflectionAgent（桥接 ReflectionStrategy，见 [agent.md](agent_doc/agent.md)） |
-| Prompts | manager.py + templates/system·tools·reflection·planning | ✅ | 提示词模板 + 管理器 builder（test_prompts；见 [prompts.md](prompts_doc/prompts.md)） |
-| Memory | base / working / short_term / long_term / memory_service | ⬜ | 三层记忆（预留） |
-| Reasoning | react.py | ✅ | ReActStrategy（见 [react.md](reasoning_doc/react.md)） |
-| Reasoning | reflection.py | ✅ | ReflectionStrategy（见 [reflection.md](reasoning_doc/reflection.md)） |
-| Reasoning | planner.py | ✅ | PlannerStrategy（见 [planner.md](reasoning_doc/planner.md)） |
-| Reasoning | chain_of_thought | ⬜ | CoT 策略（预留） |
-| Ports | llm_gateway / tool_gateway / context_budget / cost_limiter / embedding_port | ✅ | 领域端口契约（依赖倒置，见 [ports.md](ports_doc/ports.md)） |
+| Agent | base.py | [见对齐表](../ALIGNMENT.md) | BaseAgent / AgentContext / AgentResult / AgentState |
+| Agent | executor.py | [见对齐表](../ALIGNMENT.md) | ReActAgent（桥接 ReActStrategy，见 [executor.md](agent_doc/executor.md)） |
+| Agent | planner.py | [见对齐表](../ALIGNMENT.md) | PlannerAgent（桥接 PlannerStrategy，见 [agent.md](agent_doc/agent.md)） |
+| Agent | reflection.py | [见对齐表](../ALIGNMENT.md) | ReflectionAgent（桥接 ReflectionStrategy，见 [agent.md](agent_doc/agent.md)） |
+| Prompts | manager.py + templates/system·tools·reflection·planning | [见对齐表](../ALIGNMENT.md) | 提示词模板 + 管理器 builder（test_prompts；见 [prompts.md](prompts_doc/prompts.md)） |
+| Memory | base / working / short_term / long_term / memory_service | [见对齐表](../ALIGNMENT.md) | 三层记忆（预留） |
+| Reasoning | react.py | [见对齐表](../ALIGNMENT.md) | ReActStrategy（见 [react.md](reasoning_doc/react.md)） |
+| Reasoning | reflection.py | [见对齐表](../ALIGNMENT.md) | ReflectionStrategy（见 [reflection.md](reasoning_doc/reflection.md)） |
+| Reasoning | planner.py | [见对齐表](../ALIGNMENT.md) | PlannerStrategy（见 [planner.md](reasoning_doc/planner.md)） |
+| Reasoning | chain_of_thought | [见对齐表](../ALIGNMENT.md) | CoT 策略（预留） |
+| Ports | llm_gateway / tool_gateway / context_budget / cost_limiter / embedding_port | [见对齐表](../ALIGNMENT.md) | 领域端口契约（依赖倒置，见 [ports.md](ports_doc/ports.md)） |
 
 ---
 
@@ -121,10 +121,10 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| `BaseAgent` | base.py | 生命周期骨架（run/状态/事件路由/结果）+ 数据契约 | ✅ |
-| `ReActAgent` | executor.py | 桥接 ReActStrategy 到 BaseAgent 生命周期 | ✅ |
-| `PlannerAgent` | planner.py | Plan-then-Execute 编排（规划→执行→汇总，桥接 PlannerStrategy） | ✅ |
-| `ReflectionAgent` | reflection.py | Reflection 编排（生成→自查→修正） | ✅ |
+| `BaseAgent` | base.py | 生命周期骨架（run/状态/事件路由/结果）+ 数据契约 | [见对齐表](../ALIGNMENT.md) |
+| `ReActAgent` | executor.py | 桥接 ReActStrategy 到 BaseAgent 生命周期 | [见对齐表](../ALIGNMENT.md) |
+| `PlannerAgent` | planner.py | Plan-then-Execute 编排（规划→执行→汇总，桥接 PlannerStrategy） | [见对齐表](../ALIGNMENT.md) |
+| `ReflectionAgent` | reflection.py | Reflection 编排（生成→自查→修正） | [见对齐表](../ALIGNMENT.md) |
 
 ---
 
@@ -136,12 +136,12 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| `PromptManager` | manager.py | 提示词组装入口（system/reflection/planning builder + 证据/步骤序列化） | ✅ |
-| `PromptTemplate` | base.py | 模板基类（format / raw） | 🔶 待补测试 |
-| 模板 | templates/system.py | `SYSTEM_PROMPT` 系统提示词 | ✅ |
-| 模板 | templates/tools.py | `TOOL_FORMAT_PROMPT` 工具格式提示词 | ✅ |
-| 模板 | templates/planning.py | `PLANNING_PROMPT` / `REPLAN_PROMPT` / `SUMMARIZE_PROMPT` 规划提示词 | ✅ |
-| 模板 | templates/reflection.py | `CRITIQUE_PROMPT` / `REFINE_PROMPT` / `REFLECTION_SYSTEM_PROMPT` 自查提示词 | ✅ |
+| `PromptManager` | manager.py | 提示词组装入口（system/reflection/planning builder + 证据/步骤序列化） | [见对齐表](../ALIGNMENT.md) |
+| `PromptTemplate` | base.py | 模板基类（format / raw） | [见对齐表](../ALIGNMENT.md) |
+| 模板 | templates/system.py | `SYSTEM_PROMPT` 系统提示词 | [见对齐表](../ALIGNMENT.md) |
+| 模板 | templates/tools.py | `TOOL_FORMAT_PROMPT` 工具格式提示词 | [见对齐表](../ALIGNMENT.md) |
+| 模板 | templates/planning.py | `PLANNING_PROMPT` / `REPLAN_PROMPT` / `SUMMARIZE_PROMPT` 规划提示词 | [见对齐表](../ALIGNMENT.md) |
+| 模板 | templates/reflection.py | `CRITIQUE_PROMPT` / `REFINE_PROMPT` / `REFLECTION_SYSTEM_PROMPT` 自查提示词 | [见对齐表](../ALIGNMENT.md) |
 
 ---
 
@@ -161,11 +161,11 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| `ReActStrategy` | react.py | 推理 ↔ 工具循环算法（含工具并行原语） | ✅ |
-| `ReflectionStrategy` | reflection.py | 生成 → 自查 → 修正（证据链语义自查） | ✅ |
-| `PlannerStrategy` | planner.py | Plan-then-Execute 三阶段（规划 → 逐步骤执行 → 汇总，每步复用 ReAct） | ✅ |
-| 共享执行护栏与工具 | _common.py | GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量 | ✅ |
-| CoT | chain_of_thought.py | 纯推理引导 | ⬜ 预留 |
+| `ReActStrategy` | react.py | 推理 ↔ 工具循环算法（含工具并行原语） | [见对齐表](../ALIGNMENT.md) |
+| `ReflectionStrategy` | reflection.py | 生成 → 自查 → 修正（证据链语义自查） | [见对齐表](../ALIGNMENT.md) |
+| `PlannerStrategy` | planner.py | Plan-then-Execute 三阶段（规划 → 逐步骤执行 → 汇总，每步复用 ReAct） | [见对齐表](../ALIGNMENT.md) |
+| 共享执行护栏与工具 | _common.py | GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量 | [见对齐表](../ALIGNMENT.md) |
+| CoT | chain_of_thought.py | 纯推理引导 | [见对齐表](../ALIGNMENT.md) |
 
 ---
 
@@ -211,7 +211,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 ## 相关文档
 
-- [架构设计](../architecture.md)
+- [架构设计](../project/architecture.md)
 - [Agent 模块对外接口文档](agent_doc/agent.md) · [ReActAgent 桥接组件](agent_doc/executor.md)
 - [提示词模块](prompts_doc/prompts.md)
 - [记忆系统（预留）](memory_doc/memory.md)

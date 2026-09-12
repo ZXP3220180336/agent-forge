@@ -1,7 +1,7 @@
 # LLM-042 reserve R5 兜底退款被二次取消时 RPM 配额泄漏
 
 > 发现：2026-09-07 ｜ 状态：✅ 已修复 ｜ 模块：reservation_limiter（`ReservationLimiter._acquire` R5）
-> 关联：fallback/副模型守卫 [LLM-041](./2026-09-06-fallback-window-and-quota.md)（同批取消/收尾治理）· 取消中断未终态设计 [settle-cancel 并发互斥 LLM-010](./2026-08-16-settle-cancel-concurrent-race.md)
+> 关联：fallback/副模型守卫 [LLM-041](2026-09-06-fallback-window-and-quota.md)（同批取消/收尾治理）· 取消中断未终态设计 [settle-cancel 并发互斥 LLM-010](2026-08-16-settle-cancel-concurrent-race.md)
 
 ## 发现
 

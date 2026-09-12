@@ -2,7 +2,7 @@
 
 > **对应代码**：`app/domain/memory/`
 > **更新日期**：2026-08-29
-> **实现状态**：⬜ 预留（全部文件为空）
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **文档定位**：记忆系统——为 Agent 提供跨会话记忆能力。当前为预留模块，全部代码为空、无对外接口、无测试；本文档只记录预留设计要点，实现后同步更新
 
 ---
@@ -34,12 +34,12 @@
 
 | 文件 | 状态 | 预留定位 |
 | --- | --- | --- |
-| `app/domain/memory/memory_service.py` | ⬜ 空 | 记忆服务对外入口 |
-| `app/domain/memory/base.py` | ⬜ 空 | 记忆单元抽象基类 |
-| `app/domain/memory/short_term.py` | ⬜ 空 | 短期记忆 |
-| `app/domain/memory/long_term.py` | ⬜ 空 | 长期记忆 |
-| `app/domain/memory/working.py` | ⬜ 空 | 工作记忆 |
-| `app/domain/memory/__init__.py` | ⬜ 空 | 子包入口 |
+| `app/domain/memory/memory_service.py` | [见对齐表](../../ALIGNMENT.md) | 记忆服务对外入口 |
+| `app/domain/memory/base.py` | [见对齐表](../../ALIGNMENT.md) | 记忆单元抽象基类 |
+| `app/domain/memory/short_term.py` | [见对齐表](../../ALIGNMENT.md) | 短期记忆 |
+| `app/domain/memory/long_term.py` | [见对齐表](../../ALIGNMENT.md) | 长期记忆 |
+| `app/domain/memory/working.py` | [见对齐表](../../ALIGNMENT.md) | 工作记忆 |
+| `app/domain/memory/__init__.py` | [见对齐表](../../ALIGNMENT.md) | 子包入口 |
 
 ## 预留设计要点
 
@@ -65,4 +65,4 @@
 - [应用层说明](../../application_doc/README.md)（ContextManager 短期记忆接入）
 - [Embedding 服务](../../integration_doc/embedding_doc/embedding.md)（长期记忆向量化依赖）
 - [基础设施层说明](../../infrastructure_doc/infrastructure.md)（向量库预留）
-- [product 产品方向](../../product.md)
+- [product 产品方向](../../project/product.md)

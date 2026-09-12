@@ -3,7 +3,7 @@
 > **更新日期**：2026-08-30
 > **模块**：`app/integration/tools/`
 > **文档定位**：工具系统对外接口契约 + 六大子组件导航。执行细节（并发 / 重试 / 截断 / 审计）见对应子文档，本文不重复。
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **工业级对照**：对齐工业界六大子组件（注册中心 / 选择器 / 校验器 / 调度器 / 结果处理 / 安全审计），详见 [ADR](../../../adr/integration/tools/2026-08-17-six-component-alignment.md)
 
 ---
@@ -93,7 +93,7 @@ class ToolGateway(Protocol):
 | `execution_time` | `float \| None` | 执行耗时（executor 填充） |
 | `retry_count` | `int` | 实际尝试次数（executor 填充） |
 
-`ErrorCode`（[`app/domain/ports/tool_gateway.py`](../../../app/domain/ports/tool_gateway.py)）系统级 6 码：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数 JSON 解析失败）/ `VALIDATION`（校验失败）/ `REJECTED`（审批拒绝）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。工具业务错误为 `None`（`error` 字符串承载 LLM 归因）——**错误码 + 中文归因并存**：错误码供审计聚合与证据链可审计性，`error` 供 LLM 修正。
+`ErrorCode`（[app/domain/ports/tool_gateway.py](../../../app/domain/ports/tool_gateway.py)）系统级 6 码：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数 JSON 解析失败）/ `VALIDATION`（校验失败）/ `REJECTED`（审批拒绝）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。工具业务错误为 `None`（`error` 字符串承载 LLM 归因）——**错误码 + 中文归因并存**：错误码供审计聚合与证据链可审计性，`error` 供 LLM 修正。
 
 ### `ToolService` 方法
 
@@ -163,5 +163,5 @@ ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#
 - [ToolService 说明](tool_service.md)（Facade 装配 / 执行流程 / 并发语义）
 - [内置工具说明](builtin_doc/builtin.md)（BaseTool + 10 内置工具）· [外部工具热加载](external.md)（ExternalToolLoader）
 - [validator.md](validator.md) · [result_processor.md](result_processor.md) · [security.md](security.md) · [selector.md](selector.md)
-- [集成层总览](../README.md) · [架构设计](../../architecture.md)
+- [集成层总览](../README.md) · [架构设计](../../project/architecture.md)
 - 决策记录：[ADR 索引](../../../adr/integration/tools/README.md)

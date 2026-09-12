@@ -3,7 +3,7 @@
 > **模块**：`app/integration/llm/cost_tracker.py`
 > **更新日期**：2026-08-16
 > **职责**：按模型定价表估算 LLM 调用成本（单次 / 会话级累计）
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：`LLMService.calculate_cost()` 为 Facade 入口（见 [llm.md](llm.md)）
 
 ---

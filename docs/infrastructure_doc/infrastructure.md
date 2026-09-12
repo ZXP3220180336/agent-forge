@@ -61,9 +61,9 @@ app/infrastructure/
 | `app/infrastructure/database.py` | 空（0 行） | 数据库引擎与会话封装（engine / session factory / 生命周期 / 健康检查） |
 | `app/infrastructure/redis_client.py` | 空（0 行） | Redis 客户端封装（连接池 / 编解码 / 超时 / 重连 / 命名空间） |
 | `app/infrastructure/message_queue/__init__.py` | 空（0 行） | 消息队列子包入口，规划抽象统一消息发布 / 消费接口 |
-| `app/infrastructure/models/database/base.py` | ✅ 已实现（8 行） | 共享 `Base`（唯一 declarative_base 实例），见 [model.md](model_doc/model.md) |
-| `app/infrastructure/models/database/session.py` | ✅ 已实现（23 行） | `SessionModel` 会话表，见 [model.md](model_doc/model.md) |
-| `app/infrastructure/models/database/messages.py` | ✅ 已实现（31 行） | `MessageModel` 消息表，见 [model.md](model_doc/model.md) |
+| `app/infrastructure/models/database/base.py` | [见对齐表](../ALIGNMENT.md) | 共享 `Base`（唯一 declarative_base 实例），见 [model.md](model_doc/model.md) |
+| `app/infrastructure/models/database/session.py` | [见对齐表](../ALIGNMENT.md) | `SessionModel` 会话表，见 [model.md](model_doc/model.md) |
+| `app/infrastructure/models/database/messages.py` | [见对齐表](../ALIGNMENT.md) | `MessageModel` 消息表，见 [model.md](model_doc/model.md) |
 | `app/infrastructure/models/database/task.py` | 空（0 行） | 任务表预留，见 [model.md](model_doc/model.md) |
 | `app/infrastructure/models/database/tool_log.py` | 空（0 行） | 工具调用日志表预留，见 [model.md](model_doc/model.md) |
 
@@ -162,6 +162,6 @@ await self.redis.ping()
 ## 相关文档链接
 
 - [配置参考](../config_doc/config.md) — `DATABASE_URL` / `REDIS_URL` 等基础设施相关配置
-- [系统架构](../architecture.md) — 整体架构中基础设施层的定位
+- [系统架构](../project/architecture.md) — 整体架构中基础设施层的定位
 - [LLM 层说明文档](../integration_doc/llm_doc/llm.md) — 同风格的分层文档参考
 - [任务服务说明文档](../application_doc/task_doc/task.md) — 任务调度（潜在依赖消息队列）

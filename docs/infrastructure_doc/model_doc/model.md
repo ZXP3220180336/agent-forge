@@ -220,11 +220,11 @@ Base = declarative_base()
 
 Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 层出入参的校验与文档化，详见 [routes.md](../../api_doc/routes_doc/routes.md)：
 
-| 文件           | 状态                                   | 用途                                   |
+| 文件 | 状态 | 用途 |
 | -------------- | -------------------------------------- | -------------------------------------- |
-| `request.py`   | ✅ 已实现（23 行）                      | 请求体模型（如创建会话、发送消息）       |
-| `response.py`  | ✅ 已实现（15 行）                      | 响应体模型（如会话详情、消息列表）       |
-| `agent.py`     | ⬜ 预留空文件                            | Agent 相关数据结构（ReAct 结果等）       |
+| `request.py` | [见对齐表](../../ALIGNMENT.md) | 请求体模型（如创建会话、发送消息） |
+| `response.py` | [见对齐表](../../ALIGNMENT.md) | 响应体模型（如会话详情、消息列表） |
+| `agent.py` | [见对齐表](../../ALIGNMENT.md) | Agent 相关数据结构（ReAct 结果等） |
 
 ---
 
@@ -301,10 +301,10 @@ Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 
 
 | 文档                                                 | 关联内容                                           |
 | ----------------------------                         | --------------------------------------------       |
-| [架构总览](../../architecture.md)                    | 数据模型层的分层定位与整体架构                     |
+| [架构总览](../../project/architecture.md)                    | 数据模型层的分层定位与整体架构                     |
 | [研发教训](../../lessons.md)                         | 项目级研发教训（metadata / declarative_base 出处） |
 | [任务模块](../../application_doc/task_doc/task.md)   | `task.py` 预留对应的任务数据结构                   |
 | [工具系统](../../integration_doc/tools_doc/tools.md) | `tool_log.py` 预留对应的工具抽象与内置工具         |
 | [路由模块](../../api_doc/routes_doc/routes.md)                       | `schemas/` 预留对应的请求 / 响应模型               |
 | [配置参考](../../config_doc/config.md)               | `DATABASE_URL` 等数据库连接配置                    |
-| [部署文档](../../deployment.md)                      | 数据库部署与 `asyncpg` 依赖说明                    |
+| [部署文档](../../project/deployment.md)                      | 数据库部署与 `asyncpg` 依赖说明                    |

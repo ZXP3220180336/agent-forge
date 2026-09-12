@@ -3,7 +3,7 @@
 > **模块**：`app/domain/reasoning/planner.py`
 > **更新日期**：2026-09-10
 > **职责**：Planner 原子推理策略——Plan-then-Execute 单 Agent 编排（规划 → 执行 → 汇总）
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/planner.py](../agent_doc/agent.md)；工业级对标见 [planner_benchmark.md](planner_benchmark.md)
 
 ---
@@ -206,14 +206,16 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 
 ## 配置项清单
 
+配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
+
 无新增 settings 项。`AgentContext` 已有字段复用：
 
-| 配置 | 类型 / 默认 | 说明 |
-| --- | --- | --- |
-| `agent_max_refine_rounds` | int / 2 | replan 预算经 `AgentContext.max_refine_rounds` 注入 `execute(max_replan_rounds)`（Reflection 修正 / Planner replan 共用语义） |
-| `agent_max_iterations` 等 ReAct 护栏字段 | 复用 | `max_iterations` = **每步** ReAct 小跑迭代上限（步骤级）；temperature / max_tokens / max_execution_time（全局，每步转剩余）/ max_context_rounds·tokens / max_empty_retries / max_llm_fail_retries / max_tool_protocol_retries / max_same_action_turns / stream_mode 全部透传每步 ReAct |
-| `llm_structured_max_tokens` | 默认预算 | 结构化调用（plan / replan / summarize）走 generate_structured 默认预算；截断由集成层短路返回 None → 走 None 降级（不崩溃） |
-| 结构化模型键 | "fast" | `plan_model_key` / `summarize_model_key` 构造注入（默认 fast），不进 AgentContext |
+| 配置 | 说明 |
+| --- | --- |
+| `agent_max_refine_rounds` | replan 预算经 `AgentContext.max_refine_rounds` 注入 `execute(max_replan_rounds)`（Reflection 修正 / Planner replan 共用语义） |
+| `agent_max_iterations` 等 ReAct 护栏字段 | `max_iterations` = **每步** ReAct 小跑迭代上限（步骤级）；temperature / max_tokens / max_execution_time（全局，每步转剩余）/ max_context_rounds·tokens / max_empty_retries / max_llm_fail_retries / max_tool_protocol_retries / max_same_action_turns / stream_mode 全部透传每步 ReAct |
+| `llm_structured_max_tokens` | 结构化调用（plan / replan / summarize）走 generate_structured 默认预算；截断由集成层短路返回 None → 走 None 降级（不崩溃） |
+| 结构化模型键 | `plan_model_key` / `summarize_model_key` 构造注入（默认 fast），不进 AgentContext |
 
 ## 测试状态
 

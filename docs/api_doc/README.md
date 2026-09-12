@@ -3,7 +3,7 @@
 > **对应代码**：`app/api/`
 > **更新日期**：2026-08-29
 > **文档定位**：API 层（`app/api/`）—— 系统对外暴露边界，HTTP 协议适配 + 鉴权 + 统一错误信封；是客户端（前端 / 外部系统）与服务层的桥梁。
-> **实现状态**：路由（✅ chat / session）· 中间件（🔶 error_handler ✅ + auth / rate_limit 预留）· Schema（🔶 request / response）
+> 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。边界：（🔶 error_handler ✅ + auth / rate_limit 预留）
 > **配套**：端点契约见 [routes.md](routes_doc/routes.md) · 错误信封见 [middleware.md](middleware_doc/middleware.md)
 
 ---
@@ -92,13 +92,13 @@ API 层不感知领域实现，只依赖服务层接口与共享内核（`app/sh
 
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
-| 依赖注入 | deps.py | 🔶 | DI 函数：用户身份 + 服务单例 + agent 参数（经 chat_flow 间接覆盖） |
-| 路由 | chat.py / session.py | ✅ | 聊天 SSE / 会话 CRUD（见 [routes.md](routes_doc/routes.md)） |
-| 路由 | admin.py / agent.py / tool.py | ⬜ | 预留空文件 |
-| 中间件 | error_handler.py | ✅ | AppError → HTTP 状态 + `{code, message, details}` 信封（见 [middleware.md](middleware_doc/middleware.md)） |
-| 中间件 | auth.py / rate_limit.py | ⬜ | 预留空文件（认证当前由 deps 模拟） |
-| Schema | request.py / response.py | 🔶 | 请求 / 响应 DTO（随路由测试覆盖） |
-| Schema | agent.py | ⬜ | 预留空文件（Agent DTO） |
+| 依赖注入 | deps.py | [见对齐表](../ALIGNMENT.md) | DI 函数：用户身份 + 服务单例 + agent 参数（经 chat_flow 间接覆盖） |
+| 路由 | chat.py / session.py | [见对齐表](../ALIGNMENT.md) | 聊天 SSE / 会话 CRUD（见 [routes.md](routes_doc/routes.md)） |
+| 路由 | admin.py / agent.py / tool.py | [见对齐表](../ALIGNMENT.md) | 预留空文件 |
+| 中间件 | error_handler.py | [见对齐表](../ALIGNMENT.md) | AppError → HTTP 状态 + `{code, message, details}` 信封（见 [middleware.md](middleware_doc/middleware.md)） |
+| 中间件 | auth.py / rate_limit.py | [见对齐表](../ALIGNMENT.md) | 预留空文件（认证当前由 deps 模拟） |
+| Schema | request.py / response.py | [见对齐表](../ALIGNMENT.md) | 请求 / 响应 DTO（随路由测试覆盖） |
+| Schema | agent.py | [见对齐表](../ALIGNMENT.md) | 预留空文件（Agent DTO） |
 
 ---
 
@@ -110,9 +110,9 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 
 | 组件 | 文件 | 端点 | 状态 |
 | --- | --- | --- | --- |
-| 聊天 | chat.py | `POST /api/chat/send`（SSE）、`POST /api/chat/stop` | ✅ |
-| 会话 | session.py | `POST /api/session/create`、`GET /api/session/{id}`、`GET /api/session/{id}/history`、`GET /api/sessions`、`DELETE /api/session/{id}` | ✅ |
-| 管理 / 任务 / 工具 | admin.py / agent.py / tool.py | —（规划） | ⬜ |
+| 聊天 | chat.py | `POST /api/chat/send`（SSE）、`POST /api/chat/stop` | [见对齐表](../ALIGNMENT.md) |
+| 会话 | session.py | `POST /api/session/create`、`GET /api/session/{id}`、`GET /api/session/{id}/history`、`GET /api/sessions`、`DELETE /api/session/{id}` | [见对齐表](../ALIGNMENT.md) |
+| 管理 / 任务 / 工具 | admin.py / agent.py / tool.py | —（规划） | [见对齐表](../ALIGNMENT.md) |
 
 端点契约（请求 / 响应模型、认证方式、SSE 帧格式）见 [routes.md](routes_doc/routes.md) 与 [events.md](../shared_doc/events.md)。
 
@@ -126,9 +126,9 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| 统一异常处理 | error_handler.py | `AppError` → HTTP 状态 + `{code, message, details}` 信封（main.py 已注册） | ✅ |
-| 认证鉴权 | auth.py | JWT 认证、请求鉴权（当前由 deps.get_current_user 模拟） | ⬜ 预留 |
-| API 限流 | rate_limit.py | 按用户 / IP / 全局维度限流（可复用 LLM 层 reserve/settle 思路） | ⬜ 预留 |
+| 统一异常处理 | error_handler.py | `AppError` → HTTP 状态 + `{code, message, details}` 信封（main.py 已注册） | [见对齐表](../ALIGNMENT.md) |
+| 认证鉴权 | auth.py | JWT 认证、请求鉴权（当前由 deps.get_current_user 模拟） | [见对齐表](../ALIGNMENT.md) |
+| API 限流 | rate_limit.py | 按用户 / IP / 全局维度限流（可复用 LLM 层 reserve/settle 思路） | [见对齐表](../ALIGNMENT.md) |
 
 ---
 
@@ -167,7 +167,7 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 
 - [路由模块对外接口文档](routes_doc/routes.md)（端点契约 / 认证方式 / 异常契约）
 - [中间件模块对外接口文档](middleware_doc/middleware.md)（统一错误信封 / auth / rate_limit）
-- [架构设计](../architecture.md)（分层与演进路径）
+- [架构设计](../project/architecture.md)（分层与演进路径）
 - [应用层说明](../application_doc/README.md)（服务层，API 的下游）
 - [集成层说明](../integration_doc/README.md)（LLM / 工具实现）
 - [异常体系](../shared_doc/error_handling.md)（统一异常树，error_handler 的上游）

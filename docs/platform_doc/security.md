@@ -3,18 +3,20 @@
 > **更新日期**：2026-08-16
 > **文档定位**：Agent 系统安全规范——威胁模型、数据安全、工具安全、密钥管理；
 > 归拢现有零散安全实践（日志脱敏 / 拒答处理 / 代码执行黑名单）为统一规范
-> **实现状态**：🔶 部分已实施（零散实践待归拢；威胁模型与安全规范待完善）
+> 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。
 
 ---
 
 ## 📋 目录
 
-- [定位与目标](#定位与目标)
-- [威胁模型](#威胁模型)
-- [数据安全](#数据安全)
-- [工具安全](#工具安全)
-- [密钥管理](#密钥管理)
-- [相关文档](#相关文档)
+- [安全设计文档](#安全设计文档)
+  - [📋 目录](#-目录)
+  - [定位与目标](#定位与目标)
+  - [威胁模型](#威胁模型)
+  - [数据安全](#数据安全)
+  - [工具安全](#工具安全)
+  - [密钥管理](#密钥管理)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -57,7 +59,7 @@ Agent 系统的安全**规范体系**——覆盖 Agent 特有的风险面（提
 
 ## 相关文档
 
-- [architecture.md](../architecture.md)（分层与安全责任归属）
+- [architecture.md](../project/architecture.md)（分层与安全责任归属）
 - [platform_doc/observability/logging.md](observability/logging.md)（日志脱敏 / 事件元数据）
 - [integration_doc/tools_doc/builtin_doc/builtin.md](../integration_doc/tools_doc/builtin_doc/builtin.md)（内置工具安全边界）
 - [config_doc/config.md](../config_doc/config.md)（密钥加载）

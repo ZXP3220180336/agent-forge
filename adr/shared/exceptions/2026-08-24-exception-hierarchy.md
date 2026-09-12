@@ -3,7 +3,7 @@
 > **状态**：✅ 已采纳
 > **决策日期**：2026-08-24
 > **涉及模块**：`app/shared/exceptions.py` · `app/integration/llm/retry.py` · `app/integration/llm/structured.py` · `app/integration/tools/security.py` · `app/integration/tools/validator.py`
-> **关联文档**：[error_handling.md](../../../docs/shared_doc/error_handling.md) · [architecture.md](../../../docs/architecture.md)
+> **关联文档**：[error_handling.md](../../../docs/shared_doc/error_handling.md) · [architecture.md](../../../docs/project/architecture.md)
 
 ---
 

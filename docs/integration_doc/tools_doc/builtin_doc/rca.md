@@ -2,8 +2,8 @@
 
 > **更新日期**：2026-08-30
 > **模块**：`app/integration/tools/builtin/rca/`
-> **文档定位**：良率根因分析（Yield RCA）**场景工具**——支撑产品主链路「批次异常 → 并行排查 → 带证据链的根因报告」（见 [product.md](../../../product.md) P0）。
-> **实现状态**：5 工具全部 ✅（模拟数据源）
+> **文档定位**：良率根因分析（Yield RCA）**场景工具**——支撑产品主链路「批次异常 → 并行排查 → 带证据链的根因报告」（见 [product.md](../../../project/product.md) P0）。
+> 状态与验证见 [ALIGNMENT](../../../ALIGNMENT.md)。边界：（模拟数据源）
 
 ---
 
@@ -58,7 +58,7 @@ search_historical_rca("etch 偏离 良率 骤降") → RCA-001 佐证
 
 ## 相关文档
 
-- [product.md](../../../product.md)（产品规划：工具清单 P0、证据链亮点）
+- [product.md](../../../project/product.md)（产品规划：工具清单 P0、证据链亮点）
 - [内置工具详解](builtin.md)（BaseTool 基类 / 自动发现）
 - [工具模块接口文档](../tools.md)（ToolResult 契约 / ErrorCode）
 - [TOOLS-029 问题记录](../../../../issues/integration/tools/2026-08-20-rca-in-range-single-time.md)（_in_range 单边时间）

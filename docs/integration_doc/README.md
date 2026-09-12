@@ -3,7 +3,7 @@
 > **对应代码**：`app/integration/`
 > **更新日期**：2026-08-30
 > **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量，待规划）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` 的适配器实现方。
-> **实现状态**：LLM（✅ 已实现）· Tools（✅ 已实现）· Embedding（🔶 已实现，未接线）
+> 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。边界：（🔶 已实现，未接线）
 
 ---
 
@@ -115,15 +115,15 @@ app/integration/
 
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
-| LLM Facade | `llm/llm_service.py` | ✅ | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost` |
-| LLM 子包 | `llm/`（11 组件） | ✅ | ClientManager / errors / execution_control / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token_counter / request_budget |
-| 工具 Facade | `tools/tool_service.py` | ✅ | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
-| 工具子包 | `tools/`（六大子组件） | ✅ | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler / Loader |
-| 内置工具 | `tools/builtin/` | ✅ | search / readFile / writeFile / code_exec / web_browse + RCA 5 工具（query_batch_yield 等） |
-| 外部工具加载器 | `tools/loader.py` | ✅ | ExternalToolLoader：execute 惰性检查热加载 + 生命周期钩子（external/ 目录） |
-| Embedding | `embedding/embedding_service.py` | 🔶 已实现未接线 | `EmbeddingService`：`embed` / `embed_batch` / 内存缓存 |
-| VectorStore adapter | `vector_store/` | ⬜ 待规划 | Milvus 向量库检索（Phase D，规划接入 RAG） |
-| RCA 工具 | `tools/builtin/rca/` | ✅ | query_batch_yield / query_equipment_alerts / query_fdc_params / query_defect_map / search_historical_rca（模拟数据源，见 [rca.md](tools_doc/builtin_doc/rca.md)） |
+| LLM Facade | `llm/llm_service.py` | [见对齐表](../ALIGNMENT.md) | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost` |
+| LLM 子包 | `llm/`（11 组件） | [见对齐表](../ALIGNMENT.md) | ClientManager / errors / execution_control / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token_counter / request_budget |
+| 工具 Facade | `tools/tool_service.py` | [见对齐表](../ALIGNMENT.md) | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
+| 工具子包 | `tools/`（六大子组件） | [见对齐表](../ALIGNMENT.md) | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler / Loader |
+| 内置工具 | `tools/builtin/` | [见对齐表](../ALIGNMENT.md) | search / readFile / writeFile / code_exec / web_browse + RCA 5 工具（query_batch_yield 等） |
+| 外部工具加载器 | `tools/loader.py` | [见对齐表](../ALIGNMENT.md) | ExternalToolLoader：execute 惰性检查热加载 + 生命周期钩子（external/ 目录） |
+| Embedding | `embedding/embedding_service.py` | [见对齐表](../ALIGNMENT.md) | `EmbeddingService`：`embed` / `embed_batch` / 内存缓存 |
+| VectorStore adapter | `vector_store/` | [见对齐表](../ALIGNMENT.md) | Milvus 向量库检索（Phase D，规划接入 RAG） |
+| RCA 工具 | `tools/builtin/rca/` | [见对齐表](../ALIGNMENT.md) | query_batch_yield / query_equipment_alerts / query_fdc_params / query_defect_map / search_historical_rca（模拟数据源，见 [rca.md](tools_doc/builtin_doc/rca.md)） |
 
 ---
 
@@ -209,7 +209,7 @@ app/integration/
 
 ## 相关文档
 
-- [架构设计](../architecture.md)（集成层在 7 层架构中的位置与演进路径）
+- [架构设计](../project/architecture.md)（集成层在 7 层架构中的位置与演进路径）
 - [应用层说明](../application_doc/README.md)
 - [领域层说明](../domain_doc/README.md)
 - [LLM 层详解](llm_doc/llm.md) · [传输错误处理](llm_doc/error.md) · [执行控制](llm_doc/execution_control.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md) · [TokenCounter](llm_doc/token_counter.md) · [请求预算](llm_doc/request_budget.md)

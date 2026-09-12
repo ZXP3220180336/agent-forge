@@ -4,14 +4,6 @@
 > **更新日期**：2026-09-10
 > **关联**：[工具模块接口文档](../../../docs/integration_doc/tools_doc/tools.md) · [问题追踪](../../../issues/integration/tools/README.md)
 
-## 状态图例
-
-| 状态 | 含义 |
-| --- | --- |
-| ✅ 已采纳 | 决策已实施，当前生效 |
-| 🔶 已替代 | 被后续决策替代（在替代决策文件内说明） |
-| ⬜ 已放弃 | 评估后不采纳（附理由） |
-
 ## 决策索引
 
 | ID | 决策 | 状态 | 涉及模块 | 决策日期 |
@@ -24,15 +16,4 @@
 | [TOOLS-ADR-006](2026-08-17-tool-lifecycle-paradigm.md) | 工具生命周期范式（有状态连接池 + 钩子 vs LangChain 无状态） | ✅ 已采纳 | base / tool_service / loader / web_browse / container | 2026-08-17 |
 | [TOOLS-ADR-007](2026-08-17-tool-error-code.md) | 工具调用统一错误码（ErrorCode 6 码 + 审计聚合） | ✅ 已采纳 | tool_gateway / executor / security | 2026-08-17 |
 
-## 新决策登记规范
-
-1. **命名**：`<日期>-<短横线描述>.md`——日期为决策确立日（`YYYY-MM-DD`），描述为该决策的短 slug
-2. **编号（索引 ID）**：TOOLS-ADR-XXX 递增（001、002、…），仅用于索引表展示；**文件名不含编号**
-3. **模板**：元信息块（状态/日期/涉及模块/关联文档）→ Context（背景与动机，含备选方案）→ Decision（决策内容，含取舍依据）→ Consequences（正面/负面后果）
-4. **登记**：新建文件后同步更新上方索引表
-
-## 维护原则
-
-- **一个决策一个文件**：跨模块决策以主决策模块归位
-- **与 issues 分离**：本目录沉淀「为什么做这个决策」（可复用的设计理由）；issues 沉淀「问题从发现到验证的生命周期」。问题驱动的决策以问题记录为主、决策作为修复方案的一部分，不重复建 ADR
-- **目录与 app/ 结构对齐**：`adr/<层名>/<模块名>/`（本目录 = `adr/integration/tools/` 对应 `app/integration/tools/`）
+登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

@@ -3,7 +3,7 @@
 > **更新日期**：2026-08-17
 > **模块**：`app/integration/tools/validator.py`
 > **职责**：工具参数 JSON Schema 严格校验 + 错误归因（中文可读，供 LLM 下一轮修正）
-> **状态**：✅ 已实现
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **工业级对照**：jsonschema 完整校验（类型 / 必填 / 枚举 / 范围），对齐 OpenAI Function Calling 参数约束
 
 ---

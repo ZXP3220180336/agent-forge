@@ -1,5 +1,7 @@
 # 类的类型体系与实例形态
 
+> 文档类型：学习说明，不是新增执行门禁。实现取舍按 [工程规则](../engineering/ai-engineering-rules.md)；无状态、非确定性与副作用须分别判断，示例不能替代当前代码和契约。
+
 > **文档定位**：项目代码中各种「类」的设计模式归类 + 单例/实例形态分析。
 > **适用对象**：任何需要理解或新增类的开发者 —— 先判断「这属于哪一类」，再决定「是否实例化、怎么实例化」。
 > **内容来源**：对 `app/integration/llm/`、`app/container.py`、`app/api/deps.py` 等代码的模式提炼。
@@ -25,9 +27,9 @@
 项目里 `ClientManager`、`ReservationLimiterManager`、`StructuredOutput`、`CostTracker`、`StreamParser` 这些类都可以**直接类调用、不实例化**，但它们的原因各不相同：
 
 | 类 | 不实例化的真实原因 |
-|---|---|
-| `StreamParser` / `CostTracker` / `StructuredOutput` | **无状态**，实例无意义（纯函数） |
-| `ClientManager` / `ReservationLimiterManager` | **必须全局唯一**，实例化会分裂共享缓存 |
+| --- | --- |
+| `StreamParser` / `CostTracker` / `StructuredOutput` | 方法不依赖实例状态，可直接类调用；是否纯函数须另查 I/O、全局配置和副作用 |
+| `ClientManager` / `ReservationLimiterManager` | 以类方法访问共享类缓存，无需额外实例；普通实例化本身不会分裂类缓存 |
 
 > **一句话记忆**：工具类不实例化是因为「无所谓」，管理器不实例化是因为「必须唯一」。
 
@@ -39,7 +41,7 @@
 
 **代表**：`StreamParser`、`CostTracker`、`StructuredOutput`
 
-**特征**：所有方法都是 `@staticmethod`，**没有 `self` 也没有 `cls`**，完全不持有任何状态。
+**特征**：方法使用 `@staticmethod`，不隐式接收 `self` 或 `cls`，不依赖实例状态；仍可能读取类变量、全局配置或调用外部服务。
 
 ```python
 class StreamParser:
@@ -47,9 +49,9 @@ class StreamParser:
     def parse_chunk(chunk) -> ParsedChunk: ...
 ```
 
-**为什么不需要实例化**：它是一组「纯函数」的命名空间 —— 输入输出转换，无副作用、无缓存。实例化多个 `StreamParser()` 没意义，因为实例之间无差异。
+**为什么不需要实例化**：类可作为方法的语义命名空间，方法不需要实例提供状态。是否纯函数取决于同输入是否同输出、是否有副作用，不能由 `@staticmethod` 判断；例如结构化输出可能调用 LLM。多个无实例状态的 `StreamParser()` 不会提供额外实例语义。
 
-**使用场景**：**纯计算/转换逻辑**，如「解析 chunk」「算成本」「提结构化输出」。这类逻辑放类里是为了**语义分组**（`StreamParser` 表明「这些解析函数属于流式解析」）。
+**使用场景**：不依赖实例状态的计算、转换或编排，如解析 chunk、算成本、结构化输出。它们是否访问外部资源分别按方法契约判断；放类里用于语义分组，不代表必须为纯函数。
 
 **关键点**：`@staticmethod` 方法内部调用也是静态的（如 `CostTracker._find_price(model)`），不能用 `self`。
 
@@ -72,7 +74,7 @@ class ClientManager:
         return cls._instances[key]      # 有就直接返回缓存
 ```
 
-**为什么不需要实例化**：它要**全局共享一份状态**（连接池/限流桶）。如果实例化多个 `ClientManager()`，每个实例有自己的 `_instances`，连接池就分裂了 —— 违背「全局共享」意图。
+**为什么不需要实例化**：它通过类方法共享类上的资源缓存（连接池/限流桶）。仅创建多个 `ClientManager()` 不会复制 `_instances`，类方法仍绑定所属类；实例属性重新赋值会产生遮蔽，子类重新绑定类属性或不同进程则可能形成不同缓存。`ClassVar` 是类型标注，不提供运行时单例、并发互斥或跨进程共享保证。
 
 **使用场景**：**全局唯一的管理器**，管理跨请求复用的资源（连接池、限流桶）。是单例的一种实现（比 `__new__` 单例更简洁，天然支持多 key 缓存）。
 
@@ -110,7 +112,7 @@ class ParsedChunk:
     message_token: str | None = None
 ```
 
-**为什么不需要实例化**：它是**数据结构**不是行为。需要时 `ParsedChunk()` 创建一个。
+**为什么需要实例化**：dataclass 定义数据结构类型；承载每一份具体数据时仍需创建实例，例如 `ParsedChunk()`。不必预先创建全局单例，与“不需要实例化”是不同概念。
 
 **使用场景**：**数据传递** —— 函数间传递的结构化数据。
 
@@ -152,7 +154,7 @@ class SendMessageRequest(BaseModel):
 > **「一张表管理同类资源」→ 全局管理器（ClientManager）；「一个复杂对象持有异质状态」→ 模块级单例实例（Container）。**
 
 | 问题 | 判断 |
-|---|---|
+| --- | --- |
 | 无状态、纯计算/转换？ | → 无状态工具类（`@staticmethod`） |
 | 管理多个 key 的同类资源？ | → 全局管理器类（`@classmethod` + `ClassVar`） |
 | 需要独立副本或有运行时状态？ | → 有状态组件类（实例化） |
@@ -201,6 +203,7 @@ self.tool_service = ToolService()
 **特征**：服务实例不是在各模块 `xxx = SessionManager()` 创建，而是由 `Container` **容器**统一创建、持有、分发。
 
 **为什么比模块级单例好**：
+
 1. **集中创建 + 依赖注入**：`Container` 统一组装（`SessionManager(redis, db)`），理清依赖图
 2. **延迟初始化 + 生命周期管理**：启动才创建，关闭时统一清理
 3. **测试友好**：可以替换 `container.session_manager` 为 mock，不影响路由
@@ -214,7 +217,7 @@ self.tool_service = ToolService()
 **核心区别：Container 是「一个复杂对象」的实例，不是「多个资源的缓存表」。**
 
 | 维度 | 全局管理器（ClientManager） | Container |
-|---|---|---|
+| --- | --- | --- |
 | 结构 | `dict[str, X]` 一张表，按 key 取 | 具名属性（`redis` / `engine` / `session_manager`） |
 | 状态 | 同类资源 | 异质服务（不同类型，各自独立属性名） |
 | 方法 | 无实例方法，全 `@classmethod` | 有实例方法（`initialize`/`shutdown`） |
@@ -268,10 +271,10 @@ ClientManager / ReservationLimiterManager   ← 全局管理器类（classmethod
 ## 实例方法 / 类方法 / 静态方法
 
 | 方法类型 | 装饰器 | 首个参数 | 能访问 | 使用场景 |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 实例方法 | 无 | `self` | 实例状态 | 有状态组件（`TokenBucket.acquire`） |
 | 类方法 | `@classmethod` | `cls` | 类属性 | 全局管理器（`ClientManager.get_client`） |
-| 静态方法 | `@staticmethod` | 无 | 无 | 纯函数（`StreamParser.parse_chunk`） |
+| 静态方法 | `@staticmethod` | 无隐式参数 | 显式参数、全局对象或显式访问的类属性 | 不依赖实例绑定的方法；是否纯函数另查副作用 |
 
 ```python
 class Example:
@@ -300,14 +303,14 @@ class ClientManager:
 
 ### 2. `field(default_factory=...)` 是 dataclass 专属
 
-`field()` 只在 `@dataclass` 类里有意义。用在普通 class 的类属性上时，效果和 `= {}` 等价，但语义含糊。正确做法是用 `ClassVar`。
+`dataclasses.field()` 返回字段描述对象，由 dataclass 机制处理。普通 class 不会自动调用其 `default_factory`，属性保留的是 `Field` 对象，**不等价于 `= {}`**。有意共享的类字典使用 `ClassVar[dict[...]] = {}`；每实例独立字典在 `__init__` 中创建。
 
 ### 3. dataclass 可变默认值
 
 ```python
 @dataclass
 class Task:
-    tags: list = []   # ❌ 所有实例共享同一个 list
+    tags: list = []   # ❌ dataclass 拒绝这种可变默认值，类定义时报 ValueError
     tags: list = field(default_factory=list)  # ✅ 每实例独立
 ```
 
@@ -321,13 +324,13 @@ def __init__(self):
     self.tool_calls = []   # ✅ 每实例新建，无共享
 ```
 
-「可变默认值陷阱」只存在于**默认参数**形式（`def f(x=[])` 或 dataclass 字段），`__init__` 内 `self.x = []` 每次都新建，安全。
+共享可变对象也可能来自普通类属性，不能仅检查函数默认参数。dataclass 会拒绝常见不可哈希的可变默认值，应使用工厂；`__init__` 内 `self.x = []` 每次创建新列表，不会因这条赋值而跨实例共享。
 
 ---
 
 ## 相关文档
 
-- [架构设计](../architecture.md)（分层与模块状态）
+- [架构设计](../project/architecture.md)（分层与模块状态）
 - [服务层说明](../application_doc/README.md)（各服务实例归属）
 - [LLM 层](../integration_doc/llm_doc/llm.md)（ClientManager / 限流器 / StreamParser 详解）
 - [数据模型](../infrastructure_doc/model_doc/model.md)（BaseModel 契约层）
