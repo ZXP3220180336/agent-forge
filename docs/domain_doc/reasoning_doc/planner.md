@@ -1,7 +1,7 @@
 # PlannerStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/planner.py`
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-12
 > **职责**：Planner 原子推理策略——Plan-then-Execute 单 Agent 编排（规划 → 执行 → 汇总）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/planner.py](../agent_doc/agent.md)；工业级对标见 [planner_benchmark.md](planner_benchmark.md)
@@ -74,7 +74,10 @@
 
 ### PLAN_FAILED 错误分发
 
-规划 / 重规划 / 汇总三处结构化调用失败（`generate_structured` 抛 AppError）统一走 `AgentErrorKind.PLAN_FAILED`（默认 CONTINUE）——独立 kind 而非复用 `STRUCTURED_INVALID`（语义不符）。动作：CONTINUE=降级（规划失败→全量 ReAct 兜底；汇总失败→纯文本；默认）/ STOP=硬失败标记 / RAISE=抛 `AgentRunError`。捕获范围 **AppError 全家族**（拒答 / 工具调用 / 熔断等不可恢复错误）；非 AppError 编程错误不吞、向上冒泡（fail fast）。结构化截断由集成层短路返回 None → 走 None 降级路径，不进入本分发。
+规划 / 重规划 / 汇总的普通 AppError 失败走 `AgentErrorKind.PLAN_FAILED`。CONTINUE 才允许进入
+对应降级；STOP 立即关闭业务准入，不能启动 ReAct fallback；RAISE 抛 `AgentRunError`。
+`ContextWindowExceededError` 作为请求 Guard 终态单独返回，未实施语义缩减时不得用同一语义
+请求 fallback。非 AppError 编程错误继续 fail fast。
 
 ### 降级路由（best-effort）
 
@@ -82,7 +85,8 @@
 | --- | --- |
 | 规划返回 None（结构化降级耗尽） | 全量 ReAct 兜底，degraded=True |
 | 规划抛 AppError（PLAN_FAILED 默认 CONTINUE） | 全量 ReAct 兜底，degraded=True |
-| PLAN_FAILED handler STOP | 硬失败（success=False），不做有效兜底 |
+| PLAN_FAILED handler STOP | 规划阶段立即硬失败且 ReAct 调用次数为 0；重规划阶段保留已完成步骤并停止，不再汇总 |
+| 请求上下文超限 | 保留已完成 plan/step/usage 并按 CONTEXT_EXCEEDED 收尾；未缩减 payload 不 fallback |
 | 计划 normalize 后无步骤 | 降级失败 |
 | 步骤失败 → replan 新尾 | 替换未执行部分继续（degraded=False，若最终恢复） |
 | replan 耗尽 / 失败 + 有成功步 | 尝试结构化汇总产部分报告；None → 纯文本拼装（degraded=True） |
@@ -222,7 +226,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 `tests/unit/test_planner.py` + `tests/unit/test_planner_agent.py` + `tests/unit/test_prompts.py`：
 
 - 三阶段全路径：规划 → 2 步执行（第 2 步依赖第 1 步）→ 汇总 structured，`plan` 快照 id/description、usage（react + structured）累计、done 抑制与口径一致
-- 降级路径：规划 None → 全量 ReAct 兜底 / AppError → PLAN_FAILED 默认 CONTINUE 兜底 / PLAN_FAILED RAISE 抛 AgentRunError / STOP 硬失败
+- 降级路径：规划 None → 全量 ReAct 兜底 / 普通 AppError → PLAN_FAILED 默认 CONTINUE 兜底 / RAISE 抛 AgentRunError / STOP 立即停止后续 ReAct 或汇总 / 上下文超限专用终态
 - 步骤失败 → replan 产修订尾继续执行 + 失败步留审计 + `replan_rounds=1` + 新步 id 续接 max+1 单调重编号
 - replan 耗尽（无成功步）→ 纯失败 partial；汇总 None → 纯文本拼装（有步骤产出部分成功）
 - Schema 严格性（四个 schema required + additionalProperties:False，fixture 过 jsonschema）
@@ -243,6 +247,8 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 ## 问题记录
 
 - [REASON-016 跨策略执行护栏](../../../issues/domain/reasoning/2026-09-10-cross-strategy-guard-priority.md)：结构化调用前后统一复查；子 ReAct 返回后先吸收成果与 usage，再按优先级终止
+- [REASON-021 STOP 关闭 fallback](../../../issues/domain/reasoning/2026-09-12-planner-stop-starts-fallback.md)
+- [REASON-022 结构化 Guard 终态](../../../issues/domain/reasoning/2026-09-12-structured-guard-terminal-loss.md)
 
 ## 相关文档
 

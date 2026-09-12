@@ -1,5 +1,8 @@
 # ReAct 将 LLM 内部 TimeoutError 误判为总执行超时（REASON-014）
 
+> 2026-09-12 后继：本文对“内部 TimeoutError 必须区分来源”的结论继续有效；其中
+> `llm_call` 非关键日志异常穿透到 ReAct UNKNOWN 的历史行为已由
+> [LLM-049](../../integration/llm/2026-09-12-llm-observation-overrides-terminal.md) 替代。
 > **状态**：✅ 已修复 ｜ **优先级**：P1 ｜ **来源**：LLM-046 跨层审查 ｜ **涉及模块**：`app/domain/reasoning/react.py`、`app/integration/llm/streaming_rectifier.py`
 
 ## 问题描述

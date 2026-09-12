@@ -22,6 +22,10 @@ ReAct 的终止成果选择还把当前轮未执行的 `tool_calls` 当作用户
 - OpenAI Agents SDK 为取消、超时、预算类终止提供不同的异常/结果类型，调用方按类型分派收尾；本项目对应 `GuardResult.kind` 与三策略各自的终态映射（保留各策略差异化的降级内容与文案）。
 - 「调用前准入 + 成功后先接管成果与用量再复查」是异步编排的通用生命周期：只做调用前检查会漏掉 await 期间发生的取消与超限，只做调用后检查会丢已返回的成果与 usage。本项目把这条规则收敛到共享函数，由三策略统一遵守。
 
+> 2026-09-12 前向说明：完整生命周期与不同 Guard 的提交语义已由
+> [ADR-003](../../../adr/2026-09-12-sdk-call-guard-response-commit.md) 收口。本文的通用表述不再解释
+> Reflection strict deadline 例外；该分支以 ADR-003 与 REASON-022 为准。
+
 ## 修复方案
 
 - 在 `_common.py` 定义不可变 `GuardResult`，复用 `AgentErrorKind`，不新增平行枚举。

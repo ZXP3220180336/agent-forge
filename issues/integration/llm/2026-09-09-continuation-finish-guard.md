@@ -1,5 +1,7 @@
 # LLM-046 半流续接缺完成态守卫：EOF 后结算/日志异常被当续接中断重发（重复计费）
 
+> 2026-09-12 后继：EOF 完成态禁止续接/重发的结论继续有效；非关键日志异常不再上抛覆盖
+> 主终态，见 [LLM-049](2026-09-12-llm-observation-overrides-terminal.md)。结算异常仍保持可见。
 > 状态：✅ 已修复 ｜ 优先级：P1（续接成功后被再次续接 → 重复内容 + 双倍计费） ｜ 发现：2026-09-09 ｜ 模块：streaming_rectifier（`_try_continuations`）
 > 关联：[LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)（半流续接）；与主流路径 `stream_done` 守卫（rectified_stream 迭代收尾）同源同语义；异常穿透后的领域分类见 [REASON-014](../../domain/reasoning/2026-09-09-internal-timeout-misclassified-as-deadline.md)
 

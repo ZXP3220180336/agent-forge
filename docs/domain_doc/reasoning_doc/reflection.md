@@ -1,7 +1,7 @@
 # ReflectionStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/reflection.py`
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-12
 > **职责**：Reflection 原子推理策略——生成 → 自查 → 修正三阶段，模型自我评估输出质量并改进
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/reflection.py](../agent_doc/agent.md)；工业级对标见 [reflection_benchmark.md](reflection_benchmark.md)
@@ -67,8 +67,9 @@ Critic 被外部信号（工具记录）锚定：自查消息注入「证据链�
 | --- | --- |
 | ReAct 失败 | 降级 outcome（error 透传，证据链保留），degraded=True |
 | ReAct 无 structured（未调 final_answer） | 降级（content 保留），degraded=True |
-| 自查失败 / 拒答 / 熔断等不可恢复错误（AppError） | CRITIQUE_FAILED 分发，默认采用 draft，degraded=True |
-| 自查 ok | 采用 draft（degraded=False） |
+| 自查普通失败 / 拒答 / 熔断等 AppError | CRITIQUE_FAILED 分发，默认采用 draft，degraded=True |
+| 自查无结果且 cancel/deadline/context 命中 | 先按专用 Guard 终态收尾，不改写为 CRITIQUE_FAILED |
+| 自查 ok | 成本越界或 graceful cancel 采用 draft；strict deadline 迟到则保留稿与 critique，以 TIMEOUT 部分成果收尾 |
 | 自查 issues + 修正 + 复查 ok | 采用 refined（degraded=False） |
 | 修正失败 / 达上限（复查未通过） | 采用最近稿，degraded=True |
 
@@ -76,7 +77,10 @@ Critic 被外部信号（工具记录）锚定：自查消息注入「证据链�
 
 ### CRITIQUE_FAILED 错误分发
 
-自查 / 修正失败统一走 `AgentErrorKind.CRITIQUE_FAILED`（默认 CONTINUE）——独立 kind 而非复用 `STRUCTURED_INVALID`（语义不符）或 `REFUSED`（默认 STOP 会硬停整个 Agent）。动作：CONTINUE=降级采用 best（默认）/ STOP=整个失败 / RAISE=抛 `AgentRunError`。失败捕获范围为 **AppError 全家族**（拒答 / 工具调用 / 熔断等不可恢复错误）；非 AppError 编程错误不吞、向上冒泡（fail fast，[REASON-010](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md)）。结构化截断在集成层短路返回 `None`，不进入本分发。
+自查 / 修正的普通 AppError 失败统一走 `AgentErrorKind.CRITIQUE_FAILED`（默认 CONTINUE）。
+`ContextWindowExceededError` 是请求 Guard 终态，不进入该分发；调用方先归并本阶段 usage，再按
+`CONTEXT_EXCEEDED` 收尾。非 AppError 编程错误不吞、向上冒泡（fail fast，
+[REASON-010](../../../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md)）。
 
 ## 架构总览
 
@@ -131,9 +135,9 @@ ReflectionStrategy.execute()（三阶段）
   current = draft
   while True:
     ├─ 护栏①（自查调用前准入）：cancel > deadline > cost 命中 → 采用最近完整稿降级停机
-    ├─ 自查 current（CRITIQUE_SCHEMA）→ 失败 → 降级采用 current（degraded）
-    ├─ critique.ok → 采用 current（degraded=False，early exit；此后不再付费，故护栏复查在其后）
-    ├─ refine_round >= max_refine_rounds-1 → 达上限，采用 current（degraded）
+    ├─ 自查 current（CRITIQUE_SCHEMA）→ 无结果先恢复 cancel/deadline/context，再判普通失败
+    ├─ critique.ok → strict deadline 复查；按时采用 current，迟到保留事实并 TIMEOUT
+    ├─ refine_round >= max_refine_rounds-1 → strict deadline 复查；按时采用 current
     ├─ 护栏②（修正调用前准入）：命中 → 采用最近稿降级停机，不发起修正
     └─ issues → 修正（REFINE_PROMPT + 证据链 + current + issues）→
         成功 current = refined → 护栏③（归账并接管新稿后复查）→ 命中则采用 refined 降级停机；
@@ -187,7 +191,7 @@ ReflectionStrategy.execute()（三阶段）
 - 降级路径：自查失败 / 拒答 / **不可恢复 AppError（熔断 / LLMAPIError 401/403）** / 修正失败 / ReAct 无 structured / ReAct 失败
 - 非 AppError 编程错误不吞、向上冒泡（fail fast）
 - done 事件 total_tokens 与 outcome 一致 + 抑制 ReAct 中间 done（P2 / REASON-011，事件流仅收尾 1 个 done）
-- 反思循环统一护栏：自查前与修正前准入、修正归账后复查均经 `_common.evaluate_guard`；覆盖自查后取消/成本超限零额外修正调用（`test_reflect_cost_limit_stops` / `test_reflect_cancel_event_stops_degrades_to_draft`）、修正成功后接管新稿再终止（`test_reflect_refined_adopted_on_cost_limit_after_refine`），以及自查通过 + 累计超限仍产出干净成功（`test_reflect_critique_ok_after_cost_limit_is_clean_success`）
+- 反思循环护栏覆盖调用前准入、无结果终止分类、修正返回后的成果/usage 接管，以及自查通过后的成本/after-turn cancel 与 strict deadline 差异；上下文超限不进入 CRITIQUE_FAILED
 - max_refine_rounds 上限（max=1 不修正）、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
 - Scope 盲区清单维度穷举（9 dimension）、护栏透传
 - 桥接：_map_outcome 映射 / ctx 透传 / 端到端 / 默认向后兼容
@@ -203,6 +207,8 @@ ReflectionStrategy.execute()（三阶段）
 - [REASON-011 done 事件 token 口径](../../../issues/domain/reasoning/2026-09-01-reflect-done-token-caliber.md)：ReAct 中间 done 泄漏 / total_tokens 口径不一致——抑制中间 done，收尾 1 个 done 与 outcome 一致
 - [REASON-016 跨策略执行护栏](../../../issues/domain/reasoning/2026-09-10-cross-strategy-guard-priority.md)：自查/修正调用前后统一判定，取消或成本超限后不再多发下一笔请求
 - [REASON-020 护栏复查挂载点](../../../issues/domain/reasoning/2026-09-11-reflection-guard-checkpoint.md)：复查落在自查 ok 判定之前——合格报告被标降级、自查结论丢失；复查改挂到修正调用前
+- [REASON-022 结构化 Guard 终态](../../../issues/domain/reasoning/2026-09-12-structured-guard-terminal-loss.md)：保留 REASON-020 的成本/after-turn 语义，strict deadline 与上下文超限按专用终态处理
+- [ADR-003 调用与提交边界](../../../adr/2026-09-12-sdk-call-guard-response-commit.md)
 
 ## 相关文档
 

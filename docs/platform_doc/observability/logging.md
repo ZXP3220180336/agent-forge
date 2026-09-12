@@ -1,6 +1,7 @@
 # 全局日志框架
 
 > **模块**：`app/platform/observability/logger.py`
+> **更新日期**：2026-09-12
 > **定位**：项目级日志基础设施 —— 全项目所有模块（LLM / 服务 / Agent / API / 基础设施）的统一日志入口
 > **职责**：双 handler 输出、业务事件机制、结构化日志（JSON）
 
@@ -25,7 +26,7 @@
 1. **横切关注点**：日志是全局基础设施，不归属任何业务模块。各模块用 `get_logger()` 拿命名空间 Logger，最终输出统一走本框架的双 handler。
 2. **双 handler**：控制台人类可读（`[OK]/[WARN]` 前缀 + 字段摘要），文件结构化（JSON 默认，可切 text）——开发调试友好 + 可进 ELK。
 3. **业务事件**：以 `log_event("llm_call", **fields)` 记录领域事件（如 LLM 调用），事件名作 message、字段进结构化输出，跨模块可检索。
-4. **异步写入**：`log_event_async` 用 `asyncio.to_thread` 兑现「日志不阻塞主流程」，文件 IO 移出事件循环。
+4. **异步写入**：`log_event_async` 用 `asyncio.to_thread` 把文件 IO 移出事件循环；LLM 调用点统一经 `fill_llm_event_fields` 施加有界 best-effort 边界。
 5. **幂等配置**：`setup_logging()` 清空 root handlers 重建，可重复调用。
 
 ---
@@ -73,7 +74,7 @@ await log_event_async("llm_call", success=True, duration=2.3, total_tokens=120)
 
 ### `fill_llm_event_fields(event_fields, *, success, duration, error=None, usage=None, finish_reason=None) -> None`
 
-LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`duration`/`prompt_tokens`/`completion_tokens`/`total_tokens`/`finish_reason` 到 `event_fields` 并 `await log_event_async("llm_call")`。被 `llm_service.py`（generate）与 `streaming_rectifier.py`（整流循环）复用，统一各调用点的日志填充与记录。
+LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`duration`/`prompt_tokens`/`completion_tokens`/`total_tokens`/`finish_reason` 到 `event_fields`，并在固定上限内等待 `log_event_async("llm_call")`。日志 handler、文件系统异常或日志等待超时被隔离，不覆盖已确定的 SDK 成功、失败、终止或必要结算异常；调用方任务的 `CancelledError` 仍传播。`asyncio.to_thread` 已启动的底层线程可能继续完成 IO，但调用协程不会无限等待。该工具被 `llm_service.py` 与 `streaming_rectifier.py` 复用。
 
 ---
 
@@ -121,7 +122,7 @@ LLM 调用事件的通用填充 + 记录工具：填充 `success`/`error`/`durat
 | `total_tokens` | int\|None | 总计 Token |
 | `finish_reason` | str\|None | 停止原因 |
 
-**用法**：`await fill_llm_event_fields(event_fields, success=True, duration=2.3, usage=..., finish_reason=...)` —— 填充 success/error/duration/tokens/finish_reason 并 `log_event_async("llm_call")` 落盘，统一各调用点（LLMService.generate、StreamingRectifier 整流循环）。
+**用法**：`await fill_llm_event_fields(event_fields, success=True, duration=2.3, usage=..., finish_reason=...)` —— 填充 success/error/duration/tokens/finish_reason，并在有界 best-effort 边界内尝试落盘。统一各调用点（LLMService.generate、StreamingRectifier 整流循环）。契约来源见 [ADR-003](../../../adr/2026-09-12-sdk-call-guard-response-commit.md)，缺陷记录见 [LLM-049](../../../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md)。
 
 **脱敏**：只记元数据（消息数/Token），不记 messages 内容本身。
 

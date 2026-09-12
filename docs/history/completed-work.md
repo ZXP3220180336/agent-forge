@@ -4,6 +4,21 @@
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
 
+## 2026-09-12：SDK 调用 Guard、响应接管与提交边界
+
+[ADR-003](../../adr/2026-09-12-sdk-call-guard-response-commit.md) 已落地：调用前准入阻止下一
+副作用；SDK 返回后先接管响应、usage 与 reservation，再按 Guard 类型决定提交。create
+调度后的普通异常改为 `settle(None)`，LLM 调用日志改为有界 best effort；Reflection 的
+strict deadline 保留稿件与 critique 后进入超时终态，Planner 的 STOP 不再启动 ReAct 或
+付费汇总，上下文超限不再落入未缩减的普通 fallback。ReAct 经复核无需修改。
+
+实施记录见 [LLM-048](../../issues/integration/llm/2026-09-12-create-started-ordinary-error-settlement.md)、
+[LLM-049](../../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md)、
+[REASON-021](../../issues/domain/reasoning/2026-09-12-planner-stop-starts-fallback.md) 与
+[REASON-022](../../issues/domain/reasoning/2026-09-12-structured-guard-terminal-loss.md)。专项回归
+216 项通过，全量测试 968 项通过；`scripts.verify_alignment` 与 `git diff --check` 通过。
+唯一告警为 Starlette 测试兼容层的既有 `httpx` 弃用提示。
+
 ## 2026-09-12：治理包接入与迁移收尾
 
 治理包已合入基准 `c351a81` 的工作区，未提交。此前创建迁移分支受 Git 权限限制，本轮未重试分支操作。根入口单一化、正式目录迁移、源码引用恢复、索引去重及原工作流要求核对已完成；详细验收与范围见[迁移说明](../migration.md)，外部规范来源见[引用核对](../../issues/documentation/2026-09-12-reference-gaps.md)。

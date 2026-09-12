@@ -30,7 +30,7 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_message_event
-from app.shared.exceptions import LLMAPIError
+from app.shared.exceptions import ContextWindowExceededError, LLMAPIError
 
 PLAN = {
     "goal": "分析批次 A 良率下降原因",
@@ -302,6 +302,26 @@ async def test_plan_failed_stop_marks_failure():
     assert strategy.outcome is not None
     assert strategy.outcome.success is False
     assert strategy.outcome.degraded is True
+    assert llm.react_calls == 0, "STOP 已选定终态后不得再启动 ReAct fallback"
+
+
+async def test_plan_context_overflow_stops_without_react_fallback():
+    """最终 payload 上下文超限时，未缩减同一请求不得转普通 PLAN_FAILED fallback。"""
+    overflow = ContextWindowExceededError(
+        model_key="fast", input_tokens=120, input_budget=100, max_tokens=20
+    )
+    llm = _PlannerLLM(
+        react_scripts=[_stop_script("不应执行")], structured_scripts=[overflow]
+    )
+    strategy = PlannerStrategy(llm=llm, tools=None)
+
+    await _run(strategy, [{"role": "user", "content": "hi"}])
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.degraded is True
+    assert "上下文超限" in (strategy.outcome.error or "")
+    assert llm.react_calls == 0
 
 
 # =====================================================================
@@ -348,6 +368,28 @@ async def test_replan_exhausted_degrades_partial():
     assert strategy.outcome.degraded is True
     assert strategy.outcome.success is False
     assert "重规划" in strategy.outcome.error
+
+
+async def test_replan_failed_stop_does_not_start_partial_summary():
+    """replan handler 已选择 STOP 后不得再发起付费汇总。"""
+
+    async def on_plan_failed(ctx: AgentErrorContext) -> AgentErrorAction:
+        return AgentErrorAction.STOP
+
+    registry = ErrorHandlerRegistry()
+    registry.register(AgentErrorKind.PLAN_FAILED, on_plan_failed)
+    llm = _PlannerLLM(
+        react_scripts=[_stop_script("步骤 1 成果"), {"error": "步骤 2 失败"}],
+        structured_scripts=[PLAN, LLMAPIError("replan failed"), SUMMARY],
+    )
+    strategy = PlannerStrategy(llm=llm, tools=None, error_handlers=registry)
+
+    await _run(strategy, [{"role": "user", "content": "hi"}])
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.degraded is True
+    assert strategy.outcome.success is True  # 已完成步骤仍是可交付的部分成果
+    assert llm.structured_calls == 2, "STOP 后不得调用 summarize"
 
 
 # =====================================================================

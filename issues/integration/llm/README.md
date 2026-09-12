@@ -56,6 +56,8 @@
 | [LLM-045](2026-09-09-execution-control-late-result-drop.md) | await_with_execution_control abort 判赢后丢弃迟回值（reserve/create 资源泄漏） | P1 | ✅ 已修复 | execution_control / llm_service / streaming_rectifier | 2026-09-09 | 2026-09-09 |
 | [LLM-046](2026-09-09-continuation-finish-guard.md) | 半流续接缺完成态守卫：EOF 后结算/日志异常被当续接中断重发（重复计费） | P1 | ✅ 已修复 | streaming_rectifier（_try_continuations） | 2026-09-09 | 2026-09-09 |
 | [LLM-047](2026-09-09-deadline-usage-propagation-closed-loop.md) | 流式 deadline 已获 usage 传播闭环不完整（整流/续接退避部分出口漏传、无用量出口误传） | P2 | ✅ 已修复 | streaming_rectifier / llm_service / errors / structured | 2026-09-09 | 2026-09-09 |
+| [LLM-048](2026-09-12-create-started-ordinary-error-settlement.md) | create 已启动后的普通异常错误退回 reservation | P1 | ✅ 已修复 | llm_service | 2026-09-12 | 2026-09-12 |
+| [LLM-049](2026-09-12-llm-observation-overrides-terminal.md) | LLM 非关键日志覆盖调用终态 | P1 | ✅ 已修复 | logger / llm_service / streaming_rectifier | 2026-09-12 | 2026-09-12 |
 
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

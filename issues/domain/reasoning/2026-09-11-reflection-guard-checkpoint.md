@@ -1,5 +1,8 @@
 # Reflection 护栏复查挂载在自查 ok 判定之前，合格报告被改判降级（REASON-020）
 
+> 2026-09-12 后继：[ADR-003](../../../adr/2026-09-12-sdk-call-guard-response-commit.md)
+> 保留本文关于成本和 after-turn 取消的结论；strict deadline 迟到成功及无结果 Guard
+> 分类由 [REASON-022](2026-09-12-structured-guard-terminal-loss.md) 部分替代。
 > **状态**：✅ 已修复 ｜ **优先级**：P2 ｜ **来源**：REASON-016 跨策略护栏复审 ｜ **涉及模块**：`app/domain/reasoning/reflection.py`
 
 ## 问题描述

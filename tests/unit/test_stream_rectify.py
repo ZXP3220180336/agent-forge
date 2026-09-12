@@ -587,9 +587,9 @@ async def test_rate_limiter_acquire_on_retry_inside_execute(monkeypatch):
     assert calls["reserve"] == 2, (
         f"重试也应 reserve（每次 call_fn 调用前一次），实际 {calls['reserve']} 次"
     )
-    # 第 1 次 create 失败在 call_fn 内 cancel 全额退；第 2 次成功 settle 退差
-    assert calls["cancel"] == 1, f"create 失败应 cancel 全额退，实际 {calls['cancel']} 次"
-    assert calls["settle"] == 1, f"成功那次应 settle，实际 {calls['settle']} 次"
+    # 两次 create 均已调度：首次异常 settle(None) 保守关闭，第二次按 usage 结算。
+    assert calls["cancel"] == 0, "create 启动后不得全额退款"
+    assert calls["settle"] == 2, f"每次已启动 create 均应 settle，实际 {calls['settle']} 次"
     assert sr.content == "ok"
     assert all("error" not in e for e in events), f"不应有 error: {events}"
 
@@ -614,18 +614,18 @@ async def test_rate_limiter_settle_refunds_overestimate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rate_limiter_cancel_on_create_failure(monkeypatch):
-    """create 失败全额退：call_fn 内 cancel，不 settle。"""
+async def test_rate_limiter_settles_unknown_usage_on_create_failure(monkeypatch):
+    """create 已调度后失败：以 settle(None) 保守关闭，不全额退款。"""
     script = [
-        httpx.ReadError("connection reset"),  # create 失败 → cancel 全额退
+        httpx.ReadError("connection reset"),
     ]
     _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=0)
 
     sr, events = await run()
 
     assert completions.calls == 1
-    assert calls["cancel"] == 1, f"create 失败应 cancel，实际 {calls['cancel']} 次"
-    assert calls["settle"] == 0, "create 失败不应 settle"
+    assert calls["cancel"] == 0, "没有成功响应不证明远端未执行"
+    assert calls["settle"] == 1, "create 异常应以未知 usage 保守结算"
     assert any("error" in e for e in events), "应产出 error 事件"
 
 

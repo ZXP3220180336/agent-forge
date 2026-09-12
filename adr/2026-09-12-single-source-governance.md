@@ -18,11 +18,11 @@
 
 Reflection 自查早退以 [REASON-020](../issues/domain/reasoning/2026-09-11-reflection-guard-checkpoint.md)及其正式模块文档为准；不按通用模板暗改取消/成功语义。Planner 成功判据以 [REASON-019](../issues/domain/reasoning/2026-09-11-planner-step-success-extra-dimension.md)为准。两者不是本次重新设计的行为。
 
-## G0-6 的后续代码符合性工作（本轮范围外）
+## G0-6 的后续代码符合性工作
 
-当前 [REASON-014](../issues/domain/reasoning/2026-09-09-internal-timeout-misclassified-as-deadline.md)与 [LLM-046](../issues/integration/llm/2026-09-09-continuation-finish-guard.md)仍声明 EOF 后结算/日志异常上抛，日志 TimeoutError 可导致 ReAct UNKNOWN 同时保留成果与 usage。
+历史上 [REASON-014](../issues/domain/reasoning/2026-09-09-internal-timeout-misclassified-as-deadline.md)与 [LLM-046](../issues/integration/llm/2026-09-09-continuation-finish-guard.md)记录了 EOF 后结算/日志异常上抛，以及日志 TimeoutError 导致 ReAct UNKNOWN 的路径。
 
-已确定的 G0-6 要求非关键观测失败不覆盖主终态。后续代码任务须区分结算失败、业务错误与非关键观测，迁移相关传播和回归；不吞结算错误，不重发已完成请求。本次仅完成规范归位，这项代码符合性仍未关闭，进入当前计划的待确认候选。用户于 2026-09-12 明确治理规范搭建与代码实现分开，本轮不实施该候选，也不以其阻塞文档迁移完成。
+后续 [ADR-003](2026-09-12-sdk-call-guard-response-commit.md) 明确区分必要结算与非关键观测，[LLM-049](../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md) 已将 LLM 调用日志入口迁移为有界 best effort，同时保持结算错误与硬取消可见。该结论只覆盖 `fill_llm_event_fields` 的调用链；其他日志、指标和审计入口仍须按 G0-6 逐入口核验，不能从这一局部实现推导全仓已完成。
 
 ## Consequences
 

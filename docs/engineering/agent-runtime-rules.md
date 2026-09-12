@@ -133,7 +133,7 @@ Gate 是开发检查，Guard 是产品运行时门控。以下正式文档持有
 | 变更涉及 | 唯一契约位置 | 检查重点 |
 |---|---|---|
 | Guard 顺序与共享结果 | [_common](../domain_doc/reasoning_doc/_common.md) | 顺序、短路和状态归属；不新增平行枚举。 |
-| Reflection 自查与修正 | [Reflection](../domain_doc/reasoning_doc/reflection.md) | 按已声明的自查早退/修正检查点处理，不把合格稿按通用模板改判；决策见 REASON-020。 |
+| Reflection 自查与修正 | [Reflection](../domain_doc/reasoning_doc/reflection.md) | 成本与 after-turn 取消保留 REASON-020 早退；strict deadline 迟到结果按 ADR-003 保留事实并进入超时终态。 |
 | ReAct 成果、协议与 usage | [ReAct](../domain_doc/reasoning_doc/react.md) | current 与已归账结果的责任；terminal 能力不能仅按工具名推断。 |
 | Planner 步骤与 plan | [Planner](../domain_doc/reasoning_doc/planner.md) | 不额外收窄成功判据；正常与早退的公共结果形状相同。 |
 | AgentState 与生命周期 | [Agent](../domain_doc/agent_doc/agent.md)、[Executor](../domain_doc/agent_doc/executor.md) | 对照实际转换与对齐记录，不从 error 文案猜状态。 |
@@ -144,4 +144,4 @@ Gate 是开发检查，Guard 是产品运行时门控。以下正式文档持有
 
 ReAct 的局部恢复预算见 [ReAct 契约](../domain_doc/reasoning_doc/react.md)；Reflection 修正轮数见 [Reflection](../domain_doc/reasoning_doc/reflection.md)；Planner 重规划次数见 [Planner](../domain_doc/reasoning_doc/planner.md)。LLM 次数见 [Retry](../integration_doc/llm_doc/retry.md)，工具次数见 [Executor](../integration_doc/tools_doc/executor.md)。同名参数可能首次计数不同，改动时对照当前契约及配置，不能按名称统一加减一次。默认值不在治理文件维护。
 
-结果可用性、终止原因及降级含义按所属策略正式文档解释。REASON-019 与 REASON-020 是具体语义决定，不能以通用模板覆盖；如需变更，提交新 ADR 并更新同一正式契约及测试。观测隔离目标与现行异常传播的迁移责任见 [治理决策](../../adr/2026-09-12-single-source-governance.md)。
+结果可用性、终止原因及降级含义按所属策略正式文档解释。REASON-019 与 REASON-020 是具体语义决定；SDK 调用前准入、调用后事实接管和提交边界由 [ADR-003](../../adr/2026-09-12-sdk-call-guard-response-commit.md) 统一约束。ADR-003 只收窄 REASON-020 的 strict deadline 分支，成本与 after-turn 取消语义不变。非关键 LLM 调用观测已按 [LLM-049](../../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md) 迁移；其他观测路径仍须逐入口核验，不据此宣称全仓隔离完成。

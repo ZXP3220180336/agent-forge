@@ -27,7 +27,12 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_message_event
-from app.shared.exceptions import LLMAPIError, NonRetryableError, StructuredRefusalError
+from app.shared.exceptions import (
+    ContextWindowExceededError,
+    LLMAPIError,
+    NonRetryableError,
+    StructuredRefusalError,
+)
 
 DRAFT = {
     "summary": "良率下降归因于设备 A 告警",
@@ -150,7 +155,7 @@ def _make_strategy(llm, *, error_handlers=None, max_refine_rounds=2) -> Reflecti
     )
 
 
-async def _run(strategy, max_refine_rounds=2) -> list[str]:
+async def _run(strategy, max_refine_rounds=2, **execute_kwargs) -> list[str]:
     events = []
     async for ev in strategy.execute(
         "分析良率下降原因",
@@ -159,6 +164,7 @@ async def _run(strategy, max_refine_rounds=2) -> list[str]:
         temperature=0.2,
         max_tokens=1024,
         max_refine_rounds=max_refine_rounds,
+        **execute_kwargs,
     ):
         events.append(ev)
     return events
@@ -677,6 +683,78 @@ async def test_reflect_critique_ok_after_cost_limit_is_clean_success():
     assert strategy.outcome.degraded is False
     assert strategy.outcome.error is None
     assert llm.structured_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reflect_critique_ok_after_turn_cancel_is_clean_success():
+    """graceful cancel 在自查 turn 内到达：自查已通过且无下一调用时提交当前稿。"""
+    cancel_event = asyncio.Event()
+
+    class _CancelAfterCritiqueLLM(_ReflectionLLM):
+        async def generate_structured(self, *args, **kwargs):
+            result = await super().generate_structured(*args, **kwargs)
+            cancel_event.set()
+            return result
+
+    llm = _CancelAfterCritiqueLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[{"ok": True, "issues": []}],
+    )
+    strategy = _make_strategy(llm)
+
+    await _run(strategy, cancel_event=cancel_event)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.degraded is False
+    assert strategy.outcome.critique == {"ok": True, "issues": []}
+
+
+@pytest.mark.asyncio
+async def test_reflect_critique_ok_after_strict_deadline_keeps_facts_but_times_out():
+    """自查迟于绝对期限返回：保留稿、critique、usage，但不能提交按时成功。"""
+
+    class _LateCritiqueLLM(_ReflectionLLM):
+        async def generate_structured(self, *args, **kwargs):
+            deadline = kwargs["deadline"]
+            await asyncio.sleep(max(0.0, deadline - time.monotonic()) + 0.01)
+            return await super().generate_structured(*args, **kwargs)
+
+    llm = _LateCritiqueLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[{"ok": True, "issues": []}],
+        usage={"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+    )
+    strategy = _make_strategy(llm)
+
+    await _run(strategy, max_execution_time=0.1)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.critique == {"ok": True, "issues": []}
+    assert strategy.outcome.degraded is True
+    assert "执行超时" in (strategy.outcome.error or "")
+    assert (strategy.outcome.usage or {}).get("total_tokens", 0) >= 6
+
+
+@pytest.mark.asyncio
+async def test_reflect_context_overflow_is_guard_terminal_not_critique_failure():
+    """请求上下文准入拒绝须保留专用终态，不得归为普通 CRITIQUE_FAILED。"""
+    overflow = ContextWindowExceededError(
+        model_key="fast", input_tokens=120, input_budget=100, max_tokens=20
+    )
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT), structured_scripts=[overflow]
+    )
+    strategy = _make_strategy(llm)
+
+    await _run(strategy)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.degraded is True
+    assert "上下文超限" in (strategy.outcome.error or "")
+    assert "自查失败" not in (strategy.outcome.error or "")
 
 
 @pytest.mark.asyncio

@@ -154,7 +154,8 @@ async def _budget_guarded_call(
        - create **吞取消以值迟回**（response / stream 实际已取得）→ 正常 return，
          Reservation 留在 ``ctx.active`` 交调用方（generate/整流）接管——按实际 usage
          `settle(actual)` 或整流器结算，不再于本步 settle(None)；
-       - create 自然抛的普通传输异常 → 维持既有 `cancel()`（供 retry 重试语义）。
+        - create 自然抛的普通传输异常 → 请求是否到达 provider 未知，`settle(None)`
+          保守关闭预留责任；retry 是否继续由可靠性层独立决定。
 
     预算不混入限流步骤内部：它是入口的独立第一步，超限异常在网络前上抛，由
     整流器/领域层终结。
@@ -211,8 +212,8 @@ async def _budget_guarded_call(
         await res.settle(None)  # 保留全部预留（不退 RPM/TPM，防配额虚增→429）
         ctx.active.pop("res", None)
         raise
-    except BaseException:  # 普通传输异常（重试、限流、不可重试语义），请求未发出
-        await res.cancel()  # 维持既有 cancel() 语义，全额退（RPM 1 + TPM 全额）
+    except BaseException:  # create 已调度：普通传输异常也不能证明请求未到 provider
+        await res.settle(None)  # 保留预留，避免本地配额被未知远端执行虚增
         ctx.active.pop("res", None)
         raise
 
@@ -590,7 +591,7 @@ class LLMService:
         # 正常：finally 内 settle(actual) 退 TPM 差；
         # 解析抛异常：sr.usage 为 None → settle(None) 保留全部预留 + 标记终态
         #   （请求已发出，RPM/TPM 是真实消耗，不 cancel 全额退）；
-        # settle 被硬取消：未终态 res cancel() 全额退 + re-raise（不吞取消信号）。
+        # settle 被硬取消：未终态 res 以 settle(None) 保守关闭 + re-raise（不吞取消信号）。
         sr = StreamResult()
         try:
             parsed = StreamParser.parse_non_stream(response)
@@ -616,15 +617,8 @@ class LLMService:
                         )  # 保留全部预留并标记终态（不 cancel，防配额虚增）
                     raise
 
-        # LLM-044 检查点 3：create 成功返回并结算完成后、返回前复查执行状态——当前
-        # 请求在执行期间已到期/被取消 → 抛 shared 终止（不把「恰好完成但已超时」的
-        # 结果当成功返回；费用已 settle、信号携带 sr.usage 供上层成本归量不丢）。
-        # generate 是 Facade 边界：直接抛 shared 领域异常（域不依赖 integration 私有）。
-        if plan.ctx.cancel_event is not None and plan.ctx.cancel_event.is_set():
-            raise LLMCancelledError(message="用户取消", usage=sr.usage)
-        if plan.ctx.deadline is not None and time.monotonic() >= plan.ctx.deadline:
-            raise LLMDeadlineExceededError(message="执行期限耗尽", usage=sr.usage)
-
+        # 非关键观测先在自己的有界 best-effort 边界内完成；最终 Guard 之后到 return
+        # 不再存在可阻塞 await，避免日志等待期间新到的取消/deadline 穿过提交窗口。
         await fill_llm_event_fields(
             event_fields,
             success=True,
@@ -633,6 +627,15 @@ class LLMService:
             usage=sr.usage,
             finish_reason=sr.finish_reason,
         )
+
+        # LLM-044 检查点 3：create 成功返回、结算与观测完成后，返回前复查执行状态——当前
+        # 请求在执行期间已到期/被取消 → 抛 shared 终止（不把「恰好完成但已超时」的
+        # 结果当成功返回；费用已 settle、信号携带 sr.usage 供上层成本归量不丢）。
+        # generate 是 Facade 边界：直接抛 shared 领域异常（域不依赖 integration 私有）。
+        if plan.ctx.cancel_event is not None and plan.ctx.cancel_event.is_set():
+            raise LLMCancelledError(message="用户取消", usage=sr.usage)
+        if plan.ctx.deadline is not None and time.monotonic() >= plan.ctx.deadline:
+            raise LLMDeadlineExceededError(message="执行期限耗尽", usage=sr.usage)
 
         return sr
 

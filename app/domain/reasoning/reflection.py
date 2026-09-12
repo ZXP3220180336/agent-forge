@@ -40,7 +40,7 @@ from app.shared.events import (
     build_done_event,
     build_info_event,
 )
-from app.shared.exceptions import AppError
+from app.shared.exceptions import AppError, ContextWindowExceededError
 
 from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage
 from .react import ReActOutcome, ReActStrategy
@@ -333,7 +333,7 @@ class ReflectionStrategy:
                 return
 
             # ── 自查当前稿 ──
-            critique, crit_action, crit_usage = await self._critique(
+            critique, crit_action, crit_usage, crit_context_error = await self._critique(
                 evidence,
                 current,
                 react_outcome.iterations,
@@ -344,7 +344,24 @@ class ReflectionStrategy:
             if crit_usage:
                 self._structured_usage = merge_usage(self._structured_usage, crit_usage)
 
+            # generate_structured 会把 cancel/deadline 收敛为 None；上下文准入异常由
+            # _critique 显式返回。无可用 critique 时先恢复终止原因，再判普通自查失败。
             if critique is None:
+                guard = evaluate_guard(
+                    cancel_event=cancel_event,
+                    deadline=deadline,
+                    cost_limiter=None,
+                    running_usage=merge_usage(
+                        react_outcome.usage, self._structured_usage
+                    ),
+                    context_error=crit_context_error,
+                )
+                if guard is not None:
+                    for e in self._finalize_guard(
+                        guard, react_outcome, draft, current, refine_round
+                    ):
+                        yield e
+                    return
                 # 自查失败 → 降级采用当前稿（best-effort，不抛错）
                 suffix = "（STOP）" if crit_action == AgentErrorAction.STOP else ""
                 for e in self._finalize(
@@ -362,6 +379,27 @@ class ReflectionStrategy:
                 return
 
             if critique.get("ok"):
+                # REASON-020 保留成本/after-turn cancel 成功语义；绝对 deadline 是 strict，
+                # 迟到的合格稿保留，但不能标记为按时成功。
+                deadline_guard = evaluate_guard(
+                    cancel_event=None,
+                    deadline=deadline,
+                    cost_limiter=None,
+                    running_usage=merge_usage(
+                        react_outcome.usage, self._structured_usage
+                    ),
+                )
+                if deadline_guard is not None:
+                    for e in self._finalize_guard(
+                        deadline_guard,
+                        react_outcome,
+                        draft,
+                        current,
+                        refine_round,
+                        critique=critique,
+                    ):
+                        yield e
+                    return
                 # 自查通过 → 采用当前稿（degraded=False）
                 for e in self._finalize(
                     react_outcome,
@@ -378,6 +416,25 @@ class ReflectionStrategy:
             # 有 issues 且已达修正上限 → best-effort 采用当前稿（未通过自查）
             # max_refine_rounds = 报告生成尝试总次数（初稿 + 至多 max_refine_rounds-1 次修正）
             if refine_round >= max_refine_rounds - 1:
+                deadline_guard = evaluate_guard(
+                    cancel_event=None,
+                    deadline=deadline,
+                    cost_limiter=None,
+                    running_usage=merge_usage(
+                        react_outcome.usage, self._structured_usage
+                    ),
+                )
+                if deadline_guard is not None:
+                    for e in self._finalize_guard(
+                        deadline_guard,
+                        react_outcome,
+                        draft,
+                        current,
+                        refine_round,
+                        critique=critique,
+                    ):
+                        yield e
+                    return
                 for e in self._finalize(
                     react_outcome,
                     draft=draft,
@@ -415,7 +472,7 @@ class ReflectionStrategy:
             yield build_info_event(
                 f"自查发现 {len(issues)} 个问题，修正第 {refine_round} 轮"
             )
-            refined, ref_action, ref_usage = await self._refine(
+            refined, ref_action, ref_usage, ref_context_error = await self._refine(
                 evidence,
                 current,
                 issues,
@@ -437,6 +494,7 @@ class ReflectionStrategy:
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
                 running_usage=merge_usage(react_outcome.usage, self._structured_usage),
+                context_error=ref_context_error,
             )
             if guard is not None:
                 for e in self._finalize_guard(
@@ -472,6 +530,8 @@ class ReflectionStrategy:
         draft: dict[str, Any],
         current: dict[str, Any],
         refine_rounds: int,
+        *,
+        critique: dict[str, Any] | None = None,
     ) -> list[str]:
         """护栏终止时保留最近完整稿，并由统一判定提供原因。"""
         message = f"{guard.message}，采用最近稿（降级）"
@@ -479,7 +539,7 @@ class ReflectionStrategy:
             react_outcome,
             draft=draft,
             structured=current,
-            critique=None,
+            critique=critique,
             refine_rounds=refine_rounds,
             success=bool(current),
             degraded=True,
@@ -495,11 +555,18 @@ class ReflectionStrategy:
         *,
         cancel_event: asyncio.Event | None = None,
         deadline: float | None = None,
-    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
-        """自查当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
+    ) -> tuple[
+        dict | None,
+        AgentErrorAction | None,
+        dict | None,
+        ContextWindowExceededError | None,
+    ]:
+        """自查当前稿；失败走 CRITIQUE_FAILED 分发。
 
-        捕获 AppError 全家族（拒答 / 工具调用 / 截断 / 认证熔断等不可恢复错误）
-        统一分发降级（REASON-010）；非 AppError 编程错误不吞，向上冒泡（fail fast）。
+        返回 ``(结果, 动作, 用量, 上下文错误)``。上下文超限不进入普通失败分发，
+        交由调用方按 Guard 优先级终止；其余 AppError（拒答 / 工具调用 / 截断 /
+        认证熔断等）统一分发降级（REASON-010）。RAISE 抛 AgentRunError，非 AppError
+        编程错误向上冒泡（fail fast）。
         """
         try:
             messages = [
@@ -519,7 +586,9 @@ class ReflectionStrategy:
                 cancel_event=cancel_event,
                 deadline=deadline,
             )
-            return result, None, usage
+            return result, None, usage, None
+        except ContextWindowExceededError as e:
+            return None, None, usage or None, e
         except AppError as e:
             action = await dispatch_error(
                 self._error_handlers,
@@ -528,7 +597,7 @@ class ReflectionStrategy:
                 iteration,
             )
             # 保留链内已成功调用的 usage（refusal/不可恢复上抛前已发生的真实消耗）
-            return None, action, usage or None
+            return None, action, usage or None, None
 
     async def _refine(
         self,
@@ -539,11 +608,18 @@ class ReflectionStrategy:
         *,
         cancel_event: asyncio.Event | None = None,
         deadline: float | None = None,
-    ) -> tuple[dict | None, AgentErrorAction | None, dict | None]:
-        """修正当前稿；失败走 CRITIQUE_FAILED 分发。返回 (结果, 动作, 用量)；RAISE 抛 AgentRunError。
+    ) -> tuple[
+        dict | None,
+        AgentErrorAction | None,
+        dict | None,
+        ContextWindowExceededError | None,
+    ]:
+        """修正当前稿；失败走 CRITIQUE_FAILED 分发。
 
-        捕获 AppError 全家族（拒答 / 工具调用 / 截断 / 认证熔断等不可恢复错误）
-        统一分发降级（REASON-010）；非 AppError 编程错误不吞，向上冒泡（fail fast）。
+        返回 ``(结果, 动作, 用量, 上下文错误)``。上下文超限不进入普通失败分发，
+        交由调用方按 Guard 优先级终止；其余 AppError（拒答 / 工具调用 / 截断 /
+        认证熔断等）统一分发降级（REASON-010）。RAISE 抛 AgentRunError，非 AppError
+        编程错误向上冒泡（fail fast）。
         """
         try:
             messages = [
@@ -563,7 +639,9 @@ class ReflectionStrategy:
                 cancel_event=cancel_event,
                 deadline=deadline,
             )
-            return result, None, usage
+            return result, None, usage, None
+        except ContextWindowExceededError as e:
+            return None, None, usage or None, e
         except AppError as e:
             action = await dispatch_error(
                 self._error_handlers,
@@ -572,7 +650,7 @@ class ReflectionStrategy:
                 iteration,
             )
             # 保留链内已成功调用的 usage（refusal/不可恢复上抛前已发生的真实消耗）
-            return None, action, usage or None
+            return None, action, usage or None, None
 
     def _finalize(
         self,

@@ -3,7 +3,7 @@
 > 更新日期：2026-09-12
 > 原则：本表是模块状态、文档与测试路径的唯一维护登记。实现需由代码和实际测试核验，代码偏差不能自动改写已确认契约；新增/移动/删除模块或覆盖变化时同步本表和所属说明。
 > 状态徽标：✅ 代码、文档、测试文件齐全 ｜ 🔶 已实现但文档或测试不全 ｜ ⬜ 空壳待实现。文件映射已在仓库核验；徽标不代表本轮运行了业务测试或逐项验证了运行契约。
-> 本表维持既有路径与五列表头，所有路径相对仓库根。2026-09-12 在基准 `c351a81` 的迁移工作区运行 `scripts.verify_alignment` 通过：检查模块登记、路径存在性、非空文件与状态要求；不验证业务行为。本轮未运行产品测试。
+> 本表维持既有路径与五列表头，所有路径相对仓库根。2026-09-12 在工作区运行全量 pytest 与 `scripts.verify_alignment`；后者检查模块登记、路径存在性、非空文件与状态要求，业务行为由测试覆盖。
 
 | 代码模块 | 状态 | 文档 | 测试 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -48,9 +48,9 @@
 | app/domain/prompts/templates/reflection.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_reflection.py | Reflection 自查/修正提示词模板 |
 | app/domain/reasoning/_common.py | ✅ | docs/domain_doc/reasoning_doc/_common.md | tests/unit/test_reasoning_common.py | 策略共享小工具（类型化执行护栏、dispatch_error、usage 合并，三策略共用） |
 | app/domain/reasoning/chain_of_thought.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
-| app/domain/reasoning/planner.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 策略实现（PlannerStrategy + PlannerOutcome，Plan-then-Execute 三阶段：规划→逐步骤执行→汇总，每步复用 ReAct） |
+| app/domain/reasoning/planner.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 三阶段编排；STOP 直接终止，上下文超限保留 usage/plan/步骤事实且不进入同语义 fallback |
 | app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现（ReActStrategy + ReActOutcome，含流式/非流式双通道 stream_mode；非流式另见 test_react_strategy_nonstream.py） |
-| app/domain/reasoning/reflection.py | ✅ | docs/domain_doc/reasoning_doc/reflection.md | tests/unit/test_reflection.py | Reflection 策略实现（ReflectionStrategy + ReflectionOutcome） |
+| app/domain/reasoning/reflection.py | ✅ | docs/domain_doc/reasoning_doc/reflection.md | tests/unit/test_reflection.py | Reflection 自查/修正；成本与 after-turn 取消保留早退语义，strict deadline 保留稿件/critique/usage 后按超时终止 |
 | app/infrastructure/database.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，DB 由 container 直管 |
 | app/infrastructure/redis_client.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，Redis 由 container 直管 |
 | app/infrastructure/models/database/base.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | 共享 declarative_base |
@@ -64,13 +64,13 @@
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
 | app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪（CostTracker 静态定价，经 LLMService Facade 对外） |
 | app/integration/llm/errors.py | ✅ | docs/integration_doc/llm_doc/error.md | tests/unit/test_errors.py | 传输错误统一处理（分类契约 ErrorCategory/ErrorClassifier + 归一/降级判定/下游决策；归一 LLMAPIError） |
-| app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；专属测试覆盖 fallback 传递/结算/异常归一决策（decide_downstream_error → LLMAPIError） |
+| app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；create 启动后保守结算，响应接管/usage 结算/有界观测后执行最终 Guard 并同步返回 |
 | app/integration/llm/request_budget.py | ✅ | docs/integration_doc/llm_doc/request_budget.md | tests/unit/test_request_budget.py | 最终请求上下文预算闸（model_key 窗口、输出预留、tools/schema） |
 | app/integration/llm/reservation_limiter.py | ✅ | docs/integration_doc/llm_doc/limiter.md | tests/unit/test_reservation_limiter.py | reserve/settle 限流 |
 | app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试机制（错误分类/归一迁至 llm/errors.py，经 classify_error 消费分类） |
 | app/integration/llm/execution_control.py | ✅ | docs/integration_doc/llm_doc/execution_control.md | tests/unit/test_execution_control.py | 执行控制等待原语（retry/整流/llm_service 共用；reserve 排队取消/流读取竞态等调用方边界另由 test_llm_request_budget.py / test_streaming_rectifier.py 覆盖） |
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |
-| app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流 |
+| app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流/续接；EOF 完成态禁止重发，必要结算可见，LLM 日志失败由共享入口隔离 |
 | app/integration/llm/structured.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | 结构化三级降级 |
 | app/integration/llm/token_counter.py | ✅ | docs/integration_doc/llm_doc/token_counter.md | tests/unit/test_token_counter.py | tiktoken 计数实现（get_encoder/content_to_text/TiktokenTokenCounter，经 LLMService.count_* 对外） |
 | app/integration/tools/assembler.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/integration/test_tool_execution.py | 内置工具幂等装配 |
@@ -101,5 +101,5 @@
 | app/shared/exceptions.py | ✅ | docs/shared_doc/error_handling.md | tests/unit/test_exceptions.py | 统一异常树 + AppErrorCode（含 LLMAPIError，集成层 re-export） |
 | app/shared/types.py | ✅ | docs/shared_doc/types.md | tests/unit/test_types.py | 通用类型/标识（SessionId/UserId/Messages） |
 | app/shared/encoding.py | ✅ | docs/shared_doc/encoding.md | tests/integration/test_tool_execution.py | 双编码解码（UTF-8 优先 + locale 回退），code_exec/readFile 复用 |
-| app/platform/observability/logger.py | ✅ | docs/platform_doc/observability/logging.md | tests/unit/test_logger.py | 全局日志框架 |
+| app/platform/observability/logger.py | ✅ | docs/platform_doc/observability/logging.md | tests/unit/test_logger.py | 全局日志框架；LLM 调用事件填充与有界 best-effort 记录，日志失败不覆盖业务终态 |
 | app/platform/observability/metrics.py | ⬜ | (无) | (无) | 空文件；指标规划见 architecture Phase D |

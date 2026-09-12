@@ -22,6 +22,7 @@ from app.platform.observability.logger import (
     ConsoleFormatter,
     JsonFormatter,
     get_logger,
+    fill_llm_event_fields,
     log_event,
     log_event_async,
     setup_logging,
@@ -146,6 +147,45 @@ async def test_log_event_async_uses_to_thread(monkeypatch, tmp_path):
     # 文件确实写入
     data = json.loads(tmp_path.joinpath("app.log").read_text(encoding="utf-8").strip())
     assert data["message"] == "llm_call"
+
+
+@pytest.mark.asyncio
+async def test_fill_llm_event_fields_isolates_logging_failure(monkeypatch):
+    """非关键 llm_call 日志失败不得覆盖调用的主业务终态。"""
+
+    async def fail_log(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(
+        "app.platform.observability.logger.log_event_async", fail_log
+    )
+    fields = {"model": "fake"}
+
+    await fill_llm_event_fields(fields, success=True, duration=0.1)
+
+    assert fields["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_fill_llm_event_fields_bounds_logging_wait(monkeypatch):
+    """日志永久挂起时，共享 LLM 观测入口须在自己的短期限内返回。"""
+
+    async def hang_log(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "app.platform.observability.logger.log_event_async", hang_log
+    )
+    monkeypatch.setattr(
+        "app.platform.observability.logger._LLM_EVENT_LOG_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+
+    await asyncio.wait_for(
+        fill_llm_event_fields({}, success=False, error="x", duration=0.1),
+        timeout=0.1,
+    )
 
 
 def test_console_formatter_is_human_readable():

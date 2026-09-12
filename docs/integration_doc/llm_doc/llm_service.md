@@ -1,7 +1,7 @@
 # LLMService 编排设计文档
 
 > **模块**：`app/integration/llm/llm_service.py`
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-12
 > **职责**：LLM 网关统一 Facade——组织 11 个内部组件协作完成一次 LLM 调用（可靠性链 +
 > 配额结算闭环 + 事件日志）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -104,11 +104,11 @@ fallback 备用链路与主请求共享同一请求生命周期（fallback 键�
 | reserve 内部已部分扣减但尚未移交 Reservation | reserve 本层负责补偿已扣条目，完成必要清理后传播终止 |
 | 已得 Reservation，create 尚未启动即取消/到期 | `cancel()` 全额退 RPM/TPM；不发起 create |
 | create 已调度后业务取消、期限或外层硬取消，未获得可用响应 | `settle(None)` 保守保留预留并标记终态；请求可能已到 provider，不声明远端未执行 |
-| create 自然传输失败 | 维持当前项目的 `cancel()` 退款策略并传播错误；本地退款不证明供应商实际费用为零 |
+| create 已调度后自然传输失败 | `settle(None)` 保守关闭预留并传播错误；没有成功响应不证明远端未执行 |
 | create 成功，或吞取消后以响应/流迟回 | 调用方接管返回值；有实际 usage 则 `settle(actual)`，无则 `settle(None)`；未读完的流由责任方关闭 |
 | 迟回结果接管后仍命中终止 | 保留已获 usage，按公开契约终止，不将迟回值作为业务成功继续执行 |
 
-`settle(actual)` 只退未用 TPM 差，RPM 不退。以上阶段契约由 [LLM-044](../../../issues/integration/llm/2026-09-08-execution-control-through-every-call.md) 与 [LLM-045](../../../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md) 说明；不能用宽泛的 `except BaseException` 全退伪代码取代这些分支。
+`settle(actual)` 只退未用 TPM 差，RPM 不退。以上阶段契约由 [LLM-044](../../../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)、[LLM-045](../../../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md) 与 [LLM-048](../../../issues/integration/llm/2026-09-12-create-started-ordinary-error-settlement.md) 说明；不能用宽泛的 `except BaseException` 全退伪代码取代这些分支。
 
 ### 结算闭环（finally 兜底）
 
@@ -117,7 +117,7 @@ fallback 备用链路与主请求共享同一请求生命周期（fallback 键�
 | 流式（`async_generate`） | `rectified_stream` 迭代 `finally`：create 成功后的中断/取消统一 `settle(actual)`；**硬取消 `settle(None)` 保留配额 + 标记终态**（[LLM-003](../../../issues/integration/llm/2026-08-16-hard-cancel-rpm-refund.md)） |
 | 非流式（`generate`） | `try/finally` 解析 + 结算：解析抛异常 → `settle(None)` 保留；`settle` 被硬取消 → 未终态 res `settle(None)` 兜底 + re-raise（[LLM-002](../../../issues/integration/llm/2026-08-16-generate-quota-settle-fallback.md)） |
 
-**统一原则**：终止不能撤销可能已经到达 provider 的请求。create 已调度后的业务终止保守结算，尚未启动的预留可以补偿；自然传输失败按上方独立分支处理。不能把收到取消、没有成功响应或本地退款解释为远端副作用已回滚。
+**统一原则**：终止不能撤销可能已经到达 provider 的请求。create 已调度后的业务终止或普通异常均保守结算，尚未启动的预留可以补偿。不能把收到取消、没有成功响应或本地退款解释为远端副作用已回滚。
 
 ### 整流 × 限流协作
 
@@ -244,8 +244,8 @@ success / error / duration / tokens（经 `fill_llm_event_fields` 落盘）。
 （`budget_guard` / `limiter` 由调用点按 guard_key 解析），按序两段：① 请求预算闸校验
 （`reserve` 之前，超限抛 `ContextWindowExceededError`、不占配额）；② 执行控制约束下的
 `reserve`（或 `reserve_adaptive`）→ reserve 后复查 → 受控 `create`。create 前终止全额
-退款；create 调度后取消/期限/硬取消以 `settle(None)` 保守结算；自然传输失败才 `cancel()`。
-`ctx.active["res"]` 记录当前 reservation，供 create 成功后的 settle 读取（跨 create 与结算传递）。
+退款；create 调度后取消、期限、硬取消或普通异常均以 `settle(None)` 保守结算。
+`ctx.active["res"]` 记录当前 reservation，供 create 成功后的 settle 读取（跨 create 与结算传递）。create 已调度后的普通异常同样 `settle(None)`，仅 SDK 启动前允许 `cancel()`。
 
 ### LLMService 编排方法
 
@@ -290,9 +290,14 @@ generate(messages, tools, temperature=0, max_tokens=1024, response_format, model
   │    └─ 不可恢复错误（NON_RETRYABLE）→ fill 事件(error) → 统一决策（见 [error.md](error.md)）：openai 归一 LLMAPIError（from 原异常）；其余 raise
   ├─ try: StreamParser.parse_non_stream(response) → 填 StreamResult
   └─ finally: active.res → settle(usage.total_tokens)；settle 被取消 → settle(None) 兜底 + re-raise
-  ├─ 结算后返回前复查 cancel/deadline；命中时携 usage 抛 shared 类型化终止异常
-  └─ fill_llm_event_fields(success=True, usage, finish_reason) → 返回 StreamResult
+  ├─ fill_llm_event_fields(success=True, usage, finish_reason)：有界 best effort，不覆盖主终态
+  ├─ 最终复查 cancel/deadline；命中时携 usage 抛 shared 类型化终止异常
+  └─ 无后续 await，直接返回 StreamResult
 ```
+
+完整的调用前准入、响应接管、结算、调用后 Guard 与提交顺序见
+[ADR-003](../../../adr/2026-09-12-sdk-call-guard-response-commit.md)。日志隔离修复见
+[LLM-049](../../../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md)。
 
 ### generate_structured（委托三级降级）
 

@@ -4,7 +4,6 @@
 > **更新日期**：2026-09-10
 > **关联**：[推理策略说明文档](../../../docs/domain_doc/reasoning_doc/reasoning.md) · [ADR context-budget](../../../adr/domain/reasoning/2026-08-28-context-budget.md)
 
-
 ## 问题索引
 
 | ID | 问题 | 状态 | 涉及模块 | 日期 |
@@ -28,6 +27,7 @@
 | [REASON-018](2026-09-11-planner-plan-contract-shape.md) | 规划后护栏分支透出未规范化的 plan 形状，对外元数据随路径漂移 | ✅ 已修复 | reasoning/planner | 2026-09-11 |
 | [REASON-019](2026-09-11-planner-step-success-extra-dimension.md) | Planner 步骤成功判据多出一维，异常收尾的有产出步骤被误判失败 | ✅ 已修复 | reasoning/planner | 2026-09-11 |
 | [REASON-020](2026-09-11-reflection-guard-checkpoint.md) | Reflection 护栏复查挂在自查 ok 判定之前，合格报告被改判降级 | ✅ 已修复 | reasoning/reflection | 2026-09-11 |
-
+| [REASON-021](2026-09-12-planner-stop-starts-fallback.md) | Planner 已选择 STOP 后仍启动 ReAct fallback | ✅ 已修复 | reasoning/planner | 2026-09-12 |
+| [REASON-022](2026-09-12-structured-guard-terminal-loss.md) | 结构化阶段丢失 strict deadline 与上下文 Guard 终态 | ✅ 已修复 | reasoning/reflection · planner | 2026-09-12 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

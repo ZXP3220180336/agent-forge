@@ -17,7 +17,7 @@ from openai import APITimeoutError, APIResponseValidationError, AuthenticationEr
 
 from app.integration.llm.llm_service import LLMService
 from app.integration.llm.request_budget import RequestBudgetConfig, RequestBudgetManager
-from app.shared.exceptions import ContextWindowExceededError, LLMAPIError
+from app.shared.exceptions import ContextWindowExceededError, LLMAPIError, LLMCancelledError
 
 
 # =====================================================================
@@ -411,9 +411,38 @@ async def test_generate_normalizes_openai_401_to_llm_api_error(monkeypatch):
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.__cause__ is original, "应链原始 openai 异常（诊断经 __cause__）"
-    # create 抛异常 → _budget_guarded_call 限流段 cancel 全额退（请求未确认发出），非 settle
-    assert reservation.cancel_calls == 1
-    assert reservation.settled, "cancel 后应标记终态"
+    # create task 已启动，401 响应证明请求到达 provider：保守 settle(None)，不能全额退。
+    assert reservation.settle_calls == 1
+    assert reservation.cancel_calls == 0
+    assert reservation.settled, "settle(None) 后应标记终态"
+
+
+@pytest.mark.asyncio
+async def test_generate_rechecks_guard_after_observation_await(monkeypatch):
+    """最终 Guard 与返回之间不能夹日志 await；日志期间取消仍应选择取消终态。"""
+    reservation = _TrackingReservation()
+    client = _FakeClient(_FakeCompletions([_FakeResponse("ok")]))
+    _patch_generate_env(monkeypatch, client, _FakeRetryDirect(), reservation)
+    cancel_event = asyncio.Event()
+
+    async def cancel_during_log(*args, **kwargs):
+        cancel_event.set()
+
+    monkeypatch.setattr(
+        "app.integration.llm.llm_service.fill_llm_event_fields", cancel_during_log
+    )
+
+    with pytest.raises(LLMCancelledError) as exc_info:
+        await LLMService().generate(
+            messages=[{"role": "user", "content": "hi"}],
+            cancel_event=cancel_event,
+        )
+
+    assert exc_info.value.usage == {
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "total_tokens": 12,
+    }
 
 
 @pytest.mark.asyncio

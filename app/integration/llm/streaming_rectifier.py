@@ -461,8 +461,8 @@ class StreamingRectifier:
             tool_deltas: list[ToolCallDelta] = []
 
             # 成功标志：drain 读到 EOF 后置位——
-            # 此后 try 内只剩 _finish_success（settle + log），
-            # 其异常（结算或日志侧失败）须原样上抛，不得被
+            # 此后 try 内只剩 _finish_success（settle + best-effort log）。
+            # 结算异常或硬取消须原样上抛，不得被
             # except Exception 当作可整流/可续接的流中断（成功流已读完，重发即双倍计费）。
             stream_done = False
 
@@ -914,7 +914,7 @@ class StreamingRectifier:
             _reset_dead_meta(result)
 
             # 续接成功标志：drain 读到 EOF 后置位——此后 try 内只剩 _finish_success
-            # （settle + log），其异常（结算或日志侧失败）须原样上抛，不得被
+            # （settle + best-effort log），结算异常或硬取消须原样上抛，不得被
             # except Exception 当作新一轮可续接的流中断（成功续接流已完整产出并
             # 透传客户端，再续即重复内容 + 双倍计费）。与整流主流路径 rectified_stream
             # 的 stream_done 守卫同语义——两条路径共用同一完成态守卫。

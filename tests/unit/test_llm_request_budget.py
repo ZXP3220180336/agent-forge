@@ -806,19 +806,21 @@ async def test_llm047_stream_rectify_deadline_usage_survives_facade_translation(
     assert reservation.last_actual == 8, "整流中断收尾按已读 usage settle"
 
 
-async def test_llm046_finish_timeout_crosses_service_as_unknown_in_react(
+async def test_llm_call_log_failure_does_not_override_completed_stream(
     boundary, monkeypatch
 ):
-    """续接 EOF 后收尾 TimeoutError 穿透 LLMService 时，ReAct 不误报总执行超时。"""
+    """续接 EOF 后日志失败不得覆盖已完成流，也不得触发额外续接。"""
 
-    async def _raise_finish_timeout(context, attempt_start):
+    async def _raise_finish_timeout(*args, **kwargs):
         raise TimeoutError("日志收尾超时")
 
     monkeypatch.setattr(LLMService, "_stream_max_retries", 0)
     monkeypatch.setattr(LLMService, "_continuation_max_retries", 2)
     monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.0)
     monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
-    monkeypatch.setattr(StreamingRectifier, "_log_success", _raise_finish_timeout)
+    monkeypatch.setattr(
+        "app.platform.observability.logger.log_event_async", _raise_finish_timeout
+    )
 
     first_reservation = _CancelTrackingReservation()
     continuation_reservation = _CancelTrackingReservation()
@@ -846,7 +848,7 @@ async def test_llm046_finish_timeout_crosses_service_as_unknown_in_react(
 
     assert boundary.create.await_count == 2, "收尾异常不得触发第三次续接请求"
     assert strategy.outcome is not None
-    assert strategy.outcome.error == "Agent 运行异常: TimeoutError"
+    assert strategy.outcome.error != "Agent 运行异常: TimeoutError"
     assert strategy.outcome.content == "部分续写"
     assert strategy.outcome.usage == {
         "prompt_tokens": 8,

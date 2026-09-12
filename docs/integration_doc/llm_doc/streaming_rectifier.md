@@ -1,7 +1,7 @@
 # StreamingRectifier 设计文档
 
 > **模块**：`app/integration/llm/streaming_rectifier.py`
-> **更新日期**：2026-09-09
+> **更新日期**：2026-09-12
 > **职责**：流式整流/半流续接策略——「首 token 前中断 → 重新 create + 重新迭代（整流）」；「已产出 content 中断 → 带前缀续写（半流续接，[LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）」；其余已产出中断则放弃
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
@@ -99,7 +99,7 @@
 
 ### 事件日志
 
-每次尝试独立计时，失败走 `success=False` + error，成功清 `error=None`（整流成功 = 1 条失败 + 1 条成功日志）。日志填充复用 `app/platform/observability/logger.py` 的 `fill_llm_event_fields`（通用 LLM 事件日志工具）。
+每次尝试独立计时，失败走 `success=False` + error，成功清 `error=None`（整流成功 = 1 条失败 + 1 条成功日志）。日志填充复用 `app/platform/observability/logger.py` 的 `fill_llm_event_fields`。该入口有界且 best effort：日志失败或超时不覆盖流结果、原始错误或结算异常；调用方硬取消仍传播。
 
 ### 失败信号透传
 
@@ -274,7 +274,7 @@ async_generate → rectified_stream（整流/续接循环）
 12. **续接再断**：预算内（`cont_attempt < llm_stream_max_continuations`）→ 带增长后的新前缀（`result.content` 最新值）再续；超预算 → 放弃（喂熔断 + 失败信号照旧）
 13. **接缝重叠剥离**：续接流首部与已产 content 尾部重叠（窗口 ≤ `_SEAM_OVERLAP_LIMIT`=64 字符）剥离后再产出/累积；流自然结束仍全命中重叠视为纯重放丢弃
 14. **续接成功**：`error` 保持 `None`；`usage` 取末次完成流（断流 attempt 数据不可得不计，LLM-039）
-15. **续接 EOF 后收尾异常（完成态守卫）**：续接流 drain 读完 EOF 后 `cont_stream_done=True`，`_finish_success`（settle/日志）异常**原样上抛**——非续接流中断，不再续接（成功流绝不重发），与整流主流路径 `stream_done` 守卫同语义（[LLM-046](../../../issues/integration/llm/2026-09-09-continuation-finish-guard.md)）
+15. **续接 EOF 后收尾异常（完成态守卫）**：续接流 drain 读完 EOF 后 `cont_stream_done=True`。必要结算异常与硬取消原样上抛；非关键日志失败由共享入口隔离。上述收尾均不是续接流中断，不再续接（成功流绝不重发），与整流主流路径 `stream_done` 守卫同语义（[LLM-046](../../../issues/integration/llm/2026-09-09-continuation-finish-guard.md)、[LLM-049](../../../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md)）
 16. **续接 create 前终止或预算拒绝**：旧死流的 content/usage 继续保留；只有 `continue_fn` 成功返回新流后才复位旧 `finish_reason`/`usage`/`refusal`。因此前缀扩大触发上下文超限时，领域层仍能保留当前成果并正确归账（[REASON-015](../../../issues/domain/reasoning/2026-09-10-continuation-context-overflow-progress.md)）
 
 ---

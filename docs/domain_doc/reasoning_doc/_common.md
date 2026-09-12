@@ -3,7 +3,7 @@
 react / reflection / planner 三策略共用、不 import 任何策略的无状态纯函数（策略间零环依赖）。
 文件名带 `_` 前缀 = 层内私有共享（非对外导出）。
 
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-12
 
 ## 共享小工具
 
@@ -18,9 +18,11 @@ react / reflection / planner 三策略共用、不 import 任何策略的无状�
   `ContextWindowExceededError` 的策略传入。成本检查仅在更高优先级信号未命中时执行。
 
 `running_usage` 由调用方按本策略累计口径现算，函数不修改 usage。**付费调用前准入**是三个策略
-的共同规则；**调用成功并归账后复查**由 ReAct / Planner 在每笔付费调用后执行，Reflection 只挂在
-**修正**调用上——自查返回后不再有付费动作，复查只会把已合格的稿改判为降级。ReAct 子跑通过
-`baseline_usage` 把 Planner 已累计用量带入每轮判定。
+的共同规则；调用后先接管成果和 usage，再按策略契约解释 Guard。ReAct / Planner 在每笔付费
+调用后复查。Reflection 对成本和 graceful cancel 保留 after-turn 早退，但 strict deadline
+迟到结果必须以 TIMEOUT 部分成果收尾；无结果时先恢复 cancel/deadline/context 终态，再判普通
+结构化失败。完整边界见 [ADR-003](../../../adr/2026-09-12-sdk-call-guard-response-commit.md)。
+ReAct 子跑通过 `baseline_usage` 把 Planner 已累计用量带入每轮判定。
 
 使用方式：`from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage`。
 策略不再各持本地定义；error_handlers 等生命周期仍由各策略自行管理。

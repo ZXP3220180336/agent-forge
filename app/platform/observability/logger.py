@@ -39,6 +39,7 @@ __all__ = [
 
 # 业务事件统一走 app.events logger（事件名即 message，可跨模块检索）
 _EVENT_LOGGER = logging.getLogger("app.events")
+_LLM_EVENT_LOG_TIMEOUT_SECONDS = 1.0
 
 # LogRecord 保留键：formatter 侧白名单排除，避免 extra 注入与保留属性冲突。
 # （若调用方误传保留键名，logging 会在调用点直接抛 KeyError，作为开发期 bug 暴露。）
@@ -159,11 +160,12 @@ async def fill_llm_event_fields(
     usage: dict[str, Any] | None = None,
     finish_reason: str | None = None,
 ) -> None:
-    """填充 LLM 调用事件（llm_call）字段并记录。
+    """填充 LLM 调用事件（llm_call）字段并尽力记录。
 
     通用 LLM 事件日志工具：填充 success/error/duration/tokens/finish_reason
-    到 event_fields 并 await log_event_async 落盘。由 LLM 服务层（LLMService、
-    StreamingRectifier）复用，统一各调用点的日志填充与记录。
+    到 event_fields，并在有界等待内调用 log_event_async。日志异常或等待超时由本层
+    隔离；调用方自身的硬取消仍传播。由 LLM 服务层（LLMService、StreamingRectifier）
+    复用，统一各调用点的日志填充与记录。
     """
     event_fields["success"] = success
     event_fields["error"] = error
@@ -173,7 +175,15 @@ async def fill_llm_event_fields(
         event_fields["completion_tokens"] = usage.get("completion_tokens")
         event_fields["total_tokens"] = usage.get("total_tokens")
     event_fields["finish_reason"] = finish_reason
-    await log_event_async("llm_call", **event_fields)
+    # llm_call 是非关键观测：限制等待时间并隔离 handler / 文件系统异常，不能覆盖
+    # 已经确定的 SDK 成功、失败或终止语义。外层任务硬取消仍由 CancelledError 传播。
+    try:
+        await asyncio.wait_for(
+            log_event_async("llm_call", **event_fields),
+            timeout=_LLM_EVENT_LOG_TIMEOUT_SECONDS,
+        )
+    except Exception:  # noqa: BLE001 — best-effort 观测边界（含自身 TimeoutError）
+        return
 
 
 def _extra_fields(record: logging.LogRecord) -> dict[str, Any]:
