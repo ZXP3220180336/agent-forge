@@ -165,9 +165,7 @@ class ReflectionOutcome:
         default_factory=list
     )  # 证据链（来自 react outcome）
     iterations: int = 0  # react 循环轮数（证据链收集轮）
-    total_tokens: int = (
-        0  # react 累计 token（critique/refine 无 usage 回传，见 benchmark ⚠️）
-    )
+    total_tokens: int = 0  # 累计 token用量（包含react阶段 + critique）
     usage: dict | None = None
     error: str | None = None
     success: bool = False
@@ -334,7 +332,12 @@ class ReflectionStrategy:
                 return
 
             # ── 自查当前稿 ──
-            critique, crit_action, crit_usage, crit_context_error = await self._critique(
+            (
+                critique,
+                crit_action,
+                crit_usage,
+                crit_context_error,
+            ) = await self._critique(
                 evidence,
                 current,
                 react_outcome.iterations,
