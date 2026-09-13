@@ -64,7 +64,7 @@ Critic 被外部信号（工具记录）锚定：自查消息注入「证据链�
 
 ### 阶段性语义上下文缩减
 
-自查和修正的单条 user 消息同样受 `max_context_tokens` 约束。`ContextBudgetPort.count_tokens` 只提供统一计量，Reflection 的字段取舍由 `PromptManager` 完成：critique 动态区按 evidence 60% / draft 40%，refine 按 evidence 45% / draft 35% / issues 20% 初分配，未使用额度按声明顺序回流。
+自查和修正的单条 user 消息同样受 `max_context_tokens` 约束。`ContextBudgetPort.count_tokens` 只提供统一计量，Reflection 的字段取舍由 Prompt 模块内部的 `_reflection_payload` 组件完成，`PromptManager` 保持公开组装入口：critique 动态区按 evidence 60% / draft 40%，refine 按 evidence 45% / draft 35% / issues 20% 初分配，未使用额度按声明顺序回流。
 
 证据优先保留当前稿引用的记录，再保留最近记录；稳定 `E####` 编号、工具与参数、成功状态、错误码、量测值和时间锚点优先于长结果正文。稿件优先保留结论、证据引用、置信度和 `explicit_abstention`；审查意见优先 critical，再保留较新的 minor。所有删减都有带数量的 `<omitted .../>` 标记。
 
@@ -178,7 +178,7 @@ ReflectionStrategy.execute()（三阶段）
 | 结构化调用中取消/超时（E） | `_critique`/`_refine` 的 `generate_structured` 透传 `cancel_event` + 绝对 `deadline`；信号约束每笔 reserve/create/retry，并在 extract 最外层收敛 None，外层按既有路径停机降级 |
 | critique/refine 结构化输出超预算 | 走 generate_structured 默认预算（settings.llm_structured_max_tokens）；截断由集成层短路返回 None → 走 None 降级（不崩溃，P4） |
 | 同一实例并发 / 多次 execute | 不并发复用——outcome/_structured_usage 被覆盖，每次运行新建或串行读取（P4） |
-| 证据链含 final_answer 条目（校验失败留痕，非真实证据） | critique 序列化时经 `prompts/manager._serialize_evidence` 剔除（以字面量实现——prompts 不依赖 reasoning，规避环） |
+| 证据链含 final_answer 条目（校验失败留痕，非真实证据） | critique 序列化时经 `prompts/_reflection_payload.py` 剔除（以字面量实现——prompts 不依赖 reasoning，规避环） |
 | 证据链为空 + draft 引用不存在证据 | 自查 grounding 维度抓出（Grounding 价值） |
 | 语义缩减后最小提示骨架仍超过 `max_context_tokens` | 本地零结构化调用，按 CONTEXT_EXCEEDED 保留最近完整稿 |
 | 预缩减请求仍被 Integration 最终预算闸拒绝 | 当前阶段只调用一次，不缩减重试；保留原始证据、最近稿和已取得 critique |

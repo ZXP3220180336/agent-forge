@@ -3,7 +3,7 @@
 > 更新日期：2026-09-13
 > 原则：本表是模块状态、文档与测试路径的唯一维护登记。实现需由代码和实际测试核验，代码偏差不能自动改写已确认契约；新增/移动/删除模块或覆盖变化时同步本表和所属说明。
 > 状态徽标：✅ 代码、文档、测试文件齐全 ｜ 🔶 已实现但文档或测试不全 ｜ ⬜ 空壳待实现。文件映射已在仓库核验；徽标不代表本轮运行了业务测试或逐项验证了运行契约。
-> 本表维持既有路径与五列表头，所有路径相对仓库根。2026-09-12 在工作区运行全量 pytest 与 `scripts.verify_alignment`；后者检查模块登记、路径存在性、非空文件与状态要求，业务行为由测试覆盖。
+> 本表维持既有路径与五列表头，所有路径相对仓库根。2026-09-13 在工作区运行全量 pytest 与 `scripts.verify_alignment`；后者检查模块登记、路径存在性、非空文件与状态要求，业务行为由测试覆盖。
 
 | 代码模块 | 状态 | 文档 | 测试 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -41,7 +41,8 @@
 | app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议（含 calculate_cost / count_*）；随 Agent/LLM/成本测试覆盖 |
 | app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
 | app/domain/prompts/base.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
-| app/domain/prompts/manager.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | PromptManager 组装入口；Reflection 字段级语义缩减与 Planner 步骤序列化 |
+| app/domain/prompts/manager.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | PromptManager 公开组装入口；固定模板开销与 Planner 步骤序列化 |
+| app/domain/prompts/_reflection_payload.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Reflection evidence/draft/issues 字段级语义缩减；包内纯函数组件 |
 | app/domain/prompts/templates/planning.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Planner 规划/重规划/汇总提示词模板 |
 | app/domain/prompts/templates/system.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | SYSTEM_PROMPT 系统提示词 |
 | app/domain/prompts/templates/tools.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | TOOL_FORMAT_PROMPT 工具格式提示词 |

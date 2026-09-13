@@ -1,7 +1,7 @@
 # 领域层说明文档
 
 > **对应代码**：`app/domain/`
-> **更新日期**：2026-09-06
+> **更新日期**：2026-09-13
 > **文档定位**：领域层（`app/domain/`）—— Agent 内核、提示词、记忆与推理策略；是系统的**决策与行动核心**，只依赖领域端口与共享内核，零外部框架依赖。
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。边界：（✅ react / reflection / planner；CoT 预留）（⬜ 预留）
 > **配套**：事件系统位于共享层 `app/shared/events.py`（见 [events.md](../shared_doc/events.md)）
@@ -60,7 +60,8 @@ app/domain/
 │   └── embedding_port.py      ← EmbeddingPort
 ├── prompts/                   ← 提示词管理（指令层）
 │   ├── base.py                ← PromptTemplate 模板基类
-│   ├── manager.py             ← PromptManager 管理器
+│   ├── manager.py             ← PromptManager 公开组装入口
+│   ├── _reflection_payload.py ← Reflection 动态载荷缩减
 │   └── templates/             ← system.py / tools.py / planning.py / reflection.py 模板
 └── reasoning/                 ← 原子推理策略库
     ├── _common.py             ← 共享执行护栏与工具（GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量）
@@ -103,7 +104,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | Agent | executor.py | [见对齐表](../ALIGNMENT.md) | ReActAgent（桥接 ReActStrategy，见 [executor.md](agent_doc/executor.md)） |
 | Agent | planner.py | [见对齐表](../ALIGNMENT.md) | PlannerAgent（桥接 PlannerStrategy，见 [agent.md](agent_doc/agent.md)） |
 | Agent | reflection.py | [见对齐表](../ALIGNMENT.md) | ReflectionAgent（桥接 ReflectionStrategy，见 [agent.md](agent_doc/agent.md)） |
-| Prompts | manager.py + templates/system·tools·reflection·planning | [见对齐表](../ALIGNMENT.md) | 提示词模板 + 管理器 builder（test_prompts；见 [prompts.md](prompts_doc/prompts.md)） |
+| Prompts | manager.py + _reflection_payload.py + templates | [见对齐表](../ALIGNMENT.md) | 公开 builder、Reflection 载荷缩减与提示词模板（见 [prompts.md](prompts_doc/prompts.md)） |
 | Memory | base / working / short_term / long_term / memory_service | [见对齐表](../ALIGNMENT.md) | 三层记忆（预留） |
 | Reasoning | react.py | [见对齐表](../ALIGNMENT.md) | ReActStrategy（见 [react.md](reasoning_doc/react.md)） |
 | Reasoning | reflection.py | [见对齐表](../ALIGNMENT.md) | ReflectionStrategy（见 [reflection.md](reasoning_doc/reflection.md)） |
@@ -136,7 +137,8 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| `PromptManager` | manager.py | 提示词组装入口（system/reflection/planning builder + 证据/步骤序列化） | [见对齐表](../ALIGNMENT.md) |
+| `PromptManager` | manager.py | 提示词公开组装入口（system/reflection/planning builder + Planner 步骤序列化） | [见对齐表](../ALIGNMENT.md) |
+| Reflection 载荷组件 | _reflection_payload.py | evidence/draft/issues 的业务优先级与语义缩减 | [见对齐表](../ALIGNMENT.md) |
 | `PromptTemplate` | base.py | 模板基类（format / raw） | [见对齐表](../ALIGNMENT.md) |
 | 模板 | templates/system.py | `SYSTEM_PROMPT` 系统提示词 | [见对齐表](../ALIGNMENT.md) |
 | 模板 | templates/tools.py | `TOOL_FORMAT_PROMPT` 工具格式提示词 | [见对齐表](../ALIGNMENT.md) |

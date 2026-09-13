@@ -35,7 +35,7 @@ provider wire payload 的精确准入，后者仍由 Integration 独立裁决。
 
 ## 实施与验证
 
-实现覆盖 `app/domain/prompts/manager.py`、`app/domain/reasoning/reflection.py` 和
+实现覆盖 `app/domain/prompts/manager.py`、`app/domain/prompts/_reflection_payload.py`、`app/domain/reasoning/reflection.py` 和
 `app/domain/ports/context_budget.py`。测试锁定长 evidence/draft/issues、原对象不变、
 省略计数、被引用后部证据、数值/时间锚点、零调用最小骨架、最终拒绝单调用，以及 Guard
 终止保留完整 critique。核心 Prompt/Reflection 测试 46 项、相关 ContextManager/桥接测试

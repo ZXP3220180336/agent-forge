@@ -42,7 +42,8 @@
 app/domain/prompts/
 ├── __init__.py          # 子包导出
 ├── base.py              # PromptTemplate 模板基类
-├── manager.py           # PromptManager 管理器（对外入口）
+├── manager.py           # PromptManager Facade（对外入口与模板装配）
+├── _reflection_payload.py # Reflection 载荷选择与语义缩减（包内组件）
 └── templates/           # 提示词模板
     ├── system.py        # SYSTEM_PROMPT 系统提示词
     ├── tools.py         # TOOL_FORMAT_PROMPT 工具格式提示词
@@ -52,7 +53,7 @@ app/domain/prompts/
 
 ### 设计原则
 
-1. **模板与组装分离**：`templates/` 只存模板常量，`PromptManager` 负责组装（系统提示词 + 可选工具格式说明）
+1. **模板、组装与载荷策略分离**：`templates/` 只存模板常量，`PromptManager` 维护公开组装入口，`_reflection_payload.py` 维护 Reflection 的证据、稿件与问题清单缩减
 2. **单一事实源**：提示词内容只在本模块定义，Agent 编排经 `PromptManager` 获取，不散落复制
 3. **变量插值**：`PromptTemplate` 提供 `format()` 变量填充（如工具描述列表注入）
 
@@ -62,6 +63,7 @@ app/domain/prompts/
 Agent 编排（ReActAgent / PlannerAgent / ReflectionAgent）
         ▼ 调用 build_*
 PromptManager（本模块，对外入口）
+    ├── _reflection_payload.py（Reflection 动态载荷）
     ├── templates/system.py（SYSTEM_PROMPT）
     ├── templates/tools.py（TOOL_FORMAT_PROMPT）
     ├── templates/reflection.py（CRITIQUE_PROMPT / REFINE_PROMPT）
@@ -125,7 +127,8 @@ messages = [{"role": "system", "content": system_prompt}]
 | `TOOL_FORMAT_PROMPT` | templates/tools.py | 工具格式说明（`format(tools=...)` 注入工具列表 + 截断提示） | [见对齐表](../../ALIGNMENT.md) |
 | `CRITIQUE_PROMPT` / `REFINE_PROMPT` / `REFLECTION_SYSTEM_PROMPT` | templates/reflection.py | Reflection 自查 / 修正提示词 + 生成阶段 system 约束（`REFLECTION_SYSTEM_PROMPT` 可选注入，非 PromptManager 消费，见 [reflection.md](../reasoning_doc/reflection.md)） | [见对齐表](../../ALIGNMENT.md) |
 | `PLANNING_PROMPT` / `REPLAN_PROMPT` / `SUMMARIZE_PROMPT` | templates/planning.py | Planner 规划 / 重规划 / 汇总提示词（见 [planner.md](../reasoning_doc/planner.md)） | [见对齐表](../../ALIGNMENT.md) |
-| `PromptManager`（builder + 序列化） | manager.py | 组装入口 + 证据/步骤序列化（方法见「PromptManager 方法表」） | [见对齐表](../../ALIGNMENT.md) |
+| `PromptManager` | manager.py | 公开组装入口、固定模板开销计算与 Planner 步骤序列化 | [见对齐表](../../ALIGNMENT.md) |
+| Reflection 载荷组件 | _reflection_payload.py | 证据、稿件和问题清单的预算分配、优先选择、省略标记与只读序列化 | [见对齐表](../../ALIGNMENT.md) |
 
 ---
 

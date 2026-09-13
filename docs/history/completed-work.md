@@ -22,6 +22,12 @@ Planner 语义缩减仍保留在当前待办。
 关键决策点记录业务原因。业务语义维护在[产品文档](../project/product.md#良率-rca-的业务对象与报告生命周期)，
 Prompt 模块文档只维护接口与缩减契约。
 
+后续治理将 Reflection 动态载荷策略迁入同包私有 `_reflection_payload.py`，PromptManager
+只保留公开组装与 Planner 简单序列化。行为刻画同时发现并修复充足预算仍误省略证据的
+[REASON-024](../../issues/domain/reasoning/2026-09-13-reflection-evidence-budget-underestimate.md)。
+评审确认公开签名、层间依赖和业务优先级均未改变；Prompt/Reflection 相关测试 49 项、全量
+978 项通过，`scripts.verify_alignment` 与 `git diff --check` 通过。项目环境未安装 Ruff。
+
 ## 2026-09-12：SDK 调用 Guard、响应接管与提交边界
 
 [ADR-003](../../adr/2026-09-12-sdk-call-guard-response-commit.md) 已落地：调用前准入阻止下一

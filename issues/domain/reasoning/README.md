@@ -30,5 +30,6 @@
 | [REASON-021](2026-09-12-planner-stop-starts-fallback.md) | Planner 已选择 STOP 后仍启动 ReAct fallback | ✅ 已修复 | reasoning/planner | 2026-09-12 |
 | [REASON-022](2026-09-12-structured-guard-terminal-loss.md) | 结构化阶段丢失 strict deadline 与上下文 Guard 终态 | ✅ 已修复 | reasoning/reflection · planner | 2026-09-12 |
 | [REASON-023](2026-09-13-reflection-semantic-context-reduction.md) | Reflection 自查/修正载荷缺少字段级语义缩减，修正终止丢 critique | ✅ 已修复 | prompts · reasoning/reflection · ports/context_budget | 2026-09-13 |
+| [REASON-024](2026-09-13-reflection-evidence-budget-underestimate.md) | Reflection 证据需求量与实际序列化形状不一致，充足预算仍误省略证据 | ✅ 已修复 | prompts | 2026-09-13 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

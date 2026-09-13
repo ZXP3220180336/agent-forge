@@ -76,9 +76,8 @@ _TRUNCATED_MARKER = "\n[结果已截断]"
 
 # 结构化最终答案工具名（Final Answer 模式，SMOL / OpenAI 官方）：模型最后调用提交
 # schema 约束的结构化结果并终止循环。注入工具（非注册工具），react 主循环识别调用。
-# 注：reflection 证据链剔除 final_answer 条目（校验失败记录非真实证据）在
-# prompts/manager._serialize_evidence 以字面量实现（prompts 不 import reasoning，规避环），
-# 不引用本常量。
+# 注：Reflection 载荷组件按字面量剔除 final_answer 条目（校验失败记录非真实证据）；
+# prompts 不 import reasoning，以避免反向依赖，因此不引用本常量。
 _FINAL_ANSWER_TOOL = "final_answer"
 
 # max_execution_time 是 ReAct 业务循环的取消触发点。内部 LLM deadline 提前预留一小段

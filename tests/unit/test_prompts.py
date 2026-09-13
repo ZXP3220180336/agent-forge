@@ -1,5 +1,6 @@
 """PromptManager 提示词构建与语义缩减单元测试。"""
 
+import json
 import re
 from copy import deepcopy
 
@@ -81,6 +82,80 @@ def test_build_reflection_prompts_smoke():
     refine = PromptManager.build_reflection_refine_prompt(evidence, draft, [])
     assert "echo" in crit
     assert "s" in refine
+
+
+def test_reflection_budgeted_prompt_keeps_complete_payload_when_it_fits():
+    """预算充足时保留完整证据与稿件，不制造省略事实。"""
+    evidence = [
+        {
+            "tool": "yield_query",
+            "params": {"batch": "B11"},
+            "result": "yield=81.2%",
+            "success": True,
+            "error_code": None,
+        }
+    ]
+    draft = {
+        "summary": "批次 B11 良率下降",
+        "conclusions": [],
+        "next_steps": ["核对设备告警"],
+        "explicit_abstention": [],
+    }
+
+    prompt = PromptManager.build_reflection_critique_prompt(
+        evidence,
+        draft,
+        max_tokens=10_000,
+        count_tokens=len,
+    )
+
+    assert "<omitted" not in prompt
+    assert 'params={"batch":"B11"}' in prompt
+    assert "result=yield=81.2%" in prompt
+    assert json.dumps(draft, ensure_ascii=False, separators=(",", ":")) in prompt
+
+
+def test_reflection_evidence_excludes_final_answer_without_renumbering_source():
+    """终止工具不充当证据，后续真实记录仍沿用原证据链位置编号。"""
+    evidence = [
+        {
+            "tool": "final_answer",
+            "params": {"summary": "提交"},
+            "result": "ignored",
+            "success": False,
+        },
+        {
+            "tool": "yield_query",
+            "params": {"batch": "B11"},
+            "result": "yield=81.2%",
+            "success": True,
+        },
+    ]
+
+    prompt = PromptManager.build_reflection_critique_prompt(
+        evidence,
+        {"summary": "s", "conclusions": [], "next_steps": []},
+        max_tokens=10_000,
+        count_tokens=len,
+    )
+
+    assert "final_answer" not in prompt
+    assert "[E0001]" not in prompt
+    assert "[E0002] tool=yield_query" in prompt
+
+
+def test_reflection_extremely_small_budget_emits_omission_markers():
+    """最小骨架也放不下时仍返回可识别缩减视图，交由上层零调用拒绝。"""
+    prompt = PromptManager.build_reflection_critique_prompt(
+        [{"tool": "echo", "params": {"q": "x"}, "result": "ok", "success": True}],
+        {"summary": "s", "conclusions": [], "next_steps": []},
+        max_tokens=1,
+        count_tokens=len,
+    )
+
+    assert '<omitted section="evidence" records="1"' in prompt
+    assert '<omitted section="draft"' in prompt
+    assert 'reason="context_budget"' in prompt
 
 
 def test_reflection_critique_compacts_evidence_without_mutating_source():
