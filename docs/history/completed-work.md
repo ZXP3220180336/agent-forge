@@ -4,6 +4,21 @@
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
 
+## 2026-09-13：Planner 语义上下文缩减（T-02）
+
+Planner 的 plan、replan、summarize 三个结构化入口已复用 `ContextBudgetPort.count_tokens`
+形成阶段性只读载荷。规划保留完整目标和全部工具身份；重规划与汇总按原执行顺序保留
+每个步骤的 id、状态、描述与依赖，成功步骤保留结果和工具名/查询参数，失败步骤保留
+原因但不作为报告证据。固定 500/4000 字符头部截断已由分层投影和可计数省略标记替代。
+
+`steps_executed` 补充 `depends_on` 审计字段；最小语义骨架仍超限时在 SDK 调用前进入
+Context Guard，保留已有 plan、步骤成果和 usage，不做同阶段缩减重试。实施同时修复了
+只有失败记录时用列表非空误判部分成功的问题，二维步骤成功与统一 plan 形状保持不变。
+实现记录见 [REASON-025](../../issues/domain/reasoning/2026-09-13-planner-semantic-context-reduction.md)，
+现行决策见[语义预算 ADR](../../adr/domain/reasoning/2026-08-28-context-budget.md)。专项回归
+185 项、全量 984 项通过；唯一告警为既存的 Starlette/httpx 弃用提示；
+`scripts.verify_alignment` 与 `git diff --check` 通过。
+
 ## 2026-09-13：Reflection 语义上下文缩减（T-01）
 
 Reflection 自查与修正已使用 `ContextBudgetPort.count_tokens` 对阶段性单条载荷计量；
@@ -15,8 +30,8 @@ PromptManager 按固定比例缩减 evidence、draft 和 issues，优先保留�
 实施问题见 [REASON-023](../../issues/domain/reasoning/2026-09-13-reflection-semantic-context-reduction.md)，
 现行决策见[语义预算 ADR](../../adr/domain/reasoning/2026-08-28-context-budget.md)。核心 Prompt/
 Reflection 测试 46 项、相关组件测试 64 项通过；最终全量 975 项通过，唯一告警为既存的
-Starlette/httpx 弃用提示；`scripts.verify_alignment` 与 `git diff --check` 通过。T-02
-Planner 语义缩减仍保留在当前待办。
+Starlette/httpx 弃用提示；`scripts.verify_alignment` 与 `git diff --check` 通过。Planner
+后续语义缩减已由上方 T-02 完成记录承接。
 
 同日补充了良率 RCA 的业务对象、报告生命周期和上下文缩减边界，并在 PromptManager
 关键决策点记录业务原因。业务语义维护在[产品文档](../project/product.md#良率-rca-的业务对象与报告生命周期)，

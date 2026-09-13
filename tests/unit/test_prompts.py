@@ -18,6 +18,7 @@ EXECUTED = [
     {
         "id": 1,
         "description": "查询批次 A 日良率曲线",
+        "depends_on": [],
         "success": True,
         "summary": "良率 89%→80%",
         "content": "良率 89%→80%",
@@ -25,7 +26,10 @@ EXECUTED = [
             {
                 "id": "c1",
                 "type": "function",
-                "function": {"name": "yield_query", "arguments": "{}"},
+                "function": {
+                    "name": "yield_query",
+                    "arguments": '{"batch":"A"}',
+                },
             }
         ],
         "error": None,
@@ -33,6 +37,7 @@ EXECUTED = [
     {
         "id": 2,
         "description": "判断异常日期",
+        "depends_on": [1],
         "success": False,
         "summary": "",
         "content": "",
@@ -72,6 +77,100 @@ def test_build_planning_summarize_prompt_renders_results():
     assert "良率 89%→80%" in prompt  # 步骤产出摘要
     assert "失败" in prompt  # 失败步标记（不作为证据）
     assert "explicit_abstention" in prompt  # 显式放弃规范
+
+
+def test_planning_prompt_compacts_catalog_but_keeps_goal_and_all_tool_names():
+    """规划预算优先保住任务契约和能力发现，描述不足时显式省略。"""
+    goal = "分析批次 A 良率下降原因并给出可验证结论"
+    tools = "\n".join(
+        f"- tool_{index}: " + f"工具 {index} 的很长业务说明" * 30
+        for index in range(8)
+    )
+    original = PromptManager.build_planning_prompt(goal, tools)
+
+    prompt = PromptManager.build_planning_prompt(
+        goal,
+        tools,
+        max_tokens=len(original) // 2,
+        count_tokens=len,
+    )
+
+    assert len(prompt) <= len(original) // 2
+    assert goal in prompt
+    assert all(f"tool_{index}" in prompt for index in range(8))
+    assert '<omitted section="tool_descriptions"' in prompt
+
+
+def test_replan_prompt_keeps_failure_dependencies_and_traceable_success():
+    """重规划缩减视图保留失败根因和成功步骤的工具参数引用。"""
+    executed = deepcopy(EXECUTED)
+    executed[0]["summary"] = "良率原始明细" * 800
+    failed = executed[1]
+    original = deepcopy(executed)
+
+    prompt = PromptManager.build_planning_replan_prompt(
+        PLAN["goal"],
+        TOOLS,
+        executed,
+        failed,
+        "工具超时",
+        max_tokens=1800,
+        count_tokens=len,
+    )
+
+    assert len(prompt) <= 1800
+    assert "工具超时" in prompt
+    assert 'depends_on=[1]' in prompt
+    assert "yield_query" in prompt
+    assert 'batch\\\":\\\"A' in prompt or 'batch":"A' in prompt
+    assert executed == original
+
+
+def test_summarize_prompt_keeps_late_success_and_failure_reason_under_budget():
+    """汇总按步骤保留最小骨架，不能用头部截断丢失后部关键事实。"""
+    executed = deepcopy(EXECUTED)
+    executed[0]["summary"] = "早期冗长内容" * 1000
+    executed[1]["tool_calls"] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "failed_probe",
+                "arguments": '{"secret_candidate":"not_evidence"}',
+            },
+        }
+    ]
+    executed.append(
+        {
+            "id": 3,
+            "description": "核对设备告警",
+            "depends_on": [1],
+            "success": True,
+            "summary": "最终确认设备 A 在 2026-09-01 发生告警",
+            "content": "最终确认设备 A 在 2026-09-01 发生告警",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "alarm_query",
+                        "arguments": '{"device":"A"}',
+                    },
+                }
+            ],
+            "error": None,
+        }
+    )
+
+    prompt = PromptManager.build_planning_summarize_prompt(
+        PLAN["goal"], executed, max_tokens=1800, count_tokens=len
+    )
+
+    assert len(prompt) <= 1800
+    assert "步骤 3" in prompt
+    assert "最终确认设备 A" in prompt
+    assert "alarm_query" in prompt and "device" in prompt
+    assert "工具超时" in prompt
+    assert "failed_probe" not in prompt
+    assert '<omitted section="step_results"' in prompt
 
 
 def test_build_reflection_prompts_smoke():

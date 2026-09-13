@@ -26,7 +26,7 @@ Plan-then-Execute 单 Agent 编排：规划（生成依赖步骤）→ 执行（
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -222,6 +222,8 @@ class PlannerStrategy:
         )
         self._llm = llm
         self._tools = tools
+        # 只复用统一 token 计量；Planner 的字段优先级由 prompts 包内策略决定。
+        self._context_budget = context_budget
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
         self._cost_limiter = cost_limiter
         self._plan_schema = plan_schema or PLAN_SCHEMA
@@ -363,7 +365,11 @@ class PlannerStrategy:
             return
 
         plan, plan_action, plan_usage, plan_context_error = await self._plan(
-            user_input, tool_catalog, cancel_event=cancel_event, deadline=deadline
+            user_input,
+            tool_catalog,
+            max_context_tokens=max_context_tokens,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
 
         if plan_usage:
@@ -466,7 +472,7 @@ class PlannerStrategy:
                     structured=None,
                     plan=plan_result,
                     steps_executed=executed,
-                    success=bool(executed),
+                    success=any(r["success"] for r in executed),
                     degraded=True,
                     error=msg,
                     info=msg,
@@ -495,6 +501,7 @@ class PlannerStrategy:
                 {
                     "id": step["id"],
                     "description": step["description"],
+                    "depends_on": sorted(step["deps"]),
                     "success": ok,
                     "summary": (sub.content if ok and sub else "")[:500],
                     "error": None if ok else fail_reason,
@@ -533,6 +540,7 @@ class PlannerStrategy:
                 deadline,
                 cancel_event,
                 max_replan_rounds,
+                max_context_tokens,
             )
 
             if replan_guard is not None:
@@ -572,7 +580,11 @@ class PlannerStrategy:
                         return
 
                     sub_result, _, sub_usage, sub_context_error = await self._summarize(
-                        goal, executed, cancel_event=cancel_event, deadline=deadline
+                        goal,
+                        executed,
+                        max_context_tokens=max_context_tokens,
+                        cancel_event=cancel_event,
+                        deadline=deadline,
                     )
 
                     if sub_usage:
@@ -627,7 +639,11 @@ class PlannerStrategy:
             return
 
         result, action, result_usage, result_context_error = await self._summarize(
-            goal, executed, cancel_event=cancel_event, deadline=deadline
+            goal,
+            executed,
+            max_context_tokens=max_context_tokens,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
 
         if result_usage:
@@ -680,6 +696,7 @@ class PlannerStrategy:
         deadline: float | None,
         cancel_event: asyncio.Event | None,
         max_replan_rounds: int,
+        max_context_tokens: int | None = None,
     ) -> tuple[
         list[dict] | None,
         GuardResult | None,
@@ -711,6 +728,7 @@ class PlannerStrategy:
                 tool_catalog,
                 executed,
                 failed_step,
+                max_context_tokens=max_context_tokens,
                 cancel_event=cancel_event,
                 deadline=deadline,
             )
@@ -756,6 +774,7 @@ class PlannerStrategy:
         user_input: str,
         tool_catalog: str,
         *,
+        max_context_tokens: int | None = None,
         cancel_event: asyncio.Event | None = None,
         deadline: float | None = None,
     ) -> tuple[
@@ -770,12 +789,30 @@ class PlannerStrategy:
         Guard 终止；其余失败走 PLAN_FAILED 分发（默认 CONTINUE=降级 ReAct 兜底；
         STOP=硬失败；RAISE 抛 AgentRunError）。非 AppError 编程错误冒泡 fail fast。
         """
+        count_tokens = (
+            self._context_budget.count_tokens
+            if self._context_budget is not None
+            else None
+        )
+        prompt = PromptManager.build_planning_prompt(
+            user_input,
+            tool_catalog,
+            max_tokens=max_context_tokens,
+            count_tokens=count_tokens,
+        )
+        context_error = self._prompt_context_error(
+            prompt,
+            model_key=self._plan_model_key,
+            max_context_tokens=max_context_tokens,
+            count_tokens=count_tokens,
+        )
+        if context_error is not None:
+            self._last_structured_error = str(context_error)
+            return None, None, None, context_error
         messages = [
             {
                 "role": "user",
-                "content": PromptManager.build_planning_prompt(
-                    user_input, tool_catalog
-                ),
+                "content": prompt,
             }
         ]
         usage: dict = {}
@@ -812,6 +849,7 @@ class PlannerStrategy:
         executed: list[dict],
         failed_step: dict,
         *,
+        max_context_tokens: int | None = None,
         cancel_event: asyncio.Event | None = None,
         deadline: float | None = None,
     ) -> tuple[
@@ -825,16 +863,33 @@ class PlannerStrategy:
         返回 ``(新尾步骤列表, 分发动作, 用量, 上下文错误)``。上下文超限由调用方
         按 Guard 终止；普通失败返回 ``(None, action, usage, None)``。
         """
+        count_tokens = (
+            self._context_budget.count_tokens
+            if self._context_budget is not None
+            else None
+        )
+        prompt = PromptManager.build_planning_replan_prompt(
+            goal,
+            tool_catalog,
+            executed,
+            failed_step,
+            failed_step.get("error") or "",
+            max_tokens=max_context_tokens,
+            count_tokens=count_tokens,
+        )
+        context_error = self._prompt_context_error(
+            prompt,
+            model_key=self._plan_model_key,
+            max_context_tokens=max_context_tokens,
+            count_tokens=count_tokens,
+        )
+        if context_error is not None:
+            self._last_structured_error = str(context_error)
+            return None, None, None, context_error
         messages = [
             {
                 "role": "user",
-                "content": PromptManager.build_planning_replan_prompt(
-                    goal,
-                    tool_catalog,
-                    executed,
-                    failed_step,
-                    failed_step.get("error") or "",
-                ),
+                "content": prompt,
             }
         ]
         usage: dict = {}
@@ -869,6 +924,7 @@ class PlannerStrategy:
         goal: str,
         executed: list[dict],
         *,
+        max_context_tokens: int | None = None,
         cancel_event: asyncio.Event | None = None,
         deadline: float | None = None,
     ) -> tuple[
@@ -882,12 +938,29 @@ class PlannerStrategy:
         返回 ``(报告, 分发动作, 用量, 上下文错误)``。上下文超限由调用方按
         Guard 终止；普通失败返回 ``(None, action, usage, None)``。
         """
+        count_tokens = (
+            self._context_budget.count_tokens
+            if self._context_budget is not None
+            else None
+        )
+        prompt = PromptManager.build_planning_summarize_prompt(
+            goal,
+            executed,
+            max_tokens=max_context_tokens,
+            count_tokens=count_tokens,
+        )
+        context_error = self._prompt_context_error(
+            prompt,
+            model_key=self._summarize_model_key,
+            max_context_tokens=max_context_tokens,
+            count_tokens=count_tokens,
+        )
+        if context_error is not None:
+            return None, None, None, context_error
         messages = [
             {
                 "role": "user",
-                "content": PromptManager.build_planning_summarize_prompt(
-                    goal, executed
-                ),
+                "content": prompt,
             }
         ]
         usage: dict = {}
@@ -916,6 +989,27 @@ class PlannerStrategy:
     # ==================================================================
     # 内部辅助
     # ==================================================================
+
+    @staticmethod
+    def _prompt_context_error(
+        prompt: str,
+        *,
+        model_key: str,
+        max_context_tokens: int | None,
+        count_tokens: Callable[[str], int] | None,
+    ) -> ContextWindowExceededError | None:
+        """在 SDK 调用前拒绝连最小 Planner 语义骨架也装不下的提示词。"""
+        if count_tokens is None or max_context_tokens is None:
+            return None
+        input_tokens = count_tokens(prompt)
+        if input_tokens <= max_context_tokens:
+            return None
+        return ContextWindowExceededError(
+            model_key=model_key,
+            input_tokens=input_tokens,
+            input_budget=max_context_tokens,
+            max_tokens=0,
+        )
 
     def _absorb_react(self, outcome: ReActOutcome | None) -> None:
         """一次 react 子跑归并进累计态（usage / iterations）。"""

@@ -41,15 +41,16 @@
 | app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议（含 calculate_cost / count_*）；随 Agent/LLM/成本测试覆盖 |
 | app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
 | app/domain/prompts/base.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
-| app/domain/prompts/manager.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | PromptManager 公开组装入口；固定模板开销与 Planner 步骤序列化 |
+| app/domain/prompts/manager.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | PromptManager 公开组装入口与固定模板开销 |
 | app/domain/prompts/_reflection_payload.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Reflection evidence/draft/issues 字段级语义缩减；包内纯函数组件 |
+| app/domain/prompts/_planner_payload.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Planner plan/replan/summarize 分层语义投影；包内纯函数组件 |
 | app/domain/prompts/templates/planning.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Planner 规划/重规划/汇总提示词模板 |
 | app/domain/prompts/templates/system.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | SYSTEM_PROMPT 系统提示词 |
 | app/domain/prompts/templates/tools.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | TOOL_FORMAT_PROMPT 工具格式提示词 |
 | app/domain/prompts/templates/reflection.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_reflection.py | Reflection 自查/修正提示词模板 |
 | app/domain/reasoning/_common.py | ✅ | docs/domain_doc/reasoning_doc/_common.md | tests/unit/test_reasoning_common.py | 策略共享小工具（类型化执行护栏、dispatch_error、usage 合并，三策略共用） |
 | app/domain/reasoning/chain_of_thought.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
-| app/domain/reasoning/planner.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 三阶段编排；STOP 直接终止，上下文超限保留 usage/plan/步骤事实且不进入同语义 fallback |
+| app/domain/reasoning/planner.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 三阶段编排与语义预算接线；上下文超限保留 usage/plan/步骤事实且不进入同语义 fallback |
 | app/domain/reasoning/reflection.py | ✅ | docs/domain_doc/reasoning_doc/reflection.md | tests/unit/test_reflection.py | Reflection 自查/修正；语义缩减只影响 prompt 视图；Guard 终止保留最近稿、原始证据、critique 与 usage |
 | app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现（ReActStrategy + ReActOutcome，含流式/非流式双通道 stream_mode；非流式另见 test_react_strategy_nonstream.py） |
 | app/infrastructure/database.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，DB 由 container 直管 |

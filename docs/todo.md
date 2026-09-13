@@ -2,14 +2,6 @@
 
 更新：2026-09-13。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
-## 后续代码主线（本轮暂不处理）
-
-| 状态 / ID | 未完事项与收口边界 | 依据与验收入口 |
-| --- | --- | --- |
-| 待回仓核验 / T-02 | Planner 规划、重规划、汇总的语义上下文缩减：保留目标、依赖、成功步、失败原因与证据引用；超限时保留已完成步骤并形成符合既有契约的部分结果。 | 同批明确排除 Slice 4，原 Slice 4 保持未完成。读取[Planner ADR](../adr/domain/reasoning/2026-09-05-planner-strategy.md)、[Planner 模块](domain_doc/reasoning_doc/planner.md)和[请求准入 ADR](../adr/integration/llm/2026-09-06-request-context-budget.md)。若进入实施，验证 plan/replan/summarize 各请求路径、usage 单计、二维步骤成功及统一 plan 形状。 |
-
-Reflection 的 T-01 已完成，实施与验证见 [REASON-023](../issues/domain/reasoning/2026-09-13-reflection-semantic-context-reduction.md)和[完成记录](history/completed-work.md)。Planner 结构化出口已能把上下文超限交给 Guard；T-02 只承担规划、重规划和汇总的语义缩减，不重复修复分类问题。
-
 ## 独立边界与候选建设
 
 以下均需先重新确认必要性和执行范围；目前没有在实施的代码任务。候选不是必须实现清单。

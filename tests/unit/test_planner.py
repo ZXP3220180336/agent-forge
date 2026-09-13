@@ -108,6 +108,21 @@ class _PlannerLLM:
         return spec
 
 
+class _SelectiveContextBudget:
+    """只控制结构化阶段计数；消息轮次裁剪不属于本组测试目标。"""
+
+    def __init__(self, oversized_marker: str | None = None) -> None:
+        self.oversized_marker = oversized_marker
+
+    def count_tokens(self, text: str) -> int:
+        if self.oversized_marker and self.oversized_marker not in text:
+            return 10
+        return len(text)
+
+    def trim_messages(self, messages, *, max_rounds, max_tokens) -> None:
+        return None
+
+
 def _typed(events: list[str], event_type: str) -> list[dict]:
     return [
         json.loads(e[len("data: ") :].strip())
@@ -324,6 +339,28 @@ async def test_plan_context_overflow_stops_without_react_fallback():
     assert llm.react_calls == 0
 
 
+async def test_plan_minimal_prompt_overflow_stops_before_structured_call():
+    """Domain 最小规划骨架超限时不把已知非法请求交给 Integration。"""
+    llm = _PlannerLLM(
+        react_scripts=[_stop_script("不应执行")], structured_scripts=[PLAN]
+    )
+    strategy = PlannerStrategy(
+        llm=llm, tools=None, context_budget=_SelectiveContextBudget()
+    )
+
+    await _run(
+        strategy,
+        [{"role": "user", "content": "hi"}],
+        max_context_tokens=1,
+    )
+
+    assert llm.structured_calls == 0
+    assert llm.react_calls == 0
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "上下文超限" in (strategy.outcome.error or "")
+
+
 # =====================================================================
 # 步骤失败 → replan
 # =====================================================================
@@ -351,6 +388,63 @@ async def test_step_fail_triggers_replan():
     assert strategy.outcome.steps_executed[1]["success"] is True  # 修订步
     assert llm.structured_calls == 3  # plan + replan + summarize
     assert len(_typed(events, "done")) == 1
+
+
+async def test_replan_minimal_prompt_overflow_keeps_failed_step_without_new_call():
+    """重规划本地超限保留失败事实，且只有失败记录不能标为部分成功。"""
+    llm = _PlannerLLM(
+        react_scripts=[{"error": "步骤1工具调用失败"}],
+        structured_scripts=[PLAN],
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    )
+    strategy = PlannerStrategy(
+        llm=llm,
+        tools=None,
+        context_budget=_SelectiveContextBudget("某一步执行失败"),
+    )
+
+    await _run(
+        strategy,
+        [{"role": "user", "content": "hi"}],
+        max_context_tokens=50,
+        max_replan_rounds=1,
+    )
+
+    assert llm.structured_calls == 1
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert strategy.outcome.plan is not None
+    assert strategy.outcome.steps_executed[0]["success"] is False
+    assert strategy.outcome.steps_executed[0]["depends_on"] == []
+    assert strategy.outcome.total_tokens == 15
+
+
+async def test_summarize_minimal_prompt_overflow_keeps_completed_steps_and_usage():
+    """汇总本地超限不丢已完成步骤，并避免发出第二笔结构化请求。"""
+    llm = _PlannerLLM(
+        react_scripts=[_stop_script("结果一"), _stop_script("结果二")],
+        structured_scripts=[PLAN],
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    )
+    strategy = PlannerStrategy(
+        llm=llm,
+        tools=None,
+        context_budget=_SelectiveContextBudget("报告撰写者"),
+    )
+
+    await _run(
+        strategy,
+        [{"role": "user", "content": "hi"}],
+        max_context_tokens=50,
+    )
+
+    assert llm.structured_calls == 1
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.degraded is True
+    assert len(strategy.outcome.steps_executed) == 2
+    assert strategy.outcome.total_tokens == 15
+    assert "上下文超限" in (strategy.outcome.error or "")
 
 
 async def test_replan_exhausted_degrades_partial():
