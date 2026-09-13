@@ -1,6 +1,6 @@
 # ContextManager 上下文管理说明文档
 
-> **更新日期**：2026-09-03
+> **更新日期**：2026-09-13
 > **模块**：`app/application/context/context_manager.py`
 > **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、经 `LLMGateway` 端口精确计数、超限截断；并结构实现 `ContextBudgetPort`，承担 Agent 运行中的上下文预算管理。
 
@@ -121,10 +121,10 @@ _truncate_messages(messages, max_tokens)
 
 ### Agent 运行中上下文预算管理（ContextBudgetPort）
 
-`build_messages`（输入侧）负责初始组装截断；`trim_messages` 系列（运行中）负责 Agent 循环中、模型每次调用前的**增量护栏**，两者定位互补：
+`build_messages`（输入侧）负责初始组装截断；`trim_messages` 系列（运行中）负责 Agent 循环中、模型每次调用前的**增量护栏**；`count_tokens` 为策略专属字段缩减提供统一计量。三者定位互补：
 
 - **端口**：`ContextBudgetPort`（`app/domain/ports/context_budget.py`）——领域层拥有的抽象契约，`ContextManager` 结构实现之（依赖倒置，不直接 import 应用层）
-- **装配**：`chat.py` 构造 `ReActAgent(..., context_budget=context_manager)`，`ReActStrategy` 在 CONTINUE 循环末尾、模型下次调用前调用 `trim_messages`，作为上下文 gatekeeper
+- **装配**：ContextManager 经 Agent 构造参数注入策略；ReAct 使用 `trim_messages` 管理轮次历史，Reflection 使用 `count_tokens` 对 evidence/draft/issues 的只读 prompt 视图计量
 - **对齐工业界 turn-aware trimming**：保留 system/user 前缀 + 最近 N 轮 assistant/tool 配对消息，token 超限时逐轮丢最旧
 
 ```text
@@ -143,6 +143,7 @@ trim_messages(messages, *, max_rounds, max_tokens)   # 就地修改 messages
 | 输入侧组装超限 | `_truncate_messages` | 按「整条消息」丢弃最早历史，保留 system + 最近历史 + user |
 | 运行中轮次超限 | `_trim_to_recent_rounds` | 按「轮」滑动窗口，配对原子保留 |
 | 运行中 token 超限 | `_trim_to_token_budget` | 逐轮丢最旧 assistant/tool 对 |
+| Reflection 阶段单条载荷 | `count_tokens` + Domain 字段策略 | ContextManager 只计量；字段取舍由 Reflection prompt 边界决定 |
 
 ### 成本上限（CostLimiter，同目录兄弟组件）
 

@@ -1,7 +1,7 @@
 # 领域层 Reasoning 模块问题追踪
 
 > **用途**：登记 Domain 层 Reasoning 模块（`app/domain/reasoning/`）的问题记录（发现 → 分析 → 修复 → 验证 → 教训）。
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-13
 > **关联**：[推理策略说明文档](../../../docs/domain_doc/reasoning_doc/reasoning.md) · [ADR context-budget](../../../adr/domain/reasoning/2026-08-28-context-budget.md)
 
 ## 问题索引
@@ -29,5 +29,6 @@
 | [REASON-020](2026-09-11-reflection-guard-checkpoint.md) | Reflection 护栏复查挂在自查 ok 判定之前，合格报告被改判降级 | ✅ 已修复 | reasoning/reflection | 2026-09-11 |
 | [REASON-021](2026-09-12-planner-stop-starts-fallback.md) | Planner 已选择 STOP 后仍启动 ReAct fallback | ✅ 已修复 | reasoning/planner | 2026-09-12 |
 | [REASON-022](2026-09-12-structured-guard-terminal-loss.md) | 结构化阶段丢失 strict deadline 与上下文 Guard 终态 | ✅ 已修复 | reasoning/reflection · planner | 2026-09-12 |
+| [REASON-023](2026-09-13-reflection-semantic-context-reduction.md) | Reflection 自查/修正载荷缺少字段级语义缩减，修正终止丢 critique | ✅ 已修复 | prompts · reasoning/reflection · ports/context_budget | 2026-09-13 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

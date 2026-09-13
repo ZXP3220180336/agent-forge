@@ -1,15 +1,14 @@
 # 项目待办
 
-更新：2026-09-12。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
+更新：2026-09-13。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
 ## 后续代码主线（本轮暂不处理）
 
 | 状态 / ID | 未完事项与收口边界 | 依据与验收入口 |
 | --- | --- | --- |
-| 待回仓核验 / T-01 | Reflection 阶段语义上下文缩减：evidence、draft、issues 的预算分配与省略标记；缩减不覆盖原始审计证据，仍超限时保留最近可验证稿。 | 原计划“2026-09-10 第二阶段”明确排除 Slice 3，原“上下文预算跨策略闭环”Slice 3 保持未完成。读取[语义预算 ADR](../adr/domain/reasoning/2026-08-28-context-budget.md)、[请求准入 ADR](../adr/integration/llm/2026-09-06-request-context-budget.md)、[Reflection 模块](domain_doc/reasoning_doc/reflection.md)。若进入实施，覆盖超长证据/稿件/问题清单、拒绝后无额外请求、证据引用保留，并遵守 [Reflection 局部契约](engineering/agent-runtime-rules.md#reflection-exception)。 |
 | 待回仓核验 / T-02 | Planner 规划、重规划、汇总的语义上下文缩减：保留目标、依赖、成功步、失败原因与证据引用；超限时保留已完成步骤并形成符合既有契约的部分结果。 | 同批明确排除 Slice 4，原 Slice 4 保持未完成。读取[Planner ADR](../adr/domain/reasoning/2026-09-05-planner-strategy.md)、[Planner 模块](domain_doc/reasoning_doc/planner.md)和[请求准入 ADR](../adr/integration/llm/2026-09-06-request-context-budget.md)。若进入实施，验证 plan/replan/summarize 各请求路径、usage 单计、二维步骤成功及统一 plan 形状。 |
 
-本轮已验证 Reflection/Planner 结构化出口能够把上下文超限交给 Guard，并阻止未缩减 payload 进入普通 fallback。T-01/T-02 仍只承担语义缩减能力：恢复时分别设计证据、稿件、依赖与已完成步骤的预算和省略标记，不重复修复分类问题。
+Reflection 的 T-01 已完成，实施与验证见 [REASON-023](../issues/domain/reasoning/2026-09-13-reflection-semantic-context-reduction.md)和[完成记录](history/completed-work.md)。Planner 结构化出口已能把上下文超限交给 Guard；T-02 只承担规划、重规划和汇总的语义缩减，不重复修复分类问题。
 
 ## 独立边界与候选建设
 

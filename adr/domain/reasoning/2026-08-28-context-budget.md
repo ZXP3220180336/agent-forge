@@ -17,6 +17,7 @@
 3. 最终 provider 请求的窗口准入、工具定义与结构化 schema 计数、输出预留，归 Integration `LLMService` 的请求预算闸，见 [request-context-budget](../../integration/llm/2026-09-06-request-context-budget.md)。`ContextManager` 不依赖供应商协议，也不序列化最终 wire payload。
 4. **配置**：`agent_max_context_rounds=8`（轮次）+ 复用 `max_context_tokens`（token 策略上限）。`AgentContext` 默认 None（策略层向后兼容），生产由装配根注入。
 5. **session 存储下沉基础设施**记为升级路径（非本次）：工业级惯例为「会话用例在应用层、存储实现下沉基础设施（仓储接口）」，当前 session_manager 混合两者，后续可拆。
+6. Reflection 的阶段性单条载荷使用同一端口的 `count_tokens` 计量，但字段选择留在 Domain：critique 按 evidence 60% / draft 40%，refine 按 evidence 45% / draft 35% / issues 20% 初分配并回流余量。缩减视图保留被引用证据、结论、量测/时间锚点和 unresolved issues，并显式标记省略；原始证据、最近完整稿与 critique 不被覆盖。最终 wire payload 仍由 Integration 请求闸裁决。
 
 ## Consequences
 
@@ -24,4 +25,5 @@
 - ✅ 轮次保配对原子性；候选消息 token 上限保证会话状态有界。
 - ✅ 语义取舍与 provider 请求准入分属单向依赖的两层，避免 `LLMService` 反向依赖 Application。
 - ⚠️ 被 trim 的早期轮信息丢失（滑动窗口固有取舍，与 LangChain trim 一致）；token 估算保守（补低估，方向安全）。
-- 📌 其他模式（Planner / Reflection）复用同一端口即可接入；其阶段性单条输入仍由请求预算闸最终校验。
+- ✅ Reflection 自查/修正已复用统一 token 计量并实施字段级语义缩减；实现与测试见 [REASON-023](../../../issues/domain/reasoning/2026-09-13-reflection-semantic-context-reduction.md)。
+- 📌 Planner 的阶段性语义缩减仍待 T-02；所有策略的最终请求继续由请求预算闸校验。

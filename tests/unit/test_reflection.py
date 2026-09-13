@@ -11,6 +11,7 @@ StreamResult）与 generate_structured（返回 dict/None/抛异常），记录�
 import asyncio
 import json
 import time
+from copy import deepcopy
 
 import pytest
 
@@ -241,6 +242,7 @@ async def test_reflect_critique_none_degrades_to_draft():
 
     assert strategy.outcome is not None
     assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.critique is None
     assert strategy.outcome.degraded is True
     assert "自查失败" in strategy.outcome.error
     assert any("降级" in e for e in events)
@@ -258,6 +260,7 @@ async def test_reflect_critique_refusal_degrades_to_draft():
 
     assert strategy.outcome is not None
     assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.critique is None
     assert strategy.outcome.degraded is True
 
 
@@ -418,6 +421,9 @@ class _FakeCostLimiter:
 
 
 class _FakeContextBudget:
+    def count_tokens(self, text):
+        return len(text)
+
     def trim_messages(self, messages, *, max_rounds=None, max_tokens=None):
         return None
 
@@ -755,6 +761,117 @@ async def test_reflect_context_overflow_is_guard_terminal_not_critique_failure()
     assert strategy.outcome.degraded is True
     assert "上下文超限" in (strategy.outcome.error or "")
     assert "自查失败" not in (strategy.outcome.error or "")
+    assert llm.structured_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reflect_semantic_budget_compacts_before_structured_call():
+    """Reflection 自查在本地缩减单条载荷，并且每个阶段至多发起一次请求。"""
+    long_draft = deepcopy(DRAFT)
+    long_draft["next_steps"] = ["检查项" + "内容" * 200 for _ in range(30)]
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(long_draft),
+        structured_scripts=[{"ok": True, "issues": []}],
+    )
+    strategy = ReflectionStrategy(
+        llm=llm,
+        tools=_make_strategy(llm)._react._tools,
+        context_budget=_FakeContextBudget(),
+    )
+
+    await _run(strategy, max_context_tokens=2200)
+
+    assert llm.structured_calls == 1
+    prompt = llm.structured_messages[0][0]["content"]
+    assert len(prompt) <= 2200
+    assert '<omitted section="draft"' in prompt
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == long_draft
+
+
+@pytest.mark.asyncio
+async def test_reflect_semantic_budget_rejects_locally_when_skeleton_cannot_fit():
+    """连最小语义骨架也放不下时零结构化请求，并采用完整最近稿。"""
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[{"ok": True, "issues": []}],
+    )
+    strategy = ReflectionStrategy(
+        llm=llm,
+        tools=_make_strategy(llm)._react._tools,
+        context_budget=_FakeContextBudget(),
+    )
+
+    await _run(strategy, max_context_tokens=20)
+
+    assert llm.structured_calls == 0
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.draft == DRAFT
+    assert "上下文超限" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_reflect_refine_context_rejection_keeps_full_critique():
+    """修正请求最终仍被拒绝时保留完整审查意见，且不追加调用。"""
+    critique = {
+        "ok": False,
+        "issues": [
+            {
+                "severity": "critical",
+                "dimension": "grounding",
+                "description": "必须保留的完整审计意见",
+            }
+        ],
+    }
+    overflow = ContextWindowExceededError(
+        model_key="fast", input_tokens=120, input_budget=100, max_tokens=20
+    )
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[critique, overflow, REFINED],
+    )
+    strategy = _make_strategy(llm)
+
+    await _run(strategy)
+
+    assert llm.structured_calls == 2
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == DRAFT
+    assert strategy.outcome.critique == critique
+    assert "上下文超限" in (strategy.outcome.error or "")
+
+
+@pytest.mark.asyncio
+async def test_reflect_recritique_context_rejection_keeps_latest_refined_draft():
+    """修正版已接管后下一次自查超限，终态保留修正版而非退回初稿。"""
+    critique = {
+        "ok": False,
+        "issues": [
+            {
+                "severity": "critical",
+                "dimension": "grounding",
+                "description": "先完成一次修正",
+            }
+        ],
+    }
+    overflow = ContextWindowExceededError(
+        model_key="fast", input_tokens=120, input_budget=100, max_tokens=20
+    )
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[critique, REFINED, overflow],
+    )
+    strategy = _make_strategy(llm)
+
+    await _run(strategy)
+
+    assert llm.structured_calls == 3
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == REFINED
+    assert strategy.outcome.draft == DRAFT
+    assert strategy.outcome.refine_rounds == 1
+    assert "上下文超限" in (strategy.outcome.error or "")
 
 
 @pytest.mark.asyncio
@@ -798,6 +915,16 @@ async def test_reflect_cancel_event_stops_degrades_to_draft():
     assert strategy.outcome.structured == DRAFT
     assert strategy.outcome.degraded is True
     assert strategy.outcome.refine_rounds == 0
+    assert strategy.outcome.critique == {
+        "ok": False,
+        "issues": [
+            {
+                "severity": "minor",
+                "dimension": "completeness",
+                "description": "缺信号",
+            }
+        ],
+    }
     assert "用户取消" in strategy.outcome.error
     assert llm.structured_calls == 1
     assert len([event for event in events if '"type": "done"' in event]) == 1

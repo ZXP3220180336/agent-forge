@@ -200,6 +200,7 @@ class ReflectionStrategy:
             llm, tools, context_budget, error_handlers, cost_limiter
         )
         self._llm = llm
+        self._context_budget = context_budget
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
         self._cost_limiter = cost_limiter
         self._output_schema = output_schema or REFLECTION_SCHEMA
@@ -337,6 +338,7 @@ class ReflectionStrategy:
                 evidence,
                 current,
                 react_outcome.iterations,
+                max_context_tokens=max_context_tokens,
                 cancel_event=cancel_event,
                 deadline=deadline,
             )
@@ -461,7 +463,12 @@ class ReflectionStrategy:
             )
             if guard is not None:
                 for e in self._finalize_guard(
-                    guard, react_outcome, draft, current, refine_round
+                    guard,
+                    react_outcome,
+                    draft,
+                    current,
+                    refine_round,
+                    critique=critique,
                 ):
                     yield e
                 return
@@ -477,6 +484,7 @@ class ReflectionStrategy:
                 current,
                 issues,
                 react_outcome.iterations,
+                max_context_tokens=max_context_tokens,
                 cancel_event=cancel_event,
                 deadline=deadline,
             )
@@ -498,7 +506,12 @@ class ReflectionStrategy:
             )
             if guard is not None:
                 for e in self._finalize_guard(
-                    guard, react_outcome, draft, current, completed_rounds
+                    guard,
+                    react_outcome,
+                    draft,
+                    current,
+                    completed_rounds,
+                    critique=critique,
                 ):
                     yield e
                 return
@@ -553,6 +566,7 @@ class ReflectionStrategy:
         draft: dict[str, Any],
         iteration: int,
         *,
+        max_context_tokens: int | None = None,
         cancel_event: asyncio.Event | None = None,
         deadline: float | None = None,
     ) -> tuple[
@@ -568,16 +582,41 @@ class ReflectionStrategy:
         认证熔断等）统一分发降级（REASON-010）。RAISE 抛 AgentRunError，非 AppError
         编程错误向上冒泡（fail fast）。
         """
+        usage: dict = {}
         try:
+            count_tokens = (
+                self._context_budget.count_tokens
+                if self._context_budget is not None
+                else None
+            )
+            prompt = PromptManager.build_reflection_critique_prompt(
+                evidence,
+                draft,
+                max_tokens=max_context_tokens,
+                count_tokens=count_tokens,
+            )
+            if (
+                count_tokens is not None
+                and max_context_tokens is not None
+                and count_tokens(prompt) > max_context_tokens
+            ):
+                return (
+                    None,
+                    None,
+                    None,
+                    ContextWindowExceededError(
+                        model_key=self._critique_model_key,
+                        input_tokens=count_tokens(prompt),
+                        input_budget=max_context_tokens,
+                        max_tokens=0,
+                    ),
+                )
             messages = [
                 {
                     "role": "user",
-                    "content": PromptManager.build_reflection_critique_prompt(
-                        evidence, draft
-                    ),
+                    "content": prompt,
                 }
             ]
-            usage: dict = {}
             result = await self._llm.generate_structured(
                 messages,
                 self._critique_schema,
@@ -606,6 +645,7 @@ class ReflectionStrategy:
         issues: list[dict[str, Any]],
         iteration: int,
         *,
+        max_context_tokens: int | None = None,
         cancel_event: asyncio.Event | None = None,
         deadline: float | None = None,
     ) -> tuple[
@@ -621,16 +661,42 @@ class ReflectionStrategy:
         认证熔断等）统一分发降级（REASON-010）。RAISE 抛 AgentRunError，非 AppError
         编程错误向上冒泡（fail fast）。
         """
+        usage: dict = {}
         try:
+            count_tokens = (
+                self._context_budget.count_tokens
+                if self._context_budget is not None
+                else None
+            )
+            prompt = PromptManager.build_reflection_refine_prompt(
+                evidence,
+                draft,
+                issues,
+                max_tokens=max_context_tokens,
+                count_tokens=count_tokens,
+            )
+            if (
+                count_tokens is not None
+                and max_context_tokens is not None
+                and count_tokens(prompt) > max_context_tokens
+            ):
+                return (
+                    None,
+                    None,
+                    None,
+                    ContextWindowExceededError(
+                        model_key=self._critique_model_key,
+                        input_tokens=count_tokens(prompt),
+                        input_budget=max_context_tokens,
+                        max_tokens=0,
+                    ),
+                )
             messages = [
                 {
                     "role": "user",
-                    "content": PromptManager.build_reflection_refine_prompt(
-                        evidence, draft, issues
-                    ),
+                    "content": prompt,
                 }
             ]
-            usage: dict = {}
             result = await self._llm.generate_structured(
                 messages,
                 self._output_schema,

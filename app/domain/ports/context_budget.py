@@ -18,6 +18,10 @@ class ContextBudgetPort(Protocol):
     （模型下次调用前）调用，作为上下文护栏。
     """
 
+    def count_tokens(self, text: str) -> int:
+        """按语义预算使用的统一编码口径计算文本 token 数。"""
+        ...
+
     def trim_messages(
         self,
         messages: list[dict],

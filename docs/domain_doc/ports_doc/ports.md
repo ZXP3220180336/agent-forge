@@ -1,7 +1,7 @@
 # 领域端口契约对外接口文档
 
 > **对应代码**：`app/domain/ports/`
-> **更新日期**：2026-08-29
+> **更新日期**：2026-09-13
 > **文档定位**：领域端口契约模块——领域层拥有的 5 个抽象契约（依赖倒置），由集成层 / 应用层结构实现、装配根注入；服务对象为领域层 Agent / 推理策略（调用方）与集成层实现方
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
@@ -130,6 +130,7 @@ Agent 运行中上下文预算管理（横切护栏），实现方 `ContextManag
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
+| `count_tokens` | `(text) -> int` | 提供统一语义预算计量；字段取舍仍由具体策略决定 |
 | `trim_messages` | `(messages, *, max_rounds, max_tokens) -> None` | 就地裁剪 messages 到预算内：保留 system/user 前缀 + 最近 N 轮 assistant/tool 配对（轮次 + token 双层护栏）；None=不限 |
 
 ### `CostLimiterPort`

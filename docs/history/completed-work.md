@@ -1,8 +1,26 @@
 # 已完成工作的交接记录
 
-整理日期：2026-09-12。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
+整理日期：2026-09-13。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
+
+## 2026-09-13：Reflection 语义上下文缩减（T-01）
+
+Reflection 自查与修正已使用 `ContextBudgetPort.count_tokens` 对阶段性单条载荷计量；
+PromptManager 按固定比例缩减 evidence、draft 和 issues，优先保留被引用证据、量测/时间
+锚点、结论、置信度、显式放弃及 critical/较新审查意见。省略使用可计数标记，缩减视图
+不覆盖原始证据、最近完整稿或 critique。最小提示骨架仍超限时零调用，Integration 最终闸
+拒绝时单阶段只调用一次并采用最近稿。
+
+实施问题见 [REASON-023](../../issues/domain/reasoning/2026-09-13-reflection-semantic-context-reduction.md)，
+现行决策见[语义预算 ADR](../../adr/domain/reasoning/2026-08-28-context-budget.md)。核心 Prompt/
+Reflection 测试 46 项、相关组件测试 64 项通过；最终全量 975 项通过，唯一告警为既存的
+Starlette/httpx 弃用提示；`scripts.verify_alignment` 与 `git diff --check` 通过。T-02
+Planner 语义缩减仍保留在当前待办。
+
+同日补充了良率 RCA 的业务对象、报告生命周期和上下文缩减边界，并在 PromptManager
+关键决策点记录业务原因。业务语义维护在[产品文档](../project/product.md#良率-rca-的业务对象与报告生命周期)，
+Prompt 模块文档只维护接口与缩减契约。
 
 ## 2026-09-12：SDK 调用 Guard、响应接管与提交边界
 

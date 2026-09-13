@@ -1,7 +1,7 @@
 # ReflectionStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/reflection.py`
-> **更新日期**：2026-09-12
+> **更新日期**：2026-09-13
 > **职责**：Reflection 原子推理策略——生成 → 自查 → 修正三阶段，模型自我评估输出质量并改进
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/reflection.py](../agent_doc/agent.md)；工业级对标见 [reflection_benchmark.md](reflection_benchmark.md)
@@ -17,6 +17,7 @@
     - [三阶段显式分离](#三阶段显式分离)
     - [Grounding（证据锚定）](#grounding证据锚定)
     - [自查清单维度（Scope 盲区教训）](#自查清单维度scope-盲区教训)
+    - [阶段性语义上下文缩减](#阶段性语义上下文缩减)
     - [降级路由（best-effort）](#降级路由best-effort)
     - [CRITIQUE\_FAILED 错误分发](#critique_failed-错误分发)
   - [架构总览](#架构总览)
@@ -61,6 +62,14 @@ Critic 被外部信号（工具记录）锚定：自查消息注入「证据链�
 
 自查范围 = 提示词清单，清单外必漏（learning-agent step3 实测）。`CRITIQUE_PROMPT` 穷举 9 个 dimension（`CRITIQUE_SCHEMA.dimension` enum 同步）：grounding / consistency_with_data / fabrication / attribution / confidence_calibration / evidence_gap / completeness / internal_consistency / next_steps_actionable。模板明确「本清单为唯一自查范围」——把盲区变成显式契约。
 
+### 阶段性语义上下文缩减
+
+自查和修正的单条 user 消息同样受 `max_context_tokens` 约束。`ContextBudgetPort.count_tokens` 只提供统一计量，Reflection 的字段取舍由 `PromptManager` 完成：critique 动态区按 evidence 60% / draft 40%，refine 按 evidence 45% / draft 35% / issues 20% 初分配，未使用额度按声明顺序回流。
+
+证据优先保留当前稿引用的记录，再保留最近记录；稳定 `E####` 编号、工具与参数、成功状态、错误码、量测值和时间锚点优先于长结果正文。稿件优先保留结论、证据引用、置信度和 `explicit_abstention`；审查意见优先 critical，再保留较新的 minor。所有删减都有带数量的 `<omitted .../>` 标记。
+
+缩减结果只是下一次请求的只读视图。`react_outcome.tool_calls`、原始 draft、current 和完整 critique 不被修改；最近可验证稿始终是最近一次完整解码并接管 usage 的 current。若最小提示骨架仍超预算，本地零调用并按上下文 Guard 采用 current；若 Integration 最终闸仍拒绝，当前阶段也不做缩减重试。
+
 ### 降级路由（best-effort）
 
 | 情形 | 处理 |
@@ -91,8 +100,8 @@ ReflectionStrategy.execute()（三阶段）
     ├── 阶段一：ReActStrategy.execute(output_schema=REFLECTION_SCHEMA)
     │       ├── 工具收集（证据链 → outcome.tool_calls）
     │       └── final_answer 结构化初稿（→ outcome.structured）
-    ├── 阶段二：generate_structured(CRITIQUE_PROMPT + 证据链 + draft, CRITIQUE_SCHEMA)
-    └── 阶段三：generate_structured(REFINE_PROMPT + 证据链 + draft + issues, REFLECTION_SCHEMA)
+    ├── 阶段二：语义缩减(证据链 + draft) → generate_structured(..., CRITIQUE_SCHEMA)
+    └── 阶段三：语义缩减(证据链 + draft + issues) → generate_structured(..., REFLECTION_SCHEMA)
         └── 错误分发：ErrorHandlerRegistry（CRITIQUE_FAILED，default CONTINUE）
 ```
 
@@ -171,6 +180,8 @@ ReflectionStrategy.execute()（三阶段）
 | 同一实例并发 / 多次 execute | 不并发复用——outcome/_structured_usage 被覆盖，每次运行新建或串行读取（P4） |
 | 证据链含 final_answer 条目（校验失败留痕，非真实证据） | critique 序列化时经 `prompts/manager._serialize_evidence` 剔除（以字面量实现——prompts 不依赖 reasoning，规避环） |
 | 证据链为空 + draft 引用不存在证据 | 自查 grounding 维度抓出（Grounding 价值） |
+| 语义缩减后最小提示骨架仍超过 `max_context_tokens` | 本地零结构化调用，按 CONTEXT_EXCEEDED 保留最近完整稿 |
+| 预缩减请求仍被 Integration 最终预算闸拒绝 | 当前阶段只调用一次，不缩减重试；保留原始证据、最近稿和已取得 critique |
 
 ## 配置项清单
 
@@ -194,6 +205,7 @@ ReflectionStrategy.execute()（三阶段）
 - 反思循环护栏覆盖调用前准入、无结果终止分类、修正返回后的成果/usage 接管，以及自查通过后的成本/after-turn cancel 与 strict deadline 差异；上下文超限不进入 CRITIQUE_FAILED
 - max_refine_rounds 上限（max=1 不修正）、CRITIQUE_FAILED 分发（RAISE/STOP）、Schema 校验
 - Scope 盲区清单维度穷举（9 dimension）、护栏透传
+- 长 evidence/draft/issues 的字段优先级、省略计数与源对象不变；最小骨架零调用、最终拒绝单调用及 critique 保留
 - 桥接：_map_outcome 映射 / ctx 透传 / 端到端 / 默认向后兼容
 
 ## 设计决策
@@ -208,6 +220,7 @@ ReflectionStrategy.execute()（三阶段）
 - [REASON-016 跨策略执行护栏](../../../issues/domain/reasoning/2026-09-10-cross-strategy-guard-priority.md)：自查/修正调用前后统一判定，取消或成本超限后不再多发下一笔请求
 - [REASON-020 护栏复查挂载点](../../../issues/domain/reasoning/2026-09-11-reflection-guard-checkpoint.md)：复查落在自查 ok 判定之前——合格报告被标降级、自查结论丢失；复查改挂到修正调用前
 - [REASON-022 结构化 Guard 终态](../../../issues/domain/reasoning/2026-09-12-structured-guard-terminal-loss.md)：保留 REASON-020 的成本/after-turn 语义，strict deadline 与上下文超限按专用终态处理
+- [REASON-023 Reflection 语义上下文缩减](../../../issues/domain/reasoning/2026-09-13-reflection-semantic-context-reduction.md)：字段级预算与省略标记；缩减视图不覆盖原始证据、最近稿或 critique
 - [ADR-003 调用与提交边界](../../../adr/2026-09-12-sdk-call-guard-response-commit.md)
 
 ## 相关文档

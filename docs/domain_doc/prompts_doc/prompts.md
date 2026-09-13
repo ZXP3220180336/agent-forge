@@ -1,7 +1,7 @@
 # 提示词模块对外接口文档
 
 > **对应代码**：`app/domain/prompts/`
-> **更新日期**：2026-09-06
+> **更新日期**：2026-09-13
 > **文档定位**：提示词模块对外接口文档——`PromptManager` 接口契约 + 内部模板导航；服务对象为领域层 Agent 编排（ReActAgent / PlannerAgent / ReflectionAgent）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
@@ -79,13 +79,13 @@ PromptManager（本模块，对外入口）
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
 | `build_system_prompt(tool_descriptions: str = "")` | 同步静态 | 构建系统提示词：`SYSTEM_PROMPT` + 可选 `TOOL_FORMAT_PROMPT.format(tools=...)` |
-| `build_reflection_critique_prompt(evidence, draft)` | 同步静态 | 构建 Reflection 自查指令：证据链 + 初稿 |
-| `build_reflection_refine_prompt(evidence, draft, issues)` | 同步静态 | 构建 Reflection 修正指令：证据链 + 初稿 + 审查意见 |
+| `build_reflection_critique_prompt(evidence, draft, *, max_tokens=None, count_tokens=None)` | 同步静态 | 构建 Reflection 自查指令；有预算时按 evidence 60% / draft 40% 生成只读缩减视图 |
+| `build_reflection_refine_prompt(evidence, draft, issues, *, max_tokens=None, count_tokens=None)` | 同步静态 | 构建 Reflection 修正指令；有预算时按 evidence 45% / draft 35% / issues 20% 初分配 |
 | `build_planning_prompt(user_input, tool_descriptions)` | 同步静态 | 构建 Planner 规划指令：用户目标 + 工具目录（introspection 文本，不入 tools） |
 | `build_planning_replan_prompt(goal, tool_descriptions, executed, failed_step, error)` | 同步静态 | 构建 Planner 重规划指令：已完成步骤摘要 + 失败步骤 + 原因 |
 | `build_planning_summarize_prompt(goal, executed)` | 同步静态 | 构建 Planner 汇总指令：各步骤结果 → 证据链报告 |
 
-序列化辅助：`_serialize_evidence`（reflection 证据链，剔除 final_answer 终止条目）+ `_serialize_step_results`（planner 步骤执行记录，含成败 + 产出摘要 + 工具引用）——单条截断 500 字符 / 总量截断 4000 字符防上下文膨胀。
+Reflection 的序列化只生成 prompt 视图，不原地修改证据、稿件或审查意见。证据先保留当前稿引用记录及最近记录，并保留稳定 `E####` 编号、工具/参数、状态、错误码和量测/时间锚点；draft 保留结论、证据引用、置信度与显式放弃；issues 先保留 critical 和较新的 minor。删减使用带数量的 `<omitted ... reason="context_budget"/>` 标记。未提供 token 计数与预算时保持兼容调用；最终 provider 准入不属于本模块。
 
 ### PromptTemplate 方法表
 
@@ -131,6 +131,7 @@ messages = [{"role": "system", "content": system_prompt}]
 
 ## 相关文档
 
+- [良率 RCA 的业务对象与报告生命周期](../../project/product.md#良率-rca-的业务对象与报告生命周期)
 - [领域层说明](../README.md)
 - [Agent 模块对外接口文档](../agent_doc/agent.md)
 - [推理策略模块](../reasoning_doc/reasoning.md)（ReAct / Reflection / Planner 策略消费本模块提示词）
