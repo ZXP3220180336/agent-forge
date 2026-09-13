@@ -4,7 +4,6 @@
 > **更新日期**：2026-08-20
 > **关联**：[工具模块接口文档](../../../docs/integration_doc/tools_doc/tools.md) · [builtin 工具说明](../../../docs/integration_doc/tools_doc/builtin_doc/builtin.md)
 
-
 ## 问题索引
 
 | ID | 标题 | 优先级 | 状态 | 涉及模块 | 登记日期 | 修复日期 |
@@ -35,8 +34,8 @@
 | [TOOLS-024](2026-08-19-web-browse-encoding-comment.md) | web_browse 编码注释与实现不一致（缺策略说明） | P3 | ✅ 已修复 | builtin/web_browse（注释澄清） | 2026-08-19 | 2026-08-19 |
 | [TOOLS-025](2026-08-20-web-browse-parser-consistency.md) | web_browse HTML 实体未联动链接文本，`</a>` 后文本误计入链接 | P3 | ✅ 已修复 | builtin/web_browse（parser） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-026](2026-08-20-web-browse-parser-blank-lines.md) | web_browse 连续块标签换行观感（复核已防 + 测试锁定） | P3 | ✅ 已修复 | builtin/web_browse（parser 测试锁定） | 2026-08-20 | 2026-08-20 |
-| [TOOLS-027](2026-08-20-builtin-duplicate-class-warning.md) | builtin 自动发现类名冲突静默覆盖 | P3 | ✅ 已修复 | builtin/__init__（发现告警） | 2026-08-20 | 2026-08-20 |
-| [TOOLS-028](2026-08-20-builtin-lazy-comment.md) | builtin「惰性加载」注释与实现语义不符 | P3 | ✅ 已修复 | builtin/__init__（注释修正） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-027](2026-08-20-builtin-duplicate-class-warning.md) | builtin 自动发现类名冲突静默覆盖 | P3 | ✅ 已修复 | `builtin/__init__`（发现告警） | 2026-08-20 | 2026-08-20 |
+| [TOOLS-028](2026-08-20-builtin-lazy-comment.md) | builtin「惰性加载」注释与实现语义不符 | P3 | ✅ 已修复 | `builtin/__init__`（注释修正） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-029](2026-08-20-rca-in-range-single-time.md) | RCA _in_range 单边纯时间过滤静默失效 | P3 | ✅ 已修复 | rca/data（_in_range 补日期） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-030](2026-08-20-rca-time-range-dry.md) | RCA time_range 过滤逻辑三处重复 | P3 | ✅ 已修复 | rca/data（_apply_time_range 抽取） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-031](2026-08-20-invalid-params-result-extract.md) | 工具参数校验失败分支复制 6 次 | P3 | ✅ 已修复 | tools/base（_invalid_params_result） | 2026-08-20 | 2026-08-20 |
@@ -58,6 +57,5 @@
 | [TOOLS-047](2026-08-20-fact-duplication-residual.md) | 工具模块文档事实重复收敛遗漏（3 处） | P3 | ✅ 已修复 | docs（tools/executor/external/builtin） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-048](2026-08-20-doc-drift.md) | 工具模块文档轻微漂移与覆盖不全（3 处） | P3 | ✅ 已修复 | docs（builtin/README） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-049](2026-08-20-code-review-fixes.md) | 工具模块代码审查修复批次（重试归因 / SSRF CGNAT / 审计脱敏 / 外部工具冷启动 / RCA 时间锚点 + 15 次要） | P1 | ✅ 已修复 | tools/* + rca/ + container | 2026-08-20 | 2026-08-20 |
-
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。
