@@ -2,6 +2,7 @@
 
 > 发现：2026-09-08 ｜ 状态：✅ 已修复 ｜ 模块：llm_service / execution_control / retry / reservation（经执行控制外置）/ streaming_rectifier / structured / react + shared exceptions
 > 关联：E [LLM-043](2026-09-08-structured-cancel-deadline.md) 覆盖边界修正；ADR [request-context-budget](../../../adr/integration/llm/2026-09-06-request-context-budget.md) Decision 8；后置修正见 [LLM-045](2026-09-09-execution-control-late-result-drop.md)（abort 判赢后迟回值接管）
+> 2026-09-12 后继：修复条目 2 中“自然传输异常维持 `cancel()`”是当时实现，已被 [LLM-048](2026-09-12-create-started-ordinary-error-settlement.md) 替代；create 启动后的普通异常现统一执行 `settle(None)` 保守结算。
 
 ## 发现
 

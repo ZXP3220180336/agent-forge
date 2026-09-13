@@ -4,7 +4,6 @@
 > **更新日期**：2026-09-13
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [领域端口契约](../../../docs/domain_doc/README.md)
 
-
 ## 问题索引
 
 | ID | 标题 | 优先级 | 状态 | 涉及模块 | 登记日期 | 修复日期 |
@@ -59,6 +58,5 @@
 | [LLM-048](2026-09-12-create-started-ordinary-error-settlement.md) | create 已启动后的普通异常错误退回 reservation | P1 | ✅ 已修复 | llm_service | 2026-09-12 | 2026-09-12 |
 | [LLM-049](2026-09-12-llm-observation-overrides-terminal.md) | LLM 非关键日志覆盖调用终态 | P1 | ✅ 已修复 | logger / llm_service / streaming_rectifier | 2026-09-12 | 2026-09-12 |
 | [LLM-050](2026-09-13-stream-business-cancellation-contract.md) | 流式业务取消因命中时刻不同产生 SSE 或异常两种公开终态 | P1 | ✅ 已修复 | streaming_rectifier / llm_service / LLMGateway / ReAct | 2026-09-13 | 2026-09-13 |
-
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

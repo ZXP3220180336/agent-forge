@@ -131,7 +131,7 @@
 
 **关键**：async_generate 是 **async generator**，异常被捕获后**不是静默吞掉**，而是转成 SSE 错误事件产出。错误通过事件流（`build_error_event`）传达给调用方，错误文案携带异常信息。调用方（Agent 层）收到错误事件即可感知失败。
 
-**类型化终止例外**：预算闸拒绝以 `ContextWindowExceededError` 原样上抛；整体期限以 `LLMDeadlineExceededError` 上抛。两者都不折成可重试传输失败。业务取消在流式通道保留 SSE 取消出口，非流式通道抛 `LLMCancelledError`；ReAct 将两条通道统一映射为 CANCELLED/TIMEOUT。
+**类型化终止例外**：预算闸拒绝以 `ContextWindowExceededError` 原样上抛；业务取消与整体期限分别以 `LLMCancelledError`、`LLMDeadlineExceededError` 上抛。三者都不折成可重试传输失败。流式业务取消由 Integration 完成资源收尾后传播类型化异常，不生成取消 SSE；ReAct 统一映射为 CANCELLED、TIMEOUT 或 CONTEXT_EXCEEDED 终态。
 
 ### `structured.py` —— 业务边界短路
 
@@ -174,7 +174,7 @@ extract()
 | 异常来源 | 表现 | 说明 |
 | --- | --- | --- |
 | generator 内部 `yield build_error_event(...)` | 正常产出错误事件，循环**不抛异常** | 错误以数据（事件字符串）形式传达 |
-| generator 内部 `raise`（`ContextWindowExceededError` / `LLMDeadlineExceededError` / `CancelledError`） | `async for` 循环抛出异常 | 需终结语义、无法以可重试失败表达时才走这条路 |
+| generator 内部 `raise`（`ContextWindowExceededError` / `LLMCancelledError` / `LLMDeadlineExceededError` / `CancelledError`） | `async for` 循环抛出异常 | 需终结语义、无法以可重试失败表达时才走这条路 |
 
 **约定**：LLM 流式调用用错误事件传达普通 provider 失败；预算闸拒绝、业务取消、整体期限和硬任务取消等终结语义以类型化异常向上抛。业务 `cancel_event` 由 Facade 抛 `LLMCancelledError`，Integration 不生成取消 SSE、不写 `StreamResult.error`；外部 task 硬取消仍传播 `CancelledError`。该约定适用于上述 LLM 接口；其他新增流式接口应明确自身契约，不能仅因采用 async generator 就强制套用 SSE 路由。
 
