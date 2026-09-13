@@ -118,6 +118,42 @@ Pydantic Settings 读取 `.env` 不等于写入进程 `os.environ`，业务模�
 
 不等于。核验实际认证、会话归属检查、CORS、密钥与工具执行权限。mock 鉴权、默认审批放行或命令黑名单不能被当成生产安全保障；能力是否就绪见模块状态和相关安全契约。
 
+<a id="tool-lifecycle-p0"></a>
+
+## 工具生命周期 P0 部署规格（待实施）
+
+2026-09-13 规格，由 [TOOLS-ADR-008](../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)约束。本节不是已部署能力，以下脚本目标需在交付 B 实现后才能运行；当前本地 reload 入口不提供受支持的副作用工具恢复/退出保证。
+
+### A 与 B 启用边界
+
+A 允许同一活动进程内多 Agent、多批次共享 ToolService，以普通只读能力验证进程内取消、事实和有界接管，不宣称崩溃恢复。B 的副作用/未知/强制审计工具在驱动、schema、单机 Owner、未决保护恢复完成前不开放。注册工具可存在但不得在 schema 导出时误报为可执行；Gateway 还需最终检查，不能只靠模型可见清单。
+
+P0 核实 pyproject.toml/uv.lock 未声明 asyncpg，scripts/init_db.py、scripts/migrate.py 为空。B 在依赖及锁文件中接入 asyncpg；复用 Container 的 SQLAlchemy engine/sessionmaker 和 ORM Base，不因工厂构造成功就跳过真实连接与权限检查。此次未安装驱动或连接 DB。
+
+### 工具 schema 迁移
+
+采用工具专属版本化 SQL 文件 `migrations/tools/0001_execution_ledger.sql`，`scripts/migrate.py` 实现有序升级、校验和及事务回滚；`scripts/init_db.py` 只委托同一迁移入口，不建立第二份 create_all 逻辑。使用现有连接配置，脚本不打印连接凭证。
+
+目标命令（尚未实现）：`uv run python -m scripts.migrate --tools`；应用 startup 只检查版本/读写能力，不自动改 schema。每个迁移先验证 PostgreSQL 支持事务的语句；失败回滚并阻止 B，不能部分升级后宣称就绪。降级通过旧代码兼容性检查及备份恢复单独执行，不自动 DROP 未决账本。测试包括干净库升级、重复执行、校验和不符、事务中断与存量未决记录。
+
+### 单主机单活动执行进程
+
+首期受支持平台为 Windows，使用 `msvcrt.locking(fd, LK_NBLCK, 1)` 对固定本地锁文件首字节非阻塞独占；同一 scope 的所有启动入口由 Container 取得，同进程保持非继承句柄至受保护工作结束或进程退出。失败明确拒绝 B；不睡眠重试抢锁，不删除/重建锁文件。路径必须固定、可信且位于工具可修改范围外。参见 [Python msvcrt](https://docs.python.org/3/library/msvcrt.html#msvcrt.locking)。Linux/共享文件系统不在首期验证保证中，未来按平台补实现与验收，不静默绕过。
+
+DB advisory lock 不能替代该存活排他：数据库会话结束会释放锁，但旧程序仍可能执行文件或远端写入，见 [PostgreSQL 锁语义](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS)。OS 锁也不能阻止未遵守入口的外部进程、其他主机或任意代码故意破坏控制文件；当前为可信单主机部署契约，不是沙箱安全边界。
+
+启动顺序：获取 scope 的 OS 锁→连接/版本检查→分页读取未决记录、恢复必要冲突限制→开放相关准入。不重放旧意图；不能仅因旧主进程退出就消除孤儿进程/远端未知写保护。数据库不可用时，只开放能证明不绕过未决保护的独立 A 能力，相关文件读取也须受保护。
+
+### 受支持宿主与有界退出
+
+目标入口 `uv run python -m scripts.run_tool_host --host <地址> --port <端口>`（B 新增）：父宿主只做看门狗，spawn 一个执行 worker，worker 内以 Uvicorn 单 worker、无 reload 启动应用。父进程不执行 Agent，不违背“一个活动执行进程”。当前 settings 没有应用监听 host/port，新宿主明确要求 CLI 显式提供两者（端口 1～65535），没有隐式默认值，也不复用 metrics_port；配置参考登记该边界，不硬编码新端口。
+
+关闭请求由宿主记录总期限，经专用单向控制管道通知 worker；worker 设置 Uvicorn should_exit 并停止工具新准入。工具内部窗口内先清理/刷写；仍有真实 Owner 时报告关闭未完成并保持所需客户端/DB，不能继续假定正常 dispose。宿主总窗口的最后 20% 留给强退确认（工具正常窗口必须小于宿主窗口的 80%）；前段耗尽仍未退出时 terminate worker，join 仅用总窗口剩余时间。最终仍未确认则报告退出失败、不启动替代 worker；不能无限 join 或由解释器退出隐式等待掩盖失败。该故障下不承诺宿主已经物理退出，运维按非正常关闭处理。
+
+强退不会运行所有 finally，也不保证后代进程终止；专用管道不用于传递执行账本，避免把可能损坏的业务队列作为恢复来源。旧 worker 未确认退出时不启动新 worker，OS 锁作为第二道检查。详见 [Python 进程终止限制](https://docs.python.org/3/library/multiprocessing.html#multiprocessing.Process.terminate)。宿主意外崩溃、孤儿子进程和远端请求仍列未决恢复，不能宣称完全有界的分布式终止。
+
+关闭测试必须使用可控 worker/线程与真实子进程：正常退出、清理挂起、重复关闭、双启动、DB 断连、强退重启、旧执行仍持锁；验证依赖关闭顺序及未决保护，不仅 mock shutdown 返回。首期不新增系统服务安装或自动部署，用户现有 reload 开发方式保持；需要 B 保证时使用完成验收后的受支持宿主入口。
+
 ## 相关文档
 
 - [架构设计](architecture.md)

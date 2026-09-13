@@ -16,6 +16,8 @@
 
 ## Decision
 
+> **后继条款（2026-09-13）**：[TOOLS-ADR-008 D4](2026-09-13-tool-execution-lifecycle.md#d4-取消期限及公开出口)保留本记录的默认 timeout 选择优先级，并增加运行绝对 deadline 上界。“不设全局 cap”不再解释为可以突破总执行期限。后继方向已接受、实施细节待评审，尚未完成代码迁移。
+
 **给 `BaseTool` 新增 `timeout` 属性（默认 None），作为「工具自声明的默认超时」，executor 超时解析优先级：调用方显式传入 > 工具自声明 > 全局配置。**
 
 - `BaseTool.timeout`：`int | None`，None = 沿用全局 `tool_timeout`；子类按需覆写

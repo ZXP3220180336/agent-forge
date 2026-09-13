@@ -9,6 +9,8 @@
 
 ## 📋 目录
 
+新增待实施规格见[工具生命周期 P0 配置](#tool-lifecycle-p0)；不代表 settings 已提供这些字段。
+
 - [配置管理模块 对外接口文档](#配置管理模块-对外接口文档)
   - [📋 目录](#-目录)
   - [模块概述](#模块概述)
@@ -494,6 +496,39 @@ REDIS_URL="redis://localhost:6379/0"
 | 安全配置（`jwt_*`） | `app/api/middleware/` | [middleware.md](../api_doc/middleware_doc/middleware.md) |
 
 ---
+
+<a id="tool-lifecycle-p0"></a>
+
+## 工具生命周期 P0 配置（待实施规格）
+
+2026-09-13：[TOOLS-ADR-008 P0](../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#p0-实施规格2026-09-13规格完成待评审)的初始配置选择。以下新增键尚未进入 settings、环境变量解析或 Container，不能按生产可用配置使用。初值服务本地小并发验证，不是工业通用最佳参数；实施时依据负载证据调整须同步本表。
+
+| 配置键 | 初始值/约束 | 消费者与含义 |
+| --- | --- | --- |
+| tool_max_concurrent_executions_per_run | 3，正整数 | 单运行在途上限；实施时替代 agent_max_concurrent_tools 的配置入口，不保留旧名兼容别名。旧键当前实际控制共享服务全局，迁移须同时接入下行全局上限，不能静默扩大总并发 |
+| tool_max_concurrent_executions | 3，正整数 | Admission 全局真实在途上限；单运行实际上限取 min(本键, tool_max_concurrent_executions_per_run) |
+| tool_max_pending_calls | 30，正整数 | 全局等待队列上限；不是允许创建无限并发 task |
+| tool_max_pending_calls_per_run | 6，正整数且不大于全局等待上限 | 单运行排队限制，溢出明确拒绝，不在 Executor 自动循环重试 |
+| tool_admission_timeout_seconds | 30，正有限数 | 每个 attempt 的准入等待上限：首次从 Facade 入口起（含刷新/审批），重试从退避结束后重新准入起；均含排队/必需意图记录并被总 deadline 收紧。耗尽仅表示该 attempt 未调度，保留前次执行事实与实际次数，不将整个 operation 记为未执行 |
+| tool_cleanup_timeout_seconds | 1，正有限数 | 每调用清理/移交的最大等待；取与领域剩余清理窗口的较小值，不逐层新增宽限 |
+| tool_observation_timeout_seconds | 0.2，正有限数 | 每次调用非关键观测总预算，非每 Hook 重新给一份 |
+| tool_max_recovery_records | 30，正整数且不小于全局在途上限 | 未完成事实记录/恢复条目上限；在真实执行前预留所需条目，不在取消后丢弃已有事实腾位置 |
+| tool_record_max_attempts | 3，至少 1 | 必需事实写入总尝试，包含首次；仅重试幂等存储操作 |
+| tool_record_timeout_seconds | 2，正有限数 | 单次 DB 写入超时；一轮写入恢复总预算按尝试与退避之和有界，还受执行或清理/宿主窗口限制 |
+| tool_recovery_backoff_seconds | 0.2，非负有限数 | 写入/只读核验重试固定退避；不修改工具业务 retry_delay 的指数退避契约 |
+| tool_reconcile_max_attempts | 3，至少 1 | 每个未决操作累计自动核验次数，持久计数，重启不重置 |
+| tool_reconcile_timeout_seconds | 5，正有限数 | 每次确定性只读核验上限；无可信核验方法时零次直接人工处理 |
+| tool_fact_retention_days | 30，正整数 | 已完全结束且无恢复/冲突责任的记录最短保留期；不自动删除未决事实 |
+| tool_shutdown_timeout_seconds | 5，正有限数 | 工具服务停止准入、清理和必要刷写的整体窗口，不是各组件各给一份 |
+| tool_host_shutdown_timeout_seconds | 10，工具关闭窗口必须小于本值的 80% | 宿主整体窗口，最后 20% 保留给强退确认；仅受支持宿主入口消费 |
+| tool_execution_scope | B 必填非空、稳定字符串 | 同一主机上的物理执行范围身份；不允许按 run/tenant 任意生成以绕开共享资源 |
+| tool_owner_lock_path | B 必填绝对本地路径 | 位于工具可修改范围之外，同一 scope 所有入口共用；禁止运行时自动删锁抢锁 |
+
+待实现宿主的监听地址/端口只从必填 CLI `--host` / `--port` 输入（端口 1～65535），没有新增 settings 默认值；当前项目的 metrics_port 不作为应用监听端口。B 必填配置在 A-only 模式可空，只有启用相关能力时校验，不能令只读 A 启动强制依赖 B 配置。
+
+既有 tool_timeout/tool_max_retries 的选择与计数保持，新增安全检查收紧可重复执行条件。ToolExecutionSettings（integration/tools/execution.py 中冻结配置值对象）由 Container 从 settings 显式构造，分发只需要的配置给各组件；不包含运行状态、数据库对象或任意扩展字典。
+
+所有数值拒绝 NaN/Infinity 和非法范围；不能用 clamp 隐藏无效全局配置。瞬态局部 ToolResult 的 retry_count 继续采用既有首次计入语义。具体适配器 effect_class、resource_claims、audit_required 由可信代码/配置维护，不增加由模型填写的开关；没有显式可信声明时不以 risk_level 判只读。
 
 ## 相关文档
 

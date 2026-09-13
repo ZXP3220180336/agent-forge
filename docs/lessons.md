@@ -33,6 +33,7 @@
 
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
+| 为未知副作用设计隔离与恢复 | 曾把单次结果未知升级为全工具停用并要求人工解锁；对象失败、资源冲突和工具健康必须分别判断。优先限制有证据的冲突范围；容量回收、冲突解除与业务结果确认也不是同一完成条件。 | 2026-09-13 用户纠正及工业参照；[TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)、[G0-4/G0-7](engineering/ai-engineering-rules.md#g0)。 |
 | 一次 Facade 调用内部含 retry/fallback/降级/等待 | 阶段入口有 Guard 并未覆盖内部真实 attempt；新增控制参数只出现在签名，也不证明每条再调用边已经透传。 | [LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)、[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)；[请求规范](engineering/integration-rules.md)。 |
 | 同一业务取消信号跨流式阶段 | 底层既返回取消 SSE 又可能抛异常，会让公开终态取决于取消时刻。资源拥有者应先 close/settle，Facade 统一传播类型化控制信号，领域状态机独占最终用户事件；已产事实不能随取消被抹除。 | [LLM-050](../issues/integration/llm/2026-09-13-stream-business-cancellation-contract.md)；[生命周期规范](engineering/agent-runtime-rules.md#lifecycle)、[请求规范](engineering/integration-rules.md)。 |
 | abort 后 factory 吞取消并迟回资源 | helper 的正常返回曾被误当业务成功或直接丢弃；迟回值承载资源所有权，abort 判定与 settle/close 责任并不互斥。 | [LLM-045](../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md)；[请求规范](engineering/integration-rules.md)。 |
