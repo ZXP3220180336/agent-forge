@@ -1,7 +1,7 @@
 # LLMService 编排设计文档
 
 > **模块**：`app/integration/llm/llm_service.py`
-> **更新日期**：2026-09-12
+> **更新日期**：2026-09-13
 > **职责**：LLM 网关统一 Facade——组织 11 个内部组件协作完成一次 LLM 调用（可靠性链 +
 > 配额结算闭环 + 事件日志）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -114,7 +114,7 @@ fallback 备用链路与主请求共享同一请求生命周期（fallback 键�
 
 | 通道 | 兜底 |
 | --- | --- |
-| 流式（`async_generate`） | `rectified_stream` 迭代 `finally`：create 成功后的中断/取消统一 `settle(actual)`；**硬取消 `settle(None)` 保留配额 + 标记终态**（[LLM-003](../../../issues/integration/llm/2026-08-16-hard-cancel-rpm-refund.md)） |
+| 流式（`async_generate`） | `rectified_stream`：业务取消在 close + `settle(actual)` 后抛私有信号，Facade 翻译为 `LLMCancelledError`；不生成取消 SSE、不写 `result.error`。外部 task **硬取消**由 `finally` 兜底 `settle(None)` 并原样传播（[LLM-003](../../../issues/integration/llm/2026-08-16-hard-cancel-rpm-refund.md)、[LLM-050](../../../issues/integration/llm/2026-09-13-stream-business-cancellation-contract.md)） |
 | 非流式（`generate`） | `try/finally` 解析 + 结算：解析抛异常 → `settle(None)` 保留；`settle` 被硬取消 → 未终态 res `settle(None)` 兜底 + re-raise（[LLM-002](../../../issues/integration/llm/2026-08-16-generate-quota-settle-fallback.md)） |
 
 **统一原则**：终止不能撤销可能已经到达 provider 的请求。create 已调度后的业务终止或普通异常均保守结算，尚未启动的预留可以补偿。不能把收到取消、没有成功响应或本地退款解释为远端副作用已回滚。
@@ -206,11 +206,12 @@ class _CallContext:
     estimated: int
     max_tokens: int
     cancel_event: asyncio.Event | None = None
+    deadline: float | None = None
 ```
 
 一次 LLM 调用内「真实请求前后恒定」的请求件在此一次性装配：client（连接池缓存复用）、
 限流预留策略（adaptive + token 估算，整流 / 重试循环外一次算好）、跨闭包共享的结算容器
-`active` 与业务取消信号；由 `LLMService._plan_request` 构造后供其内联闭包消费。
+`active`、业务取消信号与 monotonic 绝对 deadline；由 `LLMService._plan_request` 构造后供其内联闭包消费。
 `budget_guard` / `limiter` 按 guard_key 各异（fallback 独立键
 窗口 + 独立池），**不进 ctx**——由各闭包在真实请求时经 Manager 解析，保持每次真实调用重新
 reserve。`active` 为可变 dict（frozen 只防字段被替换）。
@@ -251,7 +252,7 @@ success / error / duration / tokens（经 `fill_llm_event_fields` 落盘）。
 
 | 方法 | 编排结构 |
 | --- | --- |
-| `async_generate` | `_plan_request`（build kwargs + client/retry/配额估算/active/主副/续接闭包一次就绪）→ 构造 `rectifier_context` → `rectified_stream`（整流循环）yield SSE 事件 |
+| `async_generate` | `_plan_request`（build kwargs + client/retry/配额估算/active/主副/续接闭包一次就绪）→ 构造 `rectifier_context` → `rectified_stream`（整流循环）yield SSE；私有业务取消/deadline 信号在 Facade 翻译为 shared 类型化异常 |
 | `generate` | `_plan_request`（build kwargs + 同上前奏，无续接闭包）→ retry.execute（call_fn=限流闭环）→ `try/finally` 解析 + settle 结算 → 事件日志 |
 | `generate_structured` | 委托 `StructuredOutput.extract`（三级降级，见 [structure.md](structure.md)） |
 
@@ -272,12 +273,13 @@ async_generate(messages, tools, temperature, max_tokens, result, model_key, canc
             各闭包按各自 guard_key 直接走 _budget_guarded_call 发起真实请求；产物见 _RequestPlan
   └─ rectified_stream（整流/续接循环，见 streaming_rectifier.md）：
         每 attempt：_budget_guarded_call（执行快检 → 预算 → 受控 reserve → 复查 → 受控 create，经 retry.execute 保护）
-          ├─ create 自然失败 → cancel()；执行终止/硬取消 → settle(None)
+          ├─ create 已调度后的自然失败/执行终止/硬取消 → settle(None)
           ├─ 迭代：_drain 竞争 chunk/cancel/deadline/idle + 累积 StreamResult + 产出 SSE 事件
          ├─ 中断：_should_rectify？ 是（首 token 前）→ 退避重试（重新 reserve）
          │                    否（已产出 content）→ 续接？ 是 → continue_fn(prefix) 续写
          │                                             否 / 续接失败 → 放弃（熔断 feeding + 部分保留）
-         └─ 成功读完 / 硬取消 → settle(actual) / finally settle(None) 保留配额
+         └─ 成功读完 → settle(actual)；业务取消 → close + settle(actual) + 类型化异常；
+              硬取消 → finally settle(None) 后原样传播 CancelledError
 ```
 
 ### generate（非流式全链路）
@@ -376,11 +378,12 @@ settings 后调用）：
   估算 / 多模态 list 估算 / 解析错误 settle 结算 / settle 被取消兜底结算 / 异常归一决策
   （401→`LLMAPIError`、响应校验归一、未知非 openai 原样上抛、可恢复→None）/ generate
   reasoning_content / has_reasoning 回填（LLM-040）
-- 间接覆盖（经 Facade 全链路）：`test_stream_rectify.py`（23 用例，async_generate 整流/续接 /
+- 间接覆盖（经 Facade 全链路）：`test_stream_rectify.py`（24 用例，async_generate 整流/续接 /
   结算 / 事件 / 熔断 feeding，含续接请求追加 assistant 前缀消息 + 重新 reserve）、
   `test_generate_structured.py`（50 用例，generate_structured 三级降级）
-- LLM-044 执行控制：`test_llm_request_budget.py` 与 `test_streaming_rectifier.py` 覆盖 reserve/create、
-  retry/续接退避、chunk 竞态、流关闭和终止 usage。
+- LLM-044/050 执行控制与公开取消契约：`test_llm_request_budget.py` 与
+  `test_streaming_rectifier.py` 覆盖 reserve/create、retry/续接退避、chunk 竞态、流关闭、
+  终止 usage，以及业务取消统一抛 `LLMCancelledError` 且不生成 Integration 取消 SSE。
 
 ---
 

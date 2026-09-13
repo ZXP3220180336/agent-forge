@@ -1,5 +1,7 @@
 # LLM-047 流式 deadline 已获 usage 传播闭环不完整（部分出口漏传/误传）
 
+> 2026-09-13 后继：deadline 的 usage 传播口径继续有效；业务取消的公开出口统一为
+> `LLMCancelledError` 且同样携可得 usage，见 [LLM-050](2026-09-13-stream-business-cancellation-contract.md)。
 > 状态：✅ 已修复 ｜ 优先级：P2（成本归账边界缺口，非功能故障） ｜ 发现：2026-09-09（usage 传递口径审查） ｜ 模块：streaming_rectifier / llm_service / errors / structured
 > 关联：上承 [LLM-044](2026-09-08-execution-control-through-every-call.md)（执行终止信号双层 + 保留已获 usage）· [LLM-045](2026-09-09-execution-control-late-result-drop.md)（迟回值不丢）· [LLM-038](2026-09-02-usage-accounting.md)（usage 成本累计）
 
@@ -48,7 +50,7 @@
 
 1. ✅ ~~追踪优化 deadline 出口 usage 传递~~：整流退避睡满复查补携 usage、续接退避 deadline/cancel 出口补全、attempt 入口与续接 create 段收紧为裸抛（见上「修复」）。
 2. ✅ ~~整流退避 deadline 保留 usage 测试~~：`test_rectify_backoff_deadline_preserves_usage`。
-3. ✅ ~~半流续接退避 deadline 保留 usage 测试~~：`test_continuation_backoff_obeys_deadline_and_never_calls_provider`（整流中断流携 usage）+ `test_continuation_backoff_cancel_goes_cancel_exit`。
+3. ✅ ~~半流续接退避 deadline 保留 usage 测试~~：`test_continuation_backoff_obeys_deadline_and_never_calls_provider`（整流中断流携 usage）+ 后继 C-12 更新后的 `test_continuation_backoff_cancel_raises_typed_abort`。
 4. ✅ **async_generate Facade 跨层**：`test_llm047_stream_rectify_deadline_usage_survives_facade_translation`（经 `LLMService.async_generate` 整链直测：整流退避段 deadline 命中 → `translate_abort` 后 `LLMDeadlineExceededError.usage` 不丢；不再发起第二次 create）。
 5. ✅ **非流式迟回测试参数化**：`test_llm045_nonstream_create_swallows_abort_settles_actual_then_aborts_usage_kept` 参数化 cancel / deadline 两分支，锁定终止异常 `usage == sr.usage` 且 `settle(actual usage)`。
 6. ✅ **structured 断言**：`test_typed_abort_with_usage_accumulates_and_stops_degrade`（cancel/deadline 参数化）——`_call_generate` 对携 usage 终止 `_accumulate_usage` 累计后 `raise`，extract 最外层收敛 None、剩余降级级不再发起。

@@ -25,7 +25,7 @@ from app.integration.llm.request_budget import RequestBudgetConfig, RequestBudge
 from app.integration.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
 from app.integration.llm.retry import RetryConfig, RetryHandlerManager
 from app.domain.ports.llm_gateway import StreamResult
-from app.shared.exceptions import ContextWindowExceededError
+from app.shared.exceptions import ContextWindowExceededError, LLMCancelledError
 
 
 # =====================================================================
@@ -301,7 +301,7 @@ async def test_consecutive_interrupt_exhausts_retries(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cancel_event_no_rectify(monkeypatch):
-    """用户取消 → 不整流（calls==1，error='用户取消了请求'）。"""
+    """入口业务取消 → Facade 抛 LLMCancelledError，不发送取消 SSE。"""
     cancel = asyncio.Event()
     cancel.set()
     script = [
@@ -329,16 +329,17 @@ async def test_cancel_event_no_rectify(monkeypatch):
 
     sr = StreamResult()
     events = []
-    async for ev in llm.async_generate(
-        messages=[{"role": "user", "content": "hi"}],
-        result=sr,
-        cancel_event=cancel,
-    ):
-        events.append(ev)
+    with pytest.raises(LLMCancelledError):
+        async for ev in llm.async_generate(
+            messages=[{"role": "user", "content": "hi"}],
+            result=sr,
+            cancel_event=cancel,
+        ):
+            events.append(ev)
 
     assert completions.calls == 0, "取消置位应在整流循环入口拦截，不发起请求（LLM-006）"
-    assert any("用户取消了请求" in e for e in events), f"应有取消错误: {events}"
-    assert sr.error == "用户取消", f"取消应标记 result.error，实际: {sr.error}"
+    assert not events, f"Integration 不应生成取消 SSE: {events}"
+    assert sr.error is None, "业务取消不应伪装成 LLM 失败"
 
 
 @pytest.mark.asyncio
@@ -376,12 +377,13 @@ async def test_cancel_during_rectify_stops_new_attempt(monkeypatch):
     events = []
 
     async def collect():
-        async for ev in llm.async_generate(
-            messages=[{"role": "user", "content": "hi"}],
-            result=sr,
-            cancel_event=cancel,
-        ):
-            events.append(ev)
+        with pytest.raises(LLMCancelledError):
+            async for ev in llm.async_generate(
+                messages=[{"role": "user", "content": "hi"}],
+                result=sr,
+                cancel_event=cancel,
+            ):
+                events.append(ev)
 
     task = asyncio.create_task(collect())
     await asyncio.sleep(0.05)  # 第一轮 create + 死流 + 进入整流退避（0.5s）
@@ -389,8 +391,8 @@ async def test_cancel_during_rectify_stops_new_attempt(monkeypatch):
     await task
 
     assert fake_client.completions.calls == 1, "整流退避期间取消，第二轮 create 不应发起"
-    assert any("用户取消了请求" in e for e in events), "应产出取消事件"
-    assert sr.error == "用户取消"
+    assert not any("用户取消" in e for e in events), "Integration 不应生成取消 SSE"
+    assert sr.error is None
 
 
 @pytest.mark.asyncio
@@ -744,14 +746,16 @@ async def test_cancel_event_not_feeds_breaker(monkeypatch):
     sr = StreamResult()
     events = []
     llm = LLMService()
-    async for ev in llm.async_generate(
-        messages=[{"role": "user", "content": "hi"}],
-        result=sr,
-        cancel_event=cancel_event,
-    ):
-        events.append(ev)
+    with pytest.raises(LLMCancelledError):
+        async for ev in llm.async_generate(
+            messages=[{"role": "user", "content": "hi"}],
+            result=sr,
+            cancel_event=cancel_event,
+        ):
+            events.append(ev)
 
-    assert any("error" in e for e in events), "取消应产出 error 事件"
+    assert not events, "入口取消不应产生 Integration SSE"
+    assert sr.error is None
     assert _cb_failure_count() == 0, "用户取消（非下游故障）不应计入熔断窗口"
 
 

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.domain.ports.llm_gateway import StreamResult
 from app.domain.reasoning import ReActStrategy
 from app.integration.llm.client import ClientManager
 from app.integration.llm.llm_service import LLMService
@@ -403,7 +404,7 @@ async def test_stream_cancel_during_reserve_refunds_and_no_create(boundary, monk
     已取消」竞态）。
 
     修复前：reserve 返回后无取消复查，仍照常 create（用户已取消却发出付费请求）；
-    修复后：reserve 后 create 前复查 cancel_event，命中则 cancel 退款并走用户取消出口。
+    修复后：reserve 后 create 前复查 cancel_event，命中则 cancel 退款并类型化终止。
     """
     import asyncio as _asyncio
 
@@ -429,17 +430,18 @@ async def test_stream_cancel_during_reserve_refunds_and_no_create(boundary, monk
     monkeypatch.setattr(ReservationLimiterManager, "get", lambda key: _ReserveThenCancel())
 
     events = []
-    async for event in boundary.service.async_generate(
-        [{"role": "user", "content": "hi"}],
-        model_key="fast",
-        max_tokens=20,
-        cancel_event=cancel_event,
-    ):
-        events.append(event)
+    with pytest.raises(LLMCancelledError):
+        async for event in boundary.service.async_generate(
+            [{"role": "user", "content": "hi"}],
+            model_key="fast",
+            max_tokens=20,
+            cancel_event=cancel_event,
+        ):
+            events.append(event)
 
     boundary.create.assert_not_awaited()
     assert res.cancel_calls == 1, "已取得预留应退款（cancel），不泄漏配额"
-    assert any("用户取消" in e for e in events), "应产出用户取消事件而非 LLM 失败"
+    assert not events, "业务取消应以 Facade 类型化异常表达，不生成取消 SSE"
 
 
 async def test_llm044_generate_cancel_during_retry_backoff_no_reissue(boundary):
@@ -641,13 +643,14 @@ async def test_llm045_stream_create_swallows_cancel_late_stream_closed_and_settl
 
     async def collect():
         # 完整消费异步生成器，才能走到整流器的关流 + 结算路径
-        async for event in boundary.service.async_generate(
-            [{"role": "user", "content": "hi"}],
-            model_key="fast",
-            max_tokens=20,
-            cancel_event=cancel_event,
-        ):
-            events.append(event)
+        with pytest.raises(LLMCancelledError):
+            async for event in boundary.service.async_generate(
+                [{"role": "user", "content": "hi"}],
+                model_key="fast",
+                max_tokens=20,
+                cancel_event=cancel_event,
+            ):
+                events.append(event)
 
     task = asyncio.create_task(collect())
     await asyncio.wait_for(create_started.wait(), timeout=1)
@@ -655,14 +658,83 @@ async def test_llm045_stream_create_swallows_cancel_late_stream_closed_and_settl
     await asyncio.wait_for(task, timeout=2)
 
     assert create_calls == 1, "取消后不得发起后续 SDK create（整流/续接/fallback 均未发生）"
-    assert any("用户取消" in e for e in events), (
-        "应按公开契约产出用户取消事件（不假设必然上抛 LLMCancelledError）"
-    )
+    assert not any("用户取消" in e for e in events), "Integration 不提交业务取消事件"
     assert returned_streams and returned_streams[-1].close_calls == 1, (
         "迟回流应被整流器关闭，不能丢弃泄漏 HTTP 连接"
     )
     assert reservation.settle_calls == 1, "res 应由整流器接管结算一次"
     assert reservation.cancel_calls == 0, "请求已发出：不 cancel 全额退"
+
+
+async def test_stream_chunk_cancel_preserves_facts_and_raises_typed_error(
+    boundary, monkeypatch
+):
+    """流读取期业务取消：先接管已产内容/usage，再关流结算并由 Facade 类型化抛出。"""
+    monkeypatch.setattr(LLMService, "_stream_max_retries", 0)
+    monkeypatch.setattr(LLMService, "_continuation_max_retries", 0)
+    cancel_event = asyncio.Event()
+    usage_seen = asyncio.Event()
+    reservation = _CancelTrackingReservation()
+    boundary.limiter.reserve.return_value = reservation
+
+    class _PartialThenHangingStream:
+        def __init__(self):
+            self.index = 0
+            self.close_calls = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.index == 0:
+                self.index += 1
+                return _boundary_content_chunk("部分结果")
+            if self.index == 1:
+                self.index += 1
+                usage_seen.set()
+                return _boundary_usage_chunk(7, 3)
+            await asyncio.Event().wait()
+
+        async def close(self):
+            self.close_calls += 1
+
+    stream = _PartialThenHangingStream()
+    boundary.create.return_value = stream
+    result = StreamResult()
+    events = []
+
+    async def collect():
+        with pytest.raises(LLMCancelledError) as exc_info:
+            async for event in boundary.service.async_generate(
+                [{"role": "user", "content": "hi"}],
+                model_key="fast",
+                max_tokens=20,
+                result=result,
+                cancel_event=cancel_event,
+            ):
+                events.append(event)
+        return exc_info.value
+
+    task = asyncio.create_task(collect())
+    await asyncio.wait_for(usage_seen.wait(), timeout=1)
+    cancel_event.set()
+    error = await asyncio.wait_for(task, timeout=2)
+
+    expected_usage = {
+        "prompt_tokens": 7,
+        "completion_tokens": 3,
+        "total_tokens": 10,
+    }
+    assert result.content == "部分结果"
+    assert result.usage == expected_usage
+    assert result.error is None
+    assert error.usage == expected_usage
+    assert not any("用户取消" in event for event in events)
+    assert stream.close_calls == 1
+    assert reservation.settle_calls == 1
+    assert reservation.last_actual == 10
+    assert reservation.cancel_calls == 0
+    assert boundary.create.await_count == 1
 
 
 @pytest.mark.parametrize("abort_kind", ["cancel", "deadline"], ids=["cancel", "deadline"])

@@ -77,11 +77,6 @@ logger = get_logger("llm.streaming_rectifier")
 # 内部细节全量透传；日志侧另有 [:200] 截断，两者口径独立）。
 _RESULT_ERROR_LIMIT = 500
 
-# 用户取消出口文案（_cancel_exit 唯一来源）：result.error 置非空是编排层 Agent
-# 短路信号；SSE error 事件文案与下游测试契约一致。
-_USER_CANCEL_ERROR = "用户取消"
-_USER_CANCEL_EVENT_TEXT = "用户取消了请求"
-
 
 @dataclass
 class RectifierContext:
@@ -110,18 +105,6 @@ def _describe_exception(exc: Exception) -> str:
     超时等框架异常的 str() 常为空串，必须兜底类型名。
     """
     return str(exc) or type(exc).__name__
-
-
-def _cancel_exit(context: RectifierContext) -> str:
-    """用户取消统一出口：置 result.error + 返回取消事件文案。
-
-    调用方 yield 该文案后 return 结束整流流。整流/续接/放弃各路径的「置 error +
-    产出取消事件」收敛于此唯一实现（文案与「取消非失败」语义单点维护）。注意各
-    调用点的前序处理不同（如请求在途需先 _finish_interrupted 结算退差、续接链
-    需置 outcome.completed），不在本函数内。
-    """
-    context.result.error = _USER_CANCEL_ERROR
-    return build_error_event(_USER_CANCEL_EVENT_TEXT)
 
 
 async def _backoff_sleep(
@@ -227,7 +210,8 @@ _SEAM_OVERLAP_LIMIT = 64
 class _ContinuationOutcome:
     """半流续接链的结果标记（_try_continuations 与调用方之间传递）。
 
-    completed=True：链内已处理终态（续接成功 / 取消），调用方不再走放弃分支；
+    completed=True：续接成功且已完成结算，调用方不再走放弃分支；
+    取消与 deadline 使用类型化异常直接离开续接链，不写入本标记；
     error：续接链最后一次流中断异常（无续接时为 None → 调用方用原中断原因）。
     """
 
@@ -392,7 +376,7 @@ class StreamingRectifier:
             continuation_max_retries: 半流续接轮次上限（默认 0=禁用）
             deadline: 整体执行期限（monotonic 绝对，LLM-044）——整流/续接 attempt 入口、
                 退避、create/reserve（经 create_fn 内 ctx）与 _drain 读取期按同一期限
-                受控；命中即执行终止（不整流/不续接），与取消出口对称。
+                受控；命中即执行终止（不整流/不续接），与业务取消同为类型化出口。
         """
         result = context.result
         active = context.active
@@ -404,10 +388,9 @@ class StreamingRectifier:
             # 不发请求）与整流重试入口（上一轮中断后取消不再整流）。与迭代内
             # 检查、整流退避后检查构成三道守卫，取消信号最快生效。
             if cancel_event and cancel_event.is_set():
-                yield _cancel_exit(context)
-                return
+                raise _StreamCancel(usage=result.usage)
             # LLM-044：整流/续接 attempt 入口期限终止——deadline 命中不整流/不续接，
-            # 类型化冒泡（async_generate Facade 翻译为 shared），不折普通 error/取消事件。
+            # 类型化冒泡（async_generate Facade 翻译为 shared），不折 SSE error 事件。
             # 入口在本轮 create 前无已耗用量（首轮 usage 为空、整流重入前 _reset_dead_meta
             # 已清）→ 不带 usage 裸抛，与 create/reserve 段 deadline 一致。
             if deadline is not None and time.monotonic() >= deadline:
@@ -438,9 +421,8 @@ class StreamingRectifier:
                 # 业务取消（create/retry 阶段任一执行控制检查点命中 cancel_event）：
                 # 配额已在底层按各自语义结算闭环（请求未发 cancel 全额退、已发
                 # settle(None) 保守、reserve 排队 R5 循环退款），此处无需再结算，与
-                # attempt 入口 / 迭代中取消一致走用户取消出口（error 事件短路）。
-                yield _cancel_exit(context)
-                return
+                # attempt 入口 / 迭代中取消一致类型化冒泡，不生成取消 SSE。
+                raise _StreamCancel(usage=result.usage)
             except _DeadlineExceeded:
                 # LLM-044：create/reserve 在期限受控段（_budget_guarded_call 状态机）
                 # 抛的执行终止——配额已按「请求是否已开始」结算，类型化冒泡（async_generate
@@ -490,11 +472,10 @@ class StreamingRectifier:
                 # 正常迭代中用户取消：请求在途 → 结算退差 + 记失败日志，再标记信号
                 await StreamingRectifier._finish_interrupted(
                     context,
-                    error=_USER_CANCEL_ERROR,
+                    error="用户取消",
                     attempt_start=attempt_start,
                 )
-                yield _cancel_exit(context)
-                return
+                raise _StreamCancel(usage=result.usage)
             except _DeadlineExceeded:
                 # LLM-044：流读取期整体期限耗尽——请求在途：按已有 usage 结算退差后
                 # 类型化冒泡（async_generate Facade 翻译 shared）。deadline 非传输故障，
@@ -549,8 +530,7 @@ class StreamingRectifier:
                             attempt, e, cancel_event=cancel_event, deadline=deadline
                         )
                     except _StreamCancel:
-                        yield _cancel_exit(context)
-                        return
+                        raise _StreamCancel(usage=result.usage)
                     except _DeadlineExceeded:
                         raise _DeadlineExceeded(
                             usage=result.usage
@@ -558,8 +538,7 @@ class StreamingRectifier:
 
                     # backoff 期间取消/期限判断（wait helper 醒来兜底复查，竞态复查）
                     if cancel_event and cancel_event.is_set():
-                        yield _cancel_exit(context)
-                        return
+                        raise _StreamCancel(usage=result.usage)
                     if deadline is not None and time.monotonic() >= deadline:
                         # 睡满后复查期限已到：与上方退避中中断（重建携 usage）同一来源——
                         # 整流失败流已读、可能已收 usage chunk（usage 不算首 token），
@@ -768,8 +747,7 @@ class StreamingRectifier:
         # （且取消后异常仍是 RETRYABLE），用户取消非下游故障，不喂熔断器
         # （与 test_cancel_event_not_feeds_breaker 契约一致）。
         if cancel_event and cancel_event.is_set():
-            yield _cancel_exit(context)
-            return
+            raise _StreamCancel(usage=context.result.usage)
         if deadline is not None and time.monotonic() >= deadline:
             raise _DeadlineExceeded(usage=context.result.usage)
 
@@ -850,20 +828,15 @@ class StreamingRectifier:
                 )
             except _StreamCancel:
                 # 续接退避中用户取消：与整流退避（rectified_stream 整流分支）同语义——
-                # 取消非失败，走用户取消出口（error 事件短路）+ 置完成终态，不再发起
-                # 下一次续接 create（原裸抛绕过取消出口直达 Facade，丢 SSE 取消事件）。
-                yield _cancel_exit(context)
-                outcome.completed = True
-                return
+                # 取消非 provider 失败，类型化冒泡给 Facade，且不再发起下一次续接 create。
+                raise _StreamCancel(usage=result.usage)
             except _DeadlineExceeded:
                 # 续接退避中整体期限耗尽：与整流退避（rectified_stream 整流分支）同一
                 # 补全语义——镜像下方睡满复查（L850 同源 result.usage）：退避前中断流
                 # 可能已收 usage chunk，携带不丢成本；未产 usage 时与裸抛等价。
                 raise _DeadlineExceeded(usage=result.usage)
             if cancel_event and cancel_event.is_set():
-                yield _cancel_exit(context)
-                outcome.completed = True
-                return
+                raise _StreamCancel(usage=result.usage)
             if deadline is not None and time.monotonic() >= deadline:
                 raise _DeadlineExceeded(usage=result.usage)
 
@@ -888,11 +861,9 @@ class StreamingRectifier:
                 # 无副作用——与整流 attempt 入口 / 退避后取消一致，不记失败日志
                 # （取消非失败，记 _log_failure 会把用户取消计入失败观测）。
                 # 不走「create 失败退化放弃」（否则取消被当失败、_abandon_path 放弃
-                # 分支可能喂熔断，违背 LLM-011「取消非下游故障」）。置完成终态，走
-                # 用户取消出口。
-                yield _cancel_exit(context)
-                outcome.completed = True
-                return
+                # 分支可能喂熔断，违背 LLM-011「取消非下游故障」）。类型化冒泡，
+                # 不生成取消 SSE，也不写 result.error。
+                raise _StreamCancel(usage=result.usage)
             except _DeadlineExceeded:
                 # 续接 create/reserve 段尚未读取新流，无本次请求 usage 可附到异常；
                 # 死流的既有 usage 仍留在 result，交领域终止收尾归账。原样上抛保留
@@ -941,12 +912,10 @@ class StreamingRectifier:
             except _StreamCancel:
                 await StreamingRectifier._finish_interrupted(
                     context,
-                    error=_USER_CANCEL_ERROR,
+                    error="用户取消",
                     attempt_start=cont_start,
                 )
-                yield _cancel_exit(context)
-                outcome.completed = True
-                return
+                raise _StreamCancel(usage=result.usage)
             except _DeadlineExceeded:
                 await StreamingRectifier._finish_interrupted(
                     context,

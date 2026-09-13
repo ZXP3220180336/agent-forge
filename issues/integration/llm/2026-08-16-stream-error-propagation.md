@@ -1,5 +1,7 @@
 # LLM-001 流式 create 阶段失败被 ReActAgent 静默吞掉
 
+> 2026-09-13 后继：provider 失败继续使用 `StreamResult.error` + SSE error；业务取消已从
+> 失败信号中移除，统一抛 `LLMCancelledError`，见 [LLM-050](2026-09-13-stream-business-cancellation-contract.md)。
 > **状态**：✅ 已修复（2026-08-16）
 > **优先级**：P0（合并前必修）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 1）

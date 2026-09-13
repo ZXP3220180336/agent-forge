@@ -32,7 +32,9 @@ class StreamResult:
         # （LLM-ADR-015）同整流口径：只记末次完成流 usage，断流 attempt 不计。
         self.usage: dict | None = None
         self.refusal: str | None = None
-        # LLM 调用失败原因（create 失败 / 流中断放弃 / 用户取消），None=成功。
+        # LLM 调用失败原因（create 失败 / 流中断放弃），None=无 provider 失败。
+        # 业务取消和整体 deadline 通过类型化异常表达，不写入本字段；终止前已经
+        # 取得的 content/reasoning/usage 仍保留在本对象中，由领域编排接管。
         # 失败信号供编排层（Agent）短路决策——避免把「LLM 失败」当「空输出」空转重试。
         # 正常空回（stop + 空 content）不置位；整流成功路径不置位（只有最终放弃才置）。
         self.error: str | None = None
@@ -53,7 +55,15 @@ class LLMGateway(Protocol):
         cancel_event: asyncio.Event | None = None,
         deadline: float | None = None,
     ) -> AsyncGenerator[str]:
-        """流式生成；yield 标记为 async generator（类型用途，运行时不可达）。"""
+        """流式生成。
+
+        正常增量与 provider 失败事件通过 SSE 产出。业务 ``cancel_event`` 命中时，
+        实现方完成必要资源收尾后抛 ``LLMCancelledError``，不生成取消 SSE；整体期限
+        抛 ``LLMDeadlineExceededError``；外部 task 硬取消保留 ``CancelledError``。
+        终止前已取得的内容与 usage 保留在调用方传入的 ``result``。
+
+        ``yield`` 仅用于让类型检查器识别 async generator，运行时不可达。
+        """
         yield ""  # 使类型检查器识别为 async generator，可被 async for 遍历
 
     async def generate(

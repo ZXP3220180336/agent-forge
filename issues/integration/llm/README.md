@@ -1,7 +1,7 @@
 # LLM 模块问题追踪
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/` 及其跨模块关联方）审查/审核发现的问题，追踪从发现 → 分析 → 修复 → 验证的完整生命周期。
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-13
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [领域端口契约](../../../docs/domain_doc/README.md)
 
 
@@ -58,6 +58,7 @@
 | [LLM-047](2026-09-09-deadline-usage-propagation-closed-loop.md) | 流式 deadline 已获 usage 传播闭环不完整（整流/续接退避部分出口漏传、无用量出口误传） | P2 | ✅ 已修复 | streaming_rectifier / llm_service / errors / structured | 2026-09-09 | 2026-09-09 |
 | [LLM-048](2026-09-12-create-started-ordinary-error-settlement.md) | create 已启动后的普通异常错误退回 reservation | P1 | ✅ 已修复 | llm_service | 2026-09-12 | 2026-09-12 |
 | [LLM-049](2026-09-12-llm-observation-overrides-terminal.md) | LLM 非关键日志覆盖调用终态 | P1 | ✅ 已修复 | logger / llm_service / streaming_rectifier | 2026-09-12 | 2026-09-12 |
+| [LLM-050](2026-09-13-stream-business-cancellation-contract.md) | 流式业务取消因命中时刻不同产生 SSE 或异常两种公开终态 | P1 | ✅ 已修复 | streaming_rectifier / llm_service / LLMGateway / ReAct | 2026-09-13 | 2026-09-13 |
 
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

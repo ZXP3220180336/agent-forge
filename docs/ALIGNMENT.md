@@ -38,7 +38,7 @@
 | app/domain/ports/context_budget.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议：count_tokens + trim_messages；随 ContextManager/Agent 测试覆盖 |
 | app/domain/ports/cost_limiter.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 CostLimiter/Agent 测试覆盖 |
 | app/domain/ports/embedding_port.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 EmbeddingService 测试覆盖 |
-| app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议（含 calculate_cost / count_*）；随 Agent/LLM/成本测试覆盖 |
+| app/domain/ports/llm_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议（含 calculate_cost / count_* / 流式业务取消类型化出口）；随 Agent/LLM/成本测试覆盖 |
 | app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
 | app/domain/prompts/base.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
 | app/domain/prompts/manager.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | PromptManager 公开组装入口与固定模板开销 |
@@ -66,13 +66,13 @@
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
 | app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪（CostTracker 静态定价，经 LLMService Facade 对外） |
 | app/integration/llm/errors.py | ✅ | docs/integration_doc/llm_doc/error.md | tests/unit/test_errors.py | 传输错误统一处理（分类契约 ErrorCategory/ErrorClassifier + 归一/降级判定/下游决策；归一 LLMAPIError） |
-| app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；create 启动后保守结算，响应接管/usage 结算/有界观测后执行最终 Guard 并同步返回 |
+| app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；create 启动后保守结算，响应接管/usage 结算/有界观测后执行最终 Guard；流式业务取消统一翻译为 shared 异常 |
 | app/integration/llm/request_budget.py | ✅ | docs/integration_doc/llm_doc/request_budget.md | tests/unit/test_request_budget.py | 最终请求上下文预算闸（model_key 窗口、输出预留、tools/schema） |
 | app/integration/llm/reservation_limiter.py | ✅ | docs/integration_doc/llm_doc/limiter.md | tests/unit/test_reservation_limiter.py | reserve/settle 限流 |
 | app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试机制（错误分类/归一迁至 llm/errors.py，经 classify_error 消费分类） |
 | app/integration/llm/execution_control.py | ✅ | docs/integration_doc/llm_doc/execution_control.md | tests/unit/test_execution_control.py | 执行控制等待原语（retry/整流/llm_service 共用；reserve 排队取消/流读取竞态等调用方边界另由 test_llm_request_budget.py / test_streaming_rectifier.py 覆盖） |
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |
-| app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流/续接；EOF 完成态禁止重发，必要结算可见，LLM 日志失败由共享入口隔离 |
+| app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流/续接；业务取消先收尾再类型化冒泡且不生成取消 SSE；EOF 完成态禁止重发，必要结算可见 |
 | app/integration/llm/structured.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | 结构化三级降级 |
 | app/integration/llm/token_counter.py | ✅ | docs/integration_doc/llm_doc/token_counter.md | tests/unit/test_token_counter.py | tiktoken 计数实现（get_encoder/content_to_text/TiktokenTokenCounter，经 LLMService.count_* 对外） |
 | app/integration/tools/assembler.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/integration/test_tool_execution.py | 内置工具幂等装配 |

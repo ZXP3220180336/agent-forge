@@ -257,12 +257,8 @@ async def test_continuation_backoff_obeys_deadline_and_never_calls_provider(monk
     assert continuation_calls == 0
 
 
-async def test_continuation_backoff_cancel_goes_cancel_exit(monkeypatch):
-    """续接退避中用户取消 → 走取消出口（error 事件短路），不再发起续接 create。
-
-    回归：原退避不捕 _StreamCancel，cancel 置位时裸抛绕过取消出口直达 Facade——
-    丢 SSE 取消事件；修复后与整流退避同语义，async for 正常收尾。
-    """
+async def test_continuation_backoff_cancel_raises_typed_abort(monkeypatch):
+    """续接退避中业务取消 → 类型化终止，不生成 Integration 取消 SSE。"""
     monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.05)
     monkeypatch.setattr(StreamingRectifier, "_max_delay", 0.05)
     monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
@@ -289,24 +285,25 @@ async def test_continuation_backoff_cancel_goes_cancel_exit(monkeypatch):
     events = []
     cancel_task = asyncio.ensure_future(set_later())
     try:
-        async for event in StreamingRectifier.rectified_stream(
-            create_fn=lambda: initial,
-            retry=retry,
-            cancel_event=cancel_event,
-            stream_max_retries=0,
-            context=context,
-            continue_fn=continue_fn,
-            continuation_max_retries=1,
-        ):
-            events.append(event)
+        with pytest.raises(_StreamCancel):
+            async for event in StreamingRectifier.rectified_stream(
+                create_fn=lambda: initial,
+                retry=retry,
+                cancel_event=cancel_event,
+                stream_max_retries=0,
+                context=context,
+                continue_fn=continue_fn,
+                continuation_max_retries=1,
+            ):
+                events.append(event)
     finally:
         if not cancel_task.done():
             cancel_task.cancel()
         await asyncio.gather(cancel_task, return_exceptions=True)
 
     assert continuation_calls == 0, "退避中取消不应再发起续接 create"
-    assert result.error == "用户取消", "取消应置失败信号（编排层短路语义）"
-    assert any("error" in e for e in events), f"取消应走 error 事件出口: {events}"
+    assert result.error is None, "业务取消不是 provider/传输失败，不应污染失败信号"
+    assert not any("用户取消" in e for e in events), "Integration 不应提交业务取消事件"
 
 
 # =====================================================================
@@ -422,10 +419,26 @@ def test_cancel_event_no_rectify():
     streams = [
         _FakeStream([_content_chunk("x")], fail_at=0, exc=RuntimeError("reset")),
     ]
-    events, result, retry, reservation = _run(streams, cancel_event=cancel_event)
+    result = StreamResult()
+    reservation = _FakeReservation()
+    context = RectifierContext(result, {"res": reservation}, {})
+    retry = _FakeRetry(streams)
+
+    async def collect():
+        async for _ in StreamingRectifier.rectified_stream(
+            create_fn=lambda: _FakeStream([]),
+            retry=retry,
+            cancel_event=cancel_event,
+            stream_max_retries=1,
+            context=context,
+        ):
+            pass
+
+    with pytest.raises(_StreamCancel):
+        asyncio.run(collect())
 
     assert retry.calls == 0, "cancel 置位应在循环入口拦截，不发起请求"
-    assert any("error" in e for e in events), "应产出 error 事件"
+    assert result.error is None, "业务取消不得伪装成 provider 失败"
 
 
 def test_cancel_during_iteration_with_retryable_exc_does_not_feed_breaker():
@@ -433,7 +446,7 @@ def test_cancel_during_iteration_with_retryable_exc_does_not_feed_breaker():
 
     竞态：cancel 在循环顶部检查后、迭代阶段置位，流同时抛 RETRYABLE——
     修复前 `_should_rectify` 因 cancel 返回 False 后统一走放弃分支喂熔断
-    （用户取消被计入熔断窗口）；修复后放弃分支先判取消，不喂熔断 + 取消事件。
+    （用户取消被计入熔断窗口）；修复后抛类型化取消信号且不喂熔断。
     """
     cancel_event = asyncio.Event()
 
@@ -459,15 +472,15 @@ def test_cancel_during_iteration_with_retryable_exc_does_not_feed_breaker():
                 context=context,
             ):
                 events.append(event)
-        except asyncio.CancelledError:
+        except _StreamCancel:
             pass
         return events
 
     events = asyncio.run(collect())
 
     assert retry.circuit_breaker.failures == 0, "用户取消不得喂熔断器"
-    assert any("用户取消了请求" in e for e in events), "应产出取消事件"
-    assert result.error == "用户取消"
+    assert not any("用户取消" in e for e in events), "Integration 不应生成取消 SSE"
+    assert result.error is None
 
 
 # =====================================================================
@@ -902,7 +915,13 @@ def _tool_call_chunk():
     )
 
 
-def _run_continue(streams, continue_streams, continuation_max_retries=1):
+def _run_continue(
+    streams,
+    continue_streams,
+    continuation_max_retries=1,
+    *,
+    expected_exception: type[Exception] | None = None,
+):
     """驱动带续接的 rectified_stream，返回 (events, result, retry, reservation, prefixes)。
 
     continue_streams：续接 attempt 依次取出的对象（FakeStream 或 Exception）。
@@ -939,7 +958,12 @@ def _run_continue(streams, continue_streams, continuation_max_retries=1):
             events.append(ev)
         return events
 
-    events = asyncio.run(collect())
+    if expected_exception is None:
+        events = asyncio.run(collect())
+    else:
+        events = []
+        with pytest.raises(expected_exception):
+            asyncio.run(collect())
     return events, result, retry, reservation, prefixes
 
 
@@ -1073,8 +1097,8 @@ def test_continuation_context_window_exceeded_raises_through():
         _restore_watchdog(saved)
 
 
-def test_continuation_cancel_during_resume_uses_cancel_exit():
-    """续接调用中业务取消（_StreamCancel）→ 走用户取消出口，不当作 create 失败退化。
+def test_continuation_cancel_during_resume_raises_typed_abort():
+    """续接调用中业务取消（_StreamCancel）→ 类型化穿透，不当作 create 失败退化。
 
     修复前：continue_fn（经 _budget_guarded_call 的取消复查）抛 _StreamCancel 落
     except Exception → 按「create 失败」退化放弃，取消语义丢失，且 _abandon_path
@@ -1091,11 +1115,12 @@ def test_continuation_cancel_during_resume_uses_cancel_exit():
                 )
             ],
             continue_streams=[_StreamCancel()],
+            expected_exception=_StreamCancel,
         )
         assert prefixes == ["部分"], "应尝试续接一次（尽力而为）"
-        assert result.error == "用户取消", "续接中取消应以取消语义出口，而非原中断原因"
+        assert result.error is None, "业务取消不得污染 provider 错误字段"
         assert result.content == "部分", "已产出 content 保留"
-        assert any("用户取消了请求" in e for e in events), "应产出用户取消事件"
+        assert not any("用户取消" in e for e in events), "Integration 不应生成取消 SSE"
         assert retry.circuit_breaker.failures == 0, "用户取消不得喂熔断器"
     finally:
         _restore_watchdog(saved)

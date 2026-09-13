@@ -1,5 +1,8 @@
 # LLM-041 fallback 备用链路沿用主窗口且绕过限流闭环
 
+> 2026-09-13 后继：取消竞态仍保持退款且零 SDK 请求；公开终态由整流器内部
+> “用户取消出口”统一为 Facade `LLMCancelledError`，见
+> [LLM-050](2026-09-13-stream-business-cancellation-contract.md)。
 > 发现：2026-09-06 ｜ 状态：✅ 已修复 ｜ 模块：llm_service / request_budget / retry / streaming_rectifier
 > 关联：请求准入 [ADR](../../../adr/integration/llm/2026-09-06-request-context-budget.md)（Decision 3/7/9）· fallback 同 provider [LLM-012](2026-08-16-fallback-same-provider.md)
 

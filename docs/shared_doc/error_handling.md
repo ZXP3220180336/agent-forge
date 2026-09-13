@@ -121,7 +121,7 @@
 ```text
 调用方 async for ... in async_generate()
   ├─ create 预算闸拒绝（ContextWindowExceededError）→ 原样上抛（不折 error 事件），领域层终结为 CONTEXT_EXCEEDED
-  ├─ cancel_event / deadline → 中断 reserve/create/读取；取消走取消事件，deadline 抛 LLMDeadlineExceededError
+  ├─ cancel_event / deadline → 中断 reserve/create/读取；分别抛 LLMCancelledError / LLMDeadlineExceededError
   ├─ create 失败（阶段1）  → except Exception → yield build_error_event(f"LLM 调用失败: {e!s}") + return
   ├─ 迭代中断（阶段2）     → except Exception → 可整流则重试，不可整流 yield build_error_event(f"流式响应中断: {e!s}") + return
   └─ 硬取消（CancelledError）→ 关闭未读完的流 + settle(None) 保守结算，异常向上传播
@@ -176,7 +176,7 @@ extract()
 | generator 内部 `yield build_error_event(...)` | 正常产出错误事件，循环**不抛异常** | 错误以数据（事件字符串）形式传达 |
 | generator 内部 `raise`（`ContextWindowExceededError` / `LLMDeadlineExceededError` / `CancelledError`） | `async for` 循环抛出异常 | 需终结语义、无法以可重试失败表达时才走这条路 |
 
-**约定**：LLM 流式调用优先用错误事件传达普通失败；预算闸拒绝、整体期限和硬任务取消等终结语义以类型化异常向上抛，业务 cancel_event 走取消事件。该约定适用于上述 LLM 接口；其他新增流式接口应明确自身契约，不能仅因采用 async generator 就强制套用 SSE 路由。
+**约定**：LLM 流式调用用错误事件传达普通 provider 失败；预算闸拒绝、业务取消、整体期限和硬任务取消等终结语义以类型化异常向上抛。业务 `cancel_event` 由 Facade 抛 `LLMCancelledError`，Integration 不生成取消 SSE、不写 `StreamResult.error`；外部 task 硬取消仍传播 `CancelledError`。该约定适用于上述 LLM 接口；其他新增流式接口应明确自身契约，不能仅因采用 async generator 就强制套用 SSE 路由。
 
 ---
 

@@ -463,10 +463,12 @@ class LLMService:
 
         Raises:
             ContextWindowExceededError: 请求预算闸在网络调用前拒绝（业务边界短路）。
-            LLMCancelledError / LLMDeadlineExceededError: 执行控制终止（用户取消 /
-                整体期限耗尽，整流读取期 deadline 命中）——类型化冒泡给领域层，不折为
-                普通 error 事件（避免被识别为 LLM_FAILED）。其余流式失败一律折为
-                error 事件产出，不抛异常。
+            LLMCancelledError: ``cancel_event`` 命中；完成当前阶段必要资源收尾后类型化
+                冒泡，不生成取消 SSE，也不写 ``result.error``。已产内容、reasoning 与
+                usage 保留在调用方传入的 ``result``，异常同时携带可得 usage。
+            LLMDeadlineExceededError: 整体期限耗尽（含整流读取期命中）；类型化冒泡，
+                不折为普通 error 事件。其余流式失败折为 error 事件产出，不抛异常。
+            asyncio.CancelledError: 外部 task 硬取消；完成 ``finally`` 资源兜底后原样传播。
         """
         # 公共编排（见 _plan_request）：build kwargs / 估算 / 主副/续接闭包一次就绪
         plan = self._plan_request(
@@ -487,7 +489,7 @@ class LLMService:
         # 首 token 前中断 → 整流重试；已产出 content 中断 → 续接（尽力而为）或放弃。
         # create 阶段由 plan.retry.execute() 保护（重试/熔断/fallback），
         # 迭代阶段异常由 rectifier 判断整流/续接。产出 SSE 事件字符串。
-        # 整流内部私有执行终止信号（deadline 命中，LLM-044）在 Facade 边界翻译为
+        # 整流内部私有执行终止信号（业务取消 / deadline，LLM-044/C-12）在 Facade 边界翻译为
         # shared 领域出口抛给领域层（domain 不依赖 integration 私有异常）；其余流式
         # 失败已折为 error 事件 / result.error，不抛异常。
         try:

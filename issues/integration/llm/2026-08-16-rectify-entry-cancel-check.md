@@ -1,5 +1,7 @@
 # LLM-006 整流重试前不检查 cancel_event，取消后仍发真实请求
 
+> 2026-09-13 后继：入口仍保持零新请求；公开终态由“取消 SSE + return”改为类型化
+> `LLMCancelledError`，见 [LLM-050](2026-09-13-stream-business-cancellation-contract.md)。
 > **状态**：✅ 已修复（2026-08-16）
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 4）

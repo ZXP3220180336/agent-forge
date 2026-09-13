@@ -17,7 +17,7 @@
 1. **新增 `LLMAPIError(NonRetryableError)`**（`app/shared/exceptions.py`，`code=AppErrorCode.LLM_API_ERROR`），携带 `status_code`；包装时 `raise LLMAPIError(...) from e` 保留原始 openai 异常。
 2. **归一位置 = `llm_service.generate` except 边界**（非 retry 层）：retry/classify/熔断继续操作原始 openai 异常，归一发生在其后。**落地载体 = `app/integration/llm/errors.py`**：新增 `normalize_transport_error(exc)`（复用 openai 类型知识）包装 `APIStatusError`（带 status_code）+ `_NON_RETRYABLE_EXC`（status_code=None）；其余返回 None（429/5xx/超时走 return None、非 openai 异常原样透传）。`generate` 下游统一决策由 `decide_downstream_error(exc) -> DownstreamDecision` 承担（归一上抛 / 原样上抛 / 降级三选一），llm_service / structured 只消费结果。
 3. **不复用 `UnauthorizedError/ForbiddenError/NotFoundError`**（BusinessError，承载 API 会话认证语义）——LLM provider 认证错误与用户会话授权语义不同，混用会误导领域 handler。
-4. **`async_generate` 流式路径不归一**：它已把异常转 `StreamResult.error` 字符串 + error 事件，无异常逃逸，不构成 AppError 覆盖缺口。
+4. **`async_generate` 流式 provider 错误不归一**：create/读取等 provider 失败仍转 `StreamResult.error` + error 事件，不构成 AppError 覆盖缺口。2026-09-13 实施澄清：业务取消与整体 deadline 不属于 provider 错误，分别在 Facade 翻译为 `LLMCancelledError` / `LLMDeadlineExceededError` 后上抛；其中取消不生成 SSE、不写 `StreamResult.error`，见 [LLM-050](../../../issues/integration/llm/2026-09-13-stream-business-cancellation-contract.md)。
 5. **status_code 保留是硬约束**：`is_unsupported_response_format_error`（`errors.py`，structured 消费）依赖 `status_code==400` + message 关键词判定「response_format 不支持」降级，不保留该降级链即断裂。
 6. **API 边界映射**：`error_handler._CODE_TO_STATUS` 加 `LLM_API_ERROR → 502`（上游 provider 故障语义），**不映射 401/403**——避免误导客户端以为自身会话失效。
 

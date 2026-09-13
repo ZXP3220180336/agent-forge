@@ -1,5 +1,7 @@
 # LLM-045 await_with_execution_control abort 判赢后丢弃迟回值（reserve/create 资源泄漏）
 
+> 2026-09-13 后继：迟回流的 close/settle 所有权规则继续有效；业务取消收尾后的公开
+> 结果统一为 `LLMCancelledError`，见 [LLM-050](2026-09-13-stream-business-cancellation-contract.md)。
 > 状态：✅ 已修复 ｜ 优先级：P1（触发时 HTTP 连接 / RPM·TPM 预留永久泄漏） ｜ 发现：2026-09-09（用户最小运行探针确认） ｜ 模块：execution_control / llm_service / streaming_rectifier / reservation_limiter
 > 关联：上承 [LLM-044](2026-09-08-execution-control-through-every-call.md)（execution_control 引入）· [ADR Decision 8](../../../adr/integration/llm/2026-09-06-request-context-budget.md)
 

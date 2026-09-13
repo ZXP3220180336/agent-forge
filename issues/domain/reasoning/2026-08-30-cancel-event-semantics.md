@@ -1,5 +1,8 @@
 # REASON-003 取消信号语义错位 + 未接线：cancel_event 链路贯通 + /chat/stop 真实实现
 
+> 2026-09-13 后继：ReAct 继续独占 `CANCELLED` 终态与 SSE 提交；LLM Integration 不再
+> 生成取消 SSE，而是在资源收尾后抛 `LLMCancelledError`，见
+> [LLM-050](../../integration/llm/2026-09-13-stream-business-cancellation-contract.md)。
 > **状态**：✅ 已修复（2026-08-30）
 > **优先级**：P1（用户停止功能实际不存在；取消信号被误判为 LLM 失败可能重试）
 > **来源**：2026-08-30 代码审查发现（Agent 运行异常处理全面性评审）

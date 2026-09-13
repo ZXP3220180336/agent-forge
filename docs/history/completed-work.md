@@ -4,6 +4,20 @@
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
 
+## 2026-09-13：流式业务取消契约统一（C-12）
+
+`LLMService.async_generate` 的业务 `cancel_event` 已统一为类型化终止：Integration 在当前
+阶段完成 reservation 补偿或结算、关闭已取得的 SDK stream 后抛 `_StreamCancel`，Facade
+翻译为 shared `LLMCancelledError`。Integration 不再生成取消 SSE，也不把取消写入
+`StreamResult.error`；终止前的 content、reasoning 与 usage 留在调用方传入的结果载体，
+异常同时携带可得 usage。外部 task 硬取消仍传播 `asyncio.CancelledError`，deadline 仍使用
+`LLMDeadlineExceededError`，ReAct 独占取消终态事件与 done 的提交。
+
+实现与取舍见 [LLM-050](../../issues/integration/llm/2026-09-13-stream-business-cancellation-contract.md)，
+现行生命周期决定见[请求上下文准入 ADR](../../adr/integration/llm/2026-09-06-request-context-budget.md)。
+执行控制、Facade、整流与 ReAct 组合回归 210 项通过；全量测试 985 项通过，唯一告警为既存
+Starlette/httpx 弃用提示；alignment、Markdown 链接和 diff 检查通过。项目环境未安装 Ruff。
+
 ## 2026-09-13：Prompts 模块说明治理
 
 `prompts.md` 已收敛为模块公开契约，补齐包级导出、六个 builder、公共预算语义、错误与

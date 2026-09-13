@@ -1,5 +1,7 @@
 # LLM-011 整流放弃分支 cancel 竞态错误喂熔断器
 
+> 2026-09-13 后继：取消仍不得喂熔断；公开结果由“取消 SSE + result.error”改为
+> `LLMCancelledError`，见 [LLM-050](2026-09-13-stream-business-cancellation-contract.md)。
 > **状态**：✅ 已修复（2026-08-16）
 > **优先级**：P1（近期）
 > **来源**：2026-08-16 Integration 层 LLM 模块工业级审核（重要项 10）

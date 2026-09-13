@@ -1,7 +1,7 @@
 # LLM 网关对外接口文档
 
 > **对应代码**：`app/integration/llm/`
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-13
 > **文档定位**：LLM 模块（`app/integration/llm/`）对外接口文档——`LLMService` Facade
 > 的接口契约 + 内部组件导航；服务对象为 LLM 网关的**外部调用方**（领域层 / 应用层 /
 > API 层）
@@ -102,7 +102,7 @@ app/integration/llm/
 | --- | --- | --- |
 | `register_config(*, fallback_model_id, adaptive_reserve, stream_max_retries)` | 同步类方法 | 注入运行期配置（装配根 `container.initialize()` 调用，零 settings 依赖） |
 | `__init__(api_key="", model="", base_url="")` | 构造 | 空构造走 `ClientManager`（需先注册配置）；手动构造须 api_key / model / base_url 齐备 |
-| `async_generate(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None, deadline=None)` | 异步生成器 | 流式生成，yield SSE 事件字符串；取消约束 reserve/create/读取，整体期限耗尽抛 `LLMDeadlineExceededError` |
+| `async_generate(messages, tools=None, temperature=0.2, max_tokens=4096, result=None, model_key="main", cancel_event=None, deadline=None)` | 异步生成器 | 流式生成；业务取消在资源收尾后抛 `LLMCancelledError`，不生成取消 SSE；期限耗尽抛 `LLMDeadlineExceededError`；外部 task 硬取消保留 `CancelledError` |
 | `generate(messages, tools=None, temperature=0, max_tokens=1024, response_format=None, model_key="fast", cancel_event=None, deadline=None) -> StreamResult \| None` | 异步方法 | 非流式单轮生成；可恢复失败返回 None，不可恢复错误上抛；取消/期限抛 shared 类型化终止异常 |
 | `generate_structured(messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None) -> dict \| None` | 异步方法 | 结构化输出三级降级（JSON Schema → JSON Mode → 正则）；拒答/工具调用抛异常；`usage` 可变引用回填**全程累计** token 用量（含多级降级 / 截断重试 / 回喂的所有成功调用，供成本计量）；`cancel_event` 置位 / `deadline`（monotonic 绝对）到期 → 返回 None（与降级耗尽同出口，不再发起后续子调用） |
 | `calculate_cost(usage, model="") -> dict` | 同步静态 | 按模型用量估算成本（代理 `CostTracker`） |
@@ -120,7 +120,9 @@ app/integration/llm/
   `StructuredRefusalError`、工具调用抛 `StructuredToolCallError`（需差异化处理）
 - `async_generate`：产出 SSE 事件字符串（`StreamParser` 逐 chunk 解析的增量事件）；
   失败信号透传 `StreamResult.error`（供编排层短路决策，见 [LLM-001](../../../issues/integration/llm/2026-08-16-stream-error-propagation.md)）；
-  预算闸拒绝（`ContextWindowExceededError`）属业务边界短路，异常上抛（不折 error 事件）
+  预算闸拒绝（`ContextWindowExceededError`）属业务边界短路，异常上抛（不折 error 事件）。
+  业务取消同样以类型化异常上抛，Integration 不生成取消 SSE，也不写 `result.error`；调用方
+  传入的 `StreamResult` 保留终止前已经取得的 content、reasoning 与 usage
 
 ### 对外异常契约
 
@@ -134,7 +136,7 @@ app/integration/llm/
 | `StructuredTruncationError` | 结构化输出截断（扩 token 重试后仍不完整） | 扩大预算重试 / 降级处理 |
 | `LLMAPIError` | `generate` 下游不可恢复（openai 4xx/认证/响应校验归一，携带 status_code） | 领域层 `except AppError` 统一兜底（如 Reflection 降级） |
 | `ContextWindowExceededError` | 最终请求超过模型窗口（网络调用前本地预检拒绝，`NonRetryableError` 分支） | 终结当前调用（`CONTEXT_EXCEEDED` 语义，流式/非流式均上抛）；策略层保留部分结果；API 层映射 422 |
-| `LLMCancelledError` | `cancel_event` 在 reserve、create、重试、整流读取或结构化调用中触发 | 终结当前执行并按取消语义收尾；异常携带的 `usage` 计入当前运行，不能当作 LLM 失败重试 |
+| `LLMCancelledError` | `cancel_event` 在 reserve、create、重试、整流读取或结构化调用中触发 | 资源收尾后终结当前执行；流式通道不生成取消 SSE、不污染 `StreamResult.error`，已产事实留在 `StreamResult`，异常携带可得 `usage`；领域编排独占最终取消事件 |
 | `LLMDeadlineExceededError` | 单次调用的 monotonic 绝对 `deadline` 到期 | 终结当前执行并按超时语义收尾；保留异常或流结果中已取得的 `usage`，不将其归为可重试传输超时 |
 | 不可恢复错误（非 openai 原样上抛） | 熔断开启 / 编程错误（`NON_RETRYABLE`） | 修复调用参数 / 返回错误响应 |
 

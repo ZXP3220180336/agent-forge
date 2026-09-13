@@ -1,6 +1,6 @@
 # 研发教训
 
-更新：2026-09-12。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，本轮治理迁移未重新验证这些业务结论。当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
+更新：2026-09-13。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，本轮治理迁移未重新验证这些业务结论。当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
 
 ## 规则与文档维护
 
@@ -34,6 +34,7 @@
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
 | 一次 Facade 调用内部含 retry/fallback/降级/等待 | 阶段入口有 Guard 并未覆盖内部真实 attempt；新增控制参数只出现在签名，也不证明每条再调用边已经透传。 | [LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)、[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)；[请求规范](engineering/integration-rules.md)。 |
+| 同一业务取消信号跨流式阶段 | 底层既返回取消 SSE 又可能抛异常，会让公开终态取决于取消时刻。资源拥有者应先 close/settle，Facade 统一传播类型化控制信号，领域状态机独占最终用户事件；已产事实不能随取消被抹除。 | [LLM-050](../issues/integration/llm/2026-09-13-stream-business-cancellation-contract.md)；[生命周期规范](engineering/agent-runtime-rules.md#lifecycle)、[请求规范](engineering/integration-rules.md)。 |
 | abort 后 factory 吞取消并迟回资源 | helper 的正常返回曾被误当业务成功或直接丢弃；迟回值承载资源所有权，abort 判定与 settle/close 责任并不互斥。 | [LLM-045](../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md)；[请求规范](engineering/integration-rules.md)。 |
 | create 已调度而终止、抛普通异常，或退款被取消打断 | 没有成功响应不证明远端未执行；create 一旦调度，未知 usage 也要保守结算。重复退款和过度退款可能虚增可用配额。 | [LLM-042](../issues/integration/llm/2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md)、[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)、[LLM-048](../issues/integration/llm/2026-09-12-create-started-ordinary-error-settlement.md)；[请求规范](engineering/integration-rules.md)。 |
 | 多次真实响应合并一次返回 | 只回填末次成功漏掉前序消耗，`not target` 又曾把合法空 dict 当无累加对象；实际可得 usage 与不可得消耗要分开，估算不能冒充实际计量。 | [LLM-038/039](../issues/integration/llm/2026-09-02-usage-accounting.md)、[LLM-047](../issues/integration/llm/2026-09-09-deadline-usage-propagation-closed-loop.md)；[流式规范](engineering/integration-rules.md)。 |
