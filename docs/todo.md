@@ -19,3 +19,4 @@
 | C-09 | 配置扩展、默认值调优、热更新与多环境配置。 | 2026-08-29 config 文档重构留下研究性 backlog；没有真实消费方、负载或运维证据的默认值建议不保留为目标值。出现明确需求后重新设计，而不是照抄旧数值。 |
 | C-10 | 工具选择器向量召回与工具加载/安全边界的后续增强。 | 旧工具重构与[TOOLS-049](../issues/integration/tools/2026-08-20-code-review-fixes.md)有明确延后项；以工具规模、性能、安全边界或真实故障为触发，已完成的审计脱敏不重开。 |
 | C-11 | 其他非关键观测入口的异常与阻塞边界。 | LLM 调用日志已由 [LLM-049](../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md) 实施有界隔离；其他日志、指标和审计入口若进入终态路径，仍须逐入口核验 G0-6，不能把局部实现宣称为全仓完成。 |
+| C-12 | 流式续接退避期间的取消出口可能与其他主要取消位置不一致。 | 待复现并核对 `streaming_rectifier.py`：续接退避期间的 `_StreamCancel` 据报未转换为取消 SSE，而同一 `cancel_event` 在其他位置会正常结束并产生取消事件，可能导致 `LLMService.async_generate` 随取消时刻分别表现为取消 SSE 或抛出 `LLMCancelledError`。进入实施前须明确公开取消契约，覆盖首次请求、流读取、整流、续接退避及续接请求各时点，并验证事件、异常、流关闭与 usage/Reservation 结算一致；不得仅在单一捕获点吞异常。 |
