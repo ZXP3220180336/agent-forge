@@ -62,6 +62,7 @@ app/domain/
 │   ├── base.py                ← PromptTemplate 模板基类
 │   ├── manager.py             ← PromptManager 公开组装入口
 │   ├── _reflection_payload.py ← Reflection 动态载荷缩减
+│   ├── _planner_payload.py    ← Planner 三阶段动态载荷缩减
 │   └── templates/             ← system.py / tools.py / planning.py / reflection.py 模板
 └── reasoning/                 ← 原子推理策略库
     ├── _common.py             ← 共享执行护栏与工具（GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量）
@@ -86,7 +87,7 @@ app/domain/
         ▼ 调用 run()
 app/domain/
   ├── agent/ ──→ reasoning/（编排调用原子策略）
-  ├── agent/ ──→ prompts/（提示词组装）
+  ├── reasoning/ ──→ prompts/（Reflection / Planner 提示词组装）
   ├── agent/ / memory/ ──→ ports/（依赖倒置：LLMGateway / ToolGateway / EmbeddingPort 等）
   └── 全部 ──→ shared/（events / exceptions / types，共享内核）
         │  端口由集成层实现
@@ -104,7 +105,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | Agent | executor.py | [见对齐表](../ALIGNMENT.md) | ReActAgent（桥接 ReActStrategy，见 [executor.md](agent_doc/executor.md)） |
 | Agent | planner.py | [见对齐表](../ALIGNMENT.md) | PlannerAgent（桥接 PlannerStrategy，见 [agent.md](agent_doc/agent.md)） |
 | Agent | reflection.py | [见对齐表](../ALIGNMENT.md) | ReflectionAgent（桥接 ReflectionStrategy，见 [agent.md](agent_doc/agent.md)） |
-| Prompts | manager.py + _reflection_payload.py + templates | [见对齐表](../ALIGNMENT.md) | 公开 builder、Reflection 载荷缩减与提示词模板（见 [prompts.md](prompts_doc/prompts.md)） |
+| Prompts | manager.py + 两个 payload 组件 + templates | [见对齐表](../ALIGNMENT.md) | 公开 builder、Reflection/Planner 语义投影与提示词模板（见 [prompts.md](prompts_doc/prompts.md)） |
 | Memory | base / working / short_term / long_term / memory_service | [见对齐表](../ALIGNMENT.md) | 三层记忆（预留） |
 | Reasoning | react.py | [见对齐表](../ALIGNMENT.md) | ReActStrategy（见 [react.md](reasoning_doc/react.md)） |
 | Reasoning | reflection.py | [见对齐表](../ALIGNMENT.md) | ReflectionStrategy（见 [reflection.md](reasoning_doc/reflection.md)） |
@@ -137,8 +138,9 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| `PromptManager` | manager.py | 提示词公开组装入口（system/reflection/planning builder + Planner 步骤序列化） | [见对齐表](../ALIGNMENT.md) |
-| Reflection 载荷组件 | _reflection_payload.py | evidence/draft/issues 的业务优先级与语义缩减 | [见对齐表](../ALIGNMENT.md) |
+| `PromptManager` | manager.py | 公开 builder、固定模板开销计算与 payload 组件委托 | [见对齐表](../ALIGNMENT.md) |
+| Reflection 载荷组件 | _reflection_payload.py | evidence/draft/issues 的业务优先级与语义缩减（见 [组件说明](prompts_doc/reflection_payload.md)） | [见对齐表](../ALIGNMENT.md) |
+| Planner 载荷组件 | _planner_payload.py | plan/replan/summarize 的步骤因果、证据引用与分层缩减（见 [组件说明](prompts_doc/planner_payload.md)） | [见对齐表](../ALIGNMENT.md) |
 | `PromptTemplate` | base.py | 模板基类（format / raw） | [见对齐表](../ALIGNMENT.md) |
 | 模板 | templates/system.py | `SYSTEM_PROMPT` 系统提示词 | [见对齐表](../ALIGNMENT.md) |
 | 模板 | templates/tools.py | `TOOL_FORMAT_PROMPT` 工具格式提示词 | [见对齐表](../ALIGNMENT.md) |

@@ -42,8 +42,8 @@
 | app/domain/ports/tool_gateway.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 Agent/工具测试覆盖 |
 | app/domain/prompts/base.py | 🔶 | docs/domain_doc/prompts_doc/prompts.md | (无) | 待补测试 |
 | app/domain/prompts/manager.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | PromptManager 公开组装入口与固定模板开销 |
-| app/domain/prompts/_reflection_payload.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Reflection evidence/draft/issues 字段级语义缩减；包内纯函数组件 |
-| app/domain/prompts/_planner_payload.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Planner plan/replan/summarize 分层语义投影；包内纯函数组件 |
+| app/domain/prompts/_reflection_payload.py | ✅ | docs/domain_doc/prompts_doc/reflection_payload.md | tests/unit/test_prompts.py | Reflection evidence/draft/issues 字段级语义缩减；包内纯函数组件 |
+| app/domain/prompts/_planner_payload.py | ✅ | docs/domain_doc/prompts_doc/planner_payload.md | tests/unit/test_prompts.py | Planner plan/replan/summarize 分层语义投影；包内纯函数组件 |
 | app/domain/prompts/templates/planning.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | Planner 规划/重规划/汇总提示词模板 |
 | app/domain/prompts/templates/system.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | SYSTEM_PROMPT 系统提示词 |
 | app/domain/prompts/templates/tools.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_prompts.py | TOOL_FORMAT_PROMPT 工具格式提示词 |

@@ -4,6 +4,17 @@
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
 
+## 2026-09-13：Prompts 模块说明治理
+
+`prompts.md` 已收敛为模块公开契约，补齐包级导出、六个 builder、公共预算语义、错误与
+调用方责任，并改用 `app.domain.prompts` 公开入口示例。Reflection 与 Planner 的字段
+选择、降采样、省略标记和最小骨架边界分别迁入 `reflection_payload.md` 与
+`planner_payload.md` 两份组件说明；模板和简单 Facade 未机械拆文档。
+
+治理同步修正了直接调用方、`PromptTemplate` 使用状态、`REFLECTION_SYSTEM_PROMPT`
+接线和 Domain 层组件地图。运行代码、产品、ADR 与 Issue 契约未修改。ALIGNMENT 校验
+和文档链接测试 13 项通过，`git diff --check` 通过。
+
 ## 2026-09-13：Planner 语义上下文缩减（T-02）
 
 Planner 的 plan、replan、summarize 三个结构化入口已复用 `ContextBudgetPort.count_tokens`
