@@ -1,10 +1,10 @@
 """
-LLM 层内部执行控制等待原语（LLM-044：retry / 整流 / llm_service 共用）。
+LLM 层内部执行控制等待原语（LLM-044：retry / 整流 / request_execution 共用）。
 
 执行终止信号（`_StreamCancel` / `_DeadlineExceeded`）驱动的等待原语，供：
     - retry 退避等待（RetryHandler.execute）
     - 整流 / 续接退避（StreamingRectifier._backoff_sleep）
-    - reserve 排队 + 每次真实 create 的受控 await（LLMService._budget_guarded_call）
+    - reserve 排队 + 每次真实 create 的受控 await（request_execution._budget_guarded_call）
 共用。定义于本模块（而非 errors.py / retry.py）避免组件间反向依赖：各 llm 内部
 组件依赖本模块，本模块只依赖 `.errors` 的私有信号类型。
 """
@@ -22,7 +22,7 @@ _AbortReason = Literal["cancel", "deadline"]
 
 
 # =====================================================================
-# 执行控制等待辅助（LLM-044：retry / 整流 / llm_service 共用）
+# 执行控制等待辅助（LLM-044：retry / 整流 / request_execution 共用）
 # =====================================================================
 
 

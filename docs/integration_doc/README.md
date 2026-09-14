@@ -45,6 +45,7 @@ app/integration/
 │   └── embedding_service.py       ← EmbeddingService（embed / embed_batch / 缓存）
 ├── llm/                          ← LLM 网关（LLMService Facade + 内部组件）
 │   ├── llm_service.py            ← LLMService（统一 Facade，对外入口）
+│   ├── request_execution.py      ← 请求计划与每笔 provider create 生命周期
 │   ├── client.py                 ← ClientManager 连接池管理
 │   ├── errors.py                 ← 传输错误处理（分类/归一/降级判定/下游决策）
 │   ├── execution_control.py      ← 取消/deadline 受控等待原语
@@ -52,7 +53,7 @@ app/integration/
 │   ├── streaming.py              ← StreamParser 流式解析
 │   ├── streaming_rectifier.py    ← StreamingRectifier 流式整流重试
 │   ├── structured.py             ← StructuredOutput 结构化输出
-│   ├── structured_codec.py             ← 结构化 schema/JSON 纯转换与校验
+│   ├── structured_codec.py       ← 结构化 schema/JSON 纯转换与校验
 │   ├── reservation_limiter.py    ← ReservationLimiter 客户端限流
 │   ├── cost_tracker.py           ← CostTracker 成本计算
 │   ├── token_counter.py          ← tiktoken 计数实现
@@ -119,7 +120,7 @@ app/integration/
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
 | LLM Facade | `llm/llm_service.py` | [见对齐表](../ALIGNMENT.md) | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost` |
-| LLM 子包 | `llm/`（内部组件） | [见对齐表](../ALIGNMENT.md) | ClientManager / errors / execution_control / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token_counter / request_budget |
+| LLM 子包 | `llm/`（内部组件） | [见对齐表](../ALIGNMENT.md) | ClientManager / request execution / errors / execution control / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token counter / request budget |
 | 工具 Facade | `tools/tool_service.py` | [见对齐表](../ALIGNMENT.md) | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
 | 工具子包 | `tools/`（六大子组件） | [见对齐表](../ALIGNMENT.md) | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler / Loader |
 | 内置工具 | `tools/builtin/` | [见对齐表](../ALIGNMENT.md) | search / readFile / writeFile / code_exec / web_browse + RCA 5 工具（query_batch_yield 等） |
@@ -132,15 +133,16 @@ app/integration/
 
 ## LLM 网关
 
-**代码**：`app/integration/llm/` · **文档**：[LLM 层详解](llm_doc/llm.md) · [LLMService 编排](llm_doc/llm_service.md)
+**代码**：`app/integration/llm/` · **文档**：[LLM 层详解](llm_doc/llm.md) · [LLMService 编排](llm_doc/llm_service.md) · [请求执行](llm_doc/request_execution.md)
 
-负责所有与大语言模型的交互，是系统的**模型通信基础设施**。`LLMService` 是唯一外部入口，内部 11 组件各司其职：
+负责所有与大语言模型的交互，是系统的**模型通信基础设施**。`LLMService` 是唯一外部入口，内部组件各司其职：
 
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
 | `ClientManager` | client.py | 全局共享 AsyncOpenAI 连接池，main / reasoning / fast 三档模型懒加载 |
+| 请求执行 | request_execution.py | 请求计划与每笔真实 create 的预算、预留、执行控制和阶段结算 |
 | 传输错误处理 | errors.py | 传输异常分类/归一/降级判定/下游决策（retry/llm_service/structured/streaming_rectifier 消费） |
-| 执行控制 | execution_control.py | 取消/deadline 快检与可中断等待，供 retry/整流/llm_service 共用 |
+| 执行控制 | execution_control.py | 取消/deadline 快检与可中断等待，供 retry/整流/request_execution 共用 |
 | `RetryHandler` | retry.py | 指数退避 + 抖动 + CircuitBreaker 熔断 + fallback 降级链 |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式响应（纯函数，无状态） |
 | `StreamingRectifier` | streaming_rectifier.py | 流式整流重试：首 token 前中断才重试（防重复输出 / 双倍计费） |

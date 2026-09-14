@@ -47,4 +47,4 @@
 
 - `retry.py`：`RetryHandler.execute` 入口快检（`_raise_if_aborted`）+ 重试退避等待（`wait_with_execution_control`）
 - `streaming_rectifier.py`：`_backoff_sleep` 退避等待 + `_drain` 四方竞争（`_abort_trigger`）
-- `llm_service.py`：`_budget_guarded_call` 入口快检 + reserve / create 受控 await（`await_with_execution_control`）
+- `request_execution.py`：`_budget_guarded_call` 入口快检 + reserve / create 受控 await（`await_with_execution_control`）

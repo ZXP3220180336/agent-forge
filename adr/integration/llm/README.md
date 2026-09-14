@@ -1,7 +1,7 @@
 # LLM 模块决策记录（ADR）
 
 > **用途**：登记 Integration 层 LLM 模块（`app/integration/llm/`）的结构性/契约性设计决策，记录 Context → Decision → Consequences 完整前因后果，供追溯与复用。
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-15
 > **关联**：[LLM 层说明文档](../../../docs/integration_doc/llm_doc/llm.md) · [问题追踪](../../../issues/integration/llm/README.md)
 
 ## 决策索引
@@ -25,5 +25,6 @@
 | [LLM-ADR-015](2026-09-03-mid-stream-continuation.md) | 半流中断接续策略（text-only prefix continuation：已产出 content 带前缀续写，尽力而为退化放弃） | ✅ 已采纳 | streaming_rectifier / llm_service / settings / container / llm_gateway | 2026-09-03 |
 | [LLM-ADR-016](2026-09-06-request-context-budget.md) | Provider 请求上下文准入：语义预算与最终请求预算分离 | ✅ 已采纳 | request_budget / llm_service / token_counter | 2026-09-06 |
 | [LLM-ADR-017](2026-09-14-structured-codec-boundary.md) | 结构化输出的数据转换与编排分离：纯 codec、原观测边界 | 已接受；验证见记录 | structured / structured_codec | 2026-09-14 |
+| [LLM-ADR-018](2026-09-15-request-execution-boundary.md) | 请求执行边界与 Facade 编排分离 | 已接受；验证见记录 | llm_service / request_execution | 2026-09-15 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

@@ -561,7 +561,7 @@ T3 + 30s 后 → 请求 H（探针 #1）
 | `LLM_CIRCUIT_ALL_FAILED_MIN` | 低流量纯失败保护：全部失败且达此样本量才熔断 | `CircuitBreakerConfig.all_failed_min` |
 | `LLM_CIRCUIT_RECOVERY_TIMEOUT` | 熔断恢复到半开的时间（秒） | `CircuitBreakerConfig.recovery_timeout` |
 | `LLM_CIRCUIT_HALF_OPEN_MAX_REQUESTS` | 半开状态最大探针数 | `CircuitBreakerConfig.half_open_max_requests` |
-| `LLM_FALLBACK_MODEL_ID` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `LLMService.register_config` 注入；`_plan_request` 内联生成 `fallback_fn`（"fallback" 键窗口 + 独立池） |
+| `LLM_FALLBACK_MODEL_ID` | 降级备用模型 ID（空=不启用；**须与主模型同 provider**，复用主端点/密钥） | `LLMService.register_config` 注入；`build_request_plan` 生成 `fallback_fn`（"fallback" 键窗口 + 独立池） |
 
 ---
 

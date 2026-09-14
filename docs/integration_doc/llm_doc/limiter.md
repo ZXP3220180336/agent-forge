@@ -5,7 +5,7 @@
 > **职责**：LLM API 调用的客户端限流（RPM + TPM 双 Token Bucket）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **参考实现**：生产形态为 reserve/settle；acquire 形态限流（`RateLimiter`/`RateLimiterManager`）与 5 类参考算法（LeakyBucket/FixedWindow/SlidingWindowLog/SlidingWindowCounter/GCRA）未接入生产，代码作为参考实现完整保留在本文档「组件详解」一栏
-> **配套**：集成于 `LLMService.async_generate()` / `generate()`，见 `llm_service.py`
+> **配套**：集成于 `LLMService.async_generate()` / `generate()`，真实请求见 `request_execution.py`
 
 ---
 
@@ -235,7 +235,7 @@ ReservationLimiterManager.get(model_key) ──→ 共享 ReservationLimiter 实
 | 核心 API | `await limiter.acquire(est)` → 返回等待时间 | `await limiter.reserve(est)` → `res.settle(actual)` |
 | 结算能力 | 无（一次性扣减，不退款） | ✅ 结算退差（settle）/ 全额退（cancel） |
 | 适用场景 | 不关心退差的简单调用 | 需按实际 usage 退还未用 TPM 配额 |
-| 生产使用者 | 无（参考实现） | ✅ `llm_service.py` |
+| 生产使用者 | 无（参考实现） | ✅ `request_execution.py` |
 
 ### TokenBucket — 单桶算法
 
@@ -406,7 +406,7 @@ class ReservationLimiter:  # 完整实现见 reservation_limiter.py
 
 **组合实现**：`reserve`（固定形态）与 `reserve_adaptive`（自适应形态）都委托 `_acquire`。核心逻辑：空构造 `Reservation()`，RPM 桶 `acquire(1.0)` 扣减后 `res.add(req_bucket, 1.0)` 追加为首条目（按次桶），TPM 桶 `acquire(est)` 扣减后 `res.add(token_bucket, est)` 追加为按量条目。组合 Reservation 的 `settle` 只命中非首条目、`cancel` 命中全部条目。**防 R5（组合两步间硬取消）**：TPM 预留被取消时，`except BaseException` 回退已扣的 RPM。
 
-**组合 Reservation 的调用方责任**：`settle(actual)` 退 TPM 差而不退 RPM；`settle(None)` 保留预留并收敛终态；`cancel()` 全退。调用方依据 create 是否已经调度、终止类型及是否取得迟回响应选择操作，完整阶段表统一见 [LLMService 闭环语义](llm_service.md#真实请求入口_budget_guarded_call)。不能从“尚未收到响应”推出远端没有执行，也不能把本地 quota 退款当作供应商未计费。
+**组合 Reservation 的调用方责任**：`settle(actual)` 退 TPM 差而不退 RPM；`settle(None)` 保留预留并收敛终态；`cancel()` 全退。调用方依据 create 是否已经调度、终止类型及是否取得迟回响应选择操作，完整阶段表统一见 [请求执行组件](request_execution.md#单笔请求生命周期)。不能从“尚未收到响应”推出远端没有执行，也不能把本地 quota 退款当作供应商未计费。
 
 ### OutputTokenEstimator — 自适应输出估算器
 
@@ -442,7 +442,7 @@ res = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
 - **结构性解耦**：provider 仍收宽裕 `max_tokens`（不截断输出），只有限流器预留下降
 - **settle 回调**：`Reservation` 挂回调，`settle(actual)` 成功时喂样本；`settle(None)`/`cancel()` 不记录（无真实 usage 不污染分布）
 - **按 max_tokens 分池**：`_estimators: dict[int, OutputTokenEstimator]`，不同输出上限独立建模
-- **开关**：`llm_adaptive_reserve`（默认关），开启后 `llm_service` 走 `reserve_adaptive`，`reserve(estimated)` 保留兼容
+- **开关**：`llm_adaptive_reserve`（默认关），开启后 `request_execution` 走 `reserve_adaptive`，`reserve(estimated)` 保留兼容
 
 ### ReservationLimiterManager — 实例管理
 
@@ -950,7 +950,7 @@ TAT = 上次请求的理论到达时间
 
 ## 执行流程
 
-`llm_service.py` 集成的是 reserve/settle 形态（`ReservationLimiterManager`）。下图是职责示意，实际执行控制与异常分派以 [LLMService 阶段说明](llm_service.md#真实请求入口_budget_guarded_call) 为准：
+`request_execution.py` 集成的是 reserve/settle 形态（`ReservationLimiterManager`）。下图是职责示意，实际执行控制与异常分派以 [请求执行组件](request_execution.md#单笔请求生命周期) 为准：
 
 ```text
 async_generate() / generate()
@@ -1003,7 +1003,7 @@ async_generate() / generate()
 ## 边界情况
 
 1. **等待期间锁外 sleep**（`TokenBucket.acquire` 的 `while True` 循环）：「锁内计算 → 锁外 sleep → 循环重检」，等待期间锁不被持有，其他请求可并行计算、sleep 可响应取消。详见下文 [问题 2](../../../issues/integration/llm/2026-08-02-lock-hold-sleep.md)（✅ 已修复）。
-2. **estimated_tokens = prompt + 输出余量**：`_plan_request` 内以 `TiktokenTokenCounter.count_messages_tokens` 计数 + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文 [问题 3](../../../issues/integration/llm/2026-08-02-tpm-prompt-only.md)（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
+2. **estimated_tokens = prompt + 输出余量**：`build_request_plan` 内以 `TiktokenTokenCounter.count_messages_tokens` 计数 + `max_tokens`（输出上限的保守估算），TPM 桶按"请求可能消耗的最大 token"扣减。见下文 [问题 3](../../../issues/integration/llm/2026-08-02-tpm-prompt-only.md)（✅ 已修复）；自适应预留进一步用高分位估算替代静态上限（见对比 3.2）。
 3. **`acquire` 返回值语义**：返回桶内等待时间（wait1+wait2），不含 `retry_after` 的 sleep（后者是独立的事前等待）。调用方通常忽略返回值。见下文 [问题 4](../../../issues/integration/llm/2026-08-02-api-clarity-fixes.md)（✅ 已修复）。`reserve` 形态无返回值（返回 Reservation，等待发生在内部）。
 4. **配置 0 = 禁用限流**：`register_config()` 注入的 `rpm`/`tpm` 为 0（或未注入该 key 用默认）；`TokenBucket.acquire` 对 `refill_rate <= 0` 直接放行，`rpm/tpm` 配置为 0（或缺失）即无限流。见下文 [问题 1](../../../issues/integration/llm/2026-08-02-zero-refill-crash.md)（✅ 已修复）。
 5. **cancel/settle 的终态幂等**：`Reservation.settle`/`cancel` 任一调用后再次调用为 no-op，防止重复结算；`settle(None)` 保留全部预留但标记终态，闭环不泄漏。

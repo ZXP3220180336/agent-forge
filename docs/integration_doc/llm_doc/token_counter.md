@@ -37,7 +37,7 @@ LLMService（Facade）── 惰性委托
         ▲ 内部
 TiktokenTokenCounter（本模块）── 唯一 tiktoken 使用点
         ▲ 共享底层函数
-llm_service.LLMService._plan_request（经 TiktokenTokenCounter.count_messages_tokens，TPM 预留量估算）
+request_execution.build_request_plan（经 TiktokenTokenCounter.count_messages_tokens，TPM 预留量估算）
 ```
 
 ### 构造参数
@@ -80,7 +80,7 @@ llm_service.LLMService._plan_request（经 TiktokenTokenCounter.count_messages_t
 - 消息带 `name` 字段额外 **+1**
 - 整体末尾固定 **+2** 回复格式开销
 
-> **输出余量（max_tokens）不在此口径内**：那是 TPM 限流特有估算（`LLMService._plan_request`
+> **输出余量（max_tokens）不在此口径内**：那是 TPM 限流特有估算（`build_request_plan`
 > 在计数上加 max_tokens，仅流式/非流式限流预留用），属集成层内部实现细节，不属对外接口。
 
 ### content 防御
@@ -89,7 +89,7 @@ llm_service.LLMService._plan_request（经 TiktokenTokenCounter.count_messages_t
 
 ### 编码器缓存
 
-`get_encoder` 按模型名缓存（`_encoder_cache`），同一模型重复解析返回同一对象；`TiktokenTokenCounter` 与 `LLMService._plan_request` 的 TPM 估算都经本函数解析编码器。
+`get_encoder` 按模型名缓存（`_encoder_cache`），同一模型重复解析返回同一对象；`TiktokenTokenCounter` 与 `build_request_plan` 的 TPM 估算都经本函数解析编码器。
 
 ---
 

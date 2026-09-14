@@ -68,11 +68,12 @@
 | app/integration/llm/client.py | ✅ | docs/integration_doc/llm_doc/client.md | tests/unit/test_client_manager.py | ClientManager 连接池 |
 | app/integration/llm/cost_tracker.py | ✅ | docs/integration_doc/llm_doc/cost_tracker.md | tests/unit/test_cost_tracker.py | 成本追踪（CostTracker 静态定价，经 LLMService Facade 对外） |
 | app/integration/llm/errors.py | ✅ | docs/integration_doc/llm_doc/error.md | tests/unit/test_errors.py | 传输错误统一处理（分类契约 ErrorCategory/ErrorClassifier + 归一/降级判定/下游决策；归一 LLMAPIError） |
-| app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；create 启动后保守结算，响应接管/usage 结算/有界观测后执行最终 Guard；流式业务取消统一翻译为 shared 异常 |
+| app/integration/llm/llm_service.py | ✅ | docs/integration_doc/llm_doc/llm_service.md | tests/unit/test_llm_service.py | Facade 编排；委托请求计划，保留响应接管/usage 结算/有界观测、最终 Guard 与公开异常翻译 |
+| app/integration/llm/request_execution.py | ✅ | docs/integration_doc/llm_doc/request_execution.md | tests/unit/test_llm_request_budget.py | R2 请求计划与真实 create 边界；预算、预留、执行控制及调用阶段结算，Facade 接线另由 test_llm_service.py 覆盖 |
 | app/integration/llm/request_budget.py | ✅ | docs/integration_doc/llm_doc/request_budget.md | tests/unit/test_request_budget.py | 最终请求上下文预算闸（model_key 窗口、输出预留、tools/schema） |
 | app/integration/llm/reservation_limiter.py | ✅ | docs/integration_doc/llm_doc/limiter.md | tests/unit/test_reservation_limiter.py | reserve/settle 限流 |
 | app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试机制（错误分类/归一迁至 llm/errors.py，经 classify_error 消费分类） |
-| app/integration/llm/execution_control.py | ✅ | docs/integration_doc/llm_doc/execution_control.md | tests/unit/test_execution_control.py | 执行控制等待原语（retry/整流/llm_service 共用；reserve 排队取消/流读取竞态等调用方边界另由 test_llm_request_budget.py / test_streaming_rectifier.py 覆盖） |
+| app/integration/llm/execution_control.py | ✅ | docs/integration_doc/llm_doc/execution_control.md | tests/unit/test_execution_control.py | 执行控制等待原语（retry/整流/request_execution 共用；reserve 排队取消/流读取竞态等调用方边界另由 test_llm_request_budget.py / test_streaming_rectifier.py 覆盖） |
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |
 | app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流/续接；业务取消先收尾再类型化冒泡且不生成取消 SSE；EOF 完成态禁止重发，必要结算可见 |
 | app/integration/llm/structured.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | 结构化三级降级 |

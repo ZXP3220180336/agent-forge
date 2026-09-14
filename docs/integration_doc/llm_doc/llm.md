@@ -1,7 +1,7 @@
 # LLM 网关对外接口文档
 
 > **对应代码**：`app/integration/llm/`
-> **更新日期**：2026-09-13
+> **更新日期**：2026-09-15
 > **文档定位**：LLM 模块（`app/integration/llm/`）对外接口文档——`LLMService` Facade
 > 的接口契约 + 内部组件导航；服务对象为 LLM 网关的**外部调用方**（领域层 / 应用层 /
 > API 层）
@@ -44,6 +44,7 @@ LLM 模块是系统的**模型通信基础设施**，负责与大语言模型的
 app/integration/llm/
 ├── __init__.py                ← 包入口，仅导出 LLMService（Facade）
 ├── llm_service.py             ← LLMService（唯一对外 Facade，实现 LLMGateway）
+├── request_execution.py       ← 请求计划与每笔 provider create 生命周期
 ├── client.py                  ← ClientManager 连接池管理
 ├── errors.py                  ← 传输错误处理（分类/归一/降级判定/下游决策）
 ├── execution_control.py       ← 取消/deadline 受控等待原语
@@ -51,7 +52,7 @@ app/integration/llm/
 ├── streaming.py               ← StreamParser 流式/非流式解析
 ├── streaming_rectifier.py     ← StreamingRectifier 流式整流/续接重试
 ├── structured.py              ← StructuredOutput 结构化输出
-├── structured_codec.py              ← 结构化 schema/JSON 纯转换与校验
+├── structured_codec.py        ← 结构化 schema/JSON 纯转换与校验
 ├── reservation_limiter.py     ← ReservationLimiter 客户端限流
 ├── cost_tracker.py            ← CostTracker 成本计算
 ├── token_counter.py           ← tiktoken 计数实现
@@ -75,6 +76,7 @@ app/integration/llm/
         │  依赖倒置：经 LLMGateway 端口（app/domain/ports/llm_gateway.py）
         ▼
   LLMService（Facade，实现 LLMGateway）
+    ├── request_execution ───→ 请求计划、预算/预留与 provider create
     ├── ClientManager ──────→ AsyncOpenAI（OpenAI 兼容 API，如 DeepSeek）
     ├── RetryHandler
     │     ├── RetryConfig
@@ -183,12 +185,13 @@ cost = LLMService.calculate_cost(
 
 ## 内部实现组织
 
-> 内部 11 组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
+> 内部组件由 `LLMService` 内部依赖，不对外暴露。各组件设计文档见下表（细节不在
 > 本文展开——双处维护必然漂移，Rule 1「一个事实一个家」）。
 
 | 组件 | 文件 | 职责 | 设计文档 |
 | --- | --- | --- | --- |
 | `ClientManager` | client.py | 全局共享 AsyncOpenAI 连接池（main / reasoning / fast 懒加载 + 热切换关闭追踪） | [client.md](client.md) |
+| 请求执行 | request_execution.py | 请求参数与计划；每笔真实 create 的预算、预留、执行控制和阶段结算 | [request_execution.md](request_execution.md) |
 | `RetryHandler` + `CircuitBreaker` | retry.py | 指数退避 + 抖动 + 滑动窗口熔断 + 半开探针 + fallback 降级链 | [retry.md](retry.md) |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式 / 非流式响应（纯函数无状态） | [streaming.md](streaming.md) |
 | `StreamingRectifier` | streaming_rectifier.py | 流式整流/半流续接（首 token 前中断整流重试；已产出 content 中断带前缀续写，LLM-ADR-015） | [streaming_rectifier.md](streaming_rectifier.md) |
@@ -200,7 +203,8 @@ cost = LLMService.calculate_cost(
 | `token_counter` | token_counter.py | tiktoken 计数实现（编码器解析 / content 归一化 / 消息计数，经 `LLMService.count_*` 对外） | [token_counter.md](token_counter.md) |
 | `request_budget` | request_budget.py | 最终请求预算校验（窗口、输出预留、tools/schema） | [request_budget.md](request_budget.md) |
 
-**组件间协作**（可靠性链）：执行控制（取消/deadline）约束 `ReservationLimiter`（事前限流）与 `RetryHandler`
+**组件间协作**（可靠性链）：`LLMService` 委托 `request_execution` 建立请求计划；执行控制
+（取消/deadline）约束 `ReservationLimiter`（事前限流）与 `RetryHandler`
 （重试/熔断/降级，fallback 同 provider）→ `StreamingRectifier`（流式整流/续接）→
 `StreamParser`（解析）→ 全局日志框架 `fill_llm_event_fields("llm_call")`
 （事件记录，见 [logging.md](../../platform_doc/observability/logging.md)）。Facade 如何组织这些组件

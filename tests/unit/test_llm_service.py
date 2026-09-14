@@ -161,11 +161,11 @@ def _patch_generate_env(monkeypatch, client, retry, reservation):
         staticmethod(lambda key: client),
     )
     monkeypatch.setattr(
-        "app.integration.llm.llm_service.RetryHandlerManager.get",
+        "app.integration.llm.request_execution.RetryHandlerManager.get",
         staticmethod(lambda key: retry),
     )
     monkeypatch.setattr(
-        "app.integration.llm.llm_service.ReservationLimiterManager.get",
+        "app.integration.llm.request_execution.ReservationLimiterManager.get",
         staticmethod(lambda key: _StubLimiter(reservation)),
     )
 
@@ -181,7 +181,7 @@ def _patch_llm_env(monkeypatch, fallback_client, fake_retry):
         staticmethod(lambda key: fallback_client),
     )
     monkeypatch.setattr(
-        "app.integration.llm.llm_service.RetryHandlerManager.get",
+        "app.integration.llm.request_execution.RetryHandlerManager.get",
         staticmethod(lambda key: fake_retry),
     )
 
@@ -301,7 +301,7 @@ async def test_generate_fallback_reserves_with_own_pool_and_settles_once(monkeyp
     )
     # 主链路失败（重试耗尽）→ retry 调 fallback_fn（不调主 call_fn）
     monkeypatch.setattr(
-        "app.integration.llm.llm_service.RetryHandlerManager.get",
+        "app.integration.llm.request_execution.RetryHandlerManager.get",
         staticmethod(lambda key: _FakeRetry(_FakeResponse('{"ok": true}'))),
     )
     fallback_res = _TrackingReservation()
@@ -312,7 +312,7 @@ async def test_generate_fallback_reserves_with_own_pool_and_settles_once(monkeyp
         return _StubLimiter(fallback_res if key == "fallback" else _TrackingReservation())
 
     monkeypatch.setattr(
-        "app.integration.llm.llm_service.ReservationLimiterManager.get",
+        "app.integration.llm.request_execution.ReservationLimiterManager.get",
         staticmethod(limiter_get),
     )
     previous = dict(RequestBudgetManager._configs)

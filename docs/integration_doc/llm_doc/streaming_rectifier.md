@@ -1,11 +1,11 @@
 # StreamingRectifier 设计文档
 
 > **模块**：`app/integration/llm/streaming_rectifier.py`
-> **更新日期**：2026-09-13
+> **更新日期**：2026-09-15
 > **职责**：流式整流/半流续接策略——「首 token 前中断 → 重新 create + 重新迭代（整流）」；「已产出 content 中断 → 带前缀续写（半流续接，[LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）」；其余已产出中断则放弃
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
-> **配套**：`StreamParser`（chunk 解析）、`LLMService.async_generate`（编排，构造 `continue_fn`）、`RetryHandler`（create 阶段重试/熔断）、`llm/errors.py`（`classify_error` 整流/续接可恢复判定）
+> **配套**：`StreamParser`（chunk 解析）、`request_execution`（构造 `create_fn` / `continue_fn`）、`LLMService.async_generate`（通道编排与整流接线）、`RetryHandler`（create 阶段重试/熔断）、`llm/errors.py`（`classify_error` 整流/续接可恢复判定）
 
 ---
 
@@ -76,7 +76,7 @@
 | 轮次上限 | `cont_attempt < llm_stream_max_continuations`（默认 1，独立于整流上限） |
 | 用户未取消 | `cancel_event` 未置位 |
 
-**续接请求构造**（`llm_service.continue_fn(prefix)`，消息组装在编排层、不在整流器）：`原 messages 副本 + [{"role": "assistant", "content": prefix, "prefix": True}]`——DeepSeek `prefix` 续写字段；OpenAI 兼容端点不支持时 create 失败，整流器**尽力而为**退化到放弃（部分 content 保留 + 原中断原因失败信号），行为不劣化。
+**续接请求构造**（`request_execution` 产出的 `continue_fn(prefix)`，消息组装不在整流器）：`原 messages 副本 + [{"role": "assistant", "content": prefix, "prefix": True}]`——DeepSeek `prefix` 续写字段；OpenAI 兼容端点不支持时 create 失败，整流器**尽力而为**退化到放弃（部分 content 保留 + 原中断原因失败信号），行为不劣化。
 
 **尽力而为链**：续接请求**不经 `retry.execute` / fallback**（非主干路径）；续接再断且预算余 → 带新前缀（`result.content` 最新值）再续，超预算 → 放弃（喂熔断照旧）。
 
@@ -156,7 +156,7 @@ create_fn（限流闭环 reserve + create）
 | --- | --- | --- |
 | 策略层 | `StreamingRectifier` | 整流循环（无状态静态类）：整流判定 / emitted_any / 结算闭环 / 熔断 feeding / 事件日志 |
 | 状态层 | `RectifierContext` | 整流会话共享状态（result / active / event_fields），跨 attempt 传递 |
-| 编排层 | `LLMService.async_generate` | 构造 `create_fn`（限流闭环）+ 调 `rectified_stream` 产出事件 |
+| 编排层 | `LLMService.async_generate` / `request_execution` | Facade 委托请求计划并接线 `rectified_stream`；请求执行组件构造 `create_fn` / `continue_fn` |
 | 支撑层 | `RetryHandler` / `ReservationLimiter` / `StreamParser` | create 阶段重试熔断 / 结算 / chunk 解析 |
 
 ---

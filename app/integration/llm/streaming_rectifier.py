@@ -28,7 +28,7 @@ StreamingRectifier — 流式整流重试策略
 用法（由 LLMService.async_generate 编排）：
     rectifier = StreamingRectifier  # 无状态静态类，不实例化
     async for event in rectifier.rectified_stream(
-        create_fn=lambda: _budget_guarded_call(...),  # 预算准入 → 限流闭环，见 LLMService
+        create_fn=lambda: _budget_guarded_call(...),  # 预算准入 → 限流闭环，见 request_execution
         retry=retry,
         cancel_event=cancel_event,
         stream_max_retries=stream_max_retries,  # 由调用方传入（如 settings 值）

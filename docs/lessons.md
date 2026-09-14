@@ -10,7 +10,7 @@
 | 整合治理规范、移动说明文件或建立来源映射 | 本次用户纠正了并行保留新版规范、旧规范及 sources 快照的方案：同一规则只有一个正式位置，追溯使用现行 ADR/Issue；旧 todo 的历史过程不等于新待办。来源映射不能变成第二份规范正文。 | 本次 2026-09-12 用户纠正；[单一来源 ADR](../adr/2026-09-12-single-source-governance.md)；[项目工作流](engineering/project-workflow.md)。 |
 | 同一缺陷出现不同触发条件 | REASON-004/006 的能力侧与数据侧最终合并到一个协议问题；按表现重复建档曾造成同一机制的状态漂移。 | [协议错误 Issue](../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)；[工程规范](engineering/ai-engineering-rules.md)。 |
 | 模块、目录或包出口调整 | 旧迁移曾漏掉不带 `docs/` 前缀的相对链接，过早替换通用路径也破坏具体路径；入口文件名、导入和实际目录不一致曾导致 ImportError。检查现有目录比根据错误字符串推定根因可靠。 | [独特迁移记录](history/completed-work.md)（原交接无独立 Issue）；[项目工作流](engineering/project-workflow.md)。 |
-| 功能完成后更新文档与 ALIGNMENT | 成本、取消和停滞能力完成后，模块说明仍保留旧构造参数与异常计数；工具模块亦出现接口、注释与实现漂移。历史完成标记不能代替当前入口核对。 | [工具文档漂移](../issues/integration/tools/2026-08-20-doc-drift.md)；[项目工作流](engineering/project-workflow.md)。 |
+| 功能完成后更新文档与 ALIGNMENT | 成本、取消和停滞能力完成后，模块说明仍保留旧构造参数与异常计数；R2 提取删除私有方法后，ADR 和调用图仍称保留薄委托。除路径和链接外，还须对照实际调用点核对文字、图表与接口清单；历史完成标记不能代替当前入口核对。 | [工具文档漂移](../issues/integration/tools/2026-08-20-doc-drift.md)、[R2 文档勘误](../adr/integration/llm/2026-09-15-request-execution-boundary.md)；[项目工作流](engineering/project-workflow.md)。 |
 
 ## Agent 调用、结果与终态
 
