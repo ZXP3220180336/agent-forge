@@ -2,6 +2,19 @@
 
 更新：2026-09-14。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
+## D-01：Agent Harness 讨论保存（2026-09-15）
+
+用户授权保存完整讲解及 Markdown/HTML，供后续模块完成后更新。本项独立于 S-01，不改变其实施状态。
+
+- [x] `docs/project/agent-harness.md`：保存理论架构、项目映射、模拟案例、实现边界、参考来源与更新约定。
+- [x] `docs/project/agent-harness.html`：保存交互图解，补齐完整讲解，作为 Markdown 的配套展示。
+- [x] `docs/README.md`、`docs/catalog.md`：增加导航；两种格式互链。
+- [x] 核查文件编码、链接、HTML 结构和项目文档对齐，回填评审。
+
+可选项：后续模块落地后按新证据更新原文；本次不刷新实现状态、不执行业务测试。用户随后已授权将本项文档独立提交 Git。
+
+评审（2026-09-15）：两种格式完整保存当次讲解，明确讨论日期、模拟案例及实现边界；Markdown 为正文，HTML 包含同文展示与原交互。UTF-8/LF、全部本地链接、HTML 唯一 ID 与五步交互入口检查通过；Node DOM 替身验证两种架构切换和五步案例通过（非浏览器视觉验证）；`scripts.verify_alignment` 与本次文档 `git diff --check` 通过。本项未改变源码、模块状态或部署路径，无需变更 ALIGNMENT；S-01 内容保持原样。
+
 <a id="refactoring-plan"></a>
 
 ## R-01：代码职责与编排边界重构（R1 已完成，其余批次未启动）

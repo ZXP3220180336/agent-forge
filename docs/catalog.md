@@ -10,6 +10,7 @@
 
 ## docs
 
+- [Agent Harness 架构讲解与项目示例](project/agent-harness.md)（[交互 HTML](project/agent-harness.html)）
 - [docs/ALIGNMENT.md](ALIGNMENT.md)
 - [docs/api_doc/middleware_doc/middleware.md](api_doc/middleware_doc/middleware.md)
 - [docs/api_doc/README.md](api_doc/README.md)

@@ -6,6 +6,7 @@
 
 - [产品定位](project/product.md)
 - [架构与分层](project/architecture.md)
+- [Agent Harness 架构讲解与项目示例](project/agent-harness.md)（[交互 HTML](project/agent-harness.html)）
 - [部署与验证](project/deployment.md)
 - [代码—文档—测试对齐](ALIGNMENT.md)
 - [当前计划](todo.md)、[教训](lessons.md)、[完成记录](history/completed-work.md)
