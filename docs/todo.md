@@ -2,6 +2,100 @@
 
 更新：2026-09-14。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
+<a id="refactoring-plan"></a>
+
+## R-01：代码职责与编排边界重构（计划已整理，代码未实施）
+
+日期：2026-09-14。目标：降低推理、LLM 调用和聊天主链路的阅读与修改成本，让编排入口表达阶段与转换，让协议处理、资源与成果接管有明确归属，服务良率 RCA 的拆分、排查与证据报告交付。
+
+**授权边界**：用户已要求将已讨论的范围与方案写入本计划，并授权复核补漏、检查通过后提交计划相关文档；尚未授权实施任何重构批次。后续按批次确认实际文件范围与契约后执行。现有 [C-02](#c-02-lifecycle) 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧全部纳入纯结构重构。
+
+规范入口：[产品](project/product.md)、[工程 Gate 与最小结构变化](engineering/ai-engineering-rules.md#abstraction)、[工作流](engineering/project-workflow.md)、[编码规范文档](engineering/编码规范文档.txt)。2026-09-14 已按用户提供的目录找到并读取编码规范，来源状态统一见[来源核对记录](../issues/documentation/2026-09-12-reference-gaps.md#外部来源边界)；不复制规范正文，也不据此宣称现有代码已全部合规。
+
+### 范围依据与取舍
+
+2026-09-14 静态扫描覆盖 `app/` 下 131 个 Python 文件、18,353 行，其中 9 个文件达到 500 行；结合领域推理、LLM、工具三个子智能体的只读分析，核对主调用者、测试入口及模块契约。行数包含空行、注释与文档字符串，是本轮快照而非验收阈值；没有据此断言业务 Bug 或测试已通过。每批开始前重新核对代码，不依赖固定行号执行。
+
+| 主范围文件 | 本轮结构证据 | 决定与边界 |
+| --- | --- | --- |
+| `app/domain/reasoning/react.py` | 1,637 行；`execute` 565 行，`execute_tool_calls` 163 行；LLM 通道、usage、工具协议、批次、历史和终态集中。 | 先分离纯协议，再按 C-02 调整批次；运行级成果与终态仍由策略负责。 |
+| `app/domain/reasoning/planner.py` | 1,256 行；`execute` 461 行；步骤执行、记录转换、重规划、部分与完整汇总交织。 | 提取纯步骤转换，在原类内整理执行与汇总阶段，保留重规划预算 Owner。 |
+| `app/domain/reasoning/reflection.py` | 806 行；`execute` 339 行；稿件、问题清单、修订次数和护栏决策集中。 | 在原文件提取决策和稿件接管步骤，保留已有 `_critique`、`_refine` 调用边界。 |
+| `app/integration/llm/streaming_rectifier.py` | 1,020 行；`rectified_stream` 229 行；策略与单流读取、看门狗、chunk 累积、接缝、结算混合。 | 分离单流消费；整流器继续拥有重试、续接和结算决策。 |
+| `app/integration/llm/llm_service.py` | 722 行；`_plan_request` 130 行；Facade 混入请求构造、配额选择、请求闭包与 Reservation 转移。 | 提取内部请求执行，保留公开 API、异常翻译、结果通道与成本/计数代理。 |
+| `app/integration/llm/structured.py` | 843 行；纯 schema/JSON 处理与降级、截断扩容、校验回喂混合。 | 先提取无 I/O 的解析校验函数，调用及预算继续留在原组件。 |
+| `app/integration/tools/executor.py` | 641 行；`_execute_impl` 144 行、`_execute_with_retry` 198 行；准备、许可、尝试、事实与观测收尾交织。 | 合并到 C-02 Piece ③④；采用已有 ADR 的准入与执行接管边界。 |
+| `app/api/routes/chat.py` | 196 行；`send_message` 139 行；HTTP/SSE 与会话校验、Agent 创建、运行登记、上下文、结果保存同处。 | 迁移聊天用例到 Application，路由保留传输适配与断连信号转换。 |
+
+以上是结构治理价值排序的候选集合，不是缺陷严重度清单。优先提取有语义的函数或现有类方法；新对象须有独立生命周期、状态所有权或真实变化原因。采用前轮已核查的 [Extract Function](https://refactoring.com/catalog/extractFunction.html) 与 [Extract Class](https://refactoring.com/catalog/extractClass.html) 手法，不新增通用框架。若实施形成新的结构性决定，按记录规范写入对应 ADR；工具结构继续引用 [TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)，不另设竞争正文。
+
+### 批次、文件分工与依赖
+
+建议顺序：R1 → R2 → R3 → R4 → R5 → R6。R1 作为首批样板；R2 先稳定请求接管边界，再开展 R3。R4 内按单策略拆小提交；R5 沿 C-02 的能力依赖执行；R6 在运行/批次接口稳定后迁移。该顺序是审查与集成安排，不代表所有候选都已获得实施授权。
+
+除 C-02 已冻结的路径外，新文件名均为建议；每批启动时核对导出约定、引用与最新契约。新文件必须同时接上实际调用者，不创建空壳或临时兼容层；需要修改超过三个文件时，按下表切片逐一列明职责。仅文件迁移造成的内部导入变更与对外契约变化分别审查。
+
+| 批次 / 状态 | 文件与修改目的 | 结构边界与验收重点 |
+| --- | --- | --- |
+| R1 结构化纯逻辑 / 待实施 | 新增 `app/integration/llm/structured_codec.py`：schema 规范化、JSON 解析校验、错误摘要、回喂消息构造；修改 `structured.py`：导入纯函数，保留调用、usage、降级和错误边界；适配 `tests/unit/test_generate_structured.py`。 | 使用函数，不新建 Codec 类。保留三级降级、一次截断扩容、各级回喂预算和最后一次成果解析；拒答/工具调用短路不变。 |
+| R2 请求执行 / 待实施 | 新增 `app/integration/llm/request_execution.py`：迁入现有 `_CallContext`、`_RequestPlan`、请求 kwargs、计划构造及 `_budget_guarded_call`；修改 `llm_service.py`：委托内部请求执行；适配 `test_llm_service.py`、`test_llm_request_budget.py`。 | 内部模块接收配置值，不反向依赖 Facade。保留主/备用配额归属及调用前撤回、调用后未知/已知 usage 的结算差异。 |
+| R3 单流消费 / 待实施 | 新增 `app/integration/llm/stream_consumption.py`：流读取、chunk 累积、关闭、接缝处理；修改 `streaming_rectifier.py`：显式传入结果、控制信号与看门狗参数；适配 `test_streaming_rectifier.py`、`test_llm_request_budget.py`。 | 不依赖整流器私有上下文，避免双向 import。现有 `StreamParser` 保留 SDK 解码职责；整流器保留预算、续接和唯一结算。 |
+| R4-A Planner / 待实施 | 新增 `app/domain/reasoning/_planner_steps.py`：步骤规范化、计划载荷及单步结果的纯记录转换；修改 `planner.py`：在原类整理步骤执行与完整/部分汇总提交；适配 `test_planner.py`、`test_planner_agent.py`。 | `_replan_loop` 保持预算归属；子运行继承 deadline、baseline usage 和运行身份，父级在子策略重置前接管事实。 |
+| R4-B Reflection / 待实施 | 修改 `app/domain/reasoning/reflection.py`：提取审查后提交/修正判定及完整稿接管步骤；适配 `test_reflection.py`、`test_reflection_agent.py`。 | 先接管最近完整稿再判护栏；保留 `_critique`、`_refine`。暂不创建状态类或共享结构化阶段执行器。 |
+| R4-C ReAct / 待实施 | 新增 `app/domain/reasoning/_react_protocol.py`：工具调用身份检查、final_answer 构造/校验、动作指纹；修改 `react.py`：整理准入、上下文、LLM 单轮、成果接管、分派、收尾阶段；适配 `test_react_strategy.py`、`test_react_strategy_nonstream.py`。 | 成果、usage、终态继续由现有运行作用域负责；纯协议文件不接管工具调用或结算。批次生命周期留给 R5，不重复搬迁。 |
+| R5 工具与批次 / 随 C-02 | `executor.py` 按既定准备/尝试/完成阶段整理；`app/integration/tools/admission.py` 负责共享容量、排队和许可；`app/integration/tools/execution.py` 负责真实执行句柄和有界接管；现有 `app/domain/reasoning/tool_batch.py` 按 ADR 扩展批次边界；`react.py` 接入。 | 对应 [Piece ③④⑤](#c-02-implementation-pieces)，具体规格、文件联动、测试与状态只在 C-02/ADR 维护。结构迁移与新增运行保证分别验收，不能以搬完文件宣称能力完成。 |
+| R6 聊天用例 / 待实施 | 新增 `app/application/chat/chat_service.py` 及必要包入口：会话用例、运行身份、Agent 创建、上下文、成果保存；修改 `app/api/routes/chat.py`：HTTP/SSE 和断连适配；修改 `app/api/deps.py`、`app/container.py`：注入与装配；适配 `tests/integration/test_chat_flow.py`、`tests/unit/test_container.py`，为真实用例行为补测试。 | Application 不依赖 FastAPI Request/Response；明确生成器关闭、断连信号和 finally 持久化责任。保持会话取消范围、运行隔离、消息与 SSE 顺序，不引入通用 AgentFactory。 |
+
+表中省略目录的 `test_*.py` 均位于 `tests/unit/`。每个小提交同步其实际变化的模块/组件说明；新增模块登记到 ALIGNMENT，父 README 增加导航。新增聊天用例的模块说明与应用层导航随 R6 创建；其余说明沿既有 LLM、reasoning、工具、路由文档更新。公开契约、配置或部署事实未变化时记录无需修改的依据，不为模板增加无事实变化的文档。
+
+R6 预检与流执行分阶段：当前 `chat.py::send_message` 在构造 `StreamingResponse` 前检查会话存在性与用户归属，迁移后必须保留这一时点，不能将预检全部包入惰性异步生成器。不存在/越权仍在响应头发送前返回既有 404/403 错误，且零消息写入、零 Agent 调用；应用用例可先返回已准备的运行输入，再开始消费流，不为此预设新的运行状态类。运行登记后、首个事件前失败以及消费者关闭时的清理也须验证；若当前基线与治理契约不符，先复现并单独处理，不以行为保持为由固化缺陷。
+
+### 契约保护与验证
+
+本轮只记录结构分析，未改变运行契约。实施前对实际差异判断 E1/E2/E7/E9；触及调用、结算、异常或控制流时追加 E3/E5/E6/E8，重试变化追加 E4，并按入口读取生命周期与 retry 专项 Skill。不能因名为“重构”省略正确性检查，也不因文件含 retry/budget 就扩大范围。
+
+必须保留以下已确认差异：
+
+- Planner 仍按串行步骤执行，不改为 DAG 调度；Planner 与 Reflection 的报告 schema 同构但独立发布，不合并成公共 schema。
+- 三策略的空输出、LLM 失败、协议修复、停滞及重规划计数各有语义，不合并成统一 RetryPolicy。
+- Reflection 自查通过后的 after-turn 取消与 strict deadline 语义不同，不能强行统一三策略的调用后护栏。
+- 协议与 SSE 提交仍由原责任层控制；停止后不增加业务调用，生成器关闭不额外 yield，已接管工具事实和最近完整成果不得丢失。
+
+| 验证层面 | 每批必要证据 |
+| --- | --- |
+| 结构 | 主入口按阶段可读；新组件职责与真实消费者明确；无循环 import、万能 State 或大量参数转发链；结算/提交仍有唯一逻辑 Owner。行数下降不是独立验收依据。 |
+| 基线与行为 | 先运行对应既有测试建立基线，再补行为缺口；观察结果、错误类型、事件顺序、网络/工具实际调用次数及资源清理。若发现 Bug，先复现再单独修复，不静默改变契约。 |
+| 请求与流边界 | 准入拒绝零调用；取消/期限与响应同时到达先接管事实；未知 usage 保守结算；提前退出关闭流；完成后结算/观测失败不触发业务重放；续接接缝及半工具流行为不变。 |
+| 策略与工具边界 | 空/失败/末次允许重试；批次部分完成后终止；父子运行成本与事实归并；最近完整稿保留；协议历史合法、done 唯一。沿 C-02 验收真实线程/进程与迟回结果，不以 mock 宣称资源保证。 |
+| 应用边界 | 流前不存在/越权的 404/403、零写入与零 Agent 调用；正常 SSE、主动停止、被动断连、同会话多个 run、运行登记后首个事件前失败、消费者提前关闭；消息保存与取消登记清理的顺序和次数可观察。状态码通过真实路由/中间件验证，不能仅直接调用 `send_message`。 |
+| 回归与文档 | 按工作流先相关测试、再全量测试；R1～R3 使用 LLM 对应套件，R4 使用策略/Agent、`test_tool_fact_ownership.py`、`test_nested_run_facts.py`、`test_strategy_generator_ownership.py`，R5 沿 C-02 矩阵，R6 使用 chat_flow/container 并补真实 HTTP 预检验证。运行对齐和 diff 检查，记录实际命令、结果及未覆盖项。 |
+
+测试与文档检查命令统一使用[部署与验证入口](project/deployment.md)，不在本计划重复维护命令表。每批形成独立可回退的提交单元，不混入下一批行为建设；回退必须保留调用者、测试和文档的同批一致性。
+
+### 次级候选与不纳入范围
+
+| 候选 / 决定 | 触发与边界 |
+| --- | --- |
+| `app/application/session/session_manager.py`（484 行）/ 可选 | 先清理非执行示例与重复查询表达，再根据数据访问变化和测试成本评估 Repository/CachePort；完整持久化分层不是本期前置条件，不改查询/缓存语义。 |
+| `app/container.py`（365 行，`initialize` 255 行）/ 可选 | 可按基础设施、LLM、工具、应用提取装配方法；R5/R6 只进行必要接线，不自动开展全文件重构或引入 DI 框架。 |
+| `settings.py`、`retry.py`、`reservation_limiter.py` / 保留 | 声明式配置或已有清晰对象职责；当前没有足够证据仅按文件体量拆分。 |
+| ToolService、Loader、Agent 桥接、提示词预算载荷、工具解析器 / 保留 | 现有职责可辨认；只做所属批次必需联动，不扩建插件平台或共享管理器。 |
+| 大型测试文件 / 可选 | 可随对应批次按行为主题整理，保留用例和 fixture 语义；不作为生产重构完成标准，不为搬家增加镜像测试。 |
+| Memory/CoT 占位、队列平台、分布式调度、全库配置整理 / 不纳入 | 没有本次主链路需求与授权；不按历史 TODO 或架构蓝图建设。 |
+
+### 进度与评审
+
+- [x] 完成全库结构初筛及领域/LLM/工具并行分析，区分行数信号与职责问题。
+- [x] 核对并引用用户提供的编码规范正式文件。
+- [x] 登记 8 个主候选、2 个次级候选、逐文件分工、依赖、可选项和验收边界。
+- [x] 明确与 C-02 Piece ③④⑤的归属，保留其既有状态与规格正文。
+- [x] 完成本轮计划文档的链接、对齐与差异检查。
+- [ ] 获得首批代码实施授权，重新核对基线后启动 R1；其余批次按上表逐批推进。
+
+首次整理验证：`uv run python -m scripts.verify_alignment` 与 `git diff --check` 通过；回填后 `uv run` 遇到缓存访问拒绝，改用已有虚拟环境执行同一检查模块，通过。统计与方法跨度为静态分析证据，未运行业务测试。
+
+再次审核（2026-09-14）：主执行者与独立子智能体对照源码及 C-02，未发现 R2/R3 所有权或 R5 规格冲突；补齐 R6 流前预检、真实 HTTP 验证、首事件前失败及生成器关闭的回归入口。原先只在计划声明编码规范已找到，遗漏了未跟踪文件与正式来源状态：本次将用户原文件纳入提交，更新工程导航、原来源记录及其索引，并将经验补入既有 lessons 条目。未改变模块映射、配置、部署或 C-02 正文，无需更新 ALIGNMENT 或模块说明。修订后运行 `.venv/Scripts/python.exe -m scripts.verify_alignment` 与 `git diff --check` 均通过，另核对 C-02 原文、计划锚点、测试路径和扫描统计，结果一致。上述遗漏已补齐，计划可提交；本轮未运行业务测试，代码实施仍未开始。
+
 <a id="c-02-lifecycle"></a>
 
 ## C-02：工具执行生命周期（P0 规格已形成，待实施评审）

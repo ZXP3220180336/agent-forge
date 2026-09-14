@@ -5,6 +5,7 @@
 | 需要处理 | 正式文档 |
 |---|---|
 | 正确性、复杂度、最小结构变化与抽象 | [AI 工程规则](ai-engineering-rules.md) |
+| 编码格式、命名、注释与语言规范 | [编码规范文档](编码规范文档.txt) |
 | 计划、授权、实现和验收 | [项目工作流](project-workflow.md) |
 | 调用生命周期、结算、重试、Guard 和终态 | [Agent 运行时规则](agent-runtime-rules.md) |
 | 集成层变更按需检查 | [集成检查](integration-rules.md) |

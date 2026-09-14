@@ -1,12 +1,12 @@
 # 研发教训
 
-更新：2026-09-13。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，本轮治理迁移未重新验证这些业务结论。当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
+更新：2026-09-14。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，本轮文档维护未重新验证这些业务结论。当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
 
 ## 规则与文档维护
 
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
-| 将离线治理资料接入完整仓库 | 资料缺失说明需按当前目标存在性重新核对；治理规范搭建与代码符合性实施分开验收，不能把后续代码候选扩成文档迁移任务。 | 2026-09-12 用户明确范围；[迁移引用核对](../issues/documentation/2026-09-12-reference-gaps.md)；[文档证据规则](engineering/documentation/README.md)。 |
+| 将离线治理资料接入完整仓库或补齐来源 | 资料缺失说明需按当前目标重新核对；2026-09-14 曾只在计划声明规范已找到，遗漏正式来源状态与 Git 跟踪，提交前须核对链接目标也被纳入提交并同步唯一状态记录。治理搭建与代码符合性分别验收，不据此扩大代码范围。 | 2026-09-12 用户明确范围、2026-09-14 计划复核；[迁移引用核对](../issues/documentation/2026-09-12-reference-gaps.md)；[文档证据规则](engineering/documentation/README.md)。 |
 | 整合治理规范、移动说明文件或建立来源映射 | 本次用户纠正了并行保留新版规范、旧规范及 sources 快照的方案：同一规则只有一个正式位置，追溯使用现行 ADR/Issue；旧 todo 的历史过程不等于新待办。来源映射不能变成第二份规范正文。 | 本次 2026-09-12 用户纠正；[单一来源 ADR](../adr/2026-09-12-single-source-governance.md)；[项目工作流](engineering/project-workflow.md)。 |
 | 同一缺陷出现不同触发条件 | REASON-004/006 的能力侧与数据侧最终合并到一个协议问题；按表现重复建档曾造成同一机制的状态漂移。 | [协议错误 Issue](../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)；[工程规范](engineering/ai-engineering-rules.md)。 |
 | 模块、目录或包出口调整 | 旧迁移曾漏掉不带 `docs/` 前缀的相对链接，过早替换通用路径也破坏具体路径；入口文件名、导入和实际目录不一致曾导致 ImportError。检查现有目录比根据错误字符串推定根因可靠。 | [独特迁移记录](history/completed-work.md)（原交接无独立 Issue）；[项目工作流](engineering/project-workflow.md)。 |
