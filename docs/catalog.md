@@ -89,6 +89,7 @@
 - [docs/shared_doc/encoding.md](shared_doc/encoding.md)
 - [docs/shared_doc/error_handling.md](shared_doc/error_handling.md)
 - [docs/shared_doc/events.md](shared_doc/events.md)
+- [docs/shared_doc/json_schema.md](shared_doc/json_schema.md)
 - [docs/shared_doc/types.md](shared_doc/types.md)
 - [docs/side-effect-learn.md](side-effect-learn.md)
 - [docs/todo.md](todo.md)

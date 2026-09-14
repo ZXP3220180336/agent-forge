@@ -39,7 +39,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
-from jsonschema import validate
+from jsonschema.exceptions import best_match
 
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
@@ -77,6 +77,7 @@ from app.shared.exceptions import (
     ToolDeadlineExceededError,
     ToolRunStoppedError,
 )
+from app.shared.json_schema import create_schema_validator
 
 from ._common import (
     GuardResult,
@@ -175,7 +176,9 @@ def _extract_final_answer(
     if not isinstance(args, dict):
         return None, "参数应为 JSON 对象"
     try:
-        validate(instance=args, schema=schema)
+        error = best_match(create_schema_validator(schema).iter_errors(args))
+        if error is not None:
+            raise error
     except Exception as e:  # noqa: BLE001 — jsonschema 校验失败，回喂模型自纠
         return None, f"不符合 schema: {e}"
     return args, None
@@ -338,7 +341,8 @@ class ReActStrategy:
                 走执行器全局/工具自声明（settings.tool_timeout → ToolService）
             tool_max_retries: 工具执行最大次数——透传给 ToolGateway.execute；None=
                 走执行器全局（settings.tool_max_retries；语义=执行次数，重试=次数-1）
-            output_schema: 最终答案结构化 JSON Schema（None=不启用）。启用时注入
+            output_schema: 最终答案结构化 JSON Schema（None=不启用），固定 2020-12。
+                定义非法时在模型调用前抛 SchemaError；启用时注入
                 final_answer 工具，模型最后调用提交结构化结果并终止循环
             stream_mode: LLM 通道——True=流式 async_generate（默认，逐 token 事件，
                 面向 chat SSE 订阅者）；False=非流式 generate()（一次拿完整 StreamResult，
@@ -366,6 +370,7 @@ class ReActStrategy:
             raise ValueError("run_id 必须是非空字符串")
         # 结构化最终答案：注入 final_answer 工具（模型最后调用提交结构化结果并终止）
         if output_schema is not None:
+            create_schema_validator(output_schema)
             tool_defs = [*(tool_defs or []), _build_final_answer_tool(output_schema)]
         has_tools = bool(tool_defs)
 
@@ -566,7 +571,9 @@ class ReActStrategy:
                         or identity_error is not None
                     ):
                         if not stream_result.tool_calls:
-                            detail = "finish_reason=tool_calls 但未返回工具调用（协议异常）"
+                            detail = (
+                                "finish_reason=tool_calls 但未返回工具调用（协议异常）"
+                            )
                         elif not has_tools:
                             detail = "模型返回 tool_calls 但当前无可用工具（协议异常）"
                         else:

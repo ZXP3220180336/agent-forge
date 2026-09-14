@@ -15,6 +15,44 @@
 
 评审（2026-09-15）：两种格式完整保存当次讲解，明确讨论日期、模拟案例及实现边界；Markdown 为正文，HTML 包含同文展示与原交互。UTF-8/LF、全部本地链接、HTML 唯一 ID 与五步交互入口检查通过；Node DOM 替身验证两种架构切换和五步案例通过（非浏览器视觉验证）；`scripts.verify_alignment` 与本次文档 `git diff --check` 通过。本项未改变源码、模块状态或部署路径，无需变更 ALIGNMENT；S-01 内容保持原样。
 
+## S-01：本地 JSON Schema 版本统一
+
+授权：用户已确认统一 Draft 2020-12、独立于 R1 实施。R1 已独立提交 `d2a5f44`；本轮复验 62 项通过。
+
+目标：相同本地 Schema 的版本语义不随结构化输出级别、ReAct 或工具入口变化；保留各模块额外字段策略和错误呈现方式。
+
+文件分工与步骤：
+
+- [x] 核查三个生产入口及官方 jsonschema 的显式 cls、check_schema、iter_errors 和嵌套 evolve 行为。
+- [x] `app/shared/json_schema.py`：共享无 I/O 的 2020-12 预检和校验器构建；检查根、子 Schema 与本地引用声明。缺省按 2020-12；其他声明拒绝；仅支持内嵌及 fragment 引用，不建设远程 Schema 获取。
+- [x] `structured_codec.py`、`structured.py`：全部错误与 fallback 代表错误使用同版本；非法 Schema 预检记 ERROR 后返回 None，零模型调用；保留回喂、日志摘要与副本语义。
+- [x] `react.py`：final_answer 注入前预检，配置错误抛 SchemaError，零模型调用；实例错误继续按既有协议回喂。
+- [x] `tools/validator.py`、`tools/base.py`：参数入口将 SchemaError 转问题列表；工具导出前预检，拒绝非法定义进入模型请求。
+- [x] `test_json_schema.py`、`test_generate_structured.py`、`test_react_strategy.py`、`test_tool_validator.py`：先建立失败测试，覆盖关键字差异、三级一致、零调用、嵌套声明、普通实例数据与错误出口。
+- [x] 共享组件说明及父导航、受影响模块说明/层 README、ALIGNMENT、横切 ADR 及索引：维护统一契约与历史替代范围。
+- [x] 定向、全量、独立审查、文档对齐与 diff 检查完成。独立提交与验证分开记录：当前迁移仍为工作区改动，尚未提交。
+
+Gate：E6/E8 检查配置错误与实例错误分离；E9 由三个真实跨层调用方证明共享纯函数必要；R1/R3/R5 核对非法定义零调用，合法定义原预算/usage/协议不变。可选项：多版本兼容、远程 Schema 注册与获取、format 断言、模型接口子集转换均不纳入。
+
+评审（2026-09-15）：实现与验证已完成。本轮修改前实测 `uv run pytest -q`：1166 passed、1 条第三方弃用警告；使用现有虚拟环境执行 `python -m scripts.verify_alignment` 与 `git diff --check` 通过。历史定向失败复现和独立审查证据见 [ADR-004](../adr/2026-09-14-json-schema-dialect.md)。本轮补记状态，不把尚未发生的 Git 提交记为完成。
+
+## S-02：Schema 预检成本修复（2026-09-15）
+
+授权：用户要求依次回填 S-01、修复 P2-1，并允许处理 P3-1 / P3-2。保留原方言、引用作用域、无 I/O、异常转换和未知字段契约。
+
+- [x] `docs/todo.md`：用本轮全量基线回填 S-01，拆分验证与提交事实。
+- [x] `tests/unit/test_json_schema.py`：先复现重复元校验次数，保护扩展目标和资源作用域边界；`app/shared/json_schema.py`：分离元校验与声明扫描，用本次调用内的覆盖集合免除重复元校验。
+- [x] 可选项 P3-1（本轮处理）：`tests/unit/test_tool_validator.py` 保护构建次数、被覆盖定义和异常出口；`app/integration/tools/validator.py` 原定义始终预检，仅有效 Schema 未变时复用校验器。
+- [x] 可选项 P3-2（本轮处理）：`app/integration/tools/tool_service.py` 补注册 SchemaError 文档字符串。
+- [x] `docs/shared_doc/json_schema.md`、`docs/integration_doc/tools_doc/validator.md` 同步实现机制，`docs/integration_doc/tools_doc/tool_service.md` 同步注册异常；新增根因 Issue 和所属索引，`docs/lessons.md` 记录可复用教训。
+- [x] 定向及全量测试、同机性能对比、独立复审、文档对齐和 diff 检查；回填评审。
+
+Gate：E6/E8；现有函数内提取职责，不新增抽象层，不修改调用、预算或资源生命周期。可变定义不跨调用缓存；工具执行链多入口校验和导出预检保持现有职责。
+
+评审：已完成。先失败复现为 10 failed / 123 passed；独立复审另发现包装新增字段修复悬空引用的问题，普通及 URI 编码场景先 2 failed，再收窄优化条件。最终定向 336 passed；`.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider` 全量 1204 passed、1 条已有第三方弃用警告。沙箱内默认及独立临时目录均出现 PermissionError，自动审批允许在沙箱外运行后全量通过。文档对齐、diff、UTF-8/LF 和新增链接检查通过。
+
+标准目标元校验不再随引用数重复：10 个引用/每定义 40 字段本机均值由 148.882 ms 降至 81.874 ms（约 45%）。根因与基准口径见 [SCHEMA-004](../issues/shared/json_schema/2026-09-15-repeated-meta-validation.md)；P3-1 的安全复用条件、异常出口修复和 P3-2 见 [TOOLS-053](../issues/integration/tools/2026-09-15-effective-schema-preflight.md)。未更改公开契约、模块路径、接线或状态，已核对父导航及 ALIGNMENT，无需改动。现有工作区改动保留，本轮未提交 Git。
+
 <a id="refactoring-plan"></a>
 
 ## R-01：代码职责与编排边界重构（R1 已完成，其余批次未启动）
@@ -107,7 +145,7 @@ R6 预检与流执行分阶段：当前 `chat.py::send_message` 在构造 `Strea
 - [x] R1：先补嵌套 schema 双副本与完整回喂/日志分离行为测试，再提取纯 codec。
 - [x] R1：定向与全量回归、独立审查、结构文档及对齐检查完成。
 
-R1 文件分工：`structured_codec.py` 承担无 I/O 的转换与校验，`structured.py` 保留日志/异常翻译和运行编排，`test_generate_structured.py` 保护公开调用行为；`docs/integration_doc/llm_doc/structure.md` 维护内部边界，`llm.md` 与集成层 README 更新结构导航，ALIGNMENT 登记新模块；LLM ADR 及索引记录函数模块分离的取舍，本计划追踪执行证据。校验器异常的日志责任留在原模块，codec 不引入 logger/配置/LLM 依赖；前两级 Draft7Validator 与 fallback 的 jsonschema.validate 语义分别保留。
+R1 文件分工：`structured_codec.py` 承担无 I/O 的转换与校验，`structured.py` 保留日志/异常翻译和运行编排，`test_generate_structured.py` 保护公开调用行为；`docs/integration_doc/llm_doc/structure.md` 维护内部边界，`llm.md` 与集成层 README 更新结构导航，ALIGNMENT 登记新模块；LLM ADR 及索引记录函数模块分离的取舍，本计划追踪执行证据。校验器异常的日志责任留在原模块，codec 不引入 logger/配置/LLM 依赖。后继变更见 [ADR-004](../adr/2026-09-14-json-schema-dialect.md)：三级本地校验已统一为固定 Draft 2020-12（原「前两级 Draft7Validator 与 fallback 的 jsonschema.validate 语义分别保留」条款由该 ADR 替代）。
 
 R1 实施评审（2026-09-14）：采用 E9 的独立数据策略边界，按 E6 核对校验器异常与观测包装；没有新增运行状态、重试或所有权迁移，E3/E4/E5/E7 无新增变化。原类所有方法经引用名归一和去除文档字符串后 AST 与 HEAD 一致，独立代码审查未发现可证实行为漂移。新增源文件为 UTF-8/LF，生产改动行未超过 120 字符；未修改调用方配置或公共 Facade。
 

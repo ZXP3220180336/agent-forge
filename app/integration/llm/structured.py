@@ -23,7 +23,7 @@ import re
 import time
 from typing import Any
 
-from jsonschema import ValidationError
+from jsonschema import SchemaError, ValidationError
 
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.platform.observability.logger import get_logger
@@ -34,6 +34,7 @@ from app.shared.exceptions import (
     StructuredToolCallError,
     StructuredTruncationError,
 )
+from app.shared.json_schema import create_schema_validator
 
 from . import structured_codec as codec
 from .errors import decide_downstream_error, is_unsupported_response_format_error
@@ -176,7 +177,7 @@ class StructuredOutput:
         Args:
             llm_service: LLM 网关（本路径只调用 generate）
             messages: 完整消息列表（调用方构建）
-            schema: JSON Schema 定义
+            schema: 本地 Draft 2020-12 定义；预检失败记 ERROR 并返回 None，不调用模型
             model_key: 使用的模型标识（默认 fast，低延迟低成本）
             max_tokens: 输出预算上限。None 用 register_config 注入的默认值
                 （Container 注入 settings.llm_structured_max_tokens，默认 2048）；
@@ -224,6 +225,11 @@ class StructuredOutput:
         deadline: float | None = None,
     ) -> dict[str, Any] | None:
         """extract 的三级降级主体（与 extract 同参，由 extract 包装终止收敛）。"""
+        try:
+            create_schema_validator(schema)
+        except SchemaError as error:
+            logger.error("Schema 定义无效，未调用模型: %s", error.message)
+            return None
         # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）。
         # 默认拒绝额外字段，模型无法扩展接口混入业务不需要的字段。
         schema = codec.enforce_no_extra_fields(schema)

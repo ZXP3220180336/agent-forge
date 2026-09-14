@@ -113,6 +113,7 @@ class MyTool(BaseTool):
 4. **信任边界**：`external/` 与应用**同信任级别**——加载即执行任意 Python 代码，只放受信任工具
 5. **无状态优先**：状态由 Agent 核心管理；持连接 / 子进程 / 定时器的工具必须实现 `on_unload()` 完整回收
 6. **生命周期钩子禁反向调用**：`on_load` / `on_unload` 内禁止调用 `execute`（加载流程持 `_scan_lock`，反向调用会死锁，见 [TOOLS-014 问题记录](../../../issues/integration/tools/2026-08-19-loader-scan-lock-deadlock.md)）
+7. **参数 Schema 契约**：`parameters` 必须符合[本地 Schema 契约](../../shared_doc/json_schema.md)（缺省即 Draft 2020-12）。显式声明其他版本、非 fragment 引用或定义非法时，`register` 抛 `SchemaError`，加载流程回滚本文件——插件不会加载成功却在导出工具列表时才失败
 
 > **完整示例**：`app/integration/tools/external/http_api.py`（`http_api`）是随附的热插拔示例——REST API 调用工具，演示了元数据覆写（L1 写 / category=http / timeout=15 / **`requires_approval=True` 写操作需审批**）+ 生命周期钩子（`on_load` 建立 httpx 连接池 / `on_unload` 释放）+ 参数 schema（method 枚举 + url 必填）+ 异常分类归因 + **配置注入**（`CONFIG_KEYS=("tool_http_timeout",)` → `register_config` 注入超时）+ **SSRF 防护**（复用 [security.md](security.md) `ssrf_on_request`，裸 IP / 内网目标拒绝），可作新外部工具模板。
 
@@ -125,6 +126,7 @@ class MyTool(BaseTool):
 5. **重载失败降级**：文件改坏 → 工具暂不可用（旧实例已卸载）→ 修复文件即恢复
 6. **在飞 execute 与重载**：旧实例引用跑完；持锁时 `prune_tool_lock` 跳过，串行化不破坏
 7. **execute 热路径**：每次 execute 进入 `maybe_refresh()`；TTL 内复用签名、不执行 glob/stat，到期后经线程池检查目录签名，签名变化才重扫（见上方「execute 惰性检查」）
+8. **参数 Schema 定义非法** → 注册期拒绝并回滚本文件，与「文件级部分失败」同一出口（其余工具不受影响）；回滚同时释放**当前实例**已建立的 `on_load` 资源，不留无人追踪的连接或句柄
 
 ## 升级路径
 
@@ -137,7 +139,7 @@ class MyTool(BaseTool):
 
 ## 测试状态
 
-`tests/unit/test_tool_loader.py`（24 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / maybe_refresh TTL 短路 / maybe_refresh TTL 过期重检 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）/ 兄弟模块清理（_drop_modules + 卸载清理）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
+`tests/unit/test_tool_loader.py`（26 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / 注册失败回滚释放当前实例资源 / 重名跳过时释放失败不重复释放 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / maybe_refresh TTL 短路 / maybe_refresh TTL 过期重检 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）/ 兄弟模块清理（_drop_modules + 卸载清理）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
 
 ## 相关文档
 

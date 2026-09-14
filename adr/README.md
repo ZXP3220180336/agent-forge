@@ -11,6 +11,7 @@
 | [ADR-001](2026-09-02-request-build-validation.md) | 请求构建期校验取舍：不建集中校验层，超长上下文裁剪显式告警 | ✅ 已采纳 | application + api（横切） | 2026-09-02 |
 | [ADR-002](2026-09-12-single-source-governance.md) | 单一文档维护体系与治理目标 | 文档整合已采用；代码迁移待实施 | 横切治理 | 2026-09-12 |
 | [ADR-003](2026-09-12-sdk-call-guard-response-commit.md) | SDK 调用准入、响应接管与 Guard 提交边界 | ✅ 已采纳并验证 | domain + integration + platform | 2026-09-12 |
+| [ADR-004](2026-09-14-json-schema-dialect.md) | 本地 JSON Schema 统一 Draft 2020-12 与预检边界 | 已接受并验证 | domain + integration + shared | 2026-09-14 |
 
 登记、状态和维护规则见 [记录规范](../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。
 

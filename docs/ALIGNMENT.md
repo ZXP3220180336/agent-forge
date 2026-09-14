@@ -83,7 +83,7 @@
 | app/integration/tools/executor.py | ✅ | docs/integration_doc/tools_doc/executor.md | tests/unit/test_tool_executor_components.py | 执行编排：安全重试、控制复查及 Integration 优先事实接管；生命周期契约另见 test_tool_lifecycle_contract.py |
 | app/integration/tools/hooks.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tool_hooks.py | 成功路径有界通知 + 参数/结果快照隔离；Executor 组合边界另见 test_tool_executor_components.py |
 | app/integration/tools/loader.py | ✅ | docs/integration_doc/tools_doc/external.md | tests/unit/test_tool_loader.py | 外部工具热加载（execute 惰性检查 + 生命周期钩子） |
-| app/integration/tools/registry.py | ✅ | docs/integration_doc/tools_doc/registry.md | tests/unit/test_tool_registry_metadata.py | 注册中心 + 元数据查询（风险/分类） |
+| app/integration/tools/registry.py | ✅ | docs/integration_doc/tools_doc/registry.md | tests/unit/test_tool_registry_metadata.py | 注册中心（定义预检）+ 元数据查询（风险/分类） |
 | app/integration/tools/result_processor.py | ✅ | docs/integration_doc/tools_doc/result_processor.md | tests/unit/test_result_processor.py | 结果处理器：head+tail 截断 + 错误归一化 |
 | app/integration/tools/security.py | ✅ | docs/integration_doc/tools_doc/security.md | tests/unit/test_tool_audit.py | 风险分级 L0-L3 + 审计 + 审批通道（默认放行；审批测试 test_tool_approval.py） |
 | app/integration/tools/selector.py | ✅ | docs/integration_doc/tools_doc/selector.md | tests/unit/test_tool_selector.py | 工具选择器（默认全量注入，预留） |
@@ -101,6 +101,7 @@
 | app/integration/tools/builtin/rca/fdc_tool.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/rca.md | tests/unit/test_rca_tools.py | FDC 参数偏离（query_fdc_params，L0） |
 | app/integration/tools/builtin/rca/defect_tool.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/rca.md | tests/unit/test_rca_tools.py | 缺陷模式（query_defect_map，L0） |
 | app/integration/tools/builtin/rca/history_tool.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/rca.md | tests/unit/test_rca_tools.py | 历史案例检索（search_historical_rca，L0） |
+| app/shared/json_schema.py | ✅ | docs/shared_doc/json_schema.md | tests/unit/test_json_schema.py | 固定 2020-12；根/子声明和本地引用预检；LLM、ReAct、工具复用 |
 | app/shared/events.py | ✅ | docs/shared_doc/events.md | tests/unit/test_events.py | 7 种 SSE 事件 |
 | app/shared/error_handling.py | 🔶 | docs/shared_doc/error_handling.md | tests/unit/test_error_handling.py | Agent 错误处理策略（AgentErrorKind / Handler / Registry，共享内核横切） |
 | app/shared/exceptions.py | ✅ | docs/shared_doc/error_handling.md | tests/unit/test_exceptions.py | 统一异常树 + AppErrorCode；工具控制类型另经 test_tool_lifecycle_contract.py 覆盖 |

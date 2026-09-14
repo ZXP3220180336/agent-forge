@@ -152,6 +152,38 @@ async def test_conflict_with_registered_skipped(service, loader, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_skip_unload_failure_is_not_repeated(service, loader, tmp_path):
+    """重名跳过时就地释放；释放失败也只调用一次，不落到外层回滚重复释放。"""
+    trace = tmp_path / "dup_unload.log"
+    source = f'''\
+from app.integration.tools.base import BaseTool
+from app.domain.ports.tool_gateway import ToolResult
+
+TRACE = {str(trace)!r}
+
+
+class DupTool(BaseTool):
+    @property
+    def name(self): return "dup"
+    @property
+    def description(self): return "dup tool"
+    @property
+    def parameters(self): return {{"type": "object", "properties": {{}}}}
+    async def on_unload(self):
+        with open(TRACE, "a", encoding="utf-8") as handle:
+            handle.write("unload\\n")
+        raise RuntimeError("unload boom")
+    async def execute(self, **kwargs): return ToolResult(success=True, content="ok")
+'''
+    service.register(_FixedTool())
+    _write_tool_file(tmp_path, "dup.py", source)
+    await loader.scan_once()
+
+    assert trace.read_text(encoding="utf-8").split() == ["unload"]  # 恰好一次
+    assert isinstance(service.get("dup"), _FixedTool)  # 预注册实例未被替换
+
+
+@pytest.mark.asyncio
 async def test_syntax_error_file_skipped(service, loader, tmp_path):
     """语法错误文件 → 跳过不崩溃，其余文件照常。"""
     _write_tool_file(tmp_path, "bad.py", "def :\n")
@@ -200,6 +232,55 @@ class BadTool(BaseTool):
 
     assert service.get("good") is None  # 被回滚
     assert service.get("bad") is None
+
+
+@pytest.mark.asyncio
+async def test_register_failure_releases_current_instance(service, loader, tmp_path):
+    """注册期预检失败回滚时，当前实例的 on_load 资源也被释放（恰好一次）。"""
+    trace = tmp_path / "lifecycle.log"
+    source = f'''\
+from app.integration.tools.base import BaseTool
+from app.domain.ports.tool_gateway import ToolResult
+
+TRACE = {str(trace)!r}
+
+
+def _mark(event):
+    with open(TRACE, "a", encoding="utf-8") as handle:
+        handle.write(event + "\\n")
+
+
+class GoodTool(BaseTool):
+    @property
+    def name(self): return "good"
+    @property
+    def description(self): return "good tool"
+    @property
+    def parameters(self): return {{"type": "object", "properties": {{}}, "required": []}}
+    async def on_load(self): _mark("load")
+    async def on_unload(self): _mark("unload")
+    async def execute(self, **kwargs): return ToolResult(success=True, content="ok")
+
+
+class LegacyTool(BaseTool):
+    @property
+    def name(self): return "legacy"
+    @property
+    def description(self): return "legacy tool"
+    @property
+    def parameters(self):
+        return {{"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"}}
+    async def on_load(self): _mark("load")
+    async def on_unload(self): _mark("unload")
+    async def execute(self, **kwargs): return ToolResult(success=True, content="ok")
+'''
+    _write_tool_file(tmp_path, "legacy.py", source)
+    await loader.scan_once()
+
+    assert service.get("good") is None  # 已注册实例同样回滚
+    assert service.get("legacy") is None
+    # 两个实例各释放一次：已注册的 good 与「on_load 成功但注册失败」的 legacy
+    assert trace.read_text(encoding="utf-8").split() == ["load", "load", "unload", "unload"]
 
 
 @pytest.mark.asyncio

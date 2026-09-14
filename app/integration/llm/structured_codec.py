@@ -1,6 +1,6 @@
 """结构化输出的内部数据转换与校验函数。
 
-只依赖标准库与 jsonschema，不执行日志、模型调用或状态结算。
+依赖标准库、jsonschema 与共享 Schema 契约，不执行日志、模型调用或状态结算。
 调用方负责校验器异常的日志和业务转换；LLMService 仍是模块对外入口。
 """
 
@@ -10,7 +10,9 @@ import copy
 import json
 from typing import Any
 
-from jsonschema import Draft7Validator, validate
+from jsonschema.exceptions import best_match
+
+from app.shared.json_schema import create_schema_validator
 
 _REASK_TEMPLATE = (
     "你的上一次输出未通过 JSON Schema 校验，具体错误如下：\n{errors}\n"
@@ -95,7 +97,7 @@ def enforce_no_extra_fields(schema: dict[str, Any]) -> dict[str, Any]:
         node = stack.pop()
         if not isinstance(node, dict):
             continue
-        # 匹配 object：type 单值 "object" 或数组含 "object"（draft-07 可空写法 ["object","null"]）
+        # 匹配 object：type 单值 "object" 或数组含 "object"（联合类型写法 ["object","null"]）
         node_type = node.get("type")
         is_object = node_type == "object" or (
             isinstance(node_type, list) and "object" in node_type
@@ -147,11 +149,11 @@ def collect_schema_errors(parsed: dict[str, Any], schema: dict[str, Any]) -> lis
     需要看到具体错误才能修正）。写入日志需用脱敏版 `collect_schema_error_summaries`。
 
     LLM-007：schema 非法（UnknownType / SchemaError / TypeError 等）时
-    Draft7Validator(schema) 构造或 iter_errors 的异常交由 structured 记录并转换，
+    Schema 预检或 iter_errors 的异常交由 structured 记录并转换，
     本函数不捕获、不写日志，也不决定是否降级。
     """
     errors = []
-    for e in Draft7Validator(schema).iter_errors(parsed):
+    for e in create_schema_validator(schema).iter_errors(parsed):
         path = "/".join(str(p) for p in e.absolute_path) or "<root>"
         errors.append(f"- 字段 `{path}`：{e.message}")
     return errors
@@ -169,7 +171,7 @@ def collect_schema_error_summaries(
     LLM-007：schema 非法时异常交由 structured 记录并转换，本函数不写日志。
     """
     summaries = []
-    for e in Draft7Validator(schema).iter_errors(parsed):
+    for e in create_schema_validator(schema).iter_errors(parsed):
         path = "/".join(str(p) for p in e.absolute_path) or "<root>"
         summaries.append(f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}")
     return summaries
@@ -222,10 +224,10 @@ def parse_json_object(content: str) -> dict[str, Any] | None:
 
 
 def validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> None:
-    """按 schema 声明的 draft 校验 fallback 候选，失败原样抛给观测边界。
+    """按固定 2020-12 校验 fallback 候选，失败原样抛给观测边界。
 
-    与前两级 Draft7Validator 不同，保留 jsonschema.validate 的 schema 检查
-    和 draft 选择，不在函数内转换失败或写入日志。
+    保留 jsonschema.validate 的 best_match 代表错误选择，不自动切换版本，
+    不在函数内转换失败或写入日志。
 
     Args:
         parsed: 已解析的 JSON 对象。
@@ -235,4 +237,6 @@ def validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> None:
         jsonschema.ValidationError: 候选对象不符合 schema。
         jsonschema.SchemaError: schema 本身不合法。
     """
-    validate(instance=parsed, schema=schema)
+    error = best_match(create_schema_validator(schema).iter_errors(parsed))
+    if error is not None:
+        raise error

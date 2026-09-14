@@ -117,6 +117,8 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 ### 结构化最终答案（final_answer 工具）
 
+`output_schema` 采用[共享本地 2020-12 契约](../../shared_doc/json_schema.md)。`execute` 在注入 final_answer 前预检定义；非法定义抛 `SchemaError`，零模型调用，不进入协议修正。合法定义的实例校验继续用 `best_match` 选择代表错误并按既有错误策略回喂；不自动收紧额外字段。版本决策见 [ADR-004](../../../adr/2026-09-14-json-schema-dialect.md)。
+
 `output_schema` 启用时，注入 `final_answer` 工具（参数 = schema）。模型完成任务后调用一次提交结构化结果，`_handle_final_answer` 解析 + jsonschema 校验：成功即终止循环并写入 `outcome.structured`；校验失败走 `STRUCTURED_INVALID` 分发（默认回喂错误文本，模型下轮自纠）。注入工具非注册工具，识别在主循环，不经过 `execute_tool_calls`。
 
 ### 上下文预算（ContextBudgetPort）
@@ -308,20 +310,20 @@ result = strategy.outcome  # ReActOutcome
 5. **累计成本超限**（`agent_max_cost`，None=不启用）→ 每轮调用前检查基线 + 局部累计，调用后先归账再复查；超限走 `COST_EXCEEDED` 分发。`baseline_usage` 只参与判定、不进报告口径；与取消或 deadline 同时命中时遵守共享优先级
 6. **工具参数 JSON 解析失败** → 不执行工具：构造失败 ToolResult（JSON_PARSE）回喂模型自纠，`error`/`error_code` 进证据链
 7. **工具调用身份非法**（ID 缺失或当前批次重复）→ 在 assistant/tool 历史写入前按协议异常收编，真实 Gateway 调用为零
-7. **工具执行失败 / 无效工具名** → 回喂 `str(result)`（`"错误: <error>"`，无效工具含「未注册」），模型可感知失败自愈；`error` / `error_code` 进证据链
-8. **工具结果超长** → 截断（tool 消息 2000 字符 / 事件 200 字符）并追加 `[结果已截断]` 标记（预留标记长度，总长不超限）
-9. **reasoning_content 回喂** → DeepSeek V4 thinking + tools 必须回喂（否则 400）；`has_reasoning` 覆盖空 reasoning（空串也回喂），无信号不回喂（chat 模型）
-10. **上下文预算**（`max_context_rounds` / `max_context_tokens`，None=不裁剪）→ 循环顶部、每次 LLM 调用前经注入的 ContextBudgetPort 裁剪（所有继续路径共用）：保留最近 N 轮 assistant/tool 配对 + token 硬上限
-11. **结构化最终答案**（`output_schema`，None=不启用）→ 注入 final_answer 工具；模型调用即终止产出 `outcome.structured`；参数校验失败回喂（VALIDATION/STRUCTURED_INVALID）自纠
-12. **错误处理分发**（`error_handlers`，None=默认行为）→ 各终结/可恢复错误按 kind 分发（CONTINUE/STOP/RAISE）；默认 = 现有行为，调用方按 kind 注册覆盖
-13. **多工具失败** → 按 kind 聚合（同 kind 原因合并给 handler）；RAISE 在 `_dispatch` 中立即传播，否则 STOP 优先于 CONTINUE；终止/上报时其他失败不回喂，但全部失败已进证据链
-14. **空输出重试上限**（`max_empty_retries`，默认 2）→ 连续空输出计数，超过上限在空输出分支硬终止（`error` 记录「连续空输出（N 轮）」，先 dispatch 供 handler RAISE，CONTINUE 忽略）；有产出轮计数清零（非连续不累计）；LLM 失败重试轮不参与。**空输出重试轮不追加空 assistant 消息**（无产出不写历史，防累积污染上下文；thinking 空 reasoning 轮 `has_reasoning=True` 仍追加保字段）
-15. **循环停滞检测**（`max_same_action_turns`，默认 3）→ 连续相同工具调用（工具+参数）超过上限 → STALLED 分发硬终止（本轮工具不执行，error 记录「连续 N 轮相同工具调用」）；参数规范化（key 顺序 / 空白不同指纹一致）；换工具 / 换参数重置；真正的结构化 `final_answer` 在此之前完成提取或进入修正，未启用 output_schema 时同名未知工具仍参与指纹；STALLED handler 可 RAISE 上抛
-16. **模型拒答**（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，error 记录「模型拒答: <截断文本>」）；显式信号原则（LLM-004，不靠 content 空推断）——DeepSeek 无 refusal 字段的 stop+空 content 保持空回答语义；拒答文本截断（LLM-008 基线）
-17. **未捕获异常**（UNKNOWN）→ 主循环 `except Exception` 兜底：当前轮有可见进度时优先用 `current_result`，否则用 `last_visible_result` 组装 outcome 并合并未归账 usage，保留部分进度 + 证据链；error 仅记录「Agent 运行异常: <异常类型名>」（**脱敏**——不拼接异常 message，完整异常含 traceback 进日志供运维诊断，产品侧不泄漏内部细节，见 [REASON-005](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)）；RAISE 决策（`AgentRunError`）前置 re-raise 不被吞；`asyncio.CancelledError` / `GeneratorExit` 是 `BaseException`，保持 CANCELLED / 生成器关闭语义
-18. **用户取消**（`cancel_event`，None=不启用）→ 调用前、成功归账后与类型化异常出口经同一 guard 判定，CANCELLED 优先于 deadline/cost/context；不重试并保留当前可见成果与真实 usage；`asyncio.CancelledError`（硬取消）仍走 BaseAgent.run 的独立路径
-19. **工具协议修正上限**：`finish_reason=tool_calls` 信号不一致、`final_answer` 校验失败、工具参数 JSON 解析失败共享连续计数。最多修正 N 次，第 N+1 次仍异常即硬终止；handler 的 RAISE 仍立即传播，STOP/CONTINUE 在硬上限处均终止。合法工具协议轮清零，LLM 失败或空输出不代表协议恢复。无效 assistant/tool_calls 先短路且不写入历史，防止下一轮形成未配对消息。
-20. **非流式通道**（`stream_mode=False`，默认 True）→ 每轮 LLM 改走 `generate(model_key="main")` 一次拿完整 StreamResult，主循环护栏语义（成本/失败/拒答/工具/停滞/空输出）与流式一致；差异：① reasoning/message 事件为**整条一次性**（SSE 协议同构，前端打字机退化为整段）；② 失败契约对齐流式整流——`generate` 返回 None（可恢复耗尽）与抛 `AppError` 均折算 `LLM_FAILED` 分发（流式路径此情形从不走 UNKNOWN）；**共享 `AppError` 树含熔断 `CircuitBreakerOpenError`**（NonRetryableError 子类）→ 熔断同样归 LLM_FAILED（两通道一致）；仅 `AppError` 树外的编程错误冒泡外层 `UNKNOWN`；③ `cancel_event` 与绝对 deadline 进入 generate 内部，约束 reserve/create/retry，成功结算后仍复查一次；④ 无对应 settings 项（YAGNI，Phase C 子 Agent 构造 ctx 置 False；勿与仅作元数据出口的 `agent_streaming` 混淆）
+8. **工具执行失败 / 无效工具名** → 回喂 `str(result)`（`"错误: <error>"`，无效工具含「未注册」），模型可感知失败自愈；`error` / `error_code` 进证据链
+9. **工具结果超长** → 截断（tool 消息 2000 字符 / 事件 200 字符）并追加 `[结果已截断]` 标记（预留标记长度，总长不超限）
+10. **reasoning_content 回喂** → DeepSeek V4 thinking + tools 必须回喂（否则 400）；`has_reasoning` 覆盖空 reasoning（空串也回喂），无信号不回喂（chat 模型）
+11. **上下文预算**（`max_context_rounds` / `max_context_tokens`，None=不裁剪）→ 循环顶部、每次 LLM 调用前经注入的 ContextBudgetPort 裁剪（所有继续路径共用）：保留最近 N 轮 assistant/tool 配对 + token 硬上限
+12. **结构化最终答案**（`output_schema`，None=不启用）→ 注入 final_answer 工具；模型调用即终止产出 `outcome.structured`；参数校验失败回喂（VALIDATION/STRUCTURED_INVALID）自纠
+13. **错误处理分发**（`error_handlers`，None=默认行为）→ 各终结/可恢复错误按 kind 分发（CONTINUE/STOP/RAISE）；默认 = 现有行为，调用方按 kind 注册覆盖
+14. **多工具失败** → 按 kind 聚合（同 kind 原因合并给 handler）；RAISE 在 `_dispatch` 中立即传播，否则 STOP 优先于 CONTINUE；终止/上报时其他失败不回喂，但全部失败已进证据链
+15. **空输出重试上限**（`max_empty_retries`，默认 2）→ 连续空输出计数，超过上限在空输出分支硬终止（`error` 记录「连续空输出（N 轮）」，先 dispatch 供 handler RAISE，CONTINUE 忽略）；有产出轮计数清零（非连续不累计）；LLM 失败重试轮不参与。**空输出重试轮不追加空 assistant 消息**（无产出不写历史，防累积污染上下文；thinking 空 reasoning 轮 `has_reasoning=True` 仍追加保字段）
+16. **循环停滞检测**（`max_same_action_turns`，默认 3）→ 连续相同工具调用（工具+参数）超过上限 → STALLED 分发硬终止（本轮工具不执行，error 记录「连续 N 轮相同工具调用」）；参数规范化（key 顺序 / 空白不同指纹一致）；换工具 / 换参数重置；真正的结构化 `final_answer` 在此之前完成提取或进入修正，未启用 output_schema 时同名未知工具仍参与指纹；STALLED handler 可 RAISE 上抛
+17. **模型拒答**（refusal 字段 / content_filter）→ REFUSED 分发硬终止（默认 STOP，error 记录「模型拒答: <截断文本>」）；显式信号原则（LLM-004，不靠 content 空推断）——DeepSeek 无 refusal 字段的 stop+空 content 保持空回答语义；拒答文本截断（LLM-008 基线）
+18. **未捕获异常**（UNKNOWN）→ 主循环 `except Exception` 兜底：当前轮有可见进度时优先用 `current_result`，否则用 `last_visible_result` 组装 outcome 并合并未归账 usage，保留部分进度 + 证据链；error 仅记录「Agent 运行异常: <异常类型名>」（**脱敏**——不拼接异常 message，完整异常含 traceback 进日志供运维诊断，产品侧不泄漏内部细节，见 [REASON-005](../../../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)）；RAISE 决策（`AgentRunError`）前置 re-raise 不被吞；`asyncio.CancelledError` / `GeneratorExit` 是 `BaseException`，保持 CANCELLED / 生成器关闭语义
+19. **用户取消**（`cancel_event`，None=不启用）→ 调用前、成功归账后与类型化异常出口经同一 guard 判定，CANCELLED 优先于 deadline/cost/context；不重试并保留当前可见成果与真实 usage；`asyncio.CancelledError`（硬取消）仍走 BaseAgent.run 的独立路径
+20. **工具协议修正上限**：`finish_reason=tool_calls` 信号不一致、`final_answer` 校验失败、工具参数 JSON 解析失败共享连续计数。最多修正 N 次，第 N+1 次仍异常即硬终止；handler 的 RAISE 仍立即传播，STOP/CONTINUE 在硬上限处均终止。合法工具协议轮清零，LLM 失败或空输出不代表协议恢复。无效 assistant/tool_calls 先短路且不写入历史，防止下一轮形成未配对消息。
+21. **非流式通道**（`stream_mode=False`，默认 True）→ 每轮 LLM 改走 `generate(model_key="main")` 一次拿完整 StreamResult，主循环护栏语义（成本/失败/拒答/工具/停滞/空输出）与流式一致；差异：① reasoning/message 事件为**整条一次性**（SSE 协议同构，前端打字机退化为整段）；② 失败契约对齐流式整流——`generate` 返回 None（可恢复耗尽）与抛 `AppError` 均折算 `LLM_FAILED` 分发（流式路径此情形从不走 UNKNOWN）；**共享 `AppError` 树含熔断 `CircuitBreakerOpenError`**（NonRetryableError 子类）→ 熔断同样归 LLM_FAILED（两通道一致）；仅 `AppError` 树外的编程错误冒泡外层 `UNKNOWN`；③ `cancel_event` 与绝对 deadline 进入 generate 内部，约束 reserve/create/retry，成功结算后仍复查一次；④ 无对应 settings 项（YAGNI，Phase C 子 Agent 构造 ctx 置 False；勿与仅作元数据出口的 `agent_streaming` 混淆）
 
 ---
 

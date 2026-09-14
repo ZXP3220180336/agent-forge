@@ -242,21 +242,35 @@ class ExternalToolLoader:
 
         # 文件级原子性：逐个实例化 + on_load + 注册；任一失败回滚本文件已注册实例
         registered: list[BaseTool] = []
+        # on_load 已成功、资源待释放的实例（含尚未进入注册表的当前实例）
+        loaded: list[BaseTool] = []
         try:
             for cls in tool_classes:
                 self._inject_config(cls, module)
                 tool = cls()
                 await tool.on_load()
+                loaded.append(tool)
                 if self._service.get(tool.name) is not None:
                     logger.warning(
                         "外部工具与已注册工具重名，跳过 %s: %s", tool.name, path
                     )
-                    await tool.on_unload()  # 释放 on_load 建立的资源
+                    loaded.pop()  # 已就地释放，移出待回滚名单
+                    # 就地释放失败只记 warning：不能让异常落到外层回滚，否则同一实例被释放两次
+                    try:
+                        await tool.on_unload()  # 释放 on_load 建立的资源
+                    except Exception as unload_err:  # noqa: BLE001
+                        logger.warning(
+                            "外部工具重名跳过时 on_unload 失败: %s: %s",
+                            tool.name,
+                            unload_err,
+                        )
                     continue
                 self._service.register(tool)
                 registered.append(tool)
         except Exception as e:  # noqa: BLE001
-            for tool in registered:
+            # 回滚遍历 loaded 而非 registered：register 失败时当前实例已有 on_load
+            # 资源但尚未进入注册表，只回滚 registered 会漏掉它，资源无人释放。
+            for tool in loaded:
                 try:
                     await tool.on_unload()
                 except Exception as unload_err:  # noqa: BLE001

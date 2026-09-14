@@ -24,13 +24,13 @@
 
 ToolRegistry 是工具模块的**容器层**：持有全部已注册 `BaseTool` 实例，提供注册 / 注销 / 查询 / 列表，并按**风险等级** / **功能域**过滤（供安全审计与预留管理界面），以及 OpenAI 格式 Schema 导出。
 
-不承担执行职责——参数校验 / 重试 / 统计 / 并发控制由 [executor.md](executor.md) 负责（本组件是纯容器，无副作用）。
+不承担执行职责——参数校验 / 重试 / 统计 / 并发控制由 [executor.md](executor.md) 负责（本组件是纯容器，无副作用）。注册入口唯一做一次**定义预检**（[本地 Schema 契约](../../shared_doc/json_schema.md)）：非法定义在此被拒绝，使内置装配的逐工具兜底与外部加载的文件级回滚各自生效，不会推迟到导出或执行时让同批工具一起失效。
 
 ## 接口契约
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `register` | `(tool: BaseTool) -> None` | 注册工具；重名抛 `ValueError("工具 '...' 已存在")` |
+| `register` | `(tool: BaseTool) -> None` | 注册工具；重名抛 `ValueError("工具 '...' 已存在")`，参数 Schema 定义非法抛 `jsonschema.SchemaError`（[本地 Schema 契约](../../shared_doc/json_schema.md)） |
 | `unregister` | `(name: str) -> bool` | 注销工具，返回是否成功 |
 | `get` | `(name: str) -> BaseTool \| None` | 获取工具实例 |
 | `list_tools` | `() -> list[str]` | 列出全部工具名 |
@@ -68,7 +68,7 @@ tools = service.get_openai_tools()      # Schema 导出（实际经 selector）
 
 ## 测试
 
-`tests/unit/test_tool_registry_metadata.py`（6 用例）：`all_tools` / `list_by_risk` / `list_by_category` 过滤正确性、注销已注册工具、注销不存在工具返回 False、重名注册抛 `ValueError`（不覆盖）。
+`tests/unit/test_tool_registry_metadata.py`（8 用例）：`all_tools` / `list_by_risk` / `list_by_category` 过滤正确性、注销已注册工具、注销不存在工具返回 False、重名注册抛 `ValueError`（不覆盖）、定义非法注册抛 `SchemaError` 且不入容器、单个非法定义不影响同批导出。
 
 ## 相关文档
 

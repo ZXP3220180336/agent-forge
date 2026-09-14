@@ -15,6 +15,7 @@ dependencies = [
     "openai>=2.45.0",
     "pydantic-settings>=2.14.2",
     "redis>=8.0.1",
+    "referencing>=0.37.0",
     "requests>=2.34.2",
     "sqlalchemy>=2.0.51",
     "tavily>=1.1.0",

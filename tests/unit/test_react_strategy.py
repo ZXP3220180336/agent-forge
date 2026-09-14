@@ -16,6 +16,7 @@ import json
 import time
 
 import pytest
+from jsonschema import SchemaError
 
 from app.config import settings
 from app.domain.ports.llm_gateway import StreamResult
@@ -2268,6 +2269,50 @@ _FA_REPORT_SCHEMA = {
     },
     "required": ["conclusion", "confidence"],
 }
+
+
+@pytest.mark.parametrize("schema", [
+    {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
+    {"properties": {"x": {"$schema": "urn:unknown"}}},
+    {"type": "object", "properties": 5},
+])
+async def test_final_answer_schema_preflight_stops_before_llm(schema: dict) -> None:
+    """错误定义在注入 terminal tool 前拒绝，不能回喂给模型修改。"""
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "unused"}])
+    strategy = ReActStrategy(llm=llm, tools=None)
+    with pytest.raises(SchemaError):
+        async for _ in strategy.execute(
+            "hi", [], output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024,
+        ):
+            pass
+    assert llm.calls == 0
+    assert strategy.outcome is None
+
+
+async def test_final_answer_202012_dependency_feedback_then_success() -> None:
+    """2020-12 字段依赖失败回喂，修正后终止；保持协议调用计数。"""
+    schema = {
+        "type": "object", "properties": {"equipment": {}, "time": {}},
+        "dependentRequired": {"equipment": ["time"]},
+    }
+    good = {"equipment": "EQ-01", "time": "today"}
+    llm = _ScriptedLLM([
+        {"finish_reason": "tool_calls", "tool_calls": [{
+            "id": f"fa-{index}", "type": "function",
+            "function": {"name": "final_answer", "arguments": json.dumps(args)},
+        }]}
+        for index, args in enumerate([{"equipment": "EQ-01"}, good])
+    ])
+    strategy = ReActStrategy(llm=llm, tools=None)
+    events = [
+        event async for event in strategy.execute(
+            "hi", [], output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024,
+        )
+    ]
+    assert llm.calls == 2
+    assert strategy.outcome.success
+    assert strategy.outcome.structured == good
+    assert sum('"type": "done"' in event for event in events) == 1
 
 
 @pytest.mark.asyncio

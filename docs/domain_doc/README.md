@@ -4,6 +4,8 @@
 > **更新日期**：2026-09-13
 > **文档定位**：领域层（`app/domain/`）—— Agent 内核、提示词、记忆与推理策略；是系统的**决策与行动核心**，只依赖领域端口与共享内核，零外部框架依赖。
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。边界：（✅ react / reflection / planner；CoT 预留）（⬜ 预留）
+> ReAct 最终答案的本地 Schema 校验复用[共享 2020-12 契约](../shared_doc/json_schema.md)，定义在模型调用前预检。
+>
 > **配套**：事件系统位于共享层 `app/shared/events.py`（见 [events.md](../shared_doc/events.md)）
 
 ---

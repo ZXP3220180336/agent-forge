@@ -166,8 +166,8 @@
 | `parse_json_object` / `validate_schema` | 非 JSON 对象返回 None；校验失败原样抛出 | `_try_parse_json` / `_validate_schema` 保留逐候选校验日志和失败出口 |
 | 回喂消息、日志截断文本 | 返回新消息列表或格式化文本；不写日志、不修改原输入 | 何时重试、何时落日志与 usage 接管均留在编排侧 |
 
-前两级继续使用 `Draft7Validator.iter_errors`；fallback 继续用 `jsonschema.validate` 检查 schema 并选择 draft。
-codec 不统一这两种行为，不依赖 logger、settings、LLMGateway，也不拥有错误恢复或终态。
+三级本地校验统一使用[共享 Draft 2020-12 契约](../../shared_doc/json_schema.md)。前两级通过 `iter_errors` 收集全部错误，fallback 使用 `best_match` 选择代表错误；codec 不依赖 logger、settings、LLMGateway，也不拥有错误恢复或终态。
+调用前先预检原 Schema，定义非法、版本不支持或引用越界时记 ERROR 并返回 None，零模型调用；模型实例不符合约束才进入原有回喂/降级。版本迁移见 [ADR-004](../../../adr/2026-09-14-json-schema-dialect.md)。
 保留的私有包装承担日志及异常翻译，不是旧导入路径的兼容转发。
 
 ## 架构总览
@@ -470,7 +470,7 @@ generate_structured(messages, schema, model_key="fast")
 4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价
 5. **输出预算可配置**：`max_tokens` 由 `StructuredOutput.register_config()` 注入（Container 读 `settings.llm_structured_max_tokens`，默认 2048），调用方经 `generate_structured(max_tokens=...)` 按业务覆盖；截断时扩 2 倍重试 1 次（随参数缩放），超限后放弃
 6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（`enforce_no_extra_fields`），模型无法扩展接口；显式 `additionalProperties:true` 在本地校验中仍被尊重；**strict 请求再经 `strict_compliant` 把 true 归一为 false**（见 [LLM-018](../../../issues/integration/llm/2026-08-08-extra-fields-not-rejected.md) / [LLM-009](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)）
-7. **schema 非法防护**：`Draft7Validator(schema)` 构造或 `iter_errors` 抛异常（UnknownType / SchemaError / TypeError 等）→ 捕获并返回错误信息，按校验失败处理触发降级，不崩溃（codec 的校验器异常由 `structured.py` 中 `_validate_schema` / `_parse_and_validate` / `_collect_schema_error_summaries` 兜底，见 [LLM-007](../../../issues/integration/llm/2026-08-16-invalid-schema-crash.md)）
+7. **Schema 定义预检**：共享校验器在模型调用前检查定义、版本和本地引用，失败记 ERROR 并返回 None，不进入模型回喂/降级路径。实例校验异常仍由 structured 包装处理。非法 Schema 不崩溃的约束见 [LLM-007](../../../issues/integration/llm/2026-08-16-invalid-schema-crash.md)，零调用预检的迁移见 [ADR-004](../../../adr/2026-09-14-json-schema-dialect.md)。
 8. **response_format 400 降级**：`is_unsupported_response_format_error`（llm/errors.py，见 [error.md](error.md)）识别「模型/网关不支持 response_format」的 400 → 记 WARNING 降级到下一级（JSON mode / 正则）；**其余 NON_RETRYABLE 400 仍上抛**（调用方 bug 不静默吞掉）
 9. **校验失败日志脱敏**：`_validate_schema` 失败日志用**结构化字段摘要**（字段路径 + `validator` + `validator_value`）替代 `e.message`——jsonschema 的 `message` 会嵌入完整实例值（模型输出可能含业务敏感数据，Yield RCA 场景为良率/晶圆数据）；`parsed` 经 `truncate_json_for_log` 截断到 `structured_codec._LOG_TRUNCATE_LIMIT`（500 字符），`schema`（接口契约）保留完整。**回喂模型仍用完整错误**：`codec.collect_schema_errors` 保留 `e.message` 供回喂（模型需要具体错误修正），新增 `_collect_schema_error_summaries`（结构化字段摘要）用于回喂日志——回喂与落盘两套文本，敏感数据不因日志泄露、模型纠错能力不损（见 [LLM-037](../../../issues/integration/llm/2026-08-16-schema-validation-log-redaction.md)）
 10. **拒答日志截断**：`_raise_boundary` 拒答文本经 `truncate_text_for_log` 截断落盘——拒答常引用触发内容（Yield RCA 晶圆/良率数据），不能完整落日志；异常 message 保持简洁（不含拒答文本），日志保留截断前缀供诊断（见 [LLM-008](../../../issues/integration/llm/2026-08-16-refusal-log-truncation.md)）

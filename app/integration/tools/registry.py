@@ -4,6 +4,7 @@ from typing import Any
 
 from app.integration.tools.base import BaseTool
 from app.integration.tools.security import RiskLevel
+from app.shared.json_schema import create_schema_validator
 
 
 class ToolRegistry:
@@ -13,9 +14,14 @@ class ToolRegistry:
         self._tools: dict[str, BaseTool] = {}
 
     def register(self, tool: BaseTool) -> None:
-        """注册工具，重名抛 ValueError。"""
+        """注册工具；重名抛 ValueError，参数 Schema 定义非法抛 SchemaError。
+
+        定义预检只放在这一个注册入口：内置装配逐工具兜底、外部加载按文件回滚，
+        非法定义在此被隔离。推迟到导出或参数校验才报，会让同批全部工具一起失效。
+        """
         if tool.name in self._tools:
             raise ValueError(f"工具 '{tool.name}' 已存在")
+        create_schema_validator(tool.parameters)
         self._tools[tool.name] = tool
 
     def unregister(self, name: str) -> bool:

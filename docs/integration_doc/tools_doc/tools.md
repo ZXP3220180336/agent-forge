@@ -109,11 +109,11 @@ ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#
 
 | 方法 / 属性 | 说明 |
 | --- | --- |
-| `name` / `description` / `parameters` | 抽象；`parameters` 为 OpenAI Function Calling JSON Schema |
+| `name` / `description` / `parameters` | 抽象；`parameters` 为工具参数 JSON Schema，遵守[本地 Schema 契约](../../shared_doc/json_schema.md)及模型接口支持范围 |
 | `execute(**kwargs) -> ToolResult` | 抽象；业务错误走返回值而非抛异常 |
 | `can_retry(result_or_error) -> bool` | 适配器对本次失败的安全重试声明；默认 False，次数余额不能替代幂等/副作用证明 |
-| `to_openai_tool` / `to_openai_response` | Schema 导出（Chat / Responses 格式） |
-| `validate_parameters(**kwargs) -> bool` | 委托 jsonschema 校验器（完整校验） |
+| `to_openai_tool` / `to_openai_response` | Schema 导出（Chat / Responses 格式）；预检失败抛 `SchemaError`，阻止非法定义进入模型请求 |
+| `validate_parameters(**kwargs) -> bool` | 委托固定 Draft 2020-12 校验器；实例或 Schema 定义校验失败均返回 False |
 | `validation_issues(**kwargs) -> list[str]` | 中文归因问题列表（executor 错误信息用） |
 | `risk_level` | 风险分级（默认 L0，见 [security.md](security.md)） |
 | `category` | 功能域（默认 "general"，供按域查询） |
@@ -124,6 +124,10 @@ ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#
 | `on_load` / `on_unload` | 可选异步钩子：加载后初始化 / 卸载前释放资源（外部工具加载器消费，默认 no-op） |
 | `health_check` | 可选异步钩子：健康检查，返回可用性（默认 True，预留巡检） |
 | `register_config` | 可选类方法：装配根注入运行配置（避免直接依赖 settings） |
+
+两种导出均只读取一次 `parameters`，通过共享工厂预检后，将同一快照放入返回载荷。导出不执行网络请求；失败时不生成可发送的工具定义，也不自动转译其他 Schema 版本。接入模型时仍需满足其 Schema 子集要求，本地版本统一不代表模型支持完整规范。
+
+执行入口保留问题列表契约：定义预检失败表现为 `Schema 定义无效: ...`，ToolService 返回 `ErrorCode.VALIDATION` 且工具执行次数为零；普通参数错误仍一次收集全部问题。常规入口的非法定义已在注册期被拒（[注册中心](registry.md)），该执行期出口覆盖定义在注册后失效的情形。未知参数策略、类型不转换及内部异常接口见[参数校验器](validator.md)。
 
 ## 内部实现组织（六大子组件）
 
@@ -170,5 +174,6 @@ ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#
 - [ToolService 说明](tool_service.md)（Facade 装配 / 执行流程 / 并发语义）
 - [内置工具说明](builtin_doc/builtin.md)（BaseTool + 10 内置工具）· [外部工具热加载](external.md)（ExternalToolLoader）
 - [validator.md](validator.md) · [result_processor.md](result_processor.md) · [security.md](security.md) · [selector.md](selector.md)
+- [本地 JSON Schema 契约](../../shared_doc/json_schema.md) · [方言统一决策](../../../adr/2026-09-14-json-schema-dialect.md)
 - [集成层总览](../README.md) · [架构设计](../../project/architecture.md)
 - 决策记录：[ADR 索引](../../../adr/integration/tools/README.md)

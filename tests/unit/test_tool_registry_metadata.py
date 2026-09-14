@@ -6,6 +6,7 @@ ToolRegistry 元数据查询单元测试
 """
 
 import pytest
+from jsonschema import SchemaError
 
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.registry import ToolRegistry
@@ -130,3 +131,40 @@ def test_register_duplicate_raises():
         reg.register(_ReadTool())
     # 原实例仍在（不覆盖）
     assert reg.get("read").name == "read"
+
+
+class _LegacySchemaTool(_ReadTool):
+    """参数 Schema 声明旧方言（外部插件常见写法）。"""
+
+    @property
+    def name(self) -> str:
+        return "legacy"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {},
+        }
+
+
+def test_register_rejects_invalid_parameter_schema():
+    """定义非法在注册期隔离，不推迟到导出或参数校验。"""
+    reg = _registry()
+
+    with pytest.raises(SchemaError):
+        reg.register(_LegacySchemaTool())
+
+    assert reg.get("legacy") is None
+
+
+def test_invalid_schema_tool_does_not_break_batch_export():
+    """单个工具定义非法不影响同批其他工具导出（注册期已隔离）。"""
+    reg = _registry()
+    with pytest.raises(SchemaError):
+        reg.register(_LegacySchemaTool())
+
+    names = [t["function"]["name"] for t in reg.get_openai_tools()]
+
+    assert names == ["read", "write", "exec"]

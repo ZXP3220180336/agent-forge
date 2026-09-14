@@ -58,5 +58,8 @@
 | [TOOLS-048](2026-08-20-doc-drift.md) | 工具模块文档轻微漂移与覆盖不全（3 处） | P3 | ✅ 已修复 | docs（builtin/README） | 2026-08-20 | 2026-08-20 |
 | [TOOLS-049](2026-08-20-code-review-fixes.md) | 工具模块代码审查修复批次（重试归因 / SSRF CGNAT / 审计脱敏 / 外部工具冷启动 / RCA 时间锚点 + 15 次要） | P1 | ✅ 已修复 | tools/* + rca/ + container | 2026-08-20 | 2026-08-20 |
 | [TOOLS-050](2026-09-14-executor-postprocessing-retry.md) | 成功后处理异常触发工具重放，所有失败缺少安全重试准入 | P1 | ✅ 已修复 | executor / base / hooks / tool_service | 2026-09-14 | 2026-09-14 |
+| [TOOLS-051](2026-09-15-registry-schema-preflight.md) | 参数 Schema 定义错误缺少注册期拦截，非法定义让同批工具一起失效 | P2 | ✅ 已修复 | registry / tools 文档 | 2026-09-15 | 2026-09-15 |
+| [TOOLS-052](2026-09-15-register-rollback-resource-leak.md) | 注册失败回滚遗漏当前实例的资源释放 | P2 | ✅ 已修复 | loader | 2026-09-15 | 2026-09-15 |
+| [TOOLS-053](2026-09-15-effective-schema-preflight.md) | 包装后 Schema 预检异常未转换及条件复用边界 | P2 | ✅ 已修复 | validator / tool_service 文档 | 2026-09-15 | 2026-09-15 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

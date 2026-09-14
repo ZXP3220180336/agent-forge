@@ -69,7 +69,7 @@ class ToolService:
     # ===== 注册管理（→ Registry + Stats 双写） =====
 
     def register(self, tool: BaseTool) -> None:
-        """注册工具；重名抛 ValueError。"""
+        """注册工具；重名抛 ValueError，参数 Schema 定义非法抛 SchemaError。"""
         self._registry.register(tool)
         self._stats.init(tool.name)
 

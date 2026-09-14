@@ -35,6 +35,9 @@
 | --- | --- | --- |
 | 为未知副作用设计隔离与恢复 | 曾把单次结果未知升级为全工具停用并要求人工解锁；对象失败、资源冲突和工具健康必须分别判断。优先限制有证据的冲突范围；容量回收、冲突解除与业务结果确认也不是同一完成条件。 | 2026-09-13 用户纠正及工业参照；[TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)、[G0-4/G0-7](engineering/ai-engineering-rules.md#g0)。 |
 | 工具重试循环同时包含结果处理或观测 | 成功后的截断或统计异常曾重新执行已经成功的工具；次数预算只是上界，不能证明副作用可重复。真实调用返回后先接管结果，后处理退出重试异常范围；只有适配器明确判定安全时才允许下一次 attempt。 | [TOOLS-050](../issues/integration/tools/2026-09-14-executor-postprocessing-retry.md)、[TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)、[重试规范](engineering/agent-runtime-rules.md#retry)。 |
+| Schema 版本或包装变化 | 曾因手写引用解析、仅按字典 identity 去重和 `evolve` 沿用旧 resolver，误拒合法定义或放行递归额外字段。使用规范库解析资源，并对最终根重新创建校验器；测试跨 `$id`、共享子定义及递归 `#`。 | [SCHEMA-001](../issues/shared/json_schema/2026-09-14-reference-scope.md)；[共享契约](shared_doc/json_schema.md)。 |
+| 引入定义 / 配置类校验 | 校验点与隔离点错位曾把单点配置错误放大成整批故障，并把工具定义缺陷归因给模型参数。校验应放在唯一入口（与内置逐工具兜底、外部按文件回滚的边界对齐）；声明遍历或失败契约要覆盖实际可达的异常形态——自研遍历有界不等于所依赖的库调用有界，库的异常翻译也不全覆盖，只接主异常会留出逃逸路径。 | [TOOLS-051](../issues/integration/tools/2026-09-15-registry-schema-preflight.md)、[SCHEMA-002](../issues/shared/json_schema/2026-09-15-deep-nesting-recursion.md)、[SCHEMA-003](../issues/shared/json_schema/2026-09-15-pointer-resolution-exception-leak.md)；[工程规范](engineering/ai-engineering-rules.md)。 |
+| 为多步流程写失败回滚 | 回滚名单曾按「已进入目标状态」建立（如已注册 / 已提交），于是「已取得资源但尚未进入状态」的当前步骤不在名单里，注册期新增可失败点后立即变成资源泄漏。清理名单按**已取得资源**建立；给某步新增失败可能时回头核对名单是否覆盖它。 | [TOOLS-052](../issues/integration/tools/2026-09-15-register-rollback-resource-leak.md)；[G0-3](engineering/ai-engineering-rules.md#g0)。 |
 | 一次 Facade 调用内部含 retry/fallback/降级/等待 | 阶段入口有 Guard 并未覆盖内部真实 attempt；新增控制参数只出现在签名，也不证明每条再调用边已经透传。 | [LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)、[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)；[请求规范](engineering/integration-rules.md)。 |
 | 同一业务取消信号跨流式阶段 | 底层既返回取消 SSE 又可能抛异常，会让公开终态取决于取消时刻。资源拥有者应先 close/settle，Facade 统一传播类型化控制信号，领域状态机独占最终用户事件；已产事实不能随取消被抹除。 | [LLM-050](../issues/integration/llm/2026-09-13-stream-business-cancellation-contract.md)；[生命周期规范](engineering/agent-runtime-rules.md#lifecycle)、[请求规范](engineering/integration-rules.md)。 |
 | abort 后 factory 吞取消并迟回资源 | helper 的正常返回曾被误当业务成功或直接丢弃；迟回值承载资源所有权，abort 判定与 settle/close 责任并不互斥。 | [LLM-045](../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md)；[请求规范](engineering/integration-rules.md)。 |
@@ -53,3 +56,8 @@
 | 根据语法印象或参数名定性 bug | 工具评审曾将 Python 3.14 支持的异常写法误认作 Python 2 残留；head/tail 截断的 marker 是否计入长度亦取决于组件契约。先核对实际解释器与组件约定。 | [工具六组件 ADR](../adr/integration/tools/2026-08-17-six-component-alignment.md)、[完成记录](history/completed-work.md)（细节出自原教训，无独立 Issue）；[工程规范](engineering/ai-engineering-rules.md)。 |
 | fake DB、缓存、配置或异步容器测试 | fake 的返回协议、缓存状态和查询判别曾使断言未到目标分支；真实 `.env` 还曾使工具测试意外访问网络。异步 initialize 未等待则产生假启动失败。 | [测试迁移记录](history/completed-work.md)（原交接无独立 Issue）；[项目工作流](engineering/project-workflow.md)。 |
 | 涉及时序竞态或文档格式检查 | 时间预算不足会让测试命中提前入口；无限等待会使失败挂起。中文表格列宽应按项目实际 lint 配置核验，不能把旧脚本做法提升为每次必跑的通用要求。 | [LLM-047](../issues/integration/llm/2026-09-09-deadline-usage-propagation-closed-loop.md)、[完成记录](history/completed-work.md)；[项目工作流](engineering/project-workflow.md)。 |
+
+## Schema 预检覆盖与包装
+
+- 标准子树元校验覆盖按对象身份复用，引用访问还取决于资源作用域；二者不能共用去重键。见 [SCHEMA-004](../issues/shared/json_schema/2026-09-15-repeated-meta-validation.md) 与 [E8](engineering/ai-engineering-rules.md#gates)。
+- 包装 Schema 不只可能覆盖非法定义，也可能意外修复原悬空引用或使合法引用失效。原定义与有效定义均须保持失败出口，优化只在可证明语义未变时复用。见 [TOOLS-053](../issues/integration/tools/2026-09-15-effective-schema-preflight.md) 与[参数校验契约](integration_doc/tools_doc/validator.md)。

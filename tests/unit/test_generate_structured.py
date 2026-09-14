@@ -37,6 +37,76 @@ SCHEMA = {
 MESSAGES = [{"role": "user", "content": "张三去了北京"}]
 
 
+@pytest.mark.parametrize("level", ["json_schema", "json_object", None])
+@pytest.mark.parametrize("valid", [True, False])
+@pytest.mark.parametrize(
+    "constraint,good,bad",
+    [
+        ({"properties": {"x": {}, "y": {}}, "dependentRequired": {"x": ["y"]}},
+         {"x": 1, "y": 2}, {"x": 1}),
+        ({"$defs": {"text": {"type": "string"}}, "$ref": "#/$defs/text", "minLength": 3},
+         "abcd", "a"),
+        ({"type": "array", "prefixItems": [{"type": "integer"}], "items": False}, [1], ["x"]),
+        ({"allOf": [{"properties": {"x": {"type": "integer"}}}], "unevaluatedProperties": False},
+         {"x": 1}, {"x": 1, "extra": 2}),
+    ],
+    ids=["dependency", "ref-sibling", "tuple", "unevaluated"],
+)
+async def test_schema_202012_semantics_across_levels(
+    monkeypatch: pytest.MonkeyPatch, level: str | None, valid: bool,
+    constraint: dict, good: object, bad: object,
+) -> None:
+    """同一约束在三级真实入口均生效，失败耗尽有界且 usage 不漏记。"""
+    schema = {"type": "object", "properties": {"value": copy.deepcopy(constraint)}}
+    # 引用相对根文档；定义放根部，避免示例依赖错误的解析作用域。
+    if "$defs" in constraint:
+        schema["$defs"] = schema["properties"]["value"].pop("$defs")
+    original = copy.deepcopy(schema)
+    expected = {"value": good if valid else bad}
+    llm = LLMService()
+    calls: list[str | None] = []
+    usage: dict = {}
+
+    async def fake_generate(**kwargs: object) -> StreamResult:
+        """仅目标级别提供对象，其余级别提供不可解析输出以驱动降级。"""
+        response_format = kwargs.get("response_format")
+        current = response_format["type"] if response_format else None
+        calls.append(current)
+        result = _sr(json.dumps(expected) if current == level else "invalid JSON")
+        result.usage = {"total_tokens": 1}
+        return result
+
+    monkeypatch.setattr(llm, "generate", fake_generate)
+    result = await llm.generate_structured(MESSAGES, schema, usage=usage)
+    assert result == (expected if valid else None)
+    assert len(calls) == ({"json_schema": 1, "json_object": 4, None: 7}[level] if valid else 7)
+    assert usage == {"total_tokens": len(calls)}
+    assert schema == original
+
+
+@pytest.mark.parametrize("schema", [
+    {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
+    {"type": "object", "properties": {"value": {"$schema": "urn:unknown"}}},
+    {"type": "object", "properties": 5},
+])
+async def test_invalid_schema_preflight_has_no_model_calls(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, schema: dict,
+) -> None:
+    """配置错误保持 None 出口，明确记录原因且不付费请求模型修正。"""
+    llm = LLMService()
+    calls: list[dict] = []
+
+    async def fake_generate(**kwargs: object) -> StreamResult:
+        calls.append(kwargs)
+        return _sr("{}")
+
+    monkeypatch.setattr(llm, "generate", fake_generate)
+    with caplog.at_level(logging.ERROR, logger="app.llm.structured"):
+        assert await llm.generate_structured(MESSAGES, schema) is None
+    assert calls == []
+    assert "Schema" in caplog.text
+
+
 async def test_nested_strict_schema_preserves_local_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
     """strict 请求副本收紧嵌套字段，本地校验和调用方仍保留显式扩展许可。"""
     llm = LLMService()
@@ -910,7 +980,7 @@ async def test_invalid_schema_returns_none_not_crash():
 
     修复前：`_collect_schema_errors` 的 `Draft7Validator(schema).iter_errors` 对非法
     schema 抛异常穿透崩溃；`_validate_schema` 却有 except 兜底（两套路径不一致）。
-    修复后：捕获记日志 + 返回错误 → 按校验失败处理触发降级 → 最终 None。
+    当前：调用前预检，捕获记日志后返回 None，不调用模型修正定义。
     """
     llm = LLMService()
 
@@ -926,7 +996,7 @@ async def test_invalid_schema_returns_none_not_crash():
     ]
     for schema in invalid_schemas:
         result = await llm.generate_structured(MESSAGES, schema)
-        assert result is None, f"非法 schema 应返回 None（触发降级），而非崩溃: {schema}"
+        assert result is None, f"非法 schema 应返回 None，而非崩溃: {schema}"
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from typing import Any
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.security import RiskLevel
 from app.integration.tools.validator import ParameterValidator
+from app.shared.json_schema import create_schema_validator
 
 # 模块级校验器单例（无状态）；与 executor 注入实例配置恒等（reject_unknown=True）
 _validator = ParameterValidator()
@@ -128,13 +129,18 @@ class BaseTool(ABC):
 
         Returns:
             OpenAI Tool Schema
+
+        Raises:
+            jsonschema.SchemaError: 参数 Schema 定义非法或版本不受支持。
         """
+        parameters = self.parameters
+        create_schema_validator(parameters)
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": parameters,
             },
         }
 
@@ -144,12 +150,17 @@ class BaseTool(ABC):
 
         Returns:
             OpenAI Response Schema
+
+        Raises:
+            jsonschema.SchemaError: 参数 Schema 定义非法或版本不受支持。
         """
+        parameters = self.parameters
+        create_schema_validator(parameters)
         return {
             "type": "function",
             "name": self.name,
             "description": self.description,
-            "parameters": self.parameters,
+            "parameters": parameters,
         }
 
     # ===== 参数校验（委托 jsonschema 校验器） =====

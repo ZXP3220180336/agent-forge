@@ -68,7 +68,7 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `register` | `(tool: BaseTool) -> None` | 注册工具；重名抛 `ValueError`，同时初始化统计 |
+| `register` | `(tool: BaseTool) -> None` | 注册工具；重名抛 `ValueError`，参数定义非法抛 `SchemaError`；注册成功后初始化统计 |
 | `unregister` | `(name: str) -> bool` | 注销工具及其统计与 per-tool 锁 |
 | `get` | `(name: str) -> BaseTool \| None` | 获取工具实例 |
 | `list_tools` | `() -> list[str]` | 列出全部已注册工具名 |

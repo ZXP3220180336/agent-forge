@@ -83,6 +83,8 @@ app/integration/
     └── milvus.py                 ← 空占位（待规划）
 ```
 
+本地结构化输出和工具参数统一采用[共享 JSON Schema 契约](../shared_doc/json_schema.md)；模型接口接受的 Schema 子集由供应商约束决定。
+
 ### 设计原则
 
 1. **Facade 模式**：`LLMService` / `ToolService` 是各自子系统唯一外部入口，内部组件不对外暴露
