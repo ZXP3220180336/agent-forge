@@ -15,7 +15,7 @@
 
 ## 验证与经验
 
-原实现的有效副本失效测试先复现 SchemaError 泄漏；修复后返回单个“Schema 定义无效”问题。独立复审对过宽优化补了普通及 URI 编码悬空引用的两项失败测试，再收窄优化条件；被覆盖子定义的非法关键字、旧方言及失效引用仍拒绝。直接消费入口定向 336 passed；最终全量结果见 [S-02](../../../docs/todo.md)。
+原实现的有效副本失效测试先复现 SchemaError 泄漏；修复后返回单个“Schema 定义无效”问题。独立复审对过宽优化补了普通及 URI 编码悬空引用的两项失败测试，再收窄优化条件；被覆盖子定义的非法关键字、旧方言及失效引用仍拒绝。直接消费入口定向 336 passed；最终全量结果见 [S-01/S-02](../../../docs/history/completed-work.md#s-01-schema-dialect)。
 
 P3-2 同步 `ToolService.register` 的 docstring 和组件方法表，明确 SchemaError；其注册行为未变化。
 

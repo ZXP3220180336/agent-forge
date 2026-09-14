@@ -1,57 +1,6 @@
 # 项目待办
 
-更新：2026-09-14。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
-
-## D-01：Agent Harness 讨论保存（2026-09-15）
-
-用户授权保存完整讲解及 Markdown/HTML，供后续模块完成后更新。本项独立于 S-01，不改变其实施状态。
-
-- [x] `docs/project/agent-harness.md`：保存理论架构、项目映射、模拟案例、实现边界、参考来源与更新约定。
-- [x] `docs/project/agent-harness.html`：保存交互图解，补齐完整讲解，作为 Markdown 的配套展示。
-- [x] `docs/README.md`、`docs/catalog.md`：增加导航；两种格式互链。
-- [x] 核查文件编码、链接、HTML 结构和项目文档对齐，回填评审。
-
-可选项：后续模块落地后按新证据更新原文；本次不刷新实现状态、不执行业务测试。用户随后已授权将本项文档独立提交 Git。
-
-评审（2026-09-15）：两种格式完整保存当次讲解，明确讨论日期、模拟案例及实现边界；Markdown 为正文，HTML 包含同文展示与原交互。UTF-8/LF、全部本地链接、HTML 唯一 ID 与五步交互入口检查通过；Node DOM 替身验证两种架构切换和五步案例通过（非浏览器视觉验证）；`scripts.verify_alignment` 与本次文档 `git diff --check` 通过。本项未改变源码、模块状态或部署路径，无需变更 ALIGNMENT；S-01 内容保持原样。
-
-## S-01：本地 JSON Schema 版本统一
-
-授权：用户已确认统一 Draft 2020-12、独立于 R1 实施。R1 已独立提交 `d2a5f44`；本轮复验 62 项通过。
-
-目标：相同本地 Schema 的版本语义不随结构化输出级别、ReAct 或工具入口变化；保留各模块额外字段策略和错误呈现方式。
-
-文件分工与步骤：
-
-- [x] 核查三个生产入口及官方 jsonschema 的显式 cls、check_schema、iter_errors 和嵌套 evolve 行为。
-- [x] `app/shared/json_schema.py`：共享无 I/O 的 2020-12 预检和校验器构建；检查根、子 Schema 与本地引用声明。缺省按 2020-12；其他声明拒绝；仅支持内嵌及 fragment 引用，不建设远程 Schema 获取。
-- [x] `structured_codec.py`、`structured.py`：全部错误与 fallback 代表错误使用同版本；非法 Schema 预检记 ERROR 后返回 None，零模型调用；保留回喂、日志摘要与副本语义。
-- [x] `react.py`：final_answer 注入前预检，配置错误抛 SchemaError，零模型调用；实例错误继续按既有协议回喂。
-- [x] `tools/validator.py`、`tools/base.py`：参数入口将 SchemaError 转问题列表；工具导出前预检，拒绝非法定义进入模型请求。
-- [x] `test_json_schema.py`、`test_generate_structured.py`、`test_react_strategy.py`、`test_tool_validator.py`：先建立失败测试，覆盖关键字差异、三级一致、零调用、嵌套声明、普通实例数据与错误出口。
-- [x] 共享组件说明及父导航、受影响模块说明/层 README、ALIGNMENT、横切 ADR 及索引：维护统一契约与历史替代范围。
-- [x] 定向、全量、独立审查、文档对齐与 diff 检查完成。独立提交与验证分开记录：当前迁移仍为工作区改动，尚未提交。
-
-Gate：E6/E8 检查配置错误与实例错误分离；E9 由三个真实跨层调用方证明共享纯函数必要；R1/R3/R5 核对非法定义零调用，合法定义原预算/usage/协议不变。可选项：多版本兼容、远程 Schema 注册与获取、format 断言、模型接口子集转换均不纳入。
-
-评审（2026-09-15）：实现与验证已完成。本轮修改前实测 `uv run pytest -q`：1166 passed、1 条第三方弃用警告；使用现有虚拟环境执行 `python -m scripts.verify_alignment` 与 `git diff --check` 通过。历史定向失败复现和独立审查证据见 [ADR-004](../adr/2026-09-14-json-schema-dialect.md)。本轮补记状态，不把尚未发生的 Git 提交记为完成。
-
-## S-02：Schema 预检成本修复（2026-09-15）
-
-授权：用户要求依次回填 S-01、修复 P2-1，并允许处理 P3-1 / P3-2。保留原方言、引用作用域、无 I/O、异常转换和未知字段契约。
-
-- [x] `docs/todo.md`：用本轮全量基线回填 S-01，拆分验证与提交事实。
-- [x] `tests/unit/test_json_schema.py`：先复现重复元校验次数，保护扩展目标和资源作用域边界；`app/shared/json_schema.py`：分离元校验与声明扫描，用本次调用内的覆盖集合免除重复元校验。
-- [x] 可选项 P3-1（本轮处理）：`tests/unit/test_tool_validator.py` 保护构建次数、被覆盖定义和异常出口；`app/integration/tools/validator.py` 原定义始终预检，仅有效 Schema 未变时复用校验器。
-- [x] 可选项 P3-2（本轮处理）：`app/integration/tools/tool_service.py` 补注册 SchemaError 文档字符串。
-- [x] `docs/shared_doc/json_schema.md`、`docs/integration_doc/tools_doc/validator.md` 同步实现机制，`docs/integration_doc/tools_doc/tool_service.md` 同步注册异常；新增根因 Issue 和所属索引，`docs/lessons.md` 记录可复用教训。
-- [x] 定向及全量测试、同机性能对比、独立复审、文档对齐和 diff 检查；回填评审。
-
-Gate：E6/E8；现有函数内提取职责，不新增抽象层，不修改调用、预算或资源生命周期。可变定义不跨调用缓存；工具执行链多入口校验和导出预检保持现有职责。
-
-评审：已完成。先失败复现为 10 failed / 123 passed；独立复审另发现包装新增字段修复悬空引用的问题，普通及 URI 编码场景先 2 failed，再收窄优化条件。最终定向 336 passed；`.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider` 全量 1204 passed、1 条已有第三方弃用警告。沙箱内默认及独立临时目录均出现 PermissionError，自动审批允许在沙箱外运行后全量通过。文档对齐、diff、UTF-8/LF 和新增链接检查通过。
-
-标准目标元校验不再随引用数重复：10 个引用/每定义 40 字段本机均值由 148.882 ms 降至 81.874 ms（约 45%）。根因与基准口径见 [SCHEMA-004](../issues/shared/json_schema/2026-09-15-repeated-meta-validation.md)；P3-1 的安全复用条件、异常出口修复和 P3-2 见 [TOOLS-053](../issues/integration/tools/2026-09-15-effective-schema-preflight.md)。未更改公开契约、模块路径、接线或状态，已核对父导航及 ALIGNMENT，无需改动。现有工作区改动保留，本轮未提交 Git。
+更新：2026-09-15。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
 <a id="refactoring-plan"></a>
 

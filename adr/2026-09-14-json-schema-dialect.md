@@ -41,5 +41,5 @@ format 断言、多版本、远程注册、供应商子集转换均为独立升�
 独立审查发现新实现的资源作用域误判、共享字典跨资源漏检及 evolve 沿用旧解析器问题，均补先失败测试再修复。
 改用规范库引用解析，工具针对收紧后 Schema 重新创建校验器。
 实施期复审另修三项：定义预检执行点移到注册入口（[TOOLS-051](../issues/integration/tools/2026-09-15-registry-schema-preflight.md)）；元校验的递归深度与指针穿越的底层 `TypeError` / `ValueError` 一并收编为 SchemaError，使失败契约只暴露一种异常（[SCHEMA-002](../issues/shared/json_schema/2026-09-15-deep-nesting-recursion.md)、[SCHEMA-003](../issues/shared/json_schema/2026-09-15-pointer-resolution-exception-leak.md)）；外部工具回滚按「已取得资源」而非「已注册」建名单，避免注册失败实例的资源无人释放（[TOOLS-052](../issues/integration/tools/2026-09-15-register-rollback-resource-leak.md)）。
-最终回归：全量 1166 passed，`verify_alignment` 与 `git diff --check` 通过。
-执行记录见 [S-01](../docs/todo.md)，当前映射见 [ALIGNMENT](../docs/ALIGNMENT.md)。
+最终回归：全量 1166 passed，`verify_alignment` 与 `git diff --check` 通过。后继 S-02 预检成本修复轮全量 1204 passed，两轮结果与提交见执行记录。
+执行记录见 [S-01/S-02](../docs/history/completed-work.md#s-01-schema-dialect)，当前映射见 [ALIGNMENT](../docs/ALIGNMENT.md)。

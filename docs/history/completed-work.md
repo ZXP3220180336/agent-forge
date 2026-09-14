@@ -1,8 +1,42 @@
 # 已完成工作的交接记录
 
-整理日期：2026-09-14。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
+整理日期：2026-09-15。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
+
+<a id="s-01-schema-dialect"></a>
+
+## 2026-09-15：本地 JSON Schema 版本统一（S-01/S-02）
+
+结构化输出、ReAct 最终答案与工具参数三级本地校验已统一为固定 Draft 2020-12，共享预检与校验器工厂集中在
+`app/shared/json_schema.py`：同一 Schema 的版本语义不再随入口变化，缺省即 2020-12，其他版本声明（含子
+Schema）拒绝，只支持内嵌及 fragment 引用，显式空 Registry 禁止远程获取。定义错误与实例错误分开——
+structured 记 ERROR 后返回 None，ReAct 注入 final_answer 前抛 `SchemaError`，工具校验转问题列表，工具
+导出直接抛 `SchemaError`。定义预检收敛在唯一注册入口 `ToolRegistry.register`，使内置装配的逐工具兜底与
+外部加载的文件级回滚各自生效；外部工具回滚名单按「已取得资源」而非「已注册」建立，注册失败实例的
+`on_load` 资源也被释放。
+
+用户后续复审另修两项：引用目标不再重复元校验（10 个引用/每定义 40 字段本机均值 148.9 → 81.9 ms，约
+45%）；`ParameterValidator.validate` 仅在有效 Schema 未变时复用原校验器。内置 Schema 当前都不含引用，
+预检成本主要落在外部扩展路径。
+
+决策见 [ADR-004](../../adr/2026-09-14-json-schema-dialect.md)；根因记录见
+[SCHEMA-001](../../issues/shared/json_schema/2026-09-14-reference-scope.md)～
+[SCHEMA-004](../../issues/shared/json_schema/2026-09-15-repeated-meta-validation.md) 与
+[TOOLS-051](../../issues/integration/tools/2026-09-15-registry-schema-preflight.md)～
+[TOOLS-053](../../issues/integration/tools/2026-09-15-effective-schema-preflight.md)；提交 `3d4a271`。
+本轮全量 1204 passed，`scripts.verify_alignment` 与 `git diff --check` 通过，唯一告警为既存
+Starlette/httpx 弃用提示。已知边界：声明旧方言的外部插件会在注册期被拒并回滚本文件，插件作者需迁移。
+
+<a id="d-01-agent-harness"></a>
+
+## 2026-09-15：Agent Harness 架构讲解保存（D-01）
+
+以 [Markdown 正文](../project/agent-harness.md)保存理论架构、项目映射、模拟案例、实现边界与更新约定，
+配套 [交互 HTML](../project/agent-harness.html)展示同文内容与原交互；两种格式互链并进入文档导航。
+文中「当前」指 2026-09-14 核查时点，后续模块落地后按新证据更新原文，不另建第二份状态表。
+
+未改变源码、模块状态或部署路径，无需变更 ALIGNMENT；本次未运行业务验证。提交 `a379ef1`。
 
 <a id="c-02-p0-design-history"></a>
 
@@ -127,6 +161,7 @@ LLM 包入口曾重导出内部子组件，与“LLMService 为消费方 Facade�
 
 | 批次 / 主题 | 现行记录 |
 | --- | --- |
+| Schema 方言统一与工具定义预检 | [方言统一 ADR](../../adr/2026-09-14-json-schema-dialect.md) · [SCHEMA-004](../../issues/shared/json_schema/2026-09-15-repeated-meta-validation.md) · [TOOLS-051](../../issues/integration/tools/2026-09-15-registry-schema-preflight.md) |
 | 最新 Guard 复审：计划形状、步骤判据、自查检查点 | [REASON-018](../../issues/domain/reasoning/2026-09-11-planner-plan-contract-shape.md) · [REASON-019](../../issues/domain/reasoning/2026-09-11-planner-step-success-extra-dimension.md) · [REASON-020](../../issues/domain/reasoning/2026-09-11-reflection-guard-checkpoint.md) |
 | 跨策略 Guard 与协议预算 | [REASON-016](../../issues/domain/reasoning/2026-09-10-cross-strategy-guard-priority.md) · [REASON-017](../../issues/domain/reasoning/2026-09-10-tool-protocol-retry-limit.md) |
 | 当前轮成果、清理窗口、超时来源、续接拒绝 | [REASON-012](../../issues/domain/reasoning/2026-09-09-deadline-current-round-progress.md) · [REASON-013](../../issues/domain/reasoning/2026-09-09-deadline-cleanup-grace.md) · [REASON-014](../../issues/domain/reasoning/2026-09-09-internal-timeout-misclassified-as-deadline.md) · [REASON-015](../../issues/domain/reasoning/2026-09-10-continuation-context-overflow-progress.md) |

@@ -20,6 +20,6 @@ Schema 不仅是字典，也依赖引用资源作用域。初版迁移误将字�
 ## 验证与经验
 
 `test_json_schema.py` 的资源作用域、缺失锚点及复用字典用例分别先失败；工具递归未知字段用例先失败。
-修复后六组定向测试 341 项通过，包括真实 ToolService 零执行测试。全量证据见 [S-01](../../../docs/todo.md)。
+修复后六组定向测试 341 项通过，包括真实 ToolService 零执行测试。全量证据见 [S-01/S-02](../../../docs/history/completed-work.md#s-01-schema-dialect)。
 变更 Schema 的根或包装策略时必须核对引用作用域，不能把字典相等或 validator 类型相同视作语义相同。
 正式契约见[共享说明](../../../docs/shared_doc/json_schema.md)，迁移取舍见 [ADR-004](../../../adr/2026-09-14-json-schema-dialect.md)。
