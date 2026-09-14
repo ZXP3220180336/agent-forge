@@ -12,7 +12,7 @@ import asyncio
 import pytest
 
 from app.config import settings
-from app.integration.tools.tool_service import ToolService
+from tests.tool_lifecycle import StandaloneToolService as ToolService
 from app.integration.tools.base import BaseTool, ToolResult
 
 

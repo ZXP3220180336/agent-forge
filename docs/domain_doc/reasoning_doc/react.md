@@ -52,6 +52,7 @@
 5. **上下文预算护栏**：模型下次调用前经 `ContextBudgetPort` 裁剪（轮次 + token 双层），防上下文膨胀
 6. **统一执行护栏**：每轮付费调用前和成功归账后通过 `_common.evaluate_guard` 检查取消、绝对 deadline 与累计成本；最终请求上下文超限进入同一类型化优先级
 7. **纯算法依赖方向**：只依赖 ports + shared + 标准库，收标量参数（非 `AgentContext`）——可独立测试、可被任意编排复用
+8. **运行与事实隔离**：`run_id/run_stop` 为每次 execute 的必填控制身份；每轮工具调用创建新 batch，每个合法 call 创建 operation，并在控制异常传播前接管当前事实
 
 ---
 
@@ -198,10 +199,15 @@ ReActStrategy.execute()（ReAct 主循环）
 
 ```python
 async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict], iteration: int,
-                             tool_timeout: int | None = None, tool_max_retries: int | None = None) -> AsyncGenerator[str]:
+                             tool_timeout: int | None = None, tool_max_retries: int | None = None,
+                             *, run_id: str, run_stop: asyncio.Event, workflow_id: str | None = None,
+                             cancel_event: asyncio.Event | None = None,
+                             parent_cancel_events: tuple[asyncio.Event, ...] = (),
+                             deadline: float | None = None,
+                             cleanup_deadline: float | None = None) -> AsyncGenerator[str]:
 ```
 
-`asyncio.gather` 并行执行所有工具（并发度由 ToolService 信号量 `agent_max_concurrent_tools` 限制），gather 保证结果顺序 = 输入顺序——OpenAI 兼容 API 要求 tool 消息与前置 assistant.tool_calls 的 `tool_call_id` 配对，顺序不能乱。并发 task 内只做执行不 yield 事件（避免事件交错）；SSE 事件只在主 generator 内按序 yield。工具参数 JSON 解析失败不静默用空参执行（会掩盖错误 / 可能触发副作用），构造失败 `ToolResult`（JSON_PARSE）走失败回喂。
+当前 Piece②仍由 `asyncio.gather` 并行执行所有工具，gather 保证结果顺序 = tool_calls 输入顺序。调用前为合法 call ID 创建同批次唯一 batch/operation 上下文并预登记 NOT_STARTED；Gateway 同步发布的事实由 `ToolBatchCollector` 按 revision 接管，批次退出时复制到策略。类型化控制异常先完成该快照接管再传播。并行兄弟清理、协议历史与终态提交将在 Piece⑤由 `ToolBatchRunner` 完成；当前实现不宣称这部分已闭环。
 
 ### ReActOutcome（结果载体）
 
@@ -270,9 +276,10 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
 | `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
-| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_tool_protocol_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, output_schema=None, stream_mode=True, cancel_event=None, baseline_usage=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；yield SSE 事件（reasoning/message/tool_call/tool_result/info/done），结果写入 `outcome`。`max_tool_protocol_retries`：三类工具协议修正共享的连续重试预算。`stream_mode`：True=流式 async_generate（默认，逐 token）；False=非流式 generate()（整条 reasoning/message 事件，后台子 Agent 无人订阅场景，Phase C）。`baseline_usage`：跨阶段复用方（planner 步骤子跑）注入调用方累计用量，仅参与成本判定、不进报告口径 |
-| `execute_tool_calls(tool_calls, messages, iteration, tool_timeout=None, tool_max_retries=None) -> AsyncGenerator[str]` | 异步生成器 | 工具并行执行原语（gather 保序 + 事件产出 + 记录；`tool_timeout`/`tool_max_retries` 透传 ToolGateway，None=走执行器全局）；现独立入口：`ReActAgent._execute_tool_calls` 转发（既有测试兼容）。Reflection / Planner 的收集 / 执行阶段复用完整 `execute`（[reflection.md](reflection.md) / [planner.md](planner.md)） |
+| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, run_id, run_stop, ..., workflow_id=None, parent_cancel_events=()) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；`run_id/run_stop` 必填，同实例并发 execute 明确拒绝；Planner/Reflection 子跑继承父 run 控制。其余预算与通道参数语义保持原契约 |
+| `execute_tool_calls(..., *, run_id, run_stop, workflow_id=None, cancel_event=None, parent_cancel_events=(), deadline=None, cleanup_deadline=None) -> AsyncGenerator[str]` | 异步生成器 | 为当前批次创建唯一 batch/operation 身份，强制向 Gateway 传 `call/facts`；调用 ID 缺失或同批重复时零真实工具请求；控制异常先接管 facts 再原样传播。并行兄弟收尾与最终历史提交仍属 C-02 Piece ⑤ |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
+| `tool_facts` | 只读属性 | 返回本次运行已接管事实的深复制元组；不会暴露策略内部列表或可变 `ToolResult.metadata` 引用 |
 
 **最小调用示例**：
 
@@ -284,6 +291,7 @@ messages = [{"role": "user", "content": "30C 转华氏"}]
 async for event in strategy.execute(
     "30C 转华氏", messages,
     max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=30.0,
+    run_id=run_id, run_stop=run_stop,
 ):
     yield event  # 转发 SSE 事件
 result = strategy.outcome  # ReActOutcome
@@ -299,6 +307,7 @@ result = strategy.outcome  # ReActOutcome
 4. **达到 `max_execution_time`**（None=不设限）→ `_finalize_guard_result(TIMEOUT)`：当前轮有可见进度时优先保留当前轮，否则用 `last_visible_result` 降级；异常携带 usage 优先且只归账一次。`last_visible_result` 仅由非空 content/reasoning 更新，未执行 tool_calls 不会覆盖已有成果。LLM 内部 deadline 提前预留有界清理窗口；只有 timeout scope `expired()` 才认定总执行超时，内部普通 `TimeoutError` 归 UNKNOWN；慢消费者关闭生成器时干净停止。`max_execution_time` 是业务循环的 task 取消触发点，领域终态分发和 done 生成位于 scope 外且不再发起 LLM/工具副作用；同步阻塞或吞取消扩展点不受绝对返回时限保证。
 5. **累计成本超限**（`agent_max_cost`，None=不启用）→ 每轮调用前检查基线 + 局部累计，调用后先归账再复查；超限走 `COST_EXCEEDED` 分发。`baseline_usage` 只参与判定、不进报告口径；与取消或 deadline 同时命中时遵守共享优先级
 6. **工具参数 JSON 解析失败** → 不执行工具：构造失败 ToolResult（JSON_PARSE）回喂模型自纠，`error`/`error_code` 进证据链
+7. **工具调用身份非法**（ID 缺失或当前批次重复）→ 在 assistant/tool 历史写入前按协议异常收编，真实 Gateway 调用为零
 7. **工具执行失败 / 无效工具名** → 回喂 `str(result)`（`"错误: <error>"`，无效工具含「未注册」），模型可感知失败自愈；`error` / `error_code` 进证据链
 8. **工具结果超长** → 截断（tool 消息 2000 字符 / 事件 200 字符）并追加 `[结果已截断]` 标记（预留标记长度，总长不超限）
 9. **reasoning_content 回喂** → DeepSeek V4 thinking + tools 必须回喂（否则 400）；`has_reasoning` 覆盖空 reasoning（空串也回喂），无信号不回喂（chat 模型）

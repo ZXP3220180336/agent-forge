@@ -8,6 +8,7 @@ ctx.max_refine_rounds→replan 预算 / 端到端 run / outcome None 兜底。
 generate_structured（plan/summarize）。
 """
 
+import asyncio
 import json
 
 import pytest
@@ -73,6 +74,8 @@ def _ctx(**kw) -> AgentContext:
     base = dict(
         session_id="sess_1",
         user_id="user_1",
+        run_id="run-planner",
+        run_stop=asyncio.Event(),
         max_iterations=5,
         temperature=0.2,
         max_tokens=1024,

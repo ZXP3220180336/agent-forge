@@ -243,9 +243,11 @@ Executor 内重试、上层模型再次调用、重启恢复是三个入口，�
 | 长时执行/跨重启继续编排 | 评估 Temporal 等持久工作流 | 记录事实不自动等于恢复 Agent；执行取消仍需协作，见 [Temporal](https://docs.temporal.io/develop/python/workflows/cancellation) |
 | 持续依赖故障 | 按真实共享范围限流、熔断、恢复探测 | 不以单对象失败触发全工具封禁 |
 
-## P0 实施规格（2026-09-13，规格完成待评审）
+<a id="tool-lifecycle-p0-spec"></a>
 
-本节冻结供实施评审的具体方案，尚未创建以下新代码。类名/路径是计划目标，不冒充现有组件；配置唯一见[配置规格](../../../docs/config_doc/config.md#tool-lifecycle-p0)，部署机制唯一见[部署规格](../../../docs/project/deployment.md#tool-lifecycle-p0)。P0 完成不等于 P1～P5 已授权或已实现。
+## P0 实施规格（2026-09-13；Piece ①、②已实现）
+
+本节冻结实施方案。Piece ①、②已创建调用边界、运行身份与事实接线；后续 Piece 的类名/路径仍是计划目标，不冒充现有组件。配置唯一见[配置规格](../../../docs/config_doc/config.md#tool-lifecycle-p0)，部署机制唯一见[部署规格](../../../docs/project/deployment.md#tool-lifecycle-p0)。已实现状态和验证映射以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 与 [todo](../../../docs/todo.md#c-02-implementation-pieces) 为准。
 
 ### S1 公开接口及事实所有权
 
@@ -399,7 +401,17 @@ P0-A/B 的接口和文件已定位；配置/部署初始值是实施规格选择
 
 ## 实现与验证证据
 
-本次只完成静态核实和设计记录。当前实现/接线状态仍以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 为准；不更新模块说明为未来签名，不复制历史测试通过数量。执行步骤、红测矩阵、待冻结实现细节与文档评审见 [todo](../../../docs/todo.md#c-02-lifecycle)。只有跨层测试与持久化/资源验证闭合后，才可标记本 ADR 已实施。
+Piece①已分离真实调用与后处理异常范围，并把工具重试改为适配器显式安全声明准入；详见
+[TOOLS-050](../../../issues/integration/tools/2026-09-14-executor-postprocessing-retry.md)。Piece②已落地
+`ToolCallContext`、`ToolFact`/`ToolFactSink`、`ToolBatchCollector` 与三类共享控制异常；Application
+创建 run 身份并贯穿 Agent、三种策略、Gateway 与 Integration，现有直接调用者及测试替身已迁移。
+同会话多 run 取消隔离、实例并发拒绝、控制优先级、事实先接管再传播和无效 call ID 零执行由
+专项及跨层测试验证，当前映射见 [ALIGNMENT](../../../docs/ALIGNMENT.md)。
+
+以上只证明 Piece①、②的进程内接口和纵向接线。共享公平准入、真实线程/进程句柄、迟到事实
+监管与释放、并行兄弟有界收尾、最终协议历史和持久恢复仍分别属于 Piece③～⑧；在对应真实
+资源和存储测试闭合前，不宣称交付 A/B 或整份 ADR 已全部实施。后续进度与验收命令见
+[todo](../../../docs/todo.md#c-02-implementation-pieces)。
 
 ## 关联及历史条款承接
 

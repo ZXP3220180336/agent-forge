@@ -14,13 +14,15 @@ import pytest
 
 from app.domain.ports.tool_gateway import ErrorCode
 from app.integration.tools.base import BaseTool, ToolResult
-from app.integration.tools.executor import ToolExecutor
+from tests.tool_lifecycle import (
+    StandaloneToolExecutor as ToolExecutor,
+    StandaloneToolService as ToolService,
+)
 from app.integration.tools.hooks import ExecutionHooks
 from app.integration.tools.registry import ToolRegistry
 from app.integration.tools.result_processor import ResultProcessor
 from app.integration.tools.security import RiskLevel, ToolAuditor
 from app.integration.tools.stats import ToolStatsCollector
-from app.integration.tools.tool_service import ToolService
 
 
 class _ConcurrentTool(BaseTool):

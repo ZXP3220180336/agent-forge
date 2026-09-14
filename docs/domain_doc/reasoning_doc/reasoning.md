@@ -58,6 +58,7 @@ app/domain/reasoning/
 ```text
 BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
     ├── ReActStrategy（✅ react.py；executor.py 桥接）
+    ├── ToolBatchCollector（✅ tool_batch.py；批次事实快照）
     ├── ReflectionStrategy（✅ reflection.py；agent/reflection.py 桥接）
     ├── PlannerStrategy（✅ planner.py；agent/planner.py 桥接）
     ├── Chain-of-Thought（预留，本模块）

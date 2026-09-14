@@ -25,14 +25,17 @@ Plan-then-Execute 单 Agent 编排：规划（生成依赖步骤）→ 执行（
 """
 
 import asyncio
+import copy
 import time
 from collections.abc import AsyncGenerator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
+from app.domain.ports.tool_execution import ToolFact
 from app.domain.ports.tool_gateway import ToolGateway
 from app.domain.prompts.manager import PromptManager
 from app.shared.error_handling import (
@@ -47,7 +50,13 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError, ContextWindowExceededError
 
-from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage
+from ._common import (
+    GuardResult,
+    dispatch_error,
+    evaluate_guard,
+    merge_usage,
+    reject_concurrent_runs,
+)
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -234,11 +243,18 @@ class PlannerStrategy:
         self._summarize_model_key = summarize_model_key
         # 结果载体，execute() 结束后读取
         self.outcome: PlannerOutcome | None = None
+        self._tool_facts: list[ToolFact] = []
+
+    @property
+    def tool_facts(self) -> tuple[ToolFact, ...]:
+        """返回本 run 所有步骤及中断子跑已经接管的事实快照。"""
+        return tuple(copy.deepcopy(self._tool_facts))
 
     # ==================================================================
     # execute 主流程
     # ==================================================================
 
+    @reject_concurrent_runs
     async def execute(
         self,
         user_input: str,
@@ -247,6 +263,8 @@ class PlannerStrategy:
         max_iterations: int,
         temperature: float,
         max_tokens: int,
+        run_id: str,
+        run_stop: asyncio.Event,
         max_execution_time: float | None = None,
         max_context_rounds: int | None = None,
         max_context_tokens: int | None = None,
@@ -259,6 +277,8 @@ class PlannerStrategy:
         tool_max_retries: int | None = None,
         stream_mode: bool = True,
         cancel_event: asyncio.Event | None = None,
+        workflow_id: str | None = None,
+        parent_cancel_events: tuple[asyncio.Event, ...] = (),
     ) -> AsyncGenerator[str]:
         """
         Planner 主流程：规划 → 执行 → 汇总（三阶段显式分离）。
@@ -276,6 +296,8 @@ class PlannerStrategy:
             SSE 事件字符串（阶段 info + 步骤 tool 事件透传 + 收尾 done）
         """
         # 每次 execute 独立：重置全部累计态
+        self.outcome = None
+        self._tool_facts = []
         self._structured_usage: dict = {}  # 结构化调用（plan/replan/summarize）用量
         self._react_total_usage: dict = {}  # 各步/兜底 react 用量累计
         self._step_llm_iterations: int = 0  # 各步 react.iterations 之和
@@ -318,7 +340,7 @@ class PlannerStrategy:
             baseline_usage——子跑内每轮即按累计成本检查（对齐 cost-limit ADR「调用后
             立即检查」），子跑中途累计越界在越界轮停，报告口径仍局部（_absorb_react
             各归并一次，防双计）。"""
-            async for event in self._react.execute(
+            child = self._react.execute(
                 text,
                 sub_messages,
                 max_iterations=max_iterations,
@@ -342,10 +364,20 @@ class PlannerStrategy:
                 baseline_usage=merge_usage(
                     self._react_total_usage, self._structured_usage
                 ),
-            ):
-                if f'"type": "{AgentEventType.DONE.value}"' in event:
-                    continue
-                yield event
+                run_id=run_id,
+                run_stop=run_stop,
+                workflow_id=workflow_id,
+                parent_cancel_events=parent_cancel_events,
+            )
+            try:
+                async with aclosing(child):
+                    async for event in child:
+                        if f'"type": "{AgentEventType.DONE.value}"' in event:
+                            continue
+                        yield event
+            finally:
+                # 下一步骤会重置子策略；父 run 必须先接管，包括异常/关闭出口。
+                self._tool_facts.extend(self._react.tool_facts)
 
         # ── 阶段 A：规划（进度事件前置，发起付费调用前统一终止/成本护栏）──
         yield build_info_event("进入规划阶段")
@@ -421,8 +453,9 @@ class PlannerStrategy:
                 return
             yield build_info_event(f"规划失败{suffix}，降级为直接 ReAct")
 
-            async for event in _run_react(user_input, list(messages)):
-                yield event
+            async with aclosing(_run_react(user_input, list(messages))) as child:
+                async for event in child:
+                    yield event
 
             rb = self._react.outcome
             self._absorb_react(rb)
@@ -483,8 +516,9 @@ class PlannerStrategy:
             step = pending.pop(0)
             yield build_info_event(f"执行步骤 {step['id']}: {step['description'][:60]}")
             sub_messages = self._step_messages(goal, step, executed, messages)
-            async for event in _run_react(step["description"], sub_messages):
-                yield event
+            async with aclosing(_run_react(step["description"], sub_messages)) as child:
+                async for event in child:
+                    yield event
 
             # 子跑返回后先吸收其真实成果、usage 与迭代，再按统一优先级决定是否继续。
             sub = self._react.outcome

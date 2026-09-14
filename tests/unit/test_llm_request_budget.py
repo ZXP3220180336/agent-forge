@@ -915,6 +915,8 @@ async def test_llm_call_log_failure_does_not_override_completed_stream(
         temperature=0.2,
         max_tokens=20,
         max_execution_time=5.0,
+        run_id="run-log-failure",
+        run_stop=asyncio.Event(),
     ):
         pass
 
@@ -961,6 +963,8 @@ async def test_continuation_context_overflow_keeps_current_result_and_usage(
         temperature=0.2,
         max_tokens=20,
         max_execution_time=5.0,
+        run_id="run-continuation-overflow",
+        run_stop=asyncio.Event(),
     ):
         events.append(event)
 
@@ -1011,6 +1015,8 @@ async def test_react_deadline_completes_real_stream_cleanup_before_hard_timeout(
             temperature=0.2,
             max_tokens=20,
             max_execution_time=0.5,
+            run_id="run-cleanup-before-wall",
+            run_stop=asyncio.Event(),
         ):
             pass
 
@@ -1055,6 +1061,8 @@ async def test_react_hard_timeout_cancels_slow_close_and_finally_settles(
             temperature=0.2,
             max_tokens=20,
             max_execution_time=0.5,
+            run_id="run-hard-timeout-cleanup",
+            run_stop=asyncio.Event(),
         ):
             pass
 

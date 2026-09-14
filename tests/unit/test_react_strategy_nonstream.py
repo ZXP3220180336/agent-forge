@@ -123,6 +123,8 @@ def _typed(events: list[str], event_type: str) -> list[dict]:
 
 async def _run(strategy, messages, **kw):
     """收集 execute 全部事件（缺省护栏参数默认）。"""
+    kw.setdefault("run_id", "run-react-nonstream-test")
+    kw.setdefault("run_stop", asyncio.Event())
     events = []
     async for ev in strategy.execute(
         "测试输入",

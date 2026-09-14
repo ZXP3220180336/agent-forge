@@ -76,7 +76,7 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 | `list_by_category` | `(category: str) -> list[BaseTool]` | 按功能域过滤（预留管理界面） |
 | `get_openai_tools` | `() -> list[dict]` | OpenAI Tool Schema（经选择器） |
 | `get_openai_responses` | `() -> list[dict]` | OpenAI Response Schema（全量） |
-| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0) -> ToolResult` | 入口先做外部工具惰性检查，再信号量内执行（见下方流程） |
+| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0, *, call, facts) -> ToolResult` | `call/facts` 必填；入口先做外部工具惰性检查，再委托 Executor |
 | `get_stats` | `(name=None) -> dict \| ToolStats \| None` | 单工具或全量统计 |
 | `get_all_stats_summary` | `() -> dict` | 总调用 / 总成功 / 总失败 / 总成功率 / 各工具详情 |
 | `add_execution_hook` | `(hook: Callable) -> None` | 注册执行钩子 `async def hook(tool_name, parameters, result)` |
@@ -141,6 +141,8 @@ result = await container.tool_service.execute(
     parameters={"query": "良率 RCA 案例"},
     timeout=30,
     max_retries=3,
+    call=call_context,
+    facts=batch_collector,
 )
 print(result.success, result.content, result.execution_time, result.retry_count)
 
@@ -165,7 +167,7 @@ registered = container.tool_service.init_default_tools()
 await container.tool_service.refresh_external_tools()
 ```
 
-> 实际调用方：`app/domain/agent/executor.py`（ReActAgent 并行执行工具）、`app/api/routes/chat.py`（构造 ReActAgent 时注入 `tool_service`）。
+> 实际执行调用方：`app/domain/reasoning/react.py`，由 ReActAgent 及 Planner/Reflection 子 ReAct 间接消费；chat 路由创建 run 身份并把 `tool_service` 注入 Agent。
 
 ---
 

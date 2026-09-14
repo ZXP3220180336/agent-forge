@@ -1,5 +1,8 @@
 import asyncio
+import uuid
 
+from app.domain.ports.tool_execution import ToolCallContext
+from app.domain.reasoning.tool_batch import ToolBatchCollector
 from app.integration.tools.tool_service import ToolService
 from app.integration.tools.base import BaseTool
 from app.integration.tools.builtin import SearchTool
@@ -13,7 +16,20 @@ async def demo():
     reg.register(SearchTool())
 
     # 2. 执行工具
-    result = await reg.execute("search", {"query": "Python asyncio 教程"})
+    suffix = uuid.uuid4().hex
+    result = await reg.execute(
+        "search",
+        {"query": "Python asyncio 教程"},
+        call=ToolCallContext(
+            run_id=f"script-run-{suffix}",
+            batch_id=f"script-batch-{suffix}",
+            tool_call_id=f"script-call-{suffix}",
+            operation_id=f"script-operation-{suffix}",
+            cancel_events=(asyncio.Event(),),
+            run_stop=asyncio.Event(),
+        ),
+        facts=ToolBatchCollector(),
+    )
     print(result.content)
 
     # 3. 查看统计

@@ -238,7 +238,10 @@ AppError（根，code 默认 INTERNAL）
 │   ├── CircuitBreakerOpenError     code=CIRCUIT_OPEN
 │   └── ParameterValidationError    code=VALIDATION（多重继承 ValueError）
 │   ├── LLMCancelledError           code=LLM_CANCELLED
-│   └── LLMDeadlineExceededError    code=LLM_DEADLINE
+│   ├── LLMDeadlineExceededError    code=LLM_DEADLINE
+│   ├── ToolCancelledError          code=TOOL_CANCELLED
+│   ├── ToolDeadlineExceededError   code=TOOL_DEADLINE
+│   └── ToolRunStoppedError         code=TOOL_RUN_STOPPED
 ├── BusinessError        业务边界：具名短路，调用方差异化处理
 │   ├── StructuredExtractionError   中间基类
 │   │   ├── StructuredTruncationError   code=LLM_TRUNCATED
@@ -268,8 +271,11 @@ AppError（根，code 默认 INTERNAL）
 | `LLMAPIError` | `NonRetryableError` | `LLM_API_ERROR` | LLM 下游不可恢复（openai APIStatusError 归一：4xx/认证/响应校验，携带 status_code） | 领域层 `except AppError` 统一兜底（Reflection 自查/修正降级）；error_handler 转 502 |
 | `LLMCancelledError` | `NonRetryableError` | `LLM_CANCELLED` | `cancel_event` 在 LLM 调用内部触发；Facade 翻译私有取消信号并携带已取得的 `usage` | 领域层终结当前执行为 CANCELLED，不按传输失败重试 |
 | `LLMDeadlineExceededError` | `NonRetryableError` | `LLM_DEADLINE` | LLM monotonic 绝对 deadline 耗尽；Facade 翻译私有期限信号并携带已取得的 `usage` | 领域层终结当前执行为 TIMEOUT，不归类为可重试网络超时 |
+| `ToolCancelledError` | `NonRetryableError` | `TOOL_CANCELLED` | 工具调用任一适用的父/本运行取消信号已置位 | Integration 先发布可得事实，再选择性传播；不得进入普通工具失败重试 |
+| `ToolDeadlineExceededError` | `NonRetryableError` | `TOOL_DEADLINE` | 工具调用的 monotonic 绝对 deadline 已到 | 同上；局部 attempt timeout 仍返回 `ToolResult(ErrorCode.TIMEOUT)`，不得混用 |
+| `ToolRunStoppedError` | `NonRetryableError` | `TOOL_RUN_STOPPED` | 所属 run 已关闭新业务调用准入 | 保存已接管事实后停止该 run，不归类为 `TOOL_FAILED` 的可继续路径 |
 
-> **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。`LLMAPIError` 由集成层 `llm_service.generate` 边界经 `normalize_transport_error` 包装 openai 不可恢复异常产生（`raise ... from e` 保留原始异常）；`LLMCancelledError` / `LLMDeadlineExceededError` 由同一 Facade 经 `errors.translate_abort` 翻译私有执行终止信号产生。
+> **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。LLM 两类终止由 Facade 翻译私有信号；工具三类终止直接是 Domain 可识别的共享类型，仅携 `run_id`、`operation_id` 与可选诊断引用，事实保存在独立 `ToolFactSink`，不复制进异常。
 > **对外边界**：`app/api/middleware/error_handler.py` 把 `AppError` 翻译为 HTTP 状态 + 统一 `{code, message, details}` 信封（业务码与 HTTP 状态解耦，映射表见该模块）——API 层不抛 `HTTPException`，全走统一树。
 > **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类，契约与实现同属 `app/integration/llm/errors.py`）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，14 类：终结性默认 STOP / 可恢复默认 CONTINUE，ErrorHandlerRegistry 消费；含 Reflection `CRITIQUE_FAILED` 与 Planner `PLAN_FAILED` 两个策略专属 kind）。
 

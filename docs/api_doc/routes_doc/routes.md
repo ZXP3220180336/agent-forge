@@ -1,7 +1,7 @@
 # 路由模块对外接口文档
 
 > **对应代码**：`app/api/routes/`
-> **更新日期**：2026-08-29
+> **更新日期**：2026-09-14
 > **文档定位**：路由模块对外接口文档——端点契约（请求 / 响应模型 / 认证 / 异常）+ 内部组件导航；服务对象为路由的外部调用方（客户端 / 前端）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：错误信封经 [middleware.md](../middleware_doc/middleware.md)（error_handler）；SSE 帧格式见 [events.md](../../shared_doc/events.md)；层总览见 [README.md](../README.md)
@@ -66,7 +66,7 @@ app/api/routes/
 ### 设计原则
 
 1. **无状态路由**：路由函数不持有跨请求状态，所有依赖（用户、服务）通过 FastAPI 依赖注入按请求获取
-2. **Agent 无状态化**：每次请求新建 `ReActAgent` 实例，上下文通过 `AgentContext` 传入，避免 Agent 跨请求状态污染
+2. **Agent 运行隔离**：每次请求新建 `ReActAgent` 实例并传入唯一 `run_id` 的 `AgentContext`；实例持有运行期结果，禁止跨请求并发复用
 3. **鉴权前置**：每个受保护端点都注入 `get_current_user`，并在访问会话前校验 `user_id` 归属（403 无权访问）
 4. **统一错误语义**：路由不抛 `HTTPException`，抛统一异常树（`AppError` 子类），由 error_handler 翻译为信封（见 [middleware.md](../middleware_doc/middleware.md)）
 
@@ -178,11 +178,12 @@ Authorization: Bearer <token>
 2. **保存用户消息**：`session_manager.add_message(role="user", content=message, token_count=context_manager.count_tokens(message))`，token 数由 ContextManager 经 `LLMGateway` 的计数能力统计（实现细节见 [token_counter.md](../../integration_doc/llm_doc/token_counter.md)）
 3. **构建上下文**：`context_manager.build_messages(session_id, user_message)` 组装发送给 LLM 的消息序列
 4. **定义流式生成器 `generate()`**：
-   - 新建 `AgentContext`（身份、模型参数、执行/上下文护栏及各类重试上限来自 `get_agent_params`，请求体可在 1..100 内覆盖 `max_iterations`）与 `ReActAgent(llm=llm_service, tools=tool_service, context_budget=context_manager)` —— **Agent 无状态**，每次请求新建实例
+   - Application 为本次请求生成唯一 `run_id`，按 `run_id` 登记取消事件，并创建只属于该运行的 `run_stop`；同一会话可以同时登记多个 run
+   - 新建 `AgentContext`（携带 `run_id`、`run_stop`、模型参数、执行/上下文护栏及各类重试上限）与 `ReActAgent(llm=llm_service, tools=tool_service, context_budget=context_manager)`；Agent/策略持有运行期可变结果，因此每次请求创建独立实例，禁止并发复用同一实例
    - `async for event in task_service.run_agent(user_input, messages, context, agent)` 驱动 ReAct 闭环（LLM 思考 → 工具调用 → LLM 总结），并**在任务级并发信号量 `agent_max_concurrent_tasks` 保护下运行**
    - 每个事件 `yield` 给 `StreamingResponse` 逐帧推送
    - 异常兜底：捕获异常后 `yield build_error_event(...)`，错误以 SSE 事件透出而非中断连接
-   - `finally`：先 `yield "data: [DONE]\n\n"` 收尾，再从 `agent.result` 取最终答复，非空时 `session_manager.add_message(role="assistant", content=..., reasoning_content=..., token_count=...)` 持久化
+   - `finally`：先 `yield "data: [DONE]\n\n"` 收尾，再按 `run_id` 释放自己的取消登记；最后从 `agent.result` 取最终答复，非空时 `session_manager.add_message(role="assistant", content=..., reasoning_content=..., token_count=...)` 持久化
 5. **返回 `StreamingResponse`**：`media_type="text/event-stream"`
 
 **依赖注入**（5 个服务 + 1 个参数 + 用户）：
@@ -197,7 +198,7 @@ Authorization: Bearer <token>
 | `get_task_service` | 在任务级并发约束下运行 Agent |
 | `get_agent_params` | 提供 Agent 运行参数（模型参数、执行/上下文护栏、空输出/LLM 失败/工具协议修正/停滞上限） |
 
-> ✅ **客户端被动断连自动取消**：`send` 流式生成逐事件轮询 `request.is_disconnected()`——客户端关页 / 刷新 / 断网时自动置位会话取消事件（与 `/chat/stop` 同一优雅取消路径），停止向断连端推送、Agent 在轮次边界收尾（不再发起新 LLM 调用 / 工具），防空转烧钱；流结束照常清理注册表与结算。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
+> ✅ **客户端被动断连自动取消**：`send` 流式生成逐事件轮询 `request.is_disconnected()`——客户端关页 / 刷新 / 断网时调用 `cancel_session(session_id)`，置位该会话当时登记的全部运行取消事件；停止向断连端推送并继续排水，让 Agent 在控制边界收尾。每个生成器最终只释放自己的 `run_id` 登记，不会误删同会话兄弟运行。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
 
 #### `POST /api/chat/stop` — 停止生成
 
@@ -205,7 +206,7 @@ Authorization: Bearer <token>
 
 处理流程：会话验证与授权（404 / 403，同 `chat/send`）→ `task_service.cancel_session(session_id)` 置位会话取消事件 → 返回 `{"message": "已发送停止信号", "cancelled": bool}`。
 
-> ✅ **真实优雅取消**：`/chat/stop` 置位 `TaskService` 的会话取消事件（`cancel_event`），运行中的 Agent 在轮次边界感知取消 → `CANCELLED` 分发（优雅停止，不硬中断、保留部分进度）；send 请求结束清理注册表。`cancelled=false` 表示该会话当前无运行任务。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
+> ✅ **会话级停止**：`/chat/stop` 保留对外 session 语义，内部置位该会话全部活动 run 的取消事件；一个 run 自然结束只清理自己的登记。工具调用还携带所属 run 的 `run_stop`，该信号只关闭该 run 的新工具准入。`cancelled=false` 表示该会话当前无活动运行。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
 
 ### 对外异常契约
 

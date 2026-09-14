@@ -67,7 +67,7 @@ app/api/
 
 1. **薄路由**：路由函数只做「参数校验 → 服务编排 → 响应组装」，业务逻辑下沉服务层，不承载领域实现
 2. **依赖倒置注入**：服务经 `deps.py` 从 `container` 全局单例按请求注入，路由内不直接实例化
-3. **Agent 无状态化**：每次请求新建 `ReActAgent` 实例，上下文经 `AgentContext` 传入
+3. **Agent 运行隔离**：每次请求新建 `ReActAgent` 实例，上下文携带唯一 `run_id`；实例持有运行期结果，不并发复用
 4. **鉴权前置**：受保护端点注入 `get_current_user`，访问会话前校验 `user_id` 归属（403）
 5. **统一错误语义**：API 层不抛 `HTTPException`，全走统一异常树（`AppError`），error_handler 在对外边界翻译
 

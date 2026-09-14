@@ -31,7 +31,7 @@
 
 ### 核心功能
 
-领域端口契约是领域层**拥有的抽象契约**（依赖倒置）——领域层 Agent / 推理策略只依赖这些 Protocol，不感知集成层实现。5 个端口覆盖领域层对外的全部依赖面：LLM 调用（含成本估算 / Token 计量）、工具执行、上下文预算、成本上限、文本向量化。
+领域端口契约是领域层**拥有的抽象契约**（依赖倒置）——领域层 Agent / 推理策略只依赖这些 Protocol，不感知集成层实现。端口覆盖 LLM、工具、上下文预算、成本上限和文本向量化；`tool_execution.py` 另提供工具调用身份、控制信号与事实入口的领域值契约。
 
 ### 模块结构
 
@@ -40,6 +40,7 @@ app/domain/ports/
 ├── __init__.py          # 子包导出（5 端口 + 结果载体）
 ├── llm_gateway.py       # LLMGateway / StreamResult —— LLM 调用 + 成本估算 + Token 计量契约
 ├── tool_gateway.py      # ToolGateway / ToolResult / ErrorCode —— 工具执行契约
+├── tool_execution.py    # ToolCallContext / ToolFact / ToolFactSink —— 工具生命周期契约
 ├── context_budget.py    # ContextBudgetPort —— 上下文预算管理（横切）
 ├── cost_limiter.py      # CostLimiterPort —— 成本上限护栏（横切）
 └── embedding_port.py    # EmbeddingPort —— 文本向量化
@@ -107,7 +108,7 @@ LLM 调用契约（流式 / 非流式 / 结构化 / 成本估算 / Token 计量�
 | 方法 | 签名 | 返回 | 说明 |
 | --- | --- | --- | --- |
 | `get_openai_tools` | `()` | `list[dict[str, Any]]` | 导出全部工具为 OpenAI tool schema（供 LLM 调用注入） |
-| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0)` | `ToolResult` | 执行单个工具（参数为 dict 或 JSON 字符串） |
+| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0, *, call, facts)` | `ToolResult` | 执行单个工具；`call` 和 `facts` 必填且仅关键字传入，不静默创建无归属运行 |
 
 **`ToolResult`（执行结果载体）**：
 
@@ -119,8 +120,18 @@ LLM 调用契约（流式 / 非流式 / 结构化 / 成本估算 / Token 计量�
 | `metadata` | `dict \| None` | 扩展元数据 |
 | `execution_time` | `float \| None` | 执行耗时（秒） |
 | `retry_count` | `int` | 重试次数 |
+| `effect_state` | `ToolEffectState` | 外部效果确定性；默认 `UNKNOWN`，可信只读适配器可声明 `NONE` |
 
 **`ErrorCode`（系统级错误码，StrEnum）**：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数解析失败）/ `VALIDATION`（参数校验失败）/ `REJECTED`（审批拒绝）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。
+
+### 工具运行上下文与事实
+
+**文件**：[tool_execution.py](../../../app/domain/ports/tool_execution.py)
+
+- `ToolCallContext` 冻结 run/batch/call/operation 身份，携父级与本运行取消事件、同运行 `run_stop`、业务 deadline 和 cleanup deadline。四个身份字段必须非空，期限采用当前进程 monotonic 时刻。
+- `ToolFact` 以 revision 表达一次 operation/attempt 的事实演进，分别记录执行、效果和清理状态；其 `ToolResult` 与 metadata 在构造时复制，不暴露工具后处理仍可修改的引用。
+- `ToolFactSink.record()` 是同步无 I/O 入口。Integration 先持有自己的事实副本，再通知 Domain 收集器；入口异常按编程错误传播并关闭所属 run 的新业务准入。
+- `ToolCancelledError`、`ToolDeadlineExceededError`、`ToolRunStoppedError` 定义在 shared，不反向依赖 Domain；局部工具 timeout 继续返回 `ToolResult(ErrorCode.TIMEOUT)`。
 
 ### `ContextBudgetPort`
 

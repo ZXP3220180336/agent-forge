@@ -7,6 +7,7 @@
 from collections.abc import Callable
 from typing import Any
 
+from app.domain.ports.tool_execution import ToolCallContext, ToolFactSink
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.assembler import ToolAssembler
 from app.integration.tools.base import BaseTool
@@ -116,6 +117,9 @@ class ToolService:
         timeout: int | None = None,
         max_retries: int | None = None,
         retry_delay: float = 1.0,
+        *,
+        call: ToolCallContext,
+        facts: ToolFactSink,
     ) -> ToolResult:
         """执行工具（信号量 + 参数验证 + 自动重试 + 超时 + 统计 + 截断 + 审计 + 钩子）。
 
@@ -128,6 +132,8 @@ class ToolService:
             timeout=timeout,
             max_retries=max_retries,
             retry_delay=retry_delay,
+            call=call,
+            facts=facts,
         )
 
     async def refresh_external_tools(self) -> None:

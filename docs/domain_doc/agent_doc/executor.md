@@ -58,6 +58,8 @@
 | 场景 | 处理 |
 | --- | --- |
 | `AgentContext` 未设置 | `_strategy_cycle` 抛 `RuntimeError` |
+| run 身份透传 | 三种 Agent 桥接把 `run_id`、`run_stop`、workflow 与父取消信号原样传给策略；子 ReAct 不创建新 run |
+| 实例并发复用 | BaseAgent 在第二个并发 `run()` 入口明确拒绝，避免 `_context/outcome` 互相覆盖 |
 | 策略未产出结果（`outcome is None`） | `_map_outcome` 返回失败 `AgentResult`（`success=False` + `error`） |
 | LLM 调用失败 | 经策略短路返回失败结果（LLM-001，见 react.md 行为边界） |
 | `ctx.stream_mode=False`（非流式通道） | 经 `_strategy_cycle` 透传策略走非流式 `generate()` 通道（一次拿完整结果，reasoning/message 整条事件），面向后台子 Agent（Phase C）；默认 `True` 流式行为不变 |
@@ -72,7 +74,10 @@
 from app.domain.agent import AgentContext, ReActAgent
 
 agent = ReActAgent(llm=llm_service, tools=tool_service)
-ctx = AgentContext(session_id="sess_001", user_id="user_001")
+ctx = AgentContext(
+    session_id="sess_001", user_id="user_001",
+    run_id=run_id, run_stop=run_stop,
+)
 async for event in agent.run("查询良率", messages, ctx):
     yield event  # 转发 SSE 事件
 result = agent.result  # AgentResult

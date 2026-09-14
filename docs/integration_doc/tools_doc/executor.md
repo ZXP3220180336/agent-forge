@@ -49,7 +49,9 @@
 
 ### 重试与超时
 
-`asyncio.wait_for(tool.execute(...), timeout)` 包裹每次尝试；重试循环上界为 `range(max_retries)`（`max_retries` 实为**最大执行次数**，含首次；`max_retries=0` clamp 为一次）。失败后只有 `BaseTool.can_retry(result_or_error)` 显式返回 True 且仍有次数时，才退避 `retry_delay * 2^attempt`。默认 `can_retry=False`，次数余额不会单独授权重复执行；参数校验失败、未注册、JSON 解析失败直接返回。
+`asyncio.wait_for(tool.execute(...), timeout)` 包裹每次尝试；重试循环上界为 `range(max_retries)`（`max_retries` 实为**最大执行次数**，含首次；`max_retries=0` clamp 为一次）。每个 attempt 建立独立身份并发布 RUNNING→终局事实。失败后只有 `BaseTool.can_retry(result_or_error)` 显式返回 True 且仍有次数时，才退避 `retry_delay * 2^attempt`。默认 `can_retry=False`，次数余额不会单独授权重复执行；参数校验失败、未注册、JSON 解析失败直接返回。
+
+全局控制按取消→绝对 deadline→run_stop 检查。执行前命中时先保留 NOT_STARTED 事实再抛 shared 类型化异常；执行返回后先发布结果事实再复查，取消不会抹除已发生结果。事实发布顺序固定为 Integration 自有深副本→Domain sink；sink 编程错误会置位该 run 的 stop 信号并原样传播。
 
 真实调用返回后即退出调用异常分类范围。成功结果的展示截断在副本上执行；截断失败保留原结果，不触发工具重放。统计、Hook、审计属于非关键观测，失败不覆盖结果；异步 Hook 与审计受单次观察预算约束，Hook 只能接收独立快照。
 
@@ -86,7 +88,8 @@ ToolExecutor（依赖注入，无 settings 直接依赖）
 ## 执行流程
 
 ```text
-execute(name, parameters, timeout, max_retries, retry_delay)
+execute(name, parameters, timeout, max_retries, retry_delay, *, call, facts)
+  0. 保存 NOT_STARTED 快照；检查 cancel → deadline → run_stop
   async with _tool_semaphore                # 工具级并发信号量
     1. 查工具：未注册 → 审计（保留原始名，risk 兜底 L0）→ 返回 "工具 '...' 未注册"
     2. 解析执行参数：timeout = 调用方显式 or tool.timeout（自声明）or 全局 tool_timeout
@@ -99,12 +102,14 @@ execute(name, parameters, timeout, max_retries, retry_delay)
        · 拒绝 → 审计 → 返回 "工具调用被拒绝：等待人工审批"（默认 AutoApprovalGate 放行）
     6. 执行（concurrency_safe=False 时 per-tool 锁串行化）：
        重试循环 for attempt in range(max_retries)：
+       · 创建 attempt_id，发布 RUNNING
        · asyncio.wait_for(tool.execute(**parameters), timeout)
        · 成功 → 接管原结果并填 execution_time / retry_count
               → 在副本上截断 → 统计 → 返回处理后结果或原结果
        · 返回失败 / 超时 / 异常 → 记 error（normalize_error）→ 统计
        · can_retry=True 且 attempt 尚有余额 → 退避 asyncio.sleep(retry_delay * 2^attempt)
-    7. 在剩余观察预算内先审计最终结果；成功时再通知快照 Hook → 返回
+    7. 在剩余观察预算内先审计最终结果；成功时再通知快照 Hook
+    8. 发布 operation 终局或 UNKNOWN/PENDING 事实；复查控制 → 返回或类型化终止
 ```
 
 **统计记录时机**：每次真实尝试（成功 / 失败 / 超时 / 异常）`stats.record` 一次；**钩子触发**：仅 `result.success` 时 `hooks.run`；**审计**：每次 execute 退出点 1 条最终结果（不做 per-attempt）。
@@ -113,7 +118,8 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `execute` | `async (name, parameters, timeout=None, max_retries=None, retry_delay=1.0) -> ToolResult` | 信号量内执行完整流程（唯一公共入口） |
+| `execute` | `async (name, parameters, timeout=None, max_retries=None, retry_delay=1.0, *, call, facts) -> ToolResult` | 强制携运行上下文与事实入口，在信号量内执行完整流程 |
+| `check_abort` | `(call) -> None` | cancel→deadline→run_stop 同步复查；命中抛 shared 类型化异常 |
 | `prune_tool_lock` | `(name: str) -> None` | 注销工具时清理 per-tool 锁（由 ToolService.unregister 调用） |
 
 `_execute_impl` / `_execute_with_retry` / `_tool_lock` / `_audit` 为私有实现，不对外暴露。
@@ -125,6 +131,7 @@ execute(name, parameters, timeout, max_retries, retry_delay)
 3. **per-tool 锁仅同实例内串行**：容器单例满足生产；测试 / 多实例场景锁不跨实例
 4. **并发下统计**：同步字典更新（无锁），多任务并发时统计为尽力而为
 5. **统计 / 审计 / 钩子失败**：不影响工具执行结果；异步 Hook 和审计共享观察预算（审计优先），同步 Hook 必须非阻塞；吞取消回调的独立接管归 C-02 Piece ④
+6. **局部 timeout**：attempt 事实为 UNKNOWN/PENDING，不能据 asyncio task 被取消推定底层线程结束；真实句柄与迟回事实接管归 Piece ④
 6. **成功路径截断先于统计 / 钩子**：钩子看到的 `result.content` 为截断后内容
 7. **审批拒绝**：`requires_approval` 工具被 gate 拒绝 → 返回 `"工具调用被拒绝：等待人工审批"`，工具不执行，审计 1 条
 

@@ -78,7 +78,10 @@ app/integration/tools/
 @runtime_checkable
 class ToolGateway(Protocol):
     def get_openai_tools(self) -> list[dict[str, Any]]: ...
-    async def execute(self, name, parameters, timeout=None, max_retries=None, retry_delay=1.0) -> ToolResult: ...
+    async def execute(
+        self, name, parameters, timeout=None, max_retries=None, retry_delay=1.0,
+        *, call: ToolCallContext, facts: ToolFactSink,
+    ) -> ToolResult: ...
 ```
 
 ### `ToolResult`（领域契约）
@@ -92,6 +95,9 @@ class ToolGateway(Protocol):
 | `metadata` | `dict \| None` | 元数据（截断标记 `truncated` 等） |
 | `execution_time` | `float \| None` | 执行耗时（executor 填充） |
 | `retry_count` | `int` | 实际尝试次数（executor 填充） |
+| `effect_state` | `ToolEffectState` | 已发生外部效果的确定性；默认 UNKNOWN |
+
+`call/facts` 是强制生命周期契约：Domain 提供 run/batch/call/operation 身份及控制信号，Integration 先接管事实再同步通知批次收集器。三类全局控制终止使用 shared 的类型化异常；单工具 timeout 仍由 `ToolResult(ErrorCode.TIMEOUT)` 表达。完整字段见 [领域端口说明](../../domain_doc/ports_doc/ports.md#工具运行上下文与事实)。
 
 `ErrorCode`（[app/domain/ports/tool_gateway.py](../../../app/domain/ports/tool_gateway.py)）系统级 6 码：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数 JSON 解析失败）/ `VALIDATION`（校验失败）/ `REJECTED`（审批拒绝）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。工具业务错误为 `None`（`error` 字符串承载 LLM 归因）——**错误码 + 中文归因并存**：错误码供审计聚合与证据链可审计性，`error` 供 LLM 修正。
 

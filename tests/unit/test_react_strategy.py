@@ -19,7 +19,7 @@ import pytest
 
 from app.config import settings
 from app.domain.ports.llm_gateway import StreamResult
-from app.domain.reasoning import ReActStrategy
+from app.domain.reasoning import ReActStrategy as _ProductionReActStrategy
 from app.domain.reasoning.react import _terminal_result
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.tool_service import ToolService
@@ -32,6 +32,22 @@ from app.shared.error_handling import (
 )
 from app.shared.events import build_error_event, build_message_event
 from app.shared.exceptions import ContextWindowExceededError, LLMDeadlineExceededError
+
+
+class ReActStrategy(_ProductionReActStrategy):
+    """测试直连入口：显式提供每次独立运行的生命周期身份。"""
+
+    async def execute(self, *args, **kwargs):
+        kwargs.setdefault("run_id", "run-react-test")
+        kwargs.setdefault("run_stop", asyncio.Event())
+        async for event in super().execute(*args, **kwargs):
+            yield event
+
+    async def execute_tool_calls(self, *args, **kwargs):
+        kwargs.setdefault("run_id", "run-react-test")
+        kwargs.setdefault("run_stop", asyncio.Event())
+        async for event in super().execute_tool_calls(*args, **kwargs):
+            yield event
 
 
 class _EchoTool(BaseTool):
@@ -1225,7 +1241,8 @@ async def test_react_execute_timeout_keeps_partial_progress():
             {"finish_reason": "stop", "content": "答案"},
         ],
         sleep_before_call=2,
-        delay=0.3,
+        # 给首轮工具热加载留出稳定余量；第二轮仍确定超过总期限。
+        delay=1.0,
     )
     tools = _make_registry(tools=[_EchoTool()])
     strategy = ReActStrategy(llm=llm, tools=tools)
@@ -1233,7 +1250,7 @@ async def test_react_execute_timeout_keeps_partial_progress():
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
         max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=0.05,
+        max_execution_time=0.5,
     ):
         pass
 
@@ -3337,6 +3354,9 @@ class _RecordingGateway:
         timeout: int | None = None,
         max_retries: int | None = None,
         retry_delay: float = 1.0,
+        *,
+        call,
+        facts,
     ) -> ToolResult:
         self.calls.append(
             {
@@ -3344,6 +3364,8 @@ class _RecordingGateway:
                 "params": parameters,
                 "timeout": timeout,
                 "max_retries": max_retries,
+                "call": call,
+                "facts": facts,
             }
         )
         return ToolResult(success=True, content=f"echo:{parameters.get('text', '')}")

@@ -15,6 +15,7 @@ degraded 进 metadata，供 Phase C Orchestrator 与证据链报告消费）。
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
@@ -63,7 +64,7 @@ class PlannerAgent(BaseAgent):
         if ctx is None:
             raise RuntimeError("AgentContext 未设置")
 
-        async for event in self._strategy.execute(
+        stream = self._strategy.execute(
             user_input,
             messages,
             max_iterations=ctx.max_iterations,
@@ -81,8 +82,14 @@ class PlannerAgent(BaseAgent):
             max_replan_rounds=ctx.max_refine_rounds,
             stream_mode=ctx.stream_mode,
             cancel_event=self._cancel_event,
-        ):
-            yield event
+            run_id=ctx.run_id,
+            run_stop=ctx.run_stop,
+            workflow_id=ctx.workflow_id,
+            parent_cancel_events=ctx.parent_cancel_events,
+        )
+        async with aclosing(stream):
+            async for event in stream:
+                yield event
 
         self._result = self._map_outcome(self._strategy.outcome)
 

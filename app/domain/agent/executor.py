@@ -22,6 +22,7 @@ ReAct 循环逻辑已抽离到 `app/domain/reasoning/react.py` 的 ReActStrategy
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
@@ -71,7 +72,7 @@ class ReActAgent(BaseAgent):
         if ctx is None:
             raise RuntimeError("AgentContext 未设置")
 
-        async for event in self._strategy.execute(
+        stream = self._strategy.execute(
             user_input,
             messages,
             max_iterations=ctx.max_iterations,
@@ -86,8 +87,14 @@ class ReActAgent(BaseAgent):
             max_same_action_turns=ctx.max_same_action_turns,
             stream_mode=ctx.stream_mode,
             cancel_event=self._cancel_event,
-        ):
-            yield event
+            run_id=ctx.run_id,
+            run_stop=ctx.run_stop,
+            workflow_id=ctx.workflow_id,
+            parent_cancel_events=ctx.parent_cancel_events,
+        )
+        async with aclosing(stream):
+            async for event in stream:
+                yield event
 
         self._result = self._map_outcome(self._strategy.outcome)
 
@@ -98,12 +105,22 @@ class ReActAgent(BaseAgent):
         iteration: int,
     ) -> AsyncGenerator[str]:
         """工具并行执行原语转发（行为与抽离前一致；供 PlannerAgent 等复用语义参照）。"""
-        async for event in self._strategy.execute_tool_calls(
+        ctx = self._context
+        if ctx is None:
+            raise RuntimeError("AgentContext 未设置")
+        stream = self._strategy.execute_tool_calls(
             tool_calls,
             messages,
             iteration,
-        ):
-            yield event
+            run_id=ctx.run_id,
+            run_stop=ctx.run_stop,
+            workflow_id=ctx.workflow_id,
+            cancel_event=self._cancel_event,
+            parent_cancel_events=ctx.parent_cancel_events,
+        )
+        async with aclosing(stream):
+            async for event in stream:
+                yield event
 
     def _map_outcome(self, outcome: ReActOutcome | None) -> AgentResult:
         """ReActOutcome → AgentResult。"""

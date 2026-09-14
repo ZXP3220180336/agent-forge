@@ -2,6 +2,8 @@
 # routes/chat.py - 聊天相关 API 路由
 # ============================================
 
+import asyncio
+import uuid
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -80,13 +82,17 @@ async def send_message(
 
     # 4. 定义流式生成器
     # 取消事件：请求开始时注册（/chat/stop 可能在任何时刻置位），流结束清理
-    cancel_event = task_service.create_cancel_event(request.session_id)
+    run_id = uuid.uuid4().hex
+    cancel_event = task_service.create_cancel_event(request.session_id, run_id)
+    run_stop = asyncio.Event()
 
     async def generate():
-        # Agent 无状态：每次请求新建实例，上下文通过 AgentContext 传入
+        # Agent 持有本次运行结果：每个请求创建独立实例，并显式传入 Application 生成的身份。
         ctx = AgentContext(
             session_id=sid,
             user_id=uid,
+            run_id=run_id,
+            run_stop=run_stop,
             temperature=agent_params["temperature"],
             max_tokens=agent_params["max_tokens"],
             max_iterations=(
@@ -145,7 +151,7 @@ async def send_message(
                 yield "data: [DONE]\n\n"
 
             # 清理取消事件（会话运行结束）
-            task_service.clear_cancel_event(request.session_id)
+            task_service.clear_cancel_event(run_id)
 
             # 5. 保存 AI 回复（流结束后从 agent.result 取最终答复）
             result = agent.result

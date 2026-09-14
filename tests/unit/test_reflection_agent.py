@@ -7,6 +7,7 @@ AgentContext 新字段默认向后兼容。
 范式：复用 test_reflection.py 的 _ReflectionLLM / _EchoTool（手写假对象）。
 """
 
+import asyncio
 import json
 
 import pytest
@@ -16,6 +17,17 @@ from app.domain.reasoning import ReflectionOutcome
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.tool_service import ToolService
 from app.shared.events import build_message_event
+
+
+def _ctx(**overrides) -> AgentContext:
+    values = {
+        "session_id": "s",
+        "user_id": "u",
+        "run_id": "run-reflection",
+        "run_stop": asyncio.Event(),
+    }
+    values.update(overrides)
+    return AgentContext(**values)
 
 DRAFT = {
     "summary": "良率下降归因于设备 A 告警",
@@ -153,7 +165,7 @@ async def test_context_max_refine_rounds_passthrough():
         ],
     )
     agent = _make_agent(llm)
-    ctx = AgentContext(session_id="s", user_id="u", max_refine_rounds=1)
+    ctx = _ctx(max_refine_rounds=1)
 
     async for _ in agent.run("分析良率", [{"role": "user", "content": "分析良率"}], ctx):
         pass
@@ -171,9 +183,7 @@ async def test_context_max_tool_protocol_retries_reaches_reflection_react():
         structured_scripts=[],
     )
     agent = _make_agent(llm)
-    ctx = AgentContext(
-        session_id="s",
-        user_id="u",
+    ctx = _ctx(
         max_iterations=5,
         max_tool_protocol_retries=0,
     )
@@ -194,7 +204,7 @@ async def test_reflection_agent_end_to_end_three_stages():
         structured_scripts=[{"ok": True, "issues": []}],
     )
     agent = _make_agent(llm)
-    ctx = AgentContext(session_id="s", user_id="u")
+    ctx = _ctx()
 
     events = []
     async for event in agent.run("分析良率", [{"role": "user", "content": "分析良率"}], ctx):
@@ -211,5 +221,5 @@ async def test_reflection_agent_end_to_end_three_stages():
 
 def test_context_max_refine_rounds_default_backward_compatible():
     """AgentContext 新字段默认向后兼容（不传 = 2）。"""
-    ctx = AgentContext(session_id="s", user_id="u")
+    ctx = _ctx()
     assert ctx.max_refine_rounds == 2

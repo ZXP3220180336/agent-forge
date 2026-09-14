@@ -20,14 +20,17 @@ Reflection 推理策略（ReflectionStrategy）
 """
 
 import asyncio
+import copy
 import time
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
+from app.domain.ports.tool_execution import ToolFact
 from app.domain.ports.tool_gateway import ToolGateway
 from app.domain.prompts.manager import PromptManager
 from app.shared.error_handling import (
@@ -42,7 +45,13 @@ from app.shared.events import (
 )
 from app.shared.exceptions import AppError, ContextWindowExceededError
 
-from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage
+from ._common import (
+    GuardResult,
+    dispatch_error,
+    evaluate_guard,
+    merge_usage,
+    reject_concurrent_runs,
+)
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -209,7 +218,14 @@ class ReflectionStrategy:
         self._structured_usage: dict = {}
         # 结果载体，execute() 结束后读取
         self.outcome: ReflectionOutcome | None = None
+        self._tool_facts: list[ToolFact] = []
 
+    @property
+    def tool_facts(self) -> tuple[ToolFact, ...]:
+        """返回本 run 收集阶段已经接管的工具事实快照。"""
+        return tuple(copy.deepcopy(self._tool_facts))
+
+    @reject_concurrent_runs
     async def execute(
         self,
         user_input: str,
@@ -218,6 +234,8 @@ class ReflectionStrategy:
         max_iterations: int,
         temperature: float,
         max_tokens: int,
+        run_id: str,
+        run_stop: asyncio.Event,
         max_execution_time: float | None = None,
         max_context_rounds: int | None = None,
         max_context_tokens: int | None = None,
@@ -229,6 +247,8 @@ class ReflectionStrategy:
         tool_max_retries: int | None = None,
         max_refine_rounds: int = 2,
         cancel_event: asyncio.Event | None = None,
+        workflow_id: str | None = None,
+        parent_cancel_events: tuple[asyncio.Event, ...] = (),
     ) -> AsyncGenerator[str]:
         """
         Reflection 主流程：收集+初稿 → 自查 → 修正（三阶段显式分离）。
@@ -241,6 +261,8 @@ class ReflectionStrategy:
             SSE 事件字符串（react 事件 + 阶段 info + done）
         """
         # 每次 execute 独立：重置自查/修正阶段 token 用量累计
+        self.outcome = None
+        self._tool_facts = []
         self._structured_usage = {}
         # 总时长护栏起点（反思循环顶部检查 elapsed > max_execution_time，P3）
         start_time = time.monotonic()
@@ -251,7 +273,7 @@ class ReflectionStrategy:
         )
 
         # ── 阶段一：收集 + 初稿（复用 ReAct，工具证据链 + final_answer 结构化）──
-        async for event in self._react.execute(
+        child = self._react.execute(
             user_input,
             messages,
             max_iterations=max_iterations,
@@ -268,13 +290,21 @@ class ReflectionStrategy:
             tool_max_retries=tool_max_retries,
             output_schema=self._output_schema,
             cancel_event=cancel_event,
-        ):
-            # 抑制 ReAct 中间 done：Reflection 收尾 _finalize 统一产出 done（含
-            # 全阶段 total_tokens），透传 ReAct 的 done 会造成事件流两个口径不同
-            # 的完成事件（噪音 + 事实源漂移，P2 / REASON-011）
-            if f'"type": "{AgentEventType.DONE.value}"' in event:
-                continue
-            yield event
+            run_id=run_id,
+            run_stop=run_stop,
+            workflow_id=workflow_id,
+            parent_cancel_events=parent_cancel_events,
+        )
+        try:
+            async with aclosing(child):
+                async for event in child:
+                    # 自查/修正阶段统一提交 done，初稿阶段仅透传进度。
+                    if f'"type": "{AgentEventType.DONE.value}"' in event:
+                        continue
+                    yield event
+        finally:
+            # 即使子跑传播控制异常，事实也先转交父 run，不依赖 outcome 存在。
+            self._tool_facts.extend(self._react.tool_facts)
 
         react_outcome = self._react.outcome
         if react_outcome is None:

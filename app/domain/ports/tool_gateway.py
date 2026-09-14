@@ -9,6 +9,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from app.domain.ports.tool_execution import (
+    ToolCallContext,
+    ToolEffectState,
+    ToolFactSink,
+)
+
 
 class ErrorCode(StrEnum):
     """工具执行错误码（系统级）。
@@ -37,6 +43,7 @@ class ToolResult:
     metadata: dict[str, Any] | None = None
     execution_time: float | None = None
     retry_count: int = 0
+    effect_state: ToolEffectState = ToolEffectState.UNKNOWN
 
     def __str__(self) -> str:
         if self.success:
@@ -57,4 +64,7 @@ class ToolGateway(Protocol):
         timeout: int | None = None,
         max_retries: int | None = None,
         retry_delay: float = 1.0,
+        *,
+        call: ToolCallContext,
+        facts: ToolFactSink,
     ) -> ToolResult: ...

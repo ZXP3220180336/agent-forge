@@ -12,7 +12,7 @@ import pytest
 from app.domain.ports.tool_gateway import ErrorCode
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.security import AutoApprovalGate
-from app.integration.tools.tool_service import ToolService
+from tests.tool_lifecycle import StandaloneToolService as ToolService
 
 
 class _ApprovalTool(BaseTool):

@@ -7,6 +7,14 @@ from .context_budget import ContextBudgetPort
 from .cost_limiter import CostLimiterPort
 from .embedding_port import EmbeddingPort
 from .llm_gateway import LLMGateway, StreamResult
+from .tool_execution import (
+    ToolCallContext,
+    ToolCleanupState,
+    ToolEffectState,
+    ToolExecutionState,
+    ToolFact,
+    ToolFactSink,
+)
 from .tool_gateway import ToolGateway, ToolResult
 
 __all__ = [
@@ -15,6 +23,12 @@ __all__ = [
     "EmbeddingPort",
     "LLMGateway",
     "StreamResult",
+    "ToolCallContext",
+    "ToolCleanupState",
+    "ToolEffectState",
+    "ToolExecutionState",
+    "ToolFact",
+    "ToolFactSink",
     "ToolGateway",
     "ToolResult",
 ]

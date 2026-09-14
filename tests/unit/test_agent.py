@@ -28,6 +28,34 @@ from app.shared.error_handling import (
 from app.shared.events import build_error_event
 
 
+def _ctx(**overrides) -> AgentContext:
+    values = {
+        "session_id": "s",
+        "user_id": "u",
+        "run_id": "run-test",
+        "run_stop": asyncio.Event(),
+    }
+    values.update(overrides)
+    return AgentContext(**values)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_type"),
+    [
+        ({"run_id": " "}, ValueError),
+        ({"run_stop": object()}, TypeError),
+        ({"parent_cancel_events": [asyncio.Event()]}, TypeError),
+        ({"workflow_id": " "}, ValueError),
+    ],
+)
+@pytest.mark.asyncio
+async def test_agent_rejects_invalid_run_control_context(overrides, error_type):
+    agent = ReActAgent(llm=_NoopLLM(), tools=ToolService())
+    with pytest.raises(error_type):
+        async for _ in agent.run("x", [], _ctx(**overrides)):
+            pass
+
+
 class _DelayTool(BaseTool):
     """带不同延迟的工具，用于验证 gather 并行 + 顺序保持。"""
 
@@ -127,7 +155,7 @@ async def test_execute_tool_calls_parallel_preserves_order(monkeypatch):
     messages = []
 
     # 构造 context（_execute_tool_calls 需要 self._context）
-    agent._context = AgentContext(session_id="s", user_id="u")
+    agent._context = _ctx()
     async for _ in agent._execute_tool_calls(tool_calls, messages, iteration=1):
         pass
 
@@ -161,7 +189,7 @@ async def test_react_agent_passes_cost_limiter_to_strategy():
 async def test_react_agent_passes_max_empty_retries_to_strategy():
     """ReActAgent 经 AgentContext.max_empty_retries 透传给 execute（空输出超限硬终止）。"""
     agent = ReActAgent(llm=_EmptyLLM(), tools=None)
-    ctx = AgentContext(session_id="s", user_id="u", max_iterations=6, max_empty_retries=1)
+    ctx = _ctx(max_iterations=6, max_empty_retries=1)
 
     async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
         pass
@@ -183,9 +211,7 @@ async def test_react_agent_passes_max_llm_fail_retries_to_strategy():
     registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
 
     agent = ReActAgent(llm=_ErrorLLM(), tools=None, error_handlers=registry)
-    ctx = AgentContext(
-        session_id="s", user_id="u", max_iterations=6, max_llm_fail_retries=0
-    )
+    ctx = _ctx(max_iterations=6, max_llm_fail_retries=0)
 
     async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
         pass
@@ -203,9 +229,7 @@ async def test_react_agent_passes_max_tool_protocol_retries_to_strategy():
     """AgentContext 的协议修正上限必须进入 ReActStrategy。"""
     llm = _ScriptedLLM([{"finish_reason": "tool_calls"}])
     agent = ReActAgent(llm=llm, tools=None)
-    ctx = AgentContext(
-        session_id="s",
-        user_id="u",
+    ctx = _ctx(
         max_iterations=6,
         max_tool_protocol_retries=0,
     )
@@ -230,7 +254,7 @@ async def test_react_agent_passes_max_same_action_turns_to_strategy():
     reg = ToolService(max_concurrent_tools=10)
     reg.register(_DelayTool("tool_a", delay=0.001))
     agent = ReActAgent(llm=llm, tools=reg)
-    ctx = AgentContext(session_id="s", user_id="u", max_iterations=5, max_same_action_turns=1)
+    ctx = _ctx(max_iterations=5, max_same_action_turns=1)
 
     async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
         pass
@@ -254,7 +278,7 @@ async def test_execute_tool_calls_parallel_actually_concurrent(monkeypatch):
 
     llm = _NoopLLM()
     agent = ReActAgent(llm=llm, tools=reg)
-    agent._context = AgentContext(session_id="s", user_id="u")
+    agent._context = _ctx()
 
     tool_calls = [
         {"id": "call_1", "type": "function", "function": {"name": "tool_a", "arguments": "{}"}},
@@ -281,7 +305,7 @@ async def test_strategy_cycle_short_circuits_on_llm_error():
     """
     llm = _ErrorLLM()
     agent = ReActAgent(llm=llm, tools=None)
-    ctx = AgentContext(session_id="s", user_id="u", max_iterations=3)
+    ctx = _ctx(max_iterations=3)
 
     events = []
     async for ev in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
@@ -320,7 +344,7 @@ async def test_unknown_handler_raise_propagates():
     agent = ReActAgent(
         llm=_ThrowingLLM(), tools=None, error_handlers=registry
     )
-    ctx = AgentContext(session_id="s", user_id="u", max_iterations=3)
+    ctx = _ctx(max_iterations=3)
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in agent.run(
@@ -344,7 +368,7 @@ async def test_agent_error_reraisd_not_swallowed():
     agent = ReActAgent(
         llm=_ErrorLLM(), tools=None, error_handlers=registry
     )
-    ctx = AgentContext(session_id="s", user_id="u", max_iterations=3)
+    ctx = _ctx(max_iterations=3)
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in agent.run(
@@ -382,7 +406,7 @@ class _GenerateOnlyLLM:
 async def test_react_agent_passes_stream_mode_to_strategy():
     """ctx.stream_mode=False → ReActAgent 透传 → 非流式通道生效（哨兵假 LLM 证明）。"""
     agent = ReActAgent(llm=_GenerateOnlyLLM(), tools=None)
-    ctx = AgentContext(session_id="s", user_id="u", max_iterations=3, stream_mode=False)
+    ctx = _ctx(max_iterations=3, stream_mode=False)
 
     async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
         pass

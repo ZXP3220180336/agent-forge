@@ -163,6 +163,10 @@ ReflectionStrategy.execute()（三阶段）
 | --- | --- | --- |
 | `ReflectionStrategy` | `execute(...)` + `outcome` | 完整契约见上文；被 ReflectionAgent 编排 |
 
+`execute` 必填 `run_id` 与 `run_stop`，可选接收 `workflow_id` 和
+`parent_cancel_events`。收集阶段的 ReAct 继承同一组运行控制，不新建 run 或重置父级期限；
+同一个 ReflectionStrategy 实例不能并发执行。
+
 ## 边界情况
 
 | 场景 | 处理 |

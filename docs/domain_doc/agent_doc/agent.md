@@ -95,6 +95,9 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | 字段 | 类型 / 默认 | 说明 |
 | --- | --- | --- |
 | `session_id` / `user_id` | `SessionId` / `UserId`（必填） | 会话 / 用户标识 |
+| `run_id` / `run_stop` | `str` / `asyncio.Event`（必填） | Application 创建的独立运行身份；同运行关闭新业务准入的信号 |
+| `workflow_id` | `str \| None = None` | 可选父工作流身份；子策略原样继承 |
+| `parent_cancel_events` | `tuple[asyncio.Event, ...] = ()` | 父级取消信号；与本 run 取消信号共同下传工具调用 |
 | `max_iterations` | `int = 10` | 最大推理轮数 |
 | `temperature` | `float = 0.2` | 采样温度 |
 | `max_tokens` | `int = 4096` | 单轮最大输出 token |
@@ -109,7 +112,7 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | `stream_mode` | `bool = True` | LLM 通道开关：True=流式 `async_generate`（默认，chat SSE 订阅者）；False=非流式 `generate()`（后台子 Agent 无人逐 token 订阅，Phase C 编排按需置 False）。当前无对应 settings 项（YAGNI；勿与仅作元数据出口的 `agent_streaming` 混淆，后者无行为接线） |
 | `metadata` | `dict = {}` | 扩展字段（如 `model_key`） |
 
-传递原则：值对象，每次 `run()` 传入，运行期间不变。`iteration_limit` 属性为 `max_iterations` 的语义别名。
+传递原则：每次 `run()` 显式传入，Application 只创建一次 `run_id`；Planner/Reflection 的子 ReAct 继承同一 run 控制。BaseAgent 不重新生成身份，同一实例并发 `run()` 明确拒绝，结束后释放自身上下文。`iteration_limit` 属性为 `max_iterations` 的语义别名。
 
 #### `AgentResult`（执行结果，经 `agent.result` 读取）
 
@@ -143,7 +146,7 @@ ReAct 策略的编排载体：
 ```python
 agent = ReActAgent(llm=llm_service, tools=tool_service)
 # 可选横切能力注入：context_budget=context_manager, error_handlers=error_handler_registry,
-#                   cost_limiter=cost_limiter, cancel_event=task_service.create_cancel_event(sid)
+#                   cost_limiter=cost_limiter, cancel_event=cancel_event
 ```
 
 1. 构造：`ReActAgent(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, cancel_event=None)`——横切能力可选注入（上下文预算 / 错误处理 / 成本护栏 / 优雅取消，None=不启用），完整类型化签名与参数语义见 [executor.md](executor.md)；`BaseAgent(llm, tools, error_handlers=None)` 同构。
@@ -201,7 +204,11 @@ Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（�
 | `CRITIQUE_FAILED` | CONTINUE | Reflection 自查 / 修正失败 → 降级采用最近稿（Reflection 专属） |
 | `PLAN_FAILED` | CONTINUE | Planner 规划 / 重规划 / 汇总失败 → 降级（规划失败 ReAct 兜底 / 汇总失败纯文本，Planner 专属） |
 
-调用方视角：默认行为下 `run()` 不抛异常（取消 / 失败均收敛为对应状态 + 结果）；仅当调用方注册 handler 决策 `RAISE` 时，上抛 `AgentRunError`（定义于 `app.shared.error_handling`）——这是 Agent 模块被外部捕获的唯一领域异常类型。
+调用方视角：普通取消、策略失败和 handler 的 STOP 决策收敛为状态与结果；handler 决策
+`RAISE` 时上抛 `AgentRunError`。工具生命周期的 `ToolCancelledError`、
+`ToolDeadlineExceededError`、`ToolRunStoppedError` 是另一组选择性传播出口：Integration 与
+ReAct 已先接管可得 `ToolFact`，BaseAgent 保留其类型交给 Application/后续终态编排，避免误归类
+为可继续的 `TOOL_FAILED`。Piece ⑤将补齐对应的最终 SSE/历史提交规则。
 
 ### 最小调用示例
 
@@ -209,7 +216,10 @@ Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（�
 from app.domain.agent import AgentContext, ReActAgent
 
 agent = ReActAgent(llm=llm_service, tools=tool_service)
-ctx = AgentContext(session_id="sess_001", user_id="user_001")
+ctx = AgentContext(
+    session_id="sess_001", user_id="user_001",
+    run_id=run_id, run_stop=run_stop,
+)
 messages = [{"role": "system", "content": "你是一个智能助手"},
             {"role": "user", "content": "查询今天的天气"}]
 

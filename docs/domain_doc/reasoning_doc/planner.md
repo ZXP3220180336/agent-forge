@@ -1,7 +1,7 @@
 # PlannerStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/planner.py`
-> **更新日期**：2026-09-12
+> **更新日期**：2026-09-14
 > **职责**：Planner 原子推理策略——Plan-then-Execute 单 Agent 编排（规划 → 执行 → 汇总）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/planner.py](../agent_doc/agent.md)；工业级对标见 [planner_benchmark.md](planner_benchmark.md)
@@ -184,6 +184,10 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 | 策略类 | 契约（方法） | 说明 |
 | --- | --- | --- |
 | `PlannerStrategy` | `execute(...)` + `outcome` | 完整契约见上文；被 PlannerAgent 编排 |
+
+`execute` 必填 `run_id` 与 `run_stop`，可选接收 `workflow_id` 和
+`parent_cancel_events`。所有步骤及规划失败后的 ReAct 兜底继承同一组运行控制，不为子跑生成
+新的 run 身份；同一个 PlannerStrategy 实例不能并发执行。
 
 ## 边界情况
 

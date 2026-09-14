@@ -1,8 +1,8 @@
 # TaskService 任务调度说明文档
 
 > **对应代码**：`app/application/task/task_service.py`
-> **更新日期**：2026-08-30
-> **职责**：任务级并发调度（当前实现）；队列 / 状态追踪 / 多 Agent 编排（规划蓝图）
+> **更新日期**：2026-09-14
+> **职责**：任务级并发调度与活动 run 取消索引；队列 / 状态追踪 / 多 Agent 编排（规划蓝图）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
@@ -35,7 +35,7 @@
 
 ### 定位与职责
 
-TaskService 是系统的**任务调度枢纽**，负责编排 Agent 任务的完整生命周期。当前实现只覆盖**并发闸门**；队列、优先级、状态追踪、多 Agent 编排为规划方向（见「规划蓝图」）。
+TaskService 是系统的任务调度入口。当前实现覆盖 Agent 并发闸门，以及 `run_id → cancel_event`、`session_id → active run_ids` 的进程内索引；队列、优先级、持久状态追踪和完整多 Agent 编排仍是规划方向。
 
 ### 与 Agent 层的关系
 
@@ -63,16 +63,16 @@ Agent 层（BaseAgent / ReActAgent / 子Agent）
 | `__init__(max_concurrent=10)` | 构造 | 任务级并发信号量（装配根注入，对应 `agent_max_concurrent_tasks`） |
 | `run_agent(user_input, messages, context, agent) -> AsyncGenerator[str]` | 异步生成器 | 信号量保护下运行 Agent，逐事件 yield（并发超限在此等待） |
 | `max_concurrent` | property | 当前最大并发任务数 |
-| `create_cancel_event(session_id) -> asyncio.Event` | 同步 | 创建并注册会话取消事件（send 请求开始，返回事件供 Agent 透传） |
-| `get_cancel_event(session_id)` / `clear_cancel_event(session_id)` | 同步 | 获取 / 清理会话取消事件 |
-| `cancel_session(session_id) -> bool` | 同步 | 置位会话取消事件（/chat/stop）；无运行任务返回 False |
+| `create_cancel_event(session_id, run_id) -> asyncio.Event` | 同步 | 登记 Application 已创建的唯一 run；重复 run_id 明确拒绝 |
+| `get_cancel_event(run_id)` / `clear_cancel_event(run_id)` | 同步 | 按运行身份获取 / 释放自己的取消事件，不影响同会话兄弟运行 |
+| `cancel_session(session_id) -> bool` | 同步 | 置位该会话全部活动 run 的取消事件；无活动运行返回 False |
 
 **关键语义**（示意，完整实现见源码）：
 
 - 信号量在 `run_agent` 的 generator **外** acquire/release——yield 会挂起 generator frame，若 acquire 放 generator 内，其他任务会在首个 yield 前交错进入，信号量失去约束
 - `async with` 天然保证异常 / 取消时释放信号量，不会挂死占坑
 - 信号量是 **Agent 维度**（限制同时运行的 Agent 任务），而非 LLM API 维度（RPM / TPM 由集成层 `reservation_limiter` 覆盖，见 [LLM 层文档](../../integration_doc/llm_doc/llm.md)）
-- **会话级取消事件注册表**：`/chat/stop` 置位 `cancel_event` → 运行中的 Agent 在轮次边界优雅停止（after_turn 语义）；send 请求结束 `clear_cancel_event` 清理（见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)）
+- **运行级取消所有权**：chat 先生成 `run_id`，再登记独立 Event；`/chat/stop` 保持会话级外部语义，遍历并取消全部活动 run。每个流结束只清理自己的 run，避免同会话并发请求覆盖或误删（见 [TOOLS-ADR-008](../../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md) S4）
 
 **最小调用示例**：
 
@@ -91,7 +91,7 @@ async for event in task_service.run_agent(
 
 ## 规划蓝图
 
-> ⬜ 以下为多 Agent 任务编排的目标设计，对应架构文档演进路径。当前 `task_service.py` 仅实现并发闸门，未包含这些类型与流程。
+> ⬜ 以下为多 Agent 任务编排的目标设计，对应架构文档演进路径。当前 `task_service.py` 已实现并发闸门和进程内活动 run 取消索引，未包含以下队列与持久任务类型。
 
 ### 架构设计
 
@@ -217,7 +217,6 @@ submit_task(user_request, priority="normal")
 ---
 
 ## 配置项清单
-
 
 配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
 

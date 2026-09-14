@@ -15,6 +15,12 @@ from app.domain.agent.base import AgentContext
 from app.application.task.task_service import TaskService
 
 
+def _context(run_id: str = "run-test") -> AgentContext:
+    return AgentContext(
+        session_id="s", user_id="u", run_id=run_id, run_stop=asyncio.Event()
+    )
+
+
 class _FakeAgent:
     """最小 Agent 替身：run() 是 async generator，可配置延迟与事件数。"""
 
@@ -54,7 +60,7 @@ async def test_task_service_limits_concurrency(monkeypatch):
         async for _ in ts.run_agent(
             user_input=str(i),
             messages=[],
-            context=AgentContext(session_id="s", user_id="u"),
+            context=_context(f"run-{i}"),
             agent=fake,
         ):
             pass
@@ -73,7 +79,7 @@ async def test_run_agent_forwards_events():
     async for ev in ts.run_agent(
         user_input="hi",
         messages=[],
-        context=AgentContext(session_id="s", user_id="u"),
+        context=_context(),
         agent=fake,
     ):
         events.append(ev)
@@ -97,7 +103,7 @@ async def test_run_agent_releases_semaphore_on_error():
             async for ev in ts.run_agent(
                 user_input="x",
                 messages=[],
-                context=AgentContext(session_id="s", user_id="u"),
+                context=_context(),
                 agent=_FailingAgent(),
             ):
                 events.append(ev)
@@ -124,13 +130,19 @@ async def test_cancel_event_registry_lifecycle():
     """取消事件注册表：create/get/clear/cancel 生命周期。"""
     ts = TaskService(max_concurrent=2)
 
-    ev = ts.create_cancel_event("s1")
-    assert ts.get_cancel_event("s1") is ev
+    ev = ts.create_cancel_event("s1", "run-1")
+    sibling = ts.create_cancel_event("s1", "run-2")
+    assert ts.get_cancel_event("run-1") is ev
+    with pytest.raises(ValueError):
+        ts.create_cancel_event("s1", "run-2")
     assert not ev.is_set()  # 创建时未置位
 
     assert ts.cancel_session("s1") is True  # 有运行任务 → 置位成功
     assert ev.is_set()
+    assert sibling.is_set()
 
-    ts.clear_cancel_event("s1")
-    assert ts.get_cancel_event("s1") is None  # 清理后不存在
+    ts.clear_cancel_event("run-1")
+    assert ts.get_cancel_event("run-1") is None
+    assert ts.get_cancel_event("run-2") is sibling
+    ts.clear_cancel_event("run-2")
     assert ts.cancel_session("s1") is False  # 无运行任务 → 置位失败

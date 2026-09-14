@@ -10,7 +10,7 @@ ToolSelector 工具选择器单元测试
 
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.selector import DefaultToolSelector
-from app.integration.tools.tool_service import ToolService
+from tests.tool_lifecycle import StandaloneToolService as ToolService
 
 
 class _ATool(BaseTool):

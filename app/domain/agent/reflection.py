@@ -15,6 +15,7 @@ Reflection 三阶段逻辑已实现在 `app/domain/reasoning/reflection.py` 的
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
@@ -70,7 +71,7 @@ class ReflectionAgent(BaseAgent):
         if ctx is None:
             raise RuntimeError("AgentContext 未设置")
 
-        async for event in self._strategy.execute(
+        stream = self._strategy.execute(
             user_input,
             messages,
             max_iterations=ctx.max_iterations,
@@ -85,8 +86,14 @@ class ReflectionAgent(BaseAgent):
             max_same_action_turns=ctx.max_same_action_turns,
             max_refine_rounds=ctx.max_refine_rounds,
             cancel_event=self._cancel_event,
-        ):
-            yield event
+            run_id=ctx.run_id,
+            run_stop=ctx.run_stop,
+            workflow_id=ctx.workflow_id,
+            parent_cancel_events=ctx.parent_cancel_events,
+        )
+        async with aclosing(stream):
+            async for event in stream:
+                yield event
 
         self._result = self._map_outcome(self._strategy.outcome)
 

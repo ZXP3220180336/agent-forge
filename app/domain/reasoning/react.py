@@ -30,9 +30,11 @@ LLM 通道双形态（execute stream_mode 参数）：
 """
 
 import asyncio
+import copy
 import json
 import logging
 import time
+import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,7 +44,15 @@ from jsonschema import validate
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
+from app.domain.ports.tool_execution import (
+    ToolCallContext,
+    ToolCleanupState,
+    ToolEffectState,
+    ToolExecutionState,
+    ToolFact,
+)
 from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
+from app.domain.reasoning.tool_batch import ToolBatchCollector
 from app.shared.error_handling import (
     AgentErrorAction,
     AgentErrorKind,
@@ -63,9 +73,18 @@ from app.shared.exceptions import (
     ContextWindowExceededError,
     LLMCancelledError,
     LLMDeadlineExceededError,
+    ToolCancelledError,
+    ToolDeadlineExceededError,
+    ToolRunStoppedError,
 )
 
-from ._common import GuardResult, dispatch_error, evaluate_guard, merge_usage
+from ._common import (
+    GuardResult,
+    dispatch_error,
+    evaluate_guard,
+    merge_usage,
+    reject_concurrent_runs,
+)
 
 # 策略层标准库日志（对齐「只依赖 ports + shared + 标准库」依赖方向，不用 platform 的
 # get_logger）；logger 名对齐 app.* 命名空间，可被 setup_logging 的 handler 捕获。
@@ -130,6 +149,19 @@ def _build_final_answer_tool(schema: dict) -> dict:
             "parameters": schema,
         },
     }
+
+
+def _tool_call_identity_error(tool_calls: list[dict]) -> str | None:
+    """在写入协议历史前验证当前批次的工具调用身份。"""
+    seen: set[str] = set()
+    for tool_call in tool_calls:
+        call_id = tool_call.get("id")
+        if not isinstance(call_id, str) or not call_id.strip():
+            return "工具调用 id 缺失（协议异常）"
+        if call_id in seen:
+            return f"工具调用 id 在当前批次重复: {call_id}（协议异常）"
+        seen.add(call_id)
+    return None
 
 
 def _extract_final_answer(
@@ -218,7 +250,14 @@ class ReActStrategy:
         self._stall_count = 0
         # 结果载体，execute() 结束后读取
         self.outcome: ReActOutcome | None = None
+        self._tool_facts: list[ToolFact] = []
 
+    @property
+    def tool_facts(self) -> tuple[ToolFact, ...]:
+        """返回本次运行已接管的工具事实快照。"""
+        return tuple(copy.deepcopy(fact) for fact in self._tool_facts)
+
+    @reject_concurrent_runs
     async def execute(
         self,
         user_input: str,
@@ -227,6 +266,8 @@ class ReActStrategy:
         max_iterations: int,
         temperature: float,
         max_tokens: int,
+        run_id: str,
+        run_stop: asyncio.Event,
         max_execution_time: float | None = None,
         max_context_rounds: int | None = None,
         max_context_tokens: int | None = None,
@@ -240,6 +281,8 @@ class ReActStrategy:
         stream_mode: bool = True,
         cancel_event: asyncio.Event | None = None,
         baseline_usage: dict | None = None,
+        workflow_id: str | None = None,
+        parent_cancel_events: tuple[asyncio.Event, ...] = (),
     ) -> AsyncGenerator[str]:
         """
         ReAct 主循环。
@@ -317,13 +360,17 @@ class ReActStrategy:
             SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）；
             流式下 reasoning/message 逐 token，非流式下为整条一次性（协议同构）
         """
+        self.outcome = None
         tool_defs = self._tools.get_openai_tools() if self._tools else None
+        if not run_id.strip():
+            raise ValueError("run_id 必须是非空字符串")
         # 结构化最终答案：注入 final_answer 工具（模型最后调用提交结构化结果并终止）
         if output_schema is not None:
             tool_defs = [*(tool_defs or []), _build_final_answer_tool(output_schema)]
         has_tools = bool(tool_defs)
 
         self._tool_call_records = []
+        self._tool_facts = []
 
         # 防 handler CONTINUE 无限重试烧钱：连续空输出 / LLM 失败 / 循环停滞计数，超过上限硬终止
         # 连续空输出重试计数：execute 每次独立（有产出清零 / 空输出 +1，见主循环）
@@ -509,14 +556,22 @@ class ReActStrategy:
                     # 工具调用信号与数据/能力不一致时，整条 assistant 响应无效。
                     # 必须先校验再写历史，否则无工具场景会留下无法配对的 tool_calls，
                     # 下一轮请求可能被 OpenAI 兼容网关以 400 拒绝。
+                    # 身份异常（id 缺失 / 批内重复）同归本类：tool 消息靠 tool_call_id 与前置
+                    # assistant.tool_calls 配对，身份不可用即无法配对，与「没有 tool_calls」等价，
+                    # 同样必须先拦截、共用协议修正预算，不得写进历史。
+                    identity_error = _tool_call_identity_error(stream_result.tool_calls)
                     if finish_reason == "tool_calls" and (
-                        not stream_result.tool_calls or not has_tools
+                        not stream_result.tool_calls
+                        or not has_tools
+                        or identity_error is not None
                     ):
-                        detail = (
-                            "finish_reason=tool_calls 但未返回工具调用（协议异常）"
-                            if not stream_result.tool_calls
-                            else "模型返回 tool_calls 但当前无可用工具（协议异常）"
-                        )
+                        if not stream_result.tool_calls:
+                            detail = "finish_reason=tool_calls 但未返回工具调用（协议异常）"
+                        elif not has_tools:
+                            detail = "模型返回 tool_calls 但当前无可用工具（协议异常）"
+                        else:
+                            # 外层条件已排除前两类，此处 identity_error 必非 None；`or` 只收窄类型
+                            detail = identity_error or "工具调用身份异常（协议异常）"
                         for e in await self._handle_tool_protocol_error(
                             detail,
                             full_reasoning,
@@ -610,6 +665,13 @@ class ReActStrategy:
                             tool_timeout,
                             tool_max_retries,
                             max_tool_protocol_retries,
+                            run_id=run_id,
+                            run_stop=run_stop,
+                            workflow_id=workflow_id,
+                            cancel_event=cancel_event,
+                            parent_cancel_events=parent_cancel_events,
+                            deadline=deadline,
+                            cleanup_deadline=hard_timeout_at,
                         ):
                             yield event
                         if self.outcome is not None:
@@ -649,6 +711,10 @@ class ReActStrategy:
             # `dispatch_error` 调用错误处理器；处理器返回 RAISE 时，后者构造并抛出
             # AgentRunError。它是已经完成分类的领域错误，直接传播给 BaseAgent.run，
             # 不能再被下方 Exception 兜底改写为 UNKNOWN。
+            raise
+        except ToolCancelledError, ToolDeadlineExceededError, ToolRunStoppedError:
+            # 工具批次已先把可得事实接管到 _tool_facts；控制异常保留类型向上层传播，
+            # 不进入普通 TOOL_FAILED/UNKNOWN 路由。领域终态提交由 Piece ⑤统一完成。
             raise
         except TimeoutError as exc:
             # TimeoutError 异常来源有两类：
@@ -834,6 +900,14 @@ class ReActStrategy:
         iteration: int,
         tool_timeout: int | None = None,
         tool_max_retries: int | None = None,
+        *,
+        run_id: str,
+        run_stop: asyncio.Event,
+        workflow_id: str | None = None,
+        cancel_event: asyncio.Event | None = None,
+        parent_cancel_events: tuple[asyncio.Event, ...] = (),
+        deadline: float | None = None,
+        cleanup_deadline: float | None = None,
     ) -> AsyncGenerator[str]:
         """
         并行执行工具调用列表，追加结果到 messages，记录到 _tool_call_records。
@@ -857,9 +931,51 @@ class ReActStrategy:
             tool_call / tool_result SSE 事件
         """
 
-        async def _execute_one(tc: dict) -> tuple:
+        if not run_id.strip():
+            raise ValueError("run_id 必须是非空字符串")
+
+        identity_error = _tool_call_identity_error(tool_calls)
+        if identity_error is not None:
+            raise ValueError(identity_error)
+
+        batch_id = uuid.uuid4().hex
+        collector = ToolBatchCollector()
+        cancel_events = (
+            *parent_cancel_events,
+            *((cancel_event,) if cancel_event is not None else ()),
+        )
+        contexts: dict[int, ToolCallContext] = {}
+        for index, tc in enumerate(tool_calls):
+            tool_call_id = tc["id"]
+            call = ToolCallContext(
+                workflow_id=workflow_id,
+                run_id=run_id,
+                batch_id=batch_id,
+                tool_call_id=tool_call_id,
+                operation_id=uuid.uuid4().hex,
+                deadline=deadline,
+                cleanup_deadline=cleanup_deadline,
+                cancel_events=cancel_events,
+                run_stop=run_stop,
+            )
+            contexts[index] = call
+            collector.record(
+                ToolFact(
+                    operation_id=call.operation_id,
+                    run_id=call.run_id,
+                    batch_id=call.batch_id,
+                    tool_call_id=call.tool_call_id,
+                    revision=0,
+                    execution_state=ToolExecutionState.NOT_STARTED,
+                    effect_state=ToolEffectState.NONE,
+                    cleanup_state=ToolCleanupState.NOT_NEEDED,
+                )
+            )
+
+        async def _execute_one(index: int, tc: dict) -> tuple:
             """并行执行单个工具（并发 task 内只做执行，不 yield 事件）。"""
-            tool_name = tc["function"]["name"]
+            tool_name = tc.get("function", {}).get("name", "unknown")
+            call = contexts[index]
 
             try:
                 raw_args = tc["function"]["arguments"]
@@ -884,12 +1000,22 @@ class ReActStrategy:
                 tool_args,
                 timeout=tool_timeout,
                 max_retries=tool_max_retries,
+                call=call,
+                facts=collector,
             )
             elapsed = time.monotonic() - start
             return exec_result, tool_name, tool_args, tc, elapsed
 
         # gather 保证结果顺序 = tool_calls 输入顺序
-        results = await asyncio.gather(*[_execute_one(tc) for tc in tool_calls])
+        try:
+            results = await asyncio.gather(
+                *[_execute_one(index, tc) for index, tc in enumerate(tool_calls)]
+            )
+        finally:
+            # 先复制到策略拥有的运行事实，再断开 collector；随后抛出的类型化终止
+            # 仍可由上层结合这些事实决策，不把事实塞进异常对象。
+            self._tool_facts.extend(collector.snapshot())
+            collector.close()
 
         tool_messages: list[dict] = []
         for exec_result, tool_name, tool_args, tc, elapsed in results:
@@ -1249,6 +1375,14 @@ class ReActStrategy:
         tool_timeout: int | None,
         tool_max_retries: int | None,
         max_tool_protocol_retries: int,
+        *,
+        run_id: str,
+        run_stop: asyncio.Event,
+        workflow_id: str | None,
+        cancel_event: asyncio.Event | None,
+        parent_cancel_events: tuple[asyncio.Event, ...],
+        deadline: float | None,
+        cleanup_deadline: float | None,
     ) -> AsyncGenerator[str]:
         """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。
 
@@ -1262,6 +1396,13 @@ class ReActStrategy:
             iteration,
             tool_timeout=tool_timeout,
             tool_max_retries=tool_max_retries,
+            run_id=run_id,
+            run_stop=run_stop,
+            workflow_id=workflow_id,
+            cancel_event=cancel_event,
+            parent_cancel_events=parent_cancel_events,
+            deadline=deadline,
+            cleanup_deadline=cleanup_deadline,
         ):
             yield event
 

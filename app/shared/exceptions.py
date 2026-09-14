@@ -28,8 +28,12 @@ class AppErrorCode(StrEnum):
     FORBIDDEN = "FORBIDDEN"  # 权限不足（ForbiddenError，403）
     NOT_FOUND = "NOT_FOUND"  # 资源不存在（NotFoundError，404）
     CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED"  # 请求超出模型上下文窗口
-    LLM_CANCELLED = "LLM_CANCELLED"  # LLM 调用被业务取消（LLMCancelledError，领域可识别执行终止）
-    LLM_DEADLINE = "LLM_DEADLINE"  # LLM 调用整体执行期限耗尽（LLMDeadlineExceededError）
+    LLM_CANCELLED = (
+        "LLM_CANCELLED"  # LLM 调用被业务取消（LLMCancelledError，领域可识别执行终止）
+    )
+    LLM_DEADLINE = (
+        "LLM_DEADLINE"  # LLM 调用整体执行期限耗尽（LLMDeadlineExceededError）
+    )
     CIRCUIT_OPEN = "CIRCUIT_OPEN"  # 熔断开启（CircuitBreakerOpenError）
     LLM_API_ERROR = (
         "LLM_API_ERROR"  # LLM 下游不可恢复错误（LLMAPIError，openai 4xx/认证归一）
@@ -37,6 +41,9 @@ class AppErrorCode(StrEnum):
     LLM_TRUNCATED = "LLM_TRUNCATED"  # 结构化输出截断（StructuredTruncationError）
     LLM_REFUSAL = "LLM_REFUSAL"  # 模型拒答（StructuredRefusalError）
     LLM_TOOL_CALL = "LLM_TOOL_CALL"  # 模型选择调用工具（StructuredToolCallError）
+    TOOL_CANCELLED = "TOOL_CANCELLED"
+    TOOL_DEADLINE = "TOOL_DEADLINE"
+    TOOL_RUN_STOPPED = "TOOL_RUN_STOPPED"
     SSRF_BLOCKED = "SSRF_BLOCKED"  # SSRF 拦截（SSRFError）
 
 
@@ -150,6 +157,41 @@ class LLMAPIError(NonRetryableError):
     def __init__(self, message: str = "", status_code: int | None = None) -> None:
         self.status_code = status_code
         super().__init__(message)
+
+
+class _ToolExecutionControlError(NonRetryableError):
+    """工具生命周期的公开控制终止；只携共享层可表达的诊断身份。"""
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        run_id: str,
+        operation_id: str,
+        diagnostic_id: str | None = None,
+    ) -> None:
+        self.run_id = run_id
+        self.operation_id = operation_id
+        self.diagnostic_id = diagnostic_id
+        super().__init__(message)
+
+
+class ToolCancelledError(_ToolExecutionControlError):
+    """任一适用取消信号已置位。"""
+
+    code = AppErrorCode.TOOL_CANCELLED
+
+
+class ToolDeadlineExceededError(_ToolExecutionControlError):
+    """本调用的绝对执行期限已到。"""
+
+    code = AppErrorCode.TOOL_DEADLINE
+
+
+class ToolRunStoppedError(_ToolExecutionControlError):
+    """所属运行已关闭新的业务调用准入。"""
+
+    code = AppErrorCode.TOOL_RUN_STOPPED
 
 
 class ParameterValidationError(NonRetryableError, ValueError):

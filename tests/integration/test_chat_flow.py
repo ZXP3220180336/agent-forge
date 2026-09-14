@@ -283,10 +283,8 @@ async def test_chat_stop_cancels_running_agent(agent_params):
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持
     )
 
-    # 模拟 /chat/stop 已调用：send_message 返回后取消事件已注册，置位它
-    cancel_ev = ts.get_cancel_event("s3")
-    assert cancel_ev is not None, "send 应注册会话取消事件"
-    cancel_ev.set()
+    # 模拟 /chat/stop：按会话置位当前全部活动 run。
+    assert ts.cancel_session("s3") is True
 
     chunks: list[str] = []
     async for chunk in response.body_iterator:
@@ -301,7 +299,7 @@ async def test_chat_stop_cancels_running_agent(agent_params):
     # 取消后 LLM 未被调用（主循环顶部即停止）
     assert fake_llm.calls == 0
     # 注册表在流结束时清理
-    assert ts.get_cancel_event("s3") is None
+    assert ts.cancel_session("s3") is False
 
 
 @pytest.mark.asyncio
@@ -363,7 +361,7 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch, agent_params):
     assert "tool_call" not in types and "done" not in types, (
         f"断连后应停止向断连客户端推送后续事件: {types}"
     )
-    assert ts.get_cancel_event("s4") is None, "流结束应清理会话取消事件"
+    assert ts.cancel_session("s4") is False, "流结束应清理该会话的活动运行"
 
 
 async def _run_with_iteration_budget(

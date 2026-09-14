@@ -7,7 +7,7 @@ Agent 基类定义
 
 设计目标：
 - 策略模式：BaseAgent.run() 是统一入口，_strategy_cycle() 由子类实现具体策略
-- 无状态：每次 run() 新建实例，上下文通过 AgentContext 传入
+- 运行隔离：每次 run() 传入独立身份；同一实例并发复用明确拒绝
 - 流式友好：通过 _emit_event() 生成 SSE 事件，内层逻辑与外层输出解耦
 - 可扩展：钩子方法 on_tool_call / on_thought / on_complete 供子类覆盖
 
@@ -20,6 +20,7 @@ Agent 基类定义
 import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -34,6 +35,11 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_error_event, build_info_event
+from app.shared.exceptions import (
+    ToolCancelledError,
+    ToolDeadlineExceededError,
+    ToolRunStoppedError,
+)
 from app.shared.types import SessionId, UserId
 
 
@@ -51,15 +57,20 @@ class AgentState(Enum):
 @dataclass
 class AgentContext:
     """
-    Agent 上下文信息（不可变，每次 run() 传入）
+    Agent 上下文信息（每次 run() 独立传入）
 
     所有 Agent 运行所需的外部依赖和配置都在这里，
-    Agent 实例本身不持有状态。
+    Agent 在运行期持有上下文与结果，因此只允许顺序复用。
     """
 
     # 会话标识
     session_id: SessionId
     user_id: UserId
+    # 运行身份由 Application 或其他显式入口创建；同会话并发运行不得复用。
+    run_id: str
+    run_stop: asyncio.Event
+    workflow_id: str | None = None
+    parent_cancel_events: tuple[asyncio.Event, ...] = ()
 
     # 参数控制（默认值与配置默认一致；生产值由装配根注入，可被调用方覆盖）
     temperature: float = 0.2
@@ -146,6 +157,7 @@ class BaseAgent(ABC):
         self._state = AgentState.IDLE
         self._tool_call_history: list[dict[str, Any]] = []
         self._result: AgentResult | None = None  # 子类在策略循环中设置
+        self._running = False
 
     # ===== 公开接口 =====
 
@@ -176,15 +188,34 @@ class BaseAgent(ABC):
         Yields:
             SSE 格式的流式事件字符串
         """
+        if self._running:
+            raise RuntimeError("同一个 Agent 实例不能并发运行")
+        if not isinstance(context.run_id, str) or not context.run_id.strip():
+            raise ValueError("AgentContext.run_id 必须是非空字符串")
+        if not isinstance(context.run_stop, asyncio.Event):
+            raise TypeError("AgentContext.run_stop 必须是 asyncio.Event")
+        if not isinstance(context.parent_cancel_events, tuple) or any(
+            not isinstance(event, asyncio.Event)
+            for event in context.parent_cancel_events
+        ):
+            raise TypeError(
+                "AgentContext.parent_cancel_events 必须是 asyncio.Event 元组"
+            )
+        if context.workflow_id is not None and (
+            not isinstance(context.workflow_id, str) or not context.workflow_id.strip()
+        ):
+            raise ValueError("AgentContext.workflow_id 必须为 None 或非空字符串")
+        self._running = True
         self._context = context
         self._state = AgentState.THINKING
         self._tool_call_history = []
-
-        yield build_info_event("Agent 开始处理")
+        self._result = None
 
         try:
-            async for event in self._strategy_cycle(user_input, list(messages)):
-                yield event
+            yield build_info_event("Agent 开始处理")
+            async with aclosing(self._strategy_cycle(user_input, list(messages))) as cycle:
+                async for event in cycle:
+                    yield event
 
             self._state = (
                 AgentState.COMPLETED
@@ -210,6 +241,14 @@ class BaseAgent(ABC):
             # handler 已决策 RAISE 的领域错误：不吞，上抛给调用方
             raise
 
+        except ToolCancelledError:
+            self._state = AgentState.CANCELLED
+            raise
+        except ToolDeadlineExceededError, ToolRunStoppedError:
+            # 工具批次已先接管事实；保留类型给 Application/后续终态编排决策。
+            self._state = AgentState.FAILED
+            raise
+
         except Exception as e:
             # 未捕获异常 → 错误处理分发（默认 STOP = 现有 FAILED 态；handler 可 RAISE 上抛）
             action = await self._error_handlers.dispatch(
@@ -223,6 +262,9 @@ class BaseAgent(ABC):
                 raise
             self._state = AgentState.FAILED
             yield build_error_event(f"Agent 运行异常: {e!s}")
+        finally:
+            self._context = None
+            self._running = False
 
     # ===== 子类必须实现 =====
 

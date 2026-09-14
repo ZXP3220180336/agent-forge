@@ -33,9 +33,9 @@
 - [x] 文档链接、对齐和 diff 检查；实际结果见本轮评审记录。
 - [x] 六项讨论定案回填 ADR/todo：撤销全调用强制意图落库及全量账本前置依赖，补多 Agent 隔离、选择性异常传播与未来升级路径。
 
-### P0：最小端口与部署规格（已形成，待评审）
+### P0：最小端口与部署规格（已形成；Piece①、②已实施）
 
-唯一详细规格见 [ADR P0 S1–S8](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#p0-实施规格2026-09-13规格完成待评审)，初值见[配置规格](config_doc/config.md#tool-lifecycle-p0)，运行约束见[部署规格](project/deployment.md#tool-lifecycle-p0)。本节表格保留交付职责导航，不重复字段和参数值。
+唯一详细规格见 [ADR P0 S1–S8](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#tool-lifecycle-p0-spec)，初值见[配置规格](config_doc/config.md#tool-lifecycle-p0)，运行约束见[部署规格](project/deployment.md#tool-lifecycle-p0)。本节表格保留交付职责导航，不重复字段和参数值。
 
 - [x] P0-A：公开签名、独立 facts 端口、共享异常出口、运行/批次/attempt 身份与状态迁移。
 - [x] P0-A：Executor、Admission、Supervisor、BatchRunner/Collector 的方法及文件边界与 E9 依据。
@@ -43,7 +43,7 @@
 - [x] P0-B：逐工具持久化/资源等级，保守目录范围与 code_exec 限制。
 - [x] P0-B：SQLAlchemy 专用账本、CAS/事件幂等、SQL 迁移和 asyncpg 依赖接入位置。
 - [x] P0-A/B：配置初值、Windows 单机 Owner、宿主关闭机制和验证矩阵。
-- [ ] P0 规格经实施评审确认后启动 P1；尚未创建新代码或验证运行保证。
+- [x] P0 规格已通过实施评审；Piece①、②已按纵向切片落地，后续运行保证仍按 Piece③～⑧逐项验收。
 
 本阶段先补规格，不创建占位类。对现有消费者逐一映射：
 
@@ -66,12 +66,12 @@ P0-A 冻结运行/批次/调用身份、独立事实入口、类型化终止、�
 
 #### P0 规格的实施 piece
 
-P0 S1～S8 是设计职责划分；下列 piece 是后续实施与验收单元，沿用 P1～P5 的任务归属。字段、状态及默认值以 ADR/配置规格为唯一正文；具体文件分工沿用下方对应 P 阶段，不在此复制。所有 piece 当前均待实施，P0 规格完成不代表代码已兑现。
+P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿用 P1～P5 的任务归属。字段、状态及默认值以 ADR/配置规格为唯一正文；具体文件分工沿用下方对应 P 阶段，不在此复制。Piece①、②已兑现，后续 piece 仍待实施；局部完成不代表整套生命周期闭环。
 
 | Piece / 当前状态 | 范围与实施归属 | 主要规格依据 | 完成条件 |
 | --- | --- | --- | --- |
 | ① 调用前后处理与安全重试 / 已完成 | P1：已分离真实执行、结果处理和非关键观测；BaseTool 默认禁止重试，只有显式安全声明和次数余额同时满足才重复；见 [TOOLS-050](../issues/integration/tools/2026-09-14-executor-postprocessing-retry.md) | S2、S3、S8 | 红测闭合；工具相关 94 passed、全量 991 passed。生产适配器与 SDK 内部重试上界仍归 Piece ④逐项核验，不影响本 piece 的 Executor 边界验收 |
-| ② 运行身份、控制信号与独立事实 / 待实施 | P3-A＋P4-A：实现公开上下文、事实入口和类型化终止；Application 创建 run_id，贯穿 Gateway、Agent、策略及测试替身 | S1、S3、S4、S8 | 新端口和全部调用方同批接线；同会话多运行不串取消、身份或成果；共享异常不反向依赖 Domain |
+| ② 运行身份、控制信号与独立事实 / 已完成 | P3-A＋P4-A：已实现公开上下文、事实入口和类型化终止；Application 创建 run_id，贯穿 Gateway、Agent、策略及测试替身 | S1、S3、S4、S8 | 强制 call/facts 契约、同会话多 run 取消隔离、批次事实先接管和 shared 异常依赖方向已由专项与跨层测试覆盖；真实后台句柄仍按 Piece ④边界待实施 |
 | ③ 共享准入与配置迁移 / 待实施 | P3-A：实现 Admission 的全局/单运行容量、有界排队、按运行轮转和资源联合准入；同步配置字段、Container、settings.py 注释及配置文档 | S3、S5、配置规格 | 容量不超限；撤回与取得许可竞态不泄漏；无关运行可继续；旧键无兼容别名，改名不扩大总并发 |
 | ④ 真实执行与有界清理接管 / 待实施 | P3-A：实现 Supervisor、AttemptHandle 及首批只读适配器的真实完成跟踪、清理和迟回事实接管 | S2、S3、S5、S6、S8 | 真实线程未结束不退容量；迟回值有 Owner；清理与接管有界；依赖不在仍被使用时提前关闭 |
 | ⑤ 并行成果、协议历史与终态 / 待实施 | P4-A＋P5-A：在 ② 的事实接线上完善 BatchRunner/Collector、ReAct 历史及事件提交，完成只读交付 A 验收 | S1、S4、S8 | 部分完成后取消仍保留兄弟成果；协议消息正确配对；done 唯一；终态后无新业务调用 |
@@ -179,7 +179,7 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 
 ### 本轮评审记录
 
-2026-09-14 最新结论：Piece ①已完成，真实调用与调用后处理不再共享重试异常范围；安全声明与次数余额共同准入重试，展示失败保留原结果，统计、Hook、审计共享有界观察预算。修复前红测证实已成功工具会被执行三次，修复后工具相关 94 项、全量 991 项通过；详见 [TOOLS-050](../issues/integration/tools/2026-09-14-executor-postprocessing-retry.md)。Piece ②～⑧待实施；生产适配器与 SDK 内部重试上界归 Piece ④核验。
+2026-09-14 最新结论：Piece ①、②已完成。Piece ②新增强制 `ToolCallContext/ToolFactSink` 契约，chat/Application 创建唯一 run 身份，TaskService 按 run 隔离且按 session 取消全部活动运行；三种 Agent/策略透传父 run 控制，ReAct 为每批/每 call 建立独立身份并在类型化终止前接管事实；Integration 先保存事实副本再通知 Domain。定向策略/Agent/工具生命周期 232 项、全量 1015 项通过，`scripts.verify_alignment` 与 `git diff --check` 通过。Piece ③～⑧待实施，线程/进程真实句柄、迟回值和有界清理仍归 Piece ④。
 
 历史背景见 [C-02 文档设计交接](history/completed-work.md#c-02-p0-design-history)，不在活动计划中重复各轮验证叙述。
 

@@ -1,12 +1,15 @@
 """reasoning 策略共享小工具（react/reflection/planner 共用，不 import 任何策略 → 无环）。
 
-仅收无状态纯函数与常量，不维护任何生命周期/全局可变状态（error_handlers、策略实例态等
-由各策略自行持有）。命名带 `_` 前缀 = 层内私有共享（非对外导出）。
+仅收无状态函数、常量及跨策略装饰器，不维护全局可变状态（error_handlers、策略实例态等
+仍由各策略自行持有）。命名带 `_` 前缀 = 层内私有共享（非对外导出）。
 """
 
 import asyncio
 import time
+from contextlib import aclosing
 from dataclasses import dataclass
+from functools import wraps
+from typing import Any
 
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.shared.error_handling import (
@@ -17,6 +20,25 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.exceptions import ContextWindowExceededError
+
+
+def reject_concurrent_runs(method):
+    """拒绝并发复用持有可变 outcome/计数器的策略实例。"""
+
+    @wraps(method)
+    async def wrapped(self, *args: Any, **kwargs: Any):
+        if getattr(self, "_execution_running", False):
+            raise RuntimeError(f"同一个 {type(self).__name__} 实例不能并发执行")
+        self._execution_running = True
+        try:
+            # 外层消费者 aclose 时也要等待内部 finally，之后才可复用实例。
+            async with aclosing(method(self, *args, **kwargs)) as stream:
+                async for event in stream:
+                    yield event
+        finally:
+            self._execution_running = False
+
+    return wrapped
 
 
 @dataclass(frozen=True, slots=True)

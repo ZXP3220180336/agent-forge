@@ -3,12 +3,15 @@
 react / reflection / planner 三策略共用、不 import 任何策略的无状态纯函数（策略间零环依赖）。
 文件名带 `_` 前缀 = 层内私有共享（非对外导出）。
 
-> **更新日期**：2026-09-12
+> **更新日期**：2026-09-14
 
 ## 共享小工具
 
 - `merge_usage(*usages)`：usage dict 累加合并（prompt/completion/total；空入参跳过）——
   reflection 自查/修正阶段与 planner 全阶段共用
+- `reject_concurrent_runs`：保护持有 `outcome`、计数器和批次事实的策略实例；第二个并发
+  `execute()` 明确抛出 `RuntimeError`，首个执行无论正常、异常或生成器关闭都在 `finally`
+  释放标志。它只拒绝错误复用，不承担跨实例容量限制。
 - `GuardResult`：不可变、带 slots 的类型化护栏结果，字段为 `kind: AgentErrorKind`、`message`、
   可选 `cost_usd`；`None` 表示允许继续。
 - `evaluate_guard(*, cancel_event, deadline, cost_limiter, running_usage, cancelled=False,
@@ -43,5 +46,5 @@ RAISE 决策抛 `AgentRunError`，否则返回 action。
 - 使用方：`react._dispatch`（唯一入口，委托本函数）；reflection / planner 的结构化调用失败
   （`CRITIQUE_FAILED` / `PLAN_FAILED`）直接调用
 
-设计取向：仅收无状态纯函数、不建全局可变状态——策略间隔离性（各实例独立 registry / 可注入
-不同 handler）由策略实例保证，本模块不引入共享生命周期。
+设计取向：本模块不建全局可变状态。纯函数继续无状态；并发装饰器只读写被装饰策略实例的
+私有运行标志，策略间仍各自隔离，不在这里引入共享容量或运行注册表。

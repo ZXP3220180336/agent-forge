@@ -157,6 +157,8 @@ def _make_strategy(llm, *, error_handlers=None, max_refine_rounds=2) -> Reflecti
 
 
 async def _run(strategy, max_refine_rounds=2, **execute_kwargs) -> list[str]:
+    execute_kwargs.setdefault("run_id", "run-reflection-test")
+    execute_kwargs.setdefault("run_stop", asyncio.Event())
     events = []
     async for ev in strategy.execute(
         "分析良率下降原因",
@@ -446,6 +448,8 @@ async def test_reflect_guardrails_passthrough_to_react():
         "x", [{"role": "user", "content": "x"}],
         max_iterations=5, temperature=0.2, max_tokens=1024,
         cancel_event=cancel_event,
+        run_id="run-reflection-wiring",
+        run_stop=asyncio.Event(),
     ):
         pass
 
@@ -908,6 +912,8 @@ async def test_reflect_cancel_event_stops_degrades_to_draft():
         temperature=0.2,
         max_tokens=1024,
         cancel_event=cancel_event,
+        run_id="run-reflection-cancel",
+        run_stop=asyncio.Event(),
     ):
         events.append(ev)
 
@@ -1062,6 +1068,8 @@ async def test_reflect_passes_cancel_deadline_to_structured():
         max_tokens=1024,
         max_execution_time=60.0,
         cancel_event=cancel_event,
+        run_id="run-reflection-deadline",
+        run_stop=asyncio.Event(),
     ):
         pass
 

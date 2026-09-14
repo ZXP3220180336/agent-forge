@@ -136,6 +136,8 @@ def _stop_script(content: str) -> dict:
 
 
 async def _run(strategy, messages, **kw):
+    kw.setdefault("run_id", "run-planner-test")
+    kw.setdefault("run_stop", asyncio.Event())
     events = []
     async for ev in strategy.execute(
         "分析批次 A 良率下降原因",

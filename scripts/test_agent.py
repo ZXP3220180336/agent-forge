@@ -41,6 +41,8 @@ async def main():
     ctx = AgentContext(
         session_id="test_session",
         user_id="test_user",
+        run_id="manual-test-run",
+        run_stop=asyncio.Event(),
         max_iterations=5,
     )
 

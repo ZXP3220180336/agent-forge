@@ -23,7 +23,7 @@ import pytest
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.base import BaseTool
 from app.integration.tools.loader import ExternalToolLoader
-from app.integration.tools.tool_service import ToolService
+from tests.tool_lifecycle import StandaloneToolService as ToolService
 
 
 def _tool_source(name: str, content: str = "ok", *, extra: str = "") -> str:

@@ -4,8 +4,17 @@ import asyncio
 import copy
 import json
 import time
+import uuid
 from typing import Any
 
+from app.domain.ports.tool_execution import (
+    ToolCallContext,
+    ToolCleanupState,
+    ToolEffectState,
+    ToolExecutionState,
+    ToolFact,
+    ToolFactSink,
+)
 from app.domain.ports.tool_gateway import ErrorCode, ToolResult
 from app.integration.tools.base import BaseTool
 from app.integration.tools.hooks import ExecutionHooks
@@ -20,6 +29,11 @@ from app.integration.tools.security import (
 from app.integration.tools.stats import ToolStatsCollector
 from app.integration.tools.validator import ParameterValidator
 from app.platform.observability.logger import get_logger
+from app.shared.exceptions import (
+    ToolCancelledError,
+    ToolDeadlineExceededError,
+    ToolRunStoppedError,
+)
 
 logger = get_logger("tools.executor")
 
@@ -61,6 +75,77 @@ class ToolExecutor:
         self._tool_semaphore = asyncio.Semaphore(max_concurrent_tools)
         # per-tool 锁：concurrency_safe=False 的工具同实例内串行化
         self._tool_locks: dict[str, asyncio.Lock] = {}
+        # Integration 先接管事实；已交付且已完成清理的快照可释放。
+        # 未决执行、关闭的 sink 或交付失败仍由 Integration 持有。
+        self._latest_facts: dict[tuple[str, str | None], ToolFact] = {}
+
+    @staticmethod
+    def check_abort(call: ToolCallContext) -> None:
+        """按冻结契约顺序检查取消、绝对期限与 run 关闭。"""
+        if any(event.is_set() for event in call.cancel_events):
+            raise ToolCancelledError(
+                "工具调用已取消",
+                run_id=call.run_id,
+                operation_id=call.operation_id,
+            )
+        if call.deadline is not None and time.monotonic() >= call.deadline:
+            raise ToolDeadlineExceededError(
+                "工具调用期限已到",
+                run_id=call.run_id,
+                operation_id=call.operation_id,
+            )
+        if call.run_stop.is_set():
+            raise ToolRunStoppedError(
+                "所属运行已停止新的工具调用",
+                run_id=call.run_id,
+                operation_id=call.operation_id,
+            )
+
+    def _publish_fact(
+        self,
+        call: ToolCallContext,
+        facts: ToolFactSink,
+        *,
+        revision: int,
+        execution_state: ToolExecutionState,
+        effect_state: ToolEffectState,
+        cleanup_state: ToolCleanupState,
+        attempt_id: str | None = None,
+        result: ToolResult | None = None,
+    ) -> None:
+        """先接管专有快照，再同步通知 Domain；sink 异常按编程错误传播。"""
+        owned = ToolFact(
+            operation_id=call.operation_id,
+            attempt_id=attempt_id,
+            run_id=call.run_id,
+            batch_id=call.batch_id,
+            tool_call_id=call.tool_call_id,
+            revision=revision,
+            execution_state=execution_state,
+            effect_state=effect_state,
+            cleanup_state=cleanup_state,
+            result=copy.deepcopy(result),
+        )
+        self._latest_facts[(call.operation_id, attempt_id)] = owned
+        try:
+            acknowledged = facts.record(copy.deepcopy(owned))
+        except Exception:
+            # 事实入口失效后不允许同一 run 再启动业务调用；原异常保留给上层诊断。
+            call.run_stop.set()
+            raise
+        if (
+            acknowledged is True
+            and execution_state in {
+                ToolExecutionState.NOT_STARTED,
+                ToolExecutionState.SUCCEEDED,
+                ToolExecutionState.FAILED,
+            }
+            and cleanup_state in {
+                ToolCleanupState.COMPLETE,
+                ToolCleanupState.NOT_NEEDED,
+            }
+        ):
+            self._latest_facts.pop((call.operation_id, attempt_id), None)
 
     async def execute(
         self,
@@ -69,19 +154,51 @@ class ToolExecutor:
         timeout: int | None = None,
         max_retries: int | None = None,
         retry_delay: float = 1.0,
+        *,
+        call: ToolCallContext,
+        facts: ToolFactSink,
     ) -> ToolResult:
         """执行工具（信号量最外层，包裹含重试退避的完整流程）。
 
         async with 天然保证异常/取消时释放信号量，不会挂死占坑。
         """
+        self._publish_fact(
+            call,
+            facts,
+            revision=0,
+            execution_state=ToolExecutionState.NOT_STARTED,
+            effect_state=ToolEffectState.NONE,
+            cleanup_state=ToolCleanupState.NOT_NEEDED,
+        )
+        self.check_abort(call)
         async with self._tool_semaphore:
-            return await self._execute_impl(
+            self.check_abort(call)
+            result, execution_state, cleanup_state = await self._execute_impl(
                 name,
                 parameters,
                 timeout=timeout,
                 max_retries=max_retries,
                 retry_delay=retry_delay,
+                call=call,
+                facts=facts,
             )
+        # 真实调用返回后先发布事实，再复查控制；取消不会抹除已发生结果。
+        effect_state = (
+            ToolEffectState.NONE
+            if execution_state == ToolExecutionState.NOT_STARTED
+            else result.effect_state
+        )
+        self._publish_fact(
+            call,
+            facts,
+            revision=1,
+            execution_state=execution_state,
+            effect_state=effect_state,
+            cleanup_state=cleanup_state,
+            result=result,
+        )
+        self.check_abort(call)
+        return result
 
     async def _execute_impl(
         self,
@@ -90,7 +207,10 @@ class ToolExecutor:
         timeout: int | None = None,
         max_retries: int | None = None,
         retry_delay: float = 1.0,
-    ) -> ToolResult:
+        *,
+        call: ToolCallContext,
+        facts: ToolFactSink,
+    ) -> tuple[ToolResult, ToolExecutionState, ToolCleanupState]:
         """执行工具（带参数校验、自动重试、结果截断、审计留痕），在信号量保护内调用。"""
         started_at = time.monotonic()
 
@@ -106,7 +226,7 @@ class ToolExecutor:
             await self._audit(
                 None, parameters, result, started_at=started_at, tool_name=name
             )
-            return result
+            return result, ToolExecutionState.NOT_STARTED, ToolCleanupState.NOT_NEEDED
 
         # 2. 解析执行参数：调用方显式 > 工具自声明 > 全局配置（max_retries 仅调用方 / 全局两档）
         if timeout is None:
@@ -132,7 +252,7 @@ class ToolExecutor:
                     error_code=ErrorCode.JSON_PARSE,
                 )
                 await self._audit(tool, parameters, result, started_at=started_at)
-                return result
+                return result, ToolExecutionState.NOT_STARTED, ToolCleanupState.NOT_NEEDED
         # LLM 可能返回数组 / 标量 / null，或调用方误传非 str 键 dict——一律归 JSON_PARSE，
         # 否则后续 **parameters 抛 TypeError 逃逸编排层（违反「不让异常抛出」契约）
         if not isinstance(parameters, dict) or any(
@@ -147,7 +267,7 @@ class ToolExecutor:
                 error_code=ErrorCode.JSON_PARSE,
             )
             await self._audit(tool, parameters, result, started_at=started_at)
-            return result
+            return result, ToolExecutionState.NOT_STARTED, ToolCleanupState.NOT_NEEDED
 
         # 4. 参数前置校验（jsonschema 全量校验，错误可归因）
         issues = tool.validation_issues(**parameters)
@@ -161,7 +281,7 @@ class ToolExecutor:
                 error_code=ErrorCode.VALIDATION,
             )
             await self._audit(tool, parameters, result, started_at=started_at)
-            return result
+            return result, ToolExecutionState.NOT_STARTED, ToolCleanupState.NOT_NEEDED
 
         # 5. 人工审批拦截（requires_approval 工具需 ApprovalGate 确认，默认 AutoApprovalGate 放行）
         if tool.requires_approval and not await self._approval_gate.request(
@@ -174,25 +294,33 @@ class ToolExecutor:
                 error_code=ErrorCode.REJECTED,
             )
             await self._audit(tool, parameters, result, started_at=started_at)
-            return result
+            return result, ToolExecutionState.NOT_STARTED, ToolCleanupState.NOT_NEEDED
 
         # 6. 执行（重试循环）；concurrency_safe=False 时 per-tool 锁串行化
         if tool.concurrency_safe:
-            result, observation_remaining = await self._execute_with_retry(
+            (
+                result, observation_remaining, execution_state, cleanup_state
+            ) = await self._execute_with_retry(
                 tool,
                 parameters,
                 timeout=timeout,
                 max_retries=max_retries,
                 retry_delay=retry_delay,
+                call=call,
+                facts=facts,
             )
         else:
             async with self._tool_lock(name):
-                result, observation_remaining = await self._execute_with_retry(
+                (
+                    result, observation_remaining, execution_state, cleanup_state
+                ) = await self._execute_with_retry(
                     tool,
                     parameters,
                     timeout=timeout,
                     max_retries=max_retries,
                     retry_delay=retry_delay,
+                    call=call,
+                    facts=facts,
                 )
 
         # 7. 审计（每次 execute 一条最终结果）
@@ -215,7 +343,7 @@ class ToolExecutor:
                 result,
                 timeout=observation_remaining,
             )
-        return result
+        return result, execution_state, cleanup_state
 
     async def _audit(
         self,
@@ -269,7 +397,9 @@ class ToolExecutor:
         timeout: int,
         max_retries: int,
         retry_delay: float,
-    ) -> tuple[ToolResult, float]:
+        call: ToolCallContext,
+        facts: ToolFactSink,
+    ) -> tuple[ToolResult, float, ToolExecutionState, ToolCleanupState]:
         """重试循环：超时保护 + 渐进式退避 + 成功截断 + 统计 + 钩子。
 
         超时语义：`wait_for` 超时取消的是执行协程；工具内部经 `asyncio.to_thread`
@@ -282,9 +412,22 @@ class ToolExecutor:
         last_error_code: ErrorCode | None = None
         last_result: ToolResult | None = None
         actual_retries = 0
+        execution_state = ToolExecutionState.NOT_STARTED
+        cleanup_state = ToolCleanupState.NOT_NEEDED
         observation_remaining = self._observation_timeout
 
         for attempt in range(max_retries):
+            self.check_abort(call)
+            attempt_id = uuid.uuid4().hex
+            self._publish_fact(
+                call,
+                facts,
+                revision=0,
+                attempt_id=attempt_id,
+                execution_state=ToolExecutionState.RUNNING,
+                effect_state=ToolEffectState.UNKNOWN,
+                cleanup_state=ToolCleanupState.PENDING,
+            )
             start_time = time.monotonic()
             try:
                 result = await asyncio.wait_for(
@@ -292,6 +435,8 @@ class ToolExecutor:
                     timeout=timeout,
                 )
             except TimeoutError as error:
+                execution_state = ToolExecutionState.UNKNOWN
+                cleanup_state = ToolCleanupState.PENDING
                 failure: ToolResult | BaseException = error
                 last_error = self._normalize_error(f"工具执行超时（{timeout}秒）")
                 last_error_code = ErrorCode.TIMEOUT
@@ -305,7 +450,26 @@ class ToolExecutor:
                     observation_remaining=observation_remaining,
                 )
 
+                self._publish_fact(
+                    call,
+                    facts,
+                    revision=1,
+                    attempt_id=attempt_id,
+                    execution_state=ToolExecutionState.UNKNOWN,
+                    effect_state=ToolEffectState.UNKNOWN,
+                    cleanup_state=ToolCleanupState.PENDING,
+                    result=ToolResult(
+                        success=False,
+                        content="",
+                        error=last_error,
+                        error_code=last_error_code,
+                        retry_count=attempt + 1,
+                    ),
+                )
+
             except Exception as error:  # noqa: BLE001
+                execution_state = ToolExecutionState.FAILED
+                cleanup_state = ToolCleanupState.COMPLETE
                 failure = error
                 last_error = self._normalize_error(f"工具执行异常: {error!s}")
                 last_error_code = ErrorCode.UNKNOWN
@@ -319,13 +483,52 @@ class ToolExecutor:
                     observation_remaining=observation_remaining,
                 )
 
+                self._publish_fact(
+                    call,
+                    facts,
+                    revision=1,
+                    attempt_id=attempt_id,
+                    execution_state=ToolExecutionState.FAILED,
+                    effect_state=ToolEffectState.UNKNOWN,
+                    cleanup_state=ToolCleanupState.COMPLETE,
+                    result=ToolResult(
+                        success=False,
+                        content="",
+                        error=last_error,
+                        error_code=last_error_code,
+                        retry_count=attempt + 1,
+                    ),
+                )
+
             else:
+                # execute 已返回，因此本地尝试已完成；业务错误码不反推执行阶段。
+                # 远端效果独立采用 result.effect_state，仍可为 UNKNOWN/PARTIAL。
+                execution_state = (
+                    ToolExecutionState.SUCCEEDED
+                    if result.success
+                    else ToolExecutionState.FAILED
+                )
+                cleanup_state = ToolCleanupState.COMPLETE
                 # 真实调用已返回；以下处理不属于调用失败，异常不得触发工具重放。
                 # 填充执行元数据：retry_count = 实际执行次数（第 1 次尝试 = 1，0 基索引 +1），
                 # 成功 / 失败路径口径一致（全败路径用 actual_retries = 同一语义）
                 elapsed = time.monotonic() - start_time
                 result.execution_time = round(elapsed, 4)
                 result.retry_count = attempt + 1
+                self._publish_fact(
+                    call,
+                    facts,
+                    revision=1,
+                    attempt_id=attempt_id,
+                    execution_state=(
+                        ToolExecutionState.SUCCEEDED
+                        if result.success
+                        else ToolExecutionState.FAILED
+                    ),
+                    effect_state=result.effect_state,
+                    cleanup_state=ToolCleanupState.COMPLETE,
+                    result=result,
+                )
 
                 if result.success:
                     # 原始结果已归调用层所有；展示处理在副本上执行，失败时保留原结果。
@@ -343,7 +546,12 @@ class ToolExecutor:
                         elapsed=elapsed,
                         observation_remaining=observation_remaining,
                     )
-                    return processed_result, observation_remaining
+                    return (
+                        processed_result,
+                        observation_remaining,
+                        execution_state,
+                        cleanup_state,
+                    )
 
                 # 执行返回失败（如文件不存在）→ 记录错误与业务码，准备重试
                 last_error = self._normalize_error(result.error or "工具执行失败")
@@ -378,7 +586,7 @@ class ToolExecutor:
         result.retry_count = actual_retries
         if result.execution_time is None:
             result.execution_time = 0.0
-        return result, observation_remaining
+        return result, observation_remaining, execution_state, cleanup_state
 
     @staticmethod
     def _can_retry(tool: BaseTool, failure: ToolResult | BaseException) -> bool:

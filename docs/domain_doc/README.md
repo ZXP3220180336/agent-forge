@@ -55,6 +55,7 @@ app/domain/
 ├── ports/                     ← 领域端口契约（依赖倒置抽象）
 │   ├── llm_gateway.py         ← LLMGateway / StreamResult（含成本估算 / Token 计量）
 │   ├── tool_gateway.py        ← ToolGateway / ToolResult
+│   ├── tool_execution.py      ← 工具运行身份、控制信号与事实端口
 │   ├── context_budget.py      ← ContextBudgetPort（上下文预算管理）
 │   ├── cost_limiter.py        ← CostLimiterPort（成本上限护栏）
 │   └── embedding_port.py      ← EmbeddingPort
@@ -112,6 +113,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | Reasoning | planner.py | [见对齐表](../ALIGNMENT.md) | PlannerStrategy（见 [planner.md](reasoning_doc/planner.md)） |
 | Reasoning | chain_of_thought | [见对齐表](../ALIGNMENT.md) | CoT 策略（预留） |
 | Ports | llm_gateway / tool_gateway / context_budget / cost_limiter / embedding_port | [见对齐表](../ALIGNMENT.md) | 领域端口契约（依赖倒置，见 [ports.md](ports_doc/ports.md)） |
+| Reasoning | `reasoning/tool_batch.py` | [见对齐表](../ALIGNMENT.md) | 工具批次事实收集（见 [tool_batch.md](reasoning_doc/tool_batch.md)） |
 
 ---
 

@@ -25,7 +25,7 @@ from app.integration.tools.builtin import (
     web_browse,
 )
 from app.shared.encoding import decode_output
-from app.integration.tools.tool_service import ToolService
+from tests.tool_lifecycle import StandaloneToolService as ToolService
 
 
 @pytest.mark.asyncio
