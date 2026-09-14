@@ -51,6 +51,7 @@ app/integration/llm/
 ├── streaming.py               ← StreamParser 流式/非流式解析
 ├── streaming_rectifier.py     ← StreamingRectifier 流式整流/续接重试
 ├── structured.py              ← StructuredOutput 结构化输出
+├── structured_codec.py              ← 结构化 schema/JSON 纯转换与校验
 ├── reservation_limiter.py     ← ReservationLimiter 客户端限流
 ├── cost_tracker.py            ← CostTracker 成本计算
 ├── token_counter.py           ← tiktoken 计数实现
@@ -191,7 +192,7 @@ cost = LLMService.calculate_cost(
 | `RetryHandler` + `CircuitBreaker` | retry.py | 指数退避 + 抖动 + 滑动窗口熔断 + 半开探针 + fallback 降级链 | [retry.md](retry.md) |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式 / 非流式响应（纯函数无状态） | [streaming.md](streaming.md) |
 | `StreamingRectifier` | streaming_rectifier.py | 流式整流/半流续接（首 token 前中断整流重试；已产出 content 中断带前缀续写，LLM-ADR-015） | [streaming_rectifier.md](streaming_rectifier.md) |
-| `StructuredOutput` | structured.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则） | [structure.md](structure.md) |
+| `StructuredOutput` | structured.py / structured_codec.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则） | [structure.md](structure.md) |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流（RPM + TPM 双桶，reserve/settle + 自适应预留） | [limiter.md](limiter.md) |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配 + 会话级累计） | [cost_tracker.md](cost_tracker.md) |
 | 传输错误处理 | errors.py | 传输异常分类/归一/降级判定/下游决策（retry/llm_service/structured/streaming_rectifier 消费） | [error.md](error.md) |

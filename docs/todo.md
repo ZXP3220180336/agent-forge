@@ -4,11 +4,11 @@
 
 <a id="refactoring-plan"></a>
 
-## R-01：代码职责与编排边界重构（计划已整理，代码未实施）
+## R-01：代码职责与编排边界重构（R1 已完成，其余批次未启动）
 
 日期：2026-09-14。目标：降低推理、LLM 调用和聊天主链路的阅读与修改成本，让编排入口表达阶段与转换，让协议处理、资源与成果接管有明确归属，服务良率 RCA 的拆分、排查与证据报告交付。
 
-**授权边界**：用户已要求将已讨论的范围与方案写入本计划，并授权复核补漏、检查通过后提交计划相关文档；尚未授权实施任何重构批次。后续按批次确认实际文件范围与契约后执行。现有 [C-02](#c-02-lifecycle) 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧全部纳入纯结构重构。
+**授权边界**：用户已授权完成计划文档及提交，并进一步明确执行 R1；本轮仅实施结构化输出纯逻辑拆分与必要验证、文档同步，R2～R6 未获实施授权。现有 [C-02](#c-02-lifecycle) 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧全部纳入纯结构重构。
 
 规范入口：[产品](project/product.md)、[工程 Gate 与最小结构变化](engineering/ai-engineering-rules.md#abstraction)、[工作流](engineering/project-workflow.md)、[编码规范文档](engineering/编码规范文档.txt)。2026-09-14 已按用户提供的目录找到并读取编码规范，来源状态统一见[来源核对记录](../issues/documentation/2026-09-12-reference-gaps.md#外部来源边界)；不复制规范正文，也不据此宣称现有代码已全部合规。
 
@@ -37,7 +37,7 @@
 
 | 批次 / 状态 | 文件与修改目的 | 结构边界与验收重点 |
 | --- | --- | --- |
-| R1 结构化纯逻辑 / 待实施 | 新增 `app/integration/llm/structured_codec.py`：schema 规范化、JSON 解析校验、错误摘要、回喂消息构造；修改 `structured.py`：导入纯函数，保留调用、usage、降级和错误边界；适配 `tests/unit/test_generate_structured.py`。 | 使用函数，不新建 Codec 类。保留三级降级、一次截断扩容、各级回喂预算和最后一次成果解析；拒答/工具调用短路不变。 |
+| R1 结构化纯逻辑 / 已完成 | 新增 `app/integration/llm/structured_codec.py`：schema 规范化、JSON 解析校验、错误摘要、回喂消息构造；修改 `structured.py`：导入纯函数，保留调用、usage、降级和错误边界；适配 `tests/unit/test_generate_structured.py`。 | 使用函数，不新建 Codec 类。定向 62 项、全量 1046 项通过；保留三级降级、扩容/回喂预算、最后一次成果解析及短路；见 [LLM-ADR-017](../adr/integration/llm/2026-09-14-structured-codec-boundary.md)。 |
 | R2 请求执行 / 待实施 | 新增 `app/integration/llm/request_execution.py`：迁入现有 `_CallContext`、`_RequestPlan`、请求 kwargs、计划构造及 `_budget_guarded_call`；修改 `llm_service.py`：委托内部请求执行；适配 `test_llm_service.py`、`test_llm_request_budget.py`。 | 内部模块接收配置值，不反向依赖 Facade。保留主/备用配额归属及调用前撤回、调用后未知/已知 usage 的结算差异。 |
 | R3 单流消费 / 待实施 | 新增 `app/integration/llm/stream_consumption.py`：流读取、chunk 累积、关闭、接缝处理；修改 `streaming_rectifier.py`：显式传入结果、控制信号与看门狗参数；适配 `test_streaming_rectifier.py`、`test_llm_request_budget.py`。 | 不依赖整流器私有上下文，避免双向 import。现有 `StreamParser` 保留 SDK 解码职责；整流器保留预算、续接和唯一结算。 |
 | R4-A Planner / 待实施 | 新增 `app/domain/reasoning/_planner_steps.py`：步骤规范化、计划载荷及单步结果的纯记录转换；修改 `planner.py`：在原类整理步骤执行与完整/部分汇总提交；适配 `test_planner.py`、`test_planner_agent.py`。 | `_replan_loop` 保持预算归属；子运行继承 deadline、baseline usage 和运行身份，父级在子策略重置前接管事实。 |
@@ -52,7 +52,7 @@ R6 预检与流执行分阶段：当前 `chat.py::send_message` 在构造 `Strea
 
 ### 契约保护与验证
 
-本轮只记录结构分析，未改变运行契约。实施前对实际差异判断 E1/E2/E7/E9；触及调用、结算、异常或控制流时追加 E3/E5/E6/E8，重试变化追加 E4，并按入口读取生命周期与 retry 专项 Skill。不能因名为“重构”省略正确性检查，也不因文件含 retry/budget 就扩大范围。
+各批以保持既有运行契约为前提。实施前对实际差异判断 E1/E2/E7/E9；触及调用、结算、异常或控制流时追加 E3/E5/E6/E8，重试变化追加 E4，并按入口读取生命周期与 retry 专项 Skill。不能因名为“重构”省略正确性检查，也不因文件含 retry/budget 就扩大范围。
 
 必须保留以下已确认差异：
 
@@ -90,7 +90,17 @@ R6 预检与流执行分阶段：当前 `chat.py::send_message` 在构造 `Strea
 - [x] 登记 8 个主候选、2 个次级候选、逐文件分工、依赖、可选项和验收边界。
 - [x] 明确与 C-02 Piece ③④⑤的归属，保留其既有状态与规格正文。
 - [x] 完成本轮计划文档的链接、对齐与差异检查。
-- [ ] 获得首批代码实施授权，重新核对基线后启动 R1；其余批次按上表逐批推进。
+- [x] 获得 R1 实施授权并核对基线：结构化输出既有 60 项测试通过。
+- [x] R1：先补嵌套 schema 双副本与完整回喂/日志分离行为测试，再提取纯 codec。
+- [x] R1：定向与全量回归、独立审查、结构文档及对齐检查完成。
+
+R1 文件分工：`structured_codec.py` 承担无 I/O 的转换与校验，`structured.py` 保留日志/异常翻译和运行编排，`test_generate_structured.py` 保护公开调用行为；`docs/integration_doc/llm_doc/structure.md` 维护内部边界，`llm.md` 与集成层 README 更新结构导航，ALIGNMENT 登记新模块；LLM ADR 及索引记录函数模块分离的取舍，本计划追踪执行证据。校验器异常的日志责任留在原模块，codec 不引入 logger/配置/LLM 依赖；前两级 Draft7Validator 与 fallback 的 jsonschema.validate 语义分别保留。
+
+R1 实施评审（2026-09-14）：采用 E9 的独立数据策略边界，按 E6 核对校验器异常与观测包装；没有新增运行状态、重试或所有权迁移，E3/E4/E5/E7 无新增变化。原类所有方法经引用名归一和去除文档字符串后 AST 与 HEAD 一致，独立代码审查未发现可证实行为漂移。新增源文件为 UTF-8/LF，生产改动行未超过 120 字符；未修改调用方配置或公共 Facade。
+
+实际验证：`.venv/Scripts/python.exe -m pytest tests/unit/test_generate_structured.py -q -p no:cacheprovider` 基线 60 项，补测及拆分后 62 项通过；完整运行 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r1-all-tests`，1046 项通过（40.97 秒）。存在一条 Starlette/httpx 弃用提示，不属于本次改动。文档校验使用 `.venv/Scripts/python.exe -m scripts.verify_alignment`，差异检查使用 `git diff --check`，均通过。
+
+验证环境说明：早期全量尝试受到未创建的临时目录父路径、沙箱子进程限制和当时尚未登记的新模块影响；补齐后 1045 项通过，剩余链接测试因临时路径包含检查器排除目录 `.pytest-tmp` 而未进入目标。改用任务临时目录并在允许子进程的环境完成最终全量验证，未跳过测试或修改测试断言；经验见 [lessons](lessons.md)。R2～R6 与 C-02 均未启动。
 
 首次整理验证：`uv run python -m scripts.verify_alignment` 与 `git diff --check` 通过；回填后 `uv run` 遇到缓存访问拒绝，改用已有虚拟环境执行同一检查模块，通过。统计与方法跨度为静态分析证据，未运行业务测试。
 

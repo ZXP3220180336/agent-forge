@@ -43,7 +43,7 @@
 app/integration/
 ├── embedding/                     ← EmbeddingService 文本向量化
 │   └── embedding_service.py       ← EmbeddingService（embed / embed_batch / 缓存）
-├── llm/                          ← LLM 网关（LLMService Facade + 11 组件）
+├── llm/                          ← LLM 网关（LLMService Facade + 内部组件）
 │   ├── llm_service.py            ← LLMService（统一 Facade，对外入口）
 │   ├── client.py                 ← ClientManager 连接池管理
 │   ├── errors.py                 ← 传输错误处理（分类/归一/降级判定/下游决策）
@@ -52,6 +52,7 @@ app/integration/
 │   ├── streaming.py              ← StreamParser 流式解析
 │   ├── streaming_rectifier.py    ← StreamingRectifier 流式整流重试
 │   ├── structured.py             ← StructuredOutput 结构化输出
+│   ├── structured_codec.py             ← 结构化 schema/JSON 纯转换与校验
 │   ├── reservation_limiter.py    ← ReservationLimiter 客户端限流
 │   ├── cost_tracker.py           ← CostTracker 成本计算
 │   ├── token_counter.py          ← tiktoken 计数实现
@@ -116,7 +117,7 @@ app/integration/
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
 | LLM Facade | `llm/llm_service.py` | [见对齐表](../ALIGNMENT.md) | `LLMService`：`async_generate` / `generate` / `generate_structured` / `calculate_cost` |
-| LLM 子包 | `llm/`（11 组件） | [见对齐表](../ALIGNMENT.md) | ClientManager / errors / execution_control / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token_counter / request_budget |
+| LLM 子包 | `llm/`（内部组件） | [见对齐表](../ALIGNMENT.md) | ClientManager / errors / execution_control / RetryHandler / StreamParser / StreamingRectifier / StructuredOutput / ReservationLimiter / CostTracker / token_counter / request_budget |
 | 工具 Facade | `tools/tool_service.py` | [见对齐表](../ALIGNMENT.md) | `ToolService`：注册 / 选择 / 校验 / 执行 / 截断 / 审计 / 统计 / 钩子 / 装配 / Schema 导出 |
 | 工具子包 | `tools/`（六大子组件） | [见对齐表](../ALIGNMENT.md) | Registry / Selector / Validator / Executor / ResultProcessor / Auditor + Stats / Hooks / Assembler / Loader |
 | 内置工具 | `tools/builtin/` | [见对齐表](../ALIGNMENT.md) | search / readFile / writeFile / code_exec / web_browse + RCA 5 工具（query_batch_yield 等） |
@@ -141,7 +142,7 @@ app/integration/
 | `RetryHandler` | retry.py | 指数退避 + 抖动 + CircuitBreaker 熔断 + fallback 降级链 |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式响应（纯函数，无状态） |
 | `StreamingRectifier` | streaming_rectifier.py | 流式整流重试：首 token 前中断才重试（防重复输出 / 双倍计费） |
-| `StructuredOutput` | structured.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则提取） |
+| `StructuredOutput` | structured.py / structured_codec.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则提取） |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流，双 Token Bucket（RPM + TPM），reserve/settle 形态 |
 | `CostTracker` | cost_tracker.py | 按模型定价表估算成本（前缀匹配） |
 | `token_counter` | token_counter.py | tiktoken 计数实现：编码器解析 / content 归一化 / 消息计数（经 `LLMService.count_*` 对外） |

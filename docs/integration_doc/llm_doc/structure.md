@@ -1,7 +1,7 @@
 # StructuredOutput 结构化输出设计文档
 
-> **模块**：`app/integration/llm/structured.py`
-> **更新日期**：2026-09-02
+> **模块**：`app/integration/llm/structured.py` 与 `structured_codec.py`
+> **更新日期**：2026-09-14
 > **职责**：从 LLM 输出中提取结构化数据（三级降级：JSON Schema → JSON Mode → 正则提取）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **定位**：内部实现载体，对外唯一入口为 `LLMService.generate_structured()`（接收完整 messages，委托 `extract` 三级降级）
@@ -24,10 +24,11 @@
     - [finish\_reason / refusal](#finish_reason--refusal)
     - [正则提取 / constrained decoding](#正则提取--constrained-decoding)
     - [三级降级](#三级降级)
+  - [内部职责与协作边界](#内部职责与协作边界)
   - [架构总览](#架构总览)
   - [组件详解](#组件详解)
-    - [\_build\_json\_schema\_request — 原生 JSON Schema 请求](#_build_json_schema_request--原生-json-schema-请求)
-    - [\_build\_json\_mode\_request — JSON mode 请求](#_build_json_mode_request--json-mode-请求)
+    - [build\_json\_schema\_request — 原生 JSON Schema 请求](#build_json_schema_request--原生-json-schema-请求)
+    - [build\_json\_mode\_request — JSON mode 请求](#build_json_mode_request--json-mode-请求)
     - [extract — 三级降级编排](#extract--三级降级编排)
     - [\_try\_extract — 单级提取（response\_format 形态）](#_try_extract--单级提取response_format-形态)
     - [\_fallback\_extract — 正则兜底提取（无 response\_format）](#_fallback_extract--正则兜底提取无-response_format)
@@ -125,14 +126,14 @@
 
 `response_format` 的 `json_schema.strict=True`：服务商在解码阶段强制输出严格匹配 Schema 的 JSON（拒绝额外字段、强制类型）。**仅部分模型支持**（如 gpt-4o-mini 以上；deepseek-chat 可能只支持 `json_object`）——这是降级链存在的根本原因。
 
-**strict 额外要求**：strict 模式要求每个 object 节点 `additionalProperties:false`，调用方显式写 `true` 会被服务商拒绝（400）。`_build_json_schema_request` 用 `_strict_compliant` 把 `true` 归一为 `false`（副本，不污染调用方 schema）——见 [LLM-009](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)。
+**strict 额外要求**：strict 模式要求每个 object 节点 `additionalProperties:false`，调用方显式写 `true` 会被服务商拒绝（400）。`build_json_schema_request` 用 `strict_compliant` 把 `true` 归一为 `false`（副本，不污染调用方 schema）——见 [LLM-009](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)。
 
 ### finish_reason / refusal
 
 - `finish_reason`：模型停止原因（`stop` / `length` / `tool_calls`）。`length` = 输出被 max_tokens 截断，可能只剩半个 JSON 对象
 - `refusal`：模型拒答字段（内容安全策略触发），此时 `content` 可能为空或含拒绝说明
 
-**生产语义**：这两个字段是「API 边界检查」的一部分——截断、拒答与「正常返回但解析失败」是三类不同失败，处理方式不同（截断可扩大 token 重试，拒答不应强行 repair）。`_classify_result` 在解析前分类（refusal / truncated / tool_calls / empty / ok）：截断扩 token 重试、拒答/工具调用短路抛异常、空响应返回 None 触发降级。拒答文本含触发内容，落日志前经 `_truncate_text_for_log` 截断（见 [LLM-008](../../../issues/integration/llm/2026-08-16-refusal-log-truncation.md)）。
+**生产语义**：这两个字段是「API 边界检查」的一部分——截断、拒答与「正常返回但解析失败」是三类不同失败，处理方式不同（截断可扩大 token 重试，拒答不应强行 repair）。`_classify_result` 在解析前分类（refusal / truncated / tool_calls / empty / ok）：截断扩 token 重试、拒答/工具调用短路抛异常、空响应返回 None 触发降级。拒答文本含触发内容，落日志前经 `truncate_text_for_log` 截断（见 [LLM-008](../../../issues/integration/llm/2026-08-16-refusal-log-truncation.md)）。
 
 ### 正则提取 / constrained decoding
 
@@ -151,6 +152,24 @@
 
 ---
 
+## 内部职责与协作边界
+
+`structured.py` 保留 `StructuredOutput` 的真实调用、三级降级、回喂/扩容预算、usage、控制信号及日志；
+`structured_codec.py` 只做 schema/JSON 转换、错误文本和回喂消息构造。两者是同一内部组件，
+不增加公开入口或新的运行类。结构决定见 [LLM-ADR-017](../../../adr/integration/llm/2026-09-14-structured-codec-boundary.md)。
+
+| 协作边界 | codec 输出 / 异常 | structured 的责任 |
+| --- | --- | --- |
+| 请求与本地 schema | 分别深拷贝，strict 请求收紧显式扩展许可；本地保留显式 true | 决定 response_format 和降级级别，不修改调用方 schema |
+| `parse_and_validate` / `collect_schema_errors` | dict 与完整反馈错误；非法 schema 的校验器异常原样抛出 | `_parse_and_validate` 记录校验器异常并转换为原有反馈失败；完整实例错误仅回喂模型 |
+| `collect_schema_error_summaries` | 字段路径、validator 与约束值；校验器异常原样抛出 | 本地同名私有包装处理异常并记录日志，正常摘要用于回喂日志 |
+| `parse_json_object` / `validate_schema` | 非 JSON 对象返回 None；校验失败原样抛出 | `_try_parse_json` / `_validate_schema` 保留逐候选校验日志和失败出口 |
+| 回喂消息、日志截断文本 | 返回新消息列表或格式化文本；不写日志、不修改原输入 | 何时重试、何时落日志与 usage 接管均留在编排侧 |
+
+前两级继续使用 `Draft7Validator.iter_errors`；fallback 继续用 `jsonschema.validate` 检查 schema 并选择 draft。
+codec 不统一这两种行为，不依赖 logger、settings、LLMGateway，也不拥有错误恢复或终态。
+保留的私有包装承担日志及异常翻译，不是旧导入路径的兼容转发。
+
 ## 架构总览
 
 ```text
@@ -162,9 +181,9 @@ LLMService.generate_structured(messages, schema, model_key)
    ▼  委托
 StructuredOutput.extract(llm_service, messages, schema, model_key)
    │
-   ├─ 第一级：_build_json_schema_request(schema)  →  _try_extract（strict JSON Schema）
+   ├─ 第一级：build_json_schema_request(schema)  →  _try_extract（strict JSON Schema）
    │        失败（不支持 / 解析失败）↓
-   ├─ 第二级：_build_json_mode_request()           →  _try_extract（JSON mode）
+   ├─ 第二级：build_json_mode_request()           →  _try_extract（JSON mode）
    │        失败 ↓
    └─ 第三级：_fallback_extract（prompt + 正则，无 response_format）
         全失败 → 返回 None
@@ -185,29 +204,29 @@ StructuredOutput.extract(llm_service, messages, schema, model_key)
 | 调用辅助（类内） | `_call_generate` | 统一调 generate + 下游异常统一决策（`decide_downstream_error`，见 [error.md](error.md)：降级 / 上抛 / response_format 400 降级） |
 | 短路辅助（类内） | `_raise_boundary` | 统一 refusal / tool_calls / truncated 短路抛异常（truncated 为主调用点可选） |
 | 分类（类内） | `_classify_result` | API 边界分类（refusal / truncated / tool_calls / empty / ok） |
-| 请求构造（模块级） | `_build_json_schema_request` / `_build_json_mode_request` | 构造 response_format 参数 |
-| schema 处理（模块级） | `_strict_compliant` / `_enforce_no_extra_fields` | strict 归一 `additionalProperties:true→false` / 深拷贝递归补全 `additionalProperties:false` |
-| 解析校验（模块级） | `_try_parse_json` / `_parse_and_validate` / `_collect_schema_errors` / `_collect_schema_error_summaries` / `_validate_schema` | JSON 解析 + Schema 校验（完整错误回喂模型 / 脱敏摘要写日志） |
-| 消息构造（模块级） | `_build_reask_messages` | 构造错误回喂消息（clone + assistant 失败输出 + user 反馈） |
-| 日志脱敏（模块级） | `_truncate_json_for_log` / `_truncate_text_for_log` | 模型输出 / 拒答文本截断落盘（`_LOG_TRUNCATE_LIMIT`=500） |
+| 请求构造（模块级） | `build_json_schema_request` / `build_json_mode_request` | 构造 response_format 参数 |
+| schema 处理（模块级） | `strict_compliant` / `enforce_no_extra_fields` | strict 归一 `additionalProperties:true→false` / 深拷贝递归补全 `additionalProperties:false` |
+| 解析校验（模块级） | `_try_parse_json` / `_parse_and_validate` / `codec.collect_schema_errors` / `_collect_schema_error_summaries` / `_validate_schema` | JSON 解析 + Schema 校验（完整错误回喂模型 / 脱敏摘要写日志） |
+| 消息构造（模块级） | `build_reask_messages` | 构造错误回喂消息（clone + assistant 失败输出 + user 反馈） |
+| 日志脱敏（模块级） | `truncate_json_for_log` / `truncate_text_for_log` | 模型输出 / 拒答文本截断落盘（`structured_codec._LOG_TRUNCATE_LIMIT`=500） |
 
-> **职责划分**：模块级函数为**纯工具**（无类状态、可独立测试）；`StructuredOutput` 保留**业务编排与边界决策**（三级降级顺序、截断/拒答/工具调用短路）。`register_config` / `_default_max_tokens` 保留类内——需访问类属性，属类自身状态。
+> **职责划分**：codec 函数只做数据处理；`structured.py` 的模块级包装负责日志及校验器异常转换。`StructuredOutput` 保留**业务编排与边界决策**（三级降级顺序、截断/拒答/工具调用短路）。`register_config` / `_default_max_tokens` 保留类内——需访问类属性，属类自身状态。
 
 ---
 
 ## 组件详解
 
-### _build_json_schema_request — 原生 JSON Schema 请求
+### build_json_schema_request — 原生 JSON Schema 请求
 
 ```python
-def _build_json_schema_request(schema: dict[str, Any]) -> dict[str, Any]:
+def build_json_schema_request(schema: dict[str, Any]) -> dict[str, Any]:
     """构建 response_format 参数（strict JSON Schema）。"""
     return {
         "type": "json_schema",
         "json_schema": {
             "name": "structured_output",
             "strict": True,
-            "schema": _strict_compliant(schema),
+            "schema": strict_compliant(schema),
         },
     }
 ```
@@ -216,13 +235,13 @@ def _build_json_schema_request(schema: dict[str, Any]) -> dict[str, Any]:
 
 - **strict=True**：强制解码阶段匹配 Schema，字段/类型/枚举由服务商保证
 - **name 固定为 `structured_output`**：服务商要求的 schema 命名
-- **schema 经 `_strict_compliant` 归一后透传**：strict 模式要求每个 object 节点 `additionalProperties:false`，调用方显式 `true` 会被服务商 400 拒绝且被误判「模型不支持」——归一为 `false`（深拷贝副本，不污染调用方 schema），本地校验仍用原 schema（保留「允许扩展」意图）。另由 `extract` 入口 `_enforce_no_extra_fields` 对缺失字段递归补全（见 [LLM-009](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md) / [LLM-018](../../../issues/integration/llm/2026-08-08-extra-fields-not-rejected.md)）
-- **模块级私有函数**：纯工具函数提取出类，`extract` 内部直接调用
+- **schema 经 `strict_compliant` 归一后透传**：strict 模式要求每个 object 节点 `additionalProperties:false`，调用方显式 `true` 会被服务商 400 拒绝且被误判「模型不支持」——归一为 `false`（深拷贝副本，不污染调用方 schema），本地校验仍用原 schema（保留「允许扩展」意图）。另由 `extract` 入口 `enforce_no_extra_fields` 对缺失字段递归补全（见 [LLM-009](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md) / [LLM-018](../../../issues/integration/llm/2026-08-08-extra-fields-not-rejected.md)）
+- **内部 codec 函数**：数据转换位于 `structured_codec.py`，`extract` 经 codec 调用；不是模块对外 API。
 
-### _build_json_mode_request — JSON mode 请求
+### build_json_mode_request — JSON mode 请求
 
 ```python
-def _build_json_mode_request() -> dict[str, str]:
+def build_json_mode_request() -> dict[str, str]:
     """构建普通 JSON mode 请求参数（无 Schema 约束）。"""
     return {"type": "json_object"}
 ```
@@ -239,7 +258,7 @@ def _build_json_mode_request() -> dict[str, str]:
 async def extract(llm_service, messages, schema, model_key="fast", max_tokens=None, usage=None):
     """三级降级：JSON Schema → JSON Mode → 正则提取。
     完整实现见 structured.py::StructuredOutput.extract。"""
-    schema = _enforce_no_extra_fields(schema)   # 递归补 additionalProperties:false（LLM-018）
+    schema = enforce_no_extra_fields(schema)   # 递归补 additionalProperties:false（LLM-018）
     if max_tokens is None:
         max_tokens = StructuredOutput._default_max_tokens   # 注入的默认预算
 
@@ -247,7 +266,7 @@ async def extract(llm_service, messages, schema, model_key="fast", max_tokens=No
     try:
         result = await StructuredOutput._try_extract(
             llm_service=llm_service, messages=messages,
-            response_format=_build_json_schema_request(schema),
+            response_format=build_json_schema_request(schema),
             model_key=model_key, schema=schema, max_tokens=max_tokens, usage=usage,
         )
     except StructuredTruncationError:
@@ -255,7 +274,7 @@ async def extract(llm_service, messages, schema, model_key="fast", max_tokens=No
     if result is not None:
         return result
 
-    # 第二级：JSON mode（同第一级，response_format 换 _build_json_mode_request()）
+    # 第二级：JSON mode（同第一级，response_format 换 build_json_mode_request()）
     ...  # 截断短路返回 None，成功即返回
 
     # 第三级：正则提取（无 response_format）
@@ -318,7 +337,7 @@ async def _try_extract(*, llm_service, messages, response_format, model_key,
             return parsed
         retry = await StructuredOutput._call_generate(
             llm_service=llm_service,
-            messages=_build_reask_messages(messages, content, "\n".join(errors)),
+            messages=build_reask_messages(messages, content, "\n".join(errors)),
             model_key=model_key, max_tokens=max_tokens,
             response_format=response_format, stage="结构化输出回喂", usage=usage,
         )
@@ -384,7 +403,7 @@ async def _fallback_extract(*, llm_service, messages, model_key, schema=None,
 - **无 response_format**：走纯 prompt 约束（prompt 由调用方构建），模型可能输出解释/代码块
 - **`_call_generate` + `_raise_boundary` 统一**：调用与短路与 `_try_extract` 一致——下游异常分类、truncated/refusal/tool_calls 短路、empty 空响应返回 None
 - **渐进提取**：先剥 Markdown 代码块整体解析，失败后**正则定位首个 `{` 到末个 `}`** 提取候选块——模型在 JSON 前后加说明文字也能救回
-- **`_try_parse_json` 模块级**：渐进提取的 JSON 解析 + 校验复用（与 `_parse_and_validate` / `_collect_schema_errors` / `_validate_schema` 同类）
+- **`_try_parse_json` 模块级**：渐进提取的 JSON 解析 + 校验复用（与 `_parse_and_validate` / `codec.collect_schema_errors` / `_validate_schema` 同类）
 - **不修事实**：只做语法级归一化（剥代码块/定位块），不猜测意图、不补字段、不映射枚举——符合工业级「JSON repair 只能修语法，不能修事实」
 - **截断/拒答短路**：第三级到头无降级可走，截断不扩 token（纯 prompt 约束重试收益不定），拒答/截断抛异常（见 [LLM-016](../../../issues/integration/llm/2026-08-08-finish-reason-refusal-unchecked.md)）
 
@@ -428,7 +447,7 @@ generate_structured(messages, schema, model_key="fast")
 | `StructuredOutput.extract(llm_service, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None) -> dict \| None` | 静态异步 | 三级降级编排（JSON Schema strict → JSON Mode → 正则），返回 dict/None；`usage` 可变引用累计全程成功调用（与 `generate_structured` 同源）；`cancel_event`/`deadline` 同上拦截 |
 | `StructuredOutput.register_config(max_tokens)` | 同步类方法 | 注入默认输出预算（Container 读 settings 后调用） |
 
-> 模块级私有函数（`_build_json_schema_request` / `_strict_compliant` / `_enforce_no_extra_fields` / `_parse_and_validate` / `_validate_schema` / `_build_reask_messages` 等）与类内私有方法（`_try_extract` / `_fallback_extract` / `_call_generate` / `_classify_result` / `_raise_boundary`）为内部实现载体，不构成对外接口，见「组件详解」。
+> codec 内部函数及观测包装（`build_json_schema_request` / `strict_compliant` / `enforce_no_extra_fields` / `_parse_and_validate` / `_validate_schema` / `build_reask_messages` 等）与类内私有方法（`_try_extract` / `_fallback_extract` / `_call_generate` / `_classify_result` / `_raise_boundary`）为内部实现载体，不构成对外接口，见「组件详解」。
 
 **对外异常契约**（`generate_structured` 向上抛）：
 
@@ -450,16 +469,15 @@ generate_structured(messages, schema, model_key="fast")
 3. **错误感知重试**：`_try_extract` 校验失败先回喂错误重试（`_REASK_MAX_RETRIES=2`），耗尽才降级；strict/JSON mode 级回喂，正则级不加；回喂增加模型调用次数，token 消耗放大
 4. **多级降级 + 回喂 = 多次模型调用**：三级全失败最多 7 次调用（strict 1+回喂 2 + JSON mode 1+回喂 2 + 正则 1），token 消耗放大。这是「兼容所有模型 + 错误感知重试」的显式代价
 5. **输出预算可配置**：`max_tokens` 由 `StructuredOutput.register_config()` 注入（Container 读 `settings.llm_structured_max_tokens`，默认 2048），调用方经 `generate_structured(max_tokens=...)` 按业务覆盖；截断时扩 2 倍重试 1 次（随参数缩放），超限后放弃
-6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（`_enforce_no_extra_fields`），模型无法扩展接口；显式 `additionalProperties:true` 在本地校验中仍被尊重；**strict 请求再经 `_strict_compliant` 把 true 归一为 false**（见 [LLM-018](../../../issues/integration/llm/2026-08-08-extra-fields-not-rejected.md) / [LLM-009](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)）
-7. **schema 非法防护**：`Draft7Validator(schema)` 构造或 `iter_errors` 抛异常（UnknownType / SchemaError / TypeError 等）→ 捕获并返回错误信息，按校验失败处理触发降级，不崩溃（`_validate_schema` / `_collect_schema_errors` / `_collect_schema_error_summaries` 一致兜底，见 [LLM-007](../../../issues/integration/llm/2026-08-16-invalid-schema-crash.md)）
+6. **额外字段默认拒绝**：`extract` 对 schema 深拷贝并递归补全 `additionalProperties:false`（`enforce_no_extra_fields`），模型无法扩展接口；显式 `additionalProperties:true` 在本地校验中仍被尊重；**strict 请求再经 `strict_compliant` 把 true 归一为 false**（见 [LLM-018](../../../issues/integration/llm/2026-08-08-extra-fields-not-rejected.md) / [LLM-009](../../../issues/integration/llm/2026-08-16-strict-additional-properties-true.md)）
+7. **schema 非法防护**：`Draft7Validator(schema)` 构造或 `iter_errors` 抛异常（UnknownType / SchemaError / TypeError 等）→ 捕获并返回错误信息，按校验失败处理触发降级，不崩溃（codec 的校验器异常由 `structured.py` 中 `_validate_schema` / `_parse_and_validate` / `_collect_schema_error_summaries` 兜底，见 [LLM-007](../../../issues/integration/llm/2026-08-16-invalid-schema-crash.md)）
 8. **response_format 400 降级**：`is_unsupported_response_format_error`（llm/errors.py，见 [error.md](error.md)）识别「模型/网关不支持 response_format」的 400 → 记 WARNING 降级到下一级（JSON mode / 正则）；**其余 NON_RETRYABLE 400 仍上抛**（调用方 bug 不静默吞掉）
-9. **校验失败日志脱敏**：`_validate_schema` 失败日志用**结构化字段摘要**（字段路径 + `validator` + `validator_value`）替代 `e.message`——jsonschema 的 `message` 会嵌入完整实例值（模型输出可能含业务敏感数据，Yield RCA 场景为良率/晶圆数据）；`parsed` 经 `_truncate_json_for_log` 截断到 `_LOG_TRUNCATE_LIMIT`（500 字符），`schema`（接口契约）保留完整。**回喂模型仍用完整错误**：`_collect_schema_errors` 保留 `e.message` 供回喂（模型需要具体错误修正），新增 `_collect_schema_error_summaries`（结构化字段摘要）用于回喂日志——回喂与落盘两套文本，敏感数据不因日志泄露、模型纠错能力不损（见 [LLM-037](../../../issues/integration/llm/2026-08-16-schema-validation-log-redaction.md)）
-10. **拒答日志截断**：`_raise_boundary` 拒答文本经 `_truncate_text_for_log` 截断落盘——拒答常引用触发内容（Yield RCA 晶圆/良率数据），不能完整落日志；异常 message 保持简洁（不含拒答文本），日志保留截断前缀供诊断（见 [LLM-008](../../../issues/integration/llm/2026-08-16-refusal-log-truncation.md)）
+9. **校验失败日志脱敏**：`_validate_schema` 失败日志用**结构化字段摘要**（字段路径 + `validator` + `validator_value`）替代 `e.message`——jsonschema 的 `message` 会嵌入完整实例值（模型输出可能含业务敏感数据，Yield RCA 场景为良率/晶圆数据）；`parsed` 经 `truncate_json_for_log` 截断到 `structured_codec._LOG_TRUNCATE_LIMIT`（500 字符），`schema`（接口契约）保留完整。**回喂模型仍用完整错误**：`codec.collect_schema_errors` 保留 `e.message` 供回喂（模型需要具体错误修正），新增 `_collect_schema_error_summaries`（结构化字段摘要）用于回喂日志——回喂与落盘两套文本，敏感数据不因日志泄露、模型纠错能力不损（见 [LLM-037](../../../issues/integration/llm/2026-08-16-schema-validation-log-redaction.md)）
+10. **拒答日志截断**：`_raise_boundary` 拒答文本经 `truncate_text_for_log` 截断落盘——拒答常引用触发内容（Yield RCA 晶圆/良率数据），不能完整落日志；异常 message 保持简洁（不含拒答文本），日志保留截断前缀供诊断（见 [LLM-008](../../../issues/integration/llm/2026-08-16-refusal-log-truncation.md)）
 
 ---
 
 ## 配置项清单
-
 
 配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
 
@@ -478,7 +496,7 @@ structured.py 的调用参数（无独立配置节，max_tokens 由 `register_co
 
 ## 测试状态
 
-`tests/unit/test_generate_structured.py`（50 用例）：覆盖
+`tests/unit/test_generate_structured.py`：覆盖；实际验证状态见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 - **三级降级**：strict 成功短路 / 降级 JSON mode / 降级正则 / 三级全失败返回 None
 - **解析失败**：JSON 解析失败 / 非 dict / 空响应返回 None
@@ -491,6 +509,7 @@ structured.py 的调用参数（无独立配置节，max_tokens 由 `register_co
 - **错误回喂**：回喂后成功 / 最后一次回喂成功 / 回喂耗尽降级 / 不污染调用方 messages / 回喂内截断不进入循环 / 回喂内空响应返回 None / 回喂内拒答短路
 - **400 降级**：`json_schema` 不支持 400 降级到 JSON mode / 普通 400 仍上抛
 - **schema 非法**：非法 schema 返回 None 不崩溃（LLM-007）
+- **R1 双副本与回喂**：嵌套数组对象的 strict 收紧、本地扩展许可、原 schema 深层不变；多字段错误完整回喂、日志不落实例值、原 messages 不变。
 - **strict 归一**：`additionalProperties:true` 归一到 false（LLM-009）
 - **额外字段**：默认拒绝 / 调用方 schema 不被污染 / 显式 true 尊重 / 嵌套对象递归补全 / 可空数组 type 匹配（LLM-018）
 - **正则兜底**：prose 包裹场景正则定位 JSON 块

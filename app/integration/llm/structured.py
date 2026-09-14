@@ -18,13 +18,12 @@ StructuredOutput — 结构化输出支持
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import re
 import time
 from typing import Any
 
-from jsonschema import Draft7Validator, ValidationError, validate
+from jsonschema import ValidationError
 
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
 from app.platform.observability.logger import get_logger
@@ -36,6 +35,7 @@ from app.shared.exceptions import (
     StructuredTruncationError,
 )
 
+from . import structured_codec as codec
 from .errors import decide_downstream_error, is_unsupported_response_format_error
 
 logger = get_logger("llm.structured")
@@ -50,207 +50,38 @@ _REFUSAL_REASONS = frozenset(["content_filter"])
 # 工业共识 2~3 次；首次修正成功率最高，之后陡降。
 _REASK_MAX_RETRIES = 2
 
-_REASK_TEMPLATE = (
-    "你的上一次输出未通过 JSON Schema 校验，具体错误如下：\n{errors}\n"
-    "请根据错误修正，只输出符合 schema 的 JSON 对象，"
-    "不要 markdown 代码块、不要额外解释。"
-)
-
-
-def _strict_compliant(schema: dict[str, Any]) -> dict[str, Any]:
-    """递归归一 additionalProperties: true → false（strict JSON Schema 要求）。
-
-    OpenAI strict 模式要求每个 object 节点 additionalProperties: false（递归），
-    显式 true 会 400（LLM-009）。对齐 LangChain `_recursive_set_additional_properties_false`。
-    返回深拷贝副本，不污染调用方 schema；本地校验仍用原 schema（保留「允许扩展」意图）。
-    """
-    new_schema = copy.deepcopy(schema)
-    stack = [new_schema]
-    while stack:
-        node = stack.pop()
-        if not isinstance(node, dict):
-            continue
-        if node.get("additionalProperties") is True:
-            node["additionalProperties"] = False
-        for value in node.values():
-            if isinstance(value, dict):
-                stack.append(value)
-            elif isinstance(value, list):
-                stack.extend(v for v in value if isinstance(v, dict))
-    return new_schema
-
-
-def _build_json_schema_request(
-    schema: dict[str, Any],
-) -> dict[str, Any]:
-    """
-    构建 native JSON Schema 的 response_format（strict=True，LLM-009 归一）。
-
-    无条件构建 strict json_schema；模型 / 网关不支持该格式（400）时，由调用方
-    （_extract_impl 第二级 JSON mode / _call_generate 的
-    is_unsupported_response_format_error）降级，本函数不做支持性判断。
-
-    Args:
-        schema: JSON Schema
-
-    Returns:
-        {"type": "json_schema", "json_schema": {"name", "strict", "schema"}}
-    """
-    # 尝试 native JSON Schema
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "structured_output",
-            "strict": True,
-            # LLM-009：strict 下 additionalProperties: true → false 归一（副本）——
-            # strict 模式禁止 true（必然 400 且被误判「模型不支持」），归一避免
-            # 白打调用；本地校验仍用原 schema（保留允许扩展意图）。
-            "schema": _strict_compliant(schema),
-        },
-    }
-
-
-def _build_json_mode_request() -> dict[str, str]:
-    """构建普通 JSON mode 请求参数（无 Schema 约束）。"""
-    return {"type": "json_object"}
-
-
-def _enforce_no_extra_fields(schema: dict[str, Any]) -> dict[str, Any]:
-    """深拷贝并递归补全 `additionalProperties: false`（问题 4）。
-
-    - 深拷贝：不污染调用方 schema（默认补全发生在副本上）
-    - 递归：对每个 object 节点补 `additionalProperties:false`，拒绝模型扩展字段
-    - 显式尊重：调用方已写 `true` 的保持 `true`（不覆盖显式允许扩展的意图）
-
-    意义：减少模型自作主张扩展接口（如业务不需要的 `user_emotion` 混入）。
-    配合 Pydantic 侧 `extra="forbid"`（业务层）双保险。
-    """
-    new_schema = copy.deepcopy(schema)
-    stack = [new_schema]
-    while stack:
-        node = stack.pop()
-        if not isinstance(node, dict):
-            continue
-        # 匹配 object：type 单值 "object" 或数组含 "object"（draft-07 可空写法 ["object","null"]）
-        node_type = node.get("type")
-        is_object = node_type == "object" or (
-            isinstance(node_type, list) and "object" in node_type
-        )
-        if is_object and "additionalProperties" not in node:
-            node["additionalProperties"] = False
-        # 递归属性定义与子结构
-        for value in node.values():
-            if isinstance(value, dict):
-                stack.append(value)
-            elif isinstance(value, list):
-                stack.extend(v for v in value if isinstance(v, dict))
-    return new_schema
-
 
 def _parse_and_validate(
     content: str,
     schema: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """解析 + 校验，返回 (结果, 错误列表)。
-
-    返回的二元组供回喂循环（问题 3）使用：
-    - parsed 非 None = 成功（校验通过），错误列表空
-    - parsed 为 None = 失败，errors 携带人话错误（供回喂 / 记日志）
-    """
+    """接收纯解析结果，将校验器异常记录并转换为既有回喂错误。"""
     try:
-        parsed = json.loads(content)
-    except Exception as e:  # noqa: BLE001
-        return None, [f"- 顶层 JSON 解析失败：{e}"]
-
-    if not isinstance(parsed, dict):
-        return None, ["- 顶层不是 JSON 对象（应为 dict）"]
-
-    if schema is not None:
-        errors = _collect_schema_errors(parsed, schema)
-        if errors:
-            return None, errors
-
-    return parsed, []
-
-
-def _collect_schema_errors(parsed: dict[str, Any], schema: dict[str, Any]) -> list[str]:
-    """收集全部 Schema 校验错误，格式化为「字段路径: message」的人话（问题 3）。
-
-    一次收集全部错误（iter_errors 全量，非第一条），让模型一次改完。
-    返回空列表 = 校验通过。
-
-    注意：错误文本含 `e.message`（嵌入完整实例值）——用于**回喂模型**（模型
-    需要看到具体错误才能修正）。写入日志需用脱敏版 `_collect_schema_error_summaries`。
-
-    LLM-007：schema 非法（UnknownType / SchemaError / TypeError 等）时
-    Draft7Validator(schema) 构造或 iter_errors 抛异常——捕获并返回错误信息
-    （按校验失败处理触发降级），不崩溃（与 _validate_schema 的 except 兜底一致）。
-    """
-    try:
-        errors = []
-        for e in Draft7Validator(schema).iter_errors(parsed):
-            path = "/".join(str(p) for p in e.absolute_path) or "<root>"
-            errors.append(f"- 字段 `{path}`：{e.message}")
-        return errors
-    except Exception as e:  # noqa: BLE001  schema 非法（UnknownType / SchemaError / TypeError）
+        return codec.parse_and_validate(content, schema)
+    except Exception as e:  # noqa: BLE001  非法 schema 保持原有失败出口。
         logger.error("Schema 校验器异常（schema 可能非法）: %s", e)
-        return [f"- Schema 校验器异常（schema 可能非法）：{e}"]
+        return None, [f"- Schema 校验器异常（schema 可能非法）：{e}"]
 
 
 def _collect_schema_error_summaries(
-    parsed: dict[str, Any], schema: dict[str, Any]
+    parsed: dict[str, Any],
+    schema: dict[str, Any],
 ) -> list[str]:
-    """收集 Schema 校验错误的**脱敏摘要**（字段路径 + validator + 约束值）。
-
-    与 `_collect_schema_errors`（回喂模型，含 `e.message` 嵌入完整实例值）的区别：
-    本函数只含 schema 结构信息（validator 名 / 约束值 / 字段路径），**无实例数据**，
-    可安全写入日志——Yield RCA 场景的敏感数据（良率/晶圆）不因错误日志落盘。
-
-    LLM-007：schema 非法时捕获并返回错误信息（与 _collect_schema_errors 一致）。
-    """
+    """生成日志摘要，并在校验器异常时保留原有观测与错误文本。"""
     try:
-        summaries = []
-        for e in Draft7Validator(schema).iter_errors(parsed):
-            path = "/".join(str(p) for p in e.absolute_path) or "<root>"
-            summaries.append(
-                f"- 字段 `{path}`：违反 `{e.validator}`={e.validator_value}"
-            )
-        return summaries
-    except Exception as e:  # noqa: BLE001  schema 非法（UnknownType / SchemaError / TypeError）
+        return codec.collect_schema_error_summaries(parsed, schema)
+    except Exception as e:  # noqa: BLE001  非法 schema 保持原有失败出口。
         logger.error("Schema 校验器异常（schema 可能非法）: %s", e)
         return [f"- Schema 校验器异常（schema 可能非法）：{e}"]
-
-
-def _build_reask_messages(
-    messages: list[dict],
-    raw_content: str,
-    error_text: str,
-) -> list[dict]:
-    """构造错误回喂的消息（问题 3）：clone + 保留上次失败输出 + 末尾追加反馈。
-
-    - clone：`[dict(m) for m in messages]` 浅拷贝，绝不污染调用方 messages
-    - 保留失败输出：assistant 消息留在历史里，让模型看到自己错在哪（self-correction 关键）
-    - 末尾追加 user 消息：具体错误 + 修正指令（一次性指令，非 system 恒定规则）
-    """
-    new_messages = [dict(m) for m in messages]
-    if raw_content:
-        new_messages.append({"role": "assistant", "content": raw_content})
-    new_messages.append(
-        {"role": "user", "content": _REASK_TEMPLATE.format(errors=error_text)}
-    )
-    return new_messages
 
 
 def _try_parse_json(
     content: str,
     schema: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """解析 JSON 并校验 schema；任一失败返回 None（供第三级渐进提取复用）。"""
-    try:
-        parsed = json.loads(content)
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(parsed, dict):
+    """解析 fallback 候选，由本模块负责校验失败的日志和出口。"""
+    parsed = codec.parse_json_object(content)
+    if parsed is None:
         return None
     if schema is not None and not _validate_schema(parsed, schema):
         return None
@@ -265,7 +96,7 @@ def _validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> bool:
     minimum/maximum/pattern 等值约束与 refusal/截断绕过，都靠这层兜底。
     """
     try:
-        validate(instance=parsed, schema=schema)
+        codec.validate_schema(parsed, schema)
         return True
     except ValidationError as e:
         # 错误摘要用结构化字段（字段路径 + 校验器 + 约束值）而非 e.message——
@@ -280,7 +111,7 @@ def _validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> bool:
             json.dumps(schema, ensure_ascii=False),
             # 模型输出可能含业务敏感数据（Yield RCA 场景为良率/晶圆数据），
             # 只记截断前缀，不把完整 parsed 落盘到日志（泄露面收敛）。
-            _truncate_json_for_log(parsed),
+            codec.truncate_json_for_log(parsed),
         )
         return False
     except Exception as e:  # schema 本身非法（非标准关键字等）  # noqa: BLE001
@@ -289,26 +120,6 @@ def _validate_schema(parsed: dict[str, Any], schema: dict[str, Any]) -> bool:
             e,
         )
         return False
-
-
-def _truncate_json_for_log(value: dict[str, Any]) -> str:
-    """将模型输出序列化并截断到安全长度（防业务敏感数据全量落盘）。
-
-    结构化输出可能含业务敏感数据（Yield RCA 场景为良率/晶圆数据），全量写入
-    WARNING 日志是潜在泄露面。截断保留前 N 字符（`_LOG_TRUNCATE_LIMIT`），
-    足以定位解析/校验问题，同时避免敏感内容完整落盘。
-    """
-    return _truncate_text_for_log(json.dumps(value, ensure_ascii=False))
-
-
-_LOG_TRUNCATE_LIMIT = 500  # 模型输出日志截断长度：保留诊断所需前缀，收敛敏感数据泄露面
-
-
-def _truncate_text_for_log(text: str) -> str:
-    """将任意文本截断到安全长度（防业务敏感数据全量落盘）。"""
-    if len(text) > _LOG_TRUNCATE_LIMIT:
-        return f"{text[:_LOG_TRUNCATE_LIMIT]}...（已截断，共 {len(text)} 字符）"
-    return text
 
 
 def _accumulate_usage(target: dict | None, src: dict | None) -> None:
@@ -415,12 +226,12 @@ class StructuredOutput:
         """extract 的三级降级主体（与 extract 同参，由 extract 包装终止收敛）。"""
         # 问题 4：递归补全 additionalProperties:false（深拷贝，不污染调用方 schema）。
         # 默认拒绝额外字段，模型无法扩展接口混入业务不需要的字段。
-        schema = _enforce_no_extra_fields(schema)
+        schema = codec.enforce_no_extra_fields(schema)
         if max_tokens is None:
             max_tokens = StructuredOutput._default_max_tokens
 
         # 第一级：先用原生 JSON Schema
-        response_format = _build_json_schema_request(schema)
+        response_format = codec.build_json_schema_request(schema)
         try:
             result = await StructuredOutput._try_extract(
                 llm_service=llm_service,
@@ -439,7 +250,7 @@ class StructuredOutput:
             return result
 
         # 第二级：降级普通 JSON mode
-        response_format = _build_json_mode_request()
+        response_format = codec.build_json_mode_request()
         try:
             result = await StructuredOutput._try_extract(
                 llm_service=llm_service,
@@ -588,7 +399,9 @@ class StructuredOutput:
             # 回喂：clone + assistant 失败输出 + user 错误反馈（不污染调用方 messages）
             retry = await StructuredOutput._call_generate(
                 llm_service=llm_service,
-                messages=_build_reask_messages(messages, content, "\n".join(errors)),
+                messages=codec.build_reask_messages(
+                    messages, content, "\n".join(errors)
+                ),
                 model_key=model_key,
                 max_tokens=max_tokens,
                 response_format=response_format,
@@ -817,7 +630,7 @@ class StructuredOutput:
                 # LLM-008：拒答文本经截断落盘（「模型输出不完整落盘」安全基线）——
                 # 拒答常引用触发内容（Yield RCA 晶圆/良率数据），不能完整落日志。
                 # 异常 message 保持简洁（不含拒答文本），日志保留截断前缀供诊断。
-                _truncate_text_for_log(str(getattr(result, "refusal", "") or "")),
+                codec.truncate_text_for_log(str(getattr(result, "refusal", "") or "")),
                 result.finish_reason,
             )
             raise StructuredRefusalError(

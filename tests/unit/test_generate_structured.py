@@ -11,6 +11,7 @@ LLMService.generate_structured 单元测试
 """
 
 import asyncio
+import copy
 import json
 import logging
 import time
@@ -24,8 +25,8 @@ from app.integration.llm.structured import (
     StructuredOutput,
     StructuredRefusalError,
     StructuredTruncationError,
-    _enforce_no_extra_fields,
 )
+from app.integration.llm.structured_codec import enforce_no_extra_fields
 from app.shared.exceptions import LLMCancelledError, LLMDeadlineExceededError
 
 SCHEMA = {
@@ -34,6 +35,80 @@ SCHEMA = {
     "required": ["name"],
 }
 MESSAGES = [{"role": "user", "content": "张三去了北京"}]
+
+
+async def test_nested_strict_schema_preserves_local_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """strict 请求副本收紧嵌套字段，本地校验和调用方仍保留显式扩展许可。"""
+    llm = LLMService()
+    schema = {
+        "type": "object",
+        "properties": {
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"source": {"type": "string"}},
+                    "required": ["source"],
+                    "additionalProperties": True,
+                },
+            },
+        },
+        "required": ["evidence"],
+    }
+    original = copy.deepcopy(schema)
+    expected = {"evidence": [{"source": "FDC", "measurement": 82}]}
+    calls: list[dict] = []
+
+    async def fake_generate(**kwargs: object) -> StreamResult:
+        """记录真实组装参数并返回带合法扩展字段的模型结果。"""
+        calls.append(kwargs)
+        return _sr(json.dumps(expected))
+
+    monkeypatch.setattr(llm, "generate", fake_generate)
+    assert await llm.generate_structured(MESSAGES, schema) == expected
+    assert len(calls) == 1
+    request_schema = calls[0]["response_format"]["json_schema"]["schema"]
+    assert request_schema["additionalProperties"] is False
+    assert request_schema["properties"]["evidence"]["items"]["additionalProperties"] is False
+    assert schema == original
+
+
+async def test_reask_preserves_all_errors_without_logging_instances(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """完整错误和失败原文送回模型，日志只含摘要且调用方消息不变。"""
+    llm = LLMService()
+    schema = {
+        "type": "object",
+        "properties": {"source": {"type": "integer"}, "confidence": {"type": "number"}},
+        "required": ["source", "confidence"],
+    }
+    messages = [{"role": "user", "content": "请核对证据"}]
+    original = copy.deepcopy(messages)
+    raw = json.dumps({"source": "private-wafer-id", "confidence": "private-yield-value"})
+    expected = {"source": 1, "confidence": 0.8}
+    calls: list[dict] = []
+
+    async def fake_generate(**kwargs: object) -> StreamResult:
+        """首次返回两个非法字段，收到回喂后给出合法结果。"""
+        calls.append(kwargs)
+        return _sr(raw if len(calls) == 1 else json.dumps(expected))
+
+    monkeypatch.setattr(llm, "generate", fake_generate)
+    with caplog.at_level(logging.WARNING, logger="app.llm.structured"):
+        assert await llm.generate_structured(messages, schema) == expected
+    assert len(calls) == 2
+    assert calls[0]["response_format"] == calls[1]["response_format"]
+    feedback = calls[1]["messages"]
+    assert feedback[:-2] == original
+    assert feedback[-2] == {"role": "assistant", "content": raw}
+    assert feedback[-1]["role"] == "user"
+    for value in ("source", "confidence", "private-wafer-id", "private-yield-value"):
+        assert value in feedback[-1]["content"]
+    assert "source" in caplog.text and "confidence" in caplog.text
+    assert "private-wafer-id" not in caplog.text
+    assert "private-yield-value" not in caplog.text
+    assert messages == original
 
 
 def _sr(
@@ -971,7 +1046,7 @@ async def test_caller_schema_not_polluted():
         "properties": {"name": {"type": "string"}},
         "required": ["name"],
     }
-    enforced = _enforce_no_extra_fields(schema)
+    enforced = enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is False
     assert "additionalProperties" not in schema  # 调用方 schema 未被就地修改
 
@@ -986,7 +1061,7 @@ async def test_explicit_true_respected():
         "properties": {"name": {"type": "string"}},
         "additionalProperties": True,  # 显式允许扩展
     }
-    enforced = _enforce_no_extra_fields(schema)
+    enforced = enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is True  # 保持 true
 
 
@@ -1007,7 +1082,7 @@ async def test_nested_objects_recursively_enforced():
         },
         "required": ["name"],
     }
-    enforced = _enforce_no_extra_fields(schema)
+    enforced = enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is False  # 顶层
     assert enforced["properties"]["address"]["additionalProperties"] is False  # 嵌套
 
@@ -1048,7 +1123,7 @@ async def test_enforce_nullable_object_type_array():
         "type": ["object", "null"],  # 可空对象
         "properties": {"name": {"type": "string"}},
     }
-    enforced = _enforce_no_extra_fields(schema)
+    enforced = enforce_no_extra_fields(schema)
     assert enforced["additionalProperties"] is False
 
 
@@ -1108,7 +1183,7 @@ def test_reask_log_truncates_instance_values(caplog):
     修复后：日志改用结构化字段摘要（路径 + validator + 约束值，无实例数据），
     回喂模型保留 e.message（模型需要具体错误才能修正）。
     """
-    from app.integration.llm.structured import _collect_schema_errors
+    from app.integration.llm.structured_codec import collect_schema_errors
 
     long_secret = "yield=99.7,wafer=W12345-ABCD," * 50
     parsed = {"name": long_secret}
@@ -1117,7 +1192,7 @@ def test_reask_log_truncates_instance_values(caplog):
         "properties": {"name": {"type": "string", "maxLength": 10}},
         "required": ["name"],
     }
-    errors = _collect_schema_errors(parsed, schema)
+    errors = collect_schema_errors(parsed, schema)
     # 回喂给模型的错误文本保留 e.message（含实例值，模型需要具体错误修正）
     assert long_secret in errors[0], "回喂模型的错误应保留 e.message（含实例值）"
     # 但错误文本本身不应被直接落盘——日志环节走脱敏摘要（见 generate_structured 集成路径）

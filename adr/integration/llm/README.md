@@ -24,5 +24,6 @@
 | [LLM-ADR-014](2026-09-03-connection-establishment-phase.md) | 连接建立期异常全景与守护机制（分级超时 connect/read/write/pool + 连接池 limits + 首包/空闲双阈值看门狗实施） | ✅ 已采纳 | client / errors / retry / reservation_limiter / streaming_rectifier / settings / container | 2026-09-03 |
 | [LLM-ADR-015](2026-09-03-mid-stream-continuation.md) | 半流中断接续策略（text-only prefix continuation：已产出 content 带前缀续写，尽力而为退化放弃） | ✅ 已采纳 | streaming_rectifier / llm_service / settings / container / llm_gateway | 2026-09-03 |
 | [LLM-ADR-016](2026-09-06-request-context-budget.md) | Provider 请求上下文准入：语义预算与最终请求预算分离 | ✅ 已采纳 | request_budget / llm_service / token_counter | 2026-09-06 |
+| [LLM-ADR-017](2026-09-14-structured-codec-boundary.md) | 结构化输出的数据转换与编排分离：纯 codec、原观测边界 | 已接受；验证见记录 | structured / structured_codec | 2026-09-14 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

@@ -76,6 +76,7 @@
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |
 | app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流/续接；业务取消先收尾再类型化冒泡且不生成取消 SSE；EOF 完成态禁止重发，必要结算可见 |
 | app/integration/llm/structured.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | 结构化三级降级 |
+| app/integration/llm/structured_codec.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | R1 纯转换与校验；公开调用测试覆盖双副本与回喂边界 |
 | app/integration/llm/token_counter.py | ✅ | docs/integration_doc/llm_doc/token_counter.md | tests/unit/test_token_counter.py | tiktoken 计数实现（get_encoder/content_to_text/TiktokenTokenCounter，经 LLMService.count_* 对外） |
 | app/integration/tools/assembler.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/integration/test_tool_execution.py | 内置工具幂等装配 |
 | app/integration/tools/base.py | ✅ | docs/integration_doc/tools_doc/tools.md | tests/unit/test_tool_executor_components.py | BaseTool 抽象 + 元数据 + 保守安全重试声明 + 校验委托 + 生命周期钩子 |
