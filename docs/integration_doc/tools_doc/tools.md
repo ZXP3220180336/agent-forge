@@ -1,6 +1,6 @@
 # 工具模块接口文档
 
-> **更新日期**：2026-08-30
+> **更新日期**：2026-09-14
 > **模块**：`app/integration/tools/`
 > **文档定位**：工具系统对外接口契约 + 六大子组件导航。执行细节（并发 / 重试 / 截断 / 审计）见对应子文档，本文不重复。
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -105,6 +105,7 @@ ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#
 | --- | --- |
 | `name` / `description` / `parameters` | 抽象；`parameters` 为 OpenAI Function Calling JSON Schema |
 | `execute(**kwargs) -> ToolResult` | 抽象；业务错误走返回值而非抛异常 |
+| `can_retry(result_or_error) -> bool` | 适配器对本次失败的安全重试声明；默认 False，次数余额不能替代幂等/副作用证明 |
 | `to_openai_tool` / `to_openai_response` | Schema 导出（Chat / Responses 格式） |
 | `validate_parameters(**kwargs) -> bool` | 委托 jsonschema 校验器（完整校验） |
 | `validation_issues(**kwargs) -> list[str]` | 中文归因问题列表（executor 错误信息用） |

@@ -17,6 +17,7 @@ from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.executor import ToolExecutor
 from app.integration.tools.hooks import ExecutionHooks
 from app.integration.tools.registry import ToolRegistry
+from app.integration.tools.result_processor import ResultProcessor
 from app.integration.tools.security import RiskLevel, ToolAuditor
 from app.integration.tools.stats import ToolStatsCollector
 from app.integration.tools.tool_service import ToolService
@@ -359,12 +360,169 @@ class _FlakyTool(_ParamTool):
             return ToolResult(success=False, content="", error="flaky")
         return ToolResult(success=True, content="ok")
 
+    def can_retry(self, result_or_error: ToolResult | BaseException) -> bool:
+        return True
+
 
 class _AlwaysFailTool(_ParamTool):
     """始终失败。"""
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=False, content="", error="always fail")
+
+    def can_retry(self, result_or_error: ToolResult | BaseException) -> bool:
+        return True
+
+
+class _CountingSuccessTool(_ParamTool):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def execute(self, **kwargs) -> ToolResult:
+        self.calls += 1
+        return ToolResult(success=True, content="accepted")
+
+
+class _ExplodingResultProcessor(ResultProcessor):
+    def truncate_result(
+        self, result: ToolResult, *, max_length: int | None = None
+    ) -> None:
+        raise RuntimeError("truncate failed")
+
+
+@pytest.mark.asyncio
+async def test_success_postprocessing_failure_does_not_repeat_tool_execution():
+    """展示处理失败保留原成功结果，也不得把真实调用送回重试循环。"""
+    tool = _CountingSuccessTool()
+    auditor = _SpyAuditor()
+    service = ToolService(
+        tool_max_retries=3,
+        result_processor=_ExplodingResultProcessor(),
+        auditor=auditor,
+    )
+    service.register(tool)
+
+    result = await service.execute("param_tool", {"count": 1}, retry_delay=0)
+
+    assert tool.calls == 1
+    assert result.success is True
+    assert result.content == "accepted"
+    assert auditor.records[0]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_failure_is_not_retried_without_tool_safety_declaration():
+    """次数预算不会单独授权重试；BaseTool 缺省必须拒绝自动重复。"""
+
+    class _DefaultNoRetryTool(_ParamTool):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, **kwargs) -> ToolResult:
+            self.calls += 1
+            return ToolResult(success=False, content="", error="unsafe to repeat")
+
+    tool = _DefaultNoRetryTool()
+    service = ToolService(tool_max_retries=3)
+    service.register(tool)
+
+    result = await service.execute("param_tool", {"count": 1}, retry_delay=0)
+
+    assert result.success is False
+    assert result.retry_count == 1
+    assert tool.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_safety_check_failure_stops_without_hiding_tool_result():
+    class _BrokenRetryCheckTool(_ParamTool):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, **kwargs) -> ToolResult:
+            self.calls += 1
+            return ToolResult(success=False, content="", error="original failure")
+
+        def can_retry(self, result_or_error: ToolResult | BaseException) -> bool:
+            raise RuntimeError("classification failed")
+
+    tool = _BrokenRetryCheckTool()
+    service = ToolService(tool_max_retries=3)
+    service.register(tool)
+
+    result = await service.execute("param_tool", {"count": 1}, retry_delay=0)
+
+    assert tool.calls == 1
+    assert result.error == "original failure"
+    assert result.retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_hook_timeout_and_mutation_do_not_override_success_result():
+    tool = _CountingSuccessTool()
+    auditor = _SpyAuditor()
+    service = ToolService(
+        auditor=auditor,
+        tool_observation_timeout=0.01,
+    )
+    service.register(tool)
+
+    async def mutating_hook(name, parameters, result):
+        result.success = False
+        result.content = "mutated"
+
+    async def hanging_hook(name, parameters, result):
+        await asyncio.sleep(1)
+
+    service.add_execution_hook(mutating_hook)
+    service.add_execution_hook(hanging_hook)
+
+    result = await service.execute("param_tool", {"count": 1})
+
+    assert tool.calls == 1
+    assert result.success is True
+    assert result.content == "accepted"
+    assert len(auditor.records) == 1  # 审计优先于可扩展 Hook 消费共享观察预算
+
+
+@pytest.mark.asyncio
+async def test_stats_failure_does_not_override_success_result():
+    class _ExplodingStats(ToolStatsCollector):
+        def record(self, name: str, success: bool, elapsed: float) -> None:
+            raise RuntimeError("stats failed")
+
+    tool = _CountingSuccessTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    executor = ToolExecutor(registry, _ExplodingStats(), ExecutionHooks())
+
+    result = await executor.execute("param_tool", {"count": 1})
+
+    assert tool.calls == 1
+    assert result.success is True
+    assert result.content == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_audit_timeout_does_not_delay_or_override_success_result():
+    class _HangingAuditor(ToolAuditor):
+        async def record(self, **kwargs) -> None:  # noqa: A003
+            await asyncio.sleep(1)
+
+    tool = _CountingSuccessTool()
+    service = ToolService(
+        auditor=_HangingAuditor(),
+        tool_observation_timeout=0.01,
+    )
+    service.register(tool)
+
+    result = await asyncio.wait_for(
+        service.execute("param_tool", {"count": 1}),
+        timeout=0.2,
+    )
+
+    assert tool.calls == 1
+    assert result.success is True
 
 
 @pytest.mark.asyncio
@@ -431,6 +589,9 @@ class _TimeoutAfterBusinessFailTool(_ParamTool):
         await asyncio.sleep(0.2)
         return ToolResult(success=True, content="ok")
 
+    def can_retry(self, result_or_error: ToolResult | BaseException) -> bool:
+        return True
+
 
 @pytest.mark.asyncio
 async def test_retry_final_timeout_overrides_earlier_business_failure():
@@ -457,6 +618,9 @@ class _ExplodeAfterBusinessFailTool(_ParamTool):
         if self.calls == 1:
             return ToolResult(success=False, content="", error="业务失败")
         raise RuntimeError("boom")
+
+    def can_retry(self, result_or_error: ToolResult | BaseException) -> bool:
+        return True
 
 
 @pytest.mark.asyncio

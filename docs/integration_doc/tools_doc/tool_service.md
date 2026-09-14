@@ -1,6 +1,6 @@
 # ToolService 工具服务说明文档
 
-> **更新日期**：2026-08-24
+> **更新日期**：2026-09-14
 > **模块**：`app/integration/tools/tool_service.py`
 > **文档定位**：ToolService 独立说明 —— 工具系统的对外统一入口（容器 + 执行 + 统计 + 钩子 + 内置工具装配 + 选择 + 校验 + 截断 + 审计）。
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -94,7 +94,8 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 - 参数校验失败返回**可归因错误**（jsonschema，见 [validator.md](validator.md)）
 - 成功结果 head+tail 统一截断（`tool.max_output_length`，见 [result_processor.md](result_processor.md)）
 - 每次 `execute()` 审计 1 条最终结果，覆盖全路径（见 [security.md](security.md)）
-- 统计每次真实尝试记录一次，钩子仅成功路径触发（见 [stats.md](stats.md)）
+- 次数预算只给出执行上界；适配器还须通过 `can_retry` 明确本次失败可安全重复，默认只执行一次
+- 统计每次真实尝试记录一次，钩子仅成功路径触发；非关键观测失败或超时不覆盖工具结果（见 [stats.md](stats.md)）
 
 ### 内置工具装配 `init_default_tools`
 
@@ -127,7 +128,7 @@ def init_default_tools(self) -> list[str]:
 
 - `parameters` 传 JSON 字符串解析失败 → 返回失败结果而非抛异常
 - 并发下统计为同步字典更新（无锁），统计为尽力而为
-- 审计 / 钩子失败不影响工具执行（日志尽力而为）
+- 统计 / 审计 / 钩子失败不影响工具结果；异步钩子和审计受 ToolService 的观察预算约束，钩子取得独立结果快照
 
 ---
 
@@ -172,7 +173,7 @@ await container.tool_service.refresh_external_tools()
 
 相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config_doc/config.md) 工具配置 / Agent 并发控制节）。
 
-> ToolService 构造时读取 `agent_max_concurrent_tools` 创建信号量；`timeout` / `max_retries` 为调用方可覆盖的默认值。截断上限经内置工具 `register_config` 注入后由 `max_output_length` 属性暴露。
+> ToolService 构造时读取 `agent_max_concurrent_tools` 创建信号量；`timeout` / `max_retries` 为调用方可覆盖的执行上限，是否重试仍由适配器安全声明决定。`tool_observation_timeout` 当前为构造参数，配置系统接线随 C-02 Piece ③完成。截断上限经内置工具 `register_config` 注入后由 `max_output_length` 属性暴露。
 
 ---
 

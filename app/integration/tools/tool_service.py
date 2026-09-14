@@ -39,6 +39,7 @@ class ToolService:
         auditor: ToolAuditor | None = None,
         approval_gate: ApprovalGate | None = None,
         external_config_source: Callable[[str], Any] | None = None,
+        tool_observation_timeout: float = 0.2,
     ) -> None:
         self._registry = ToolRegistry()
         self._stats = ToolStatsCollector()
@@ -56,6 +57,7 @@ class ToolService:
             max_concurrent_tools=max_concurrent_tools,
             tool_timeout=tool_timeout,
             tool_max_retries=tool_max_retries,
+            observation_timeout=tool_observation_timeout,
         )
         # 外部工具热加载器（execute 惰性检查：无后台任务，见 loader.py）
         # 配置注入：装配根绑定的 settings 读取器 → 外部工具 CONFIG_KEYS 注册

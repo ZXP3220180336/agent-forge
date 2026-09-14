@@ -54,6 +54,14 @@ class BaseTool(ABC):
             ToolResult: 执行结果
         """
 
+    def can_retry(self, result_or_error: ToolResult | BaseException) -> bool:
+        """本次失败是否可安全自动重试。
+
+        次数预算只限制重试上界，不证明重复执行安全。适配器必须依据自身协议、
+        副作用和幂等能力显式覆写；无法证明时保持默认 False。
+        """
+        return False
+
     @classmethod
     def register_config(cls, **kwargs: Any) -> None:
         """可选：由装配根注入工具运行配置（默认无操作，子类按需覆盖）。

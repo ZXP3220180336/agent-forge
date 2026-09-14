@@ -1,6 +1,7 @@
 """工具执行器：信号量 + 重试 + 超时 + 校验 + 截断 + 审计 + 统计 + 钩子。"""
 
 import asyncio
+import copy
 import json
 import time
 from typing import Any
@@ -44,6 +45,7 @@ class ToolExecutor:
         max_concurrent_tools: int = 3,
         tool_timeout: int = 30,
         tool_max_retries: int = 3,
+        observation_timeout: float = 0.2,
     ) -> None:
         self._registry = registry
         self._stats = stats
@@ -54,6 +56,7 @@ class ToolExecutor:
         self._approval_gate = approval_gate or AutoApprovalGate()
         self._tool_timeout = tool_timeout
         self._tool_max_retries = tool_max_retries
+        self._observation_timeout = observation_timeout
         # 信号量构造期创建：asyncio 原语 3.10+ 惰性绑定事件循环，构造期创建仅需保证实例就绪
         self._tool_semaphore = asyncio.Semaphore(max_concurrent_tools)
         # per-tool 锁：concurrency_safe=False 的工具同实例内串行化
@@ -175,7 +178,7 @@ class ToolExecutor:
 
         # 6. 执行（重试循环）；concurrency_safe=False 时 per-tool 锁串行化
         if tool.concurrency_safe:
-            result = await self._execute_with_retry(
+            result, observation_remaining = await self._execute_with_retry(
                 tool,
                 parameters,
                 timeout=timeout,
@@ -184,7 +187,7 @@ class ToolExecutor:
             )
         else:
             async with self._tool_lock(name):
-                result = await self._execute_with_retry(
+                result, observation_remaining = await self._execute_with_retry(
                     tool,
                     parameters,
                     timeout=timeout,
@@ -193,8 +196,70 @@ class ToolExecutor:
                 )
 
         # 7. 审计（每次 execute 一条最终结果）
-        await self._audit(tool, parameters, result, started_at=started_at)
+        observation_started_at = time.monotonic()
+        await self._audit(
+            tool,
+            parameters,
+            result,
+            started_at=started_at,
+            observation_timeout=observation_remaining,
+        )
+        observation_remaining = max(
+            0.0,
+            observation_remaining - (time.monotonic() - observation_started_at),
+        )
+        if result.success:
+            await self._hooks.run(
+                name,
+                parameters,
+                result,
+                timeout=observation_remaining,
+            )
         return result
+
+    async def _audit(
+        self,
+        tool: BaseTool | None,
+        parameters: dict[str, Any] | str,
+        result: ToolResult,
+        *,
+        started_at: float,
+        tool_name: str | None = None,
+        observation_timeout: float | None = None,
+    ) -> None:
+        """统一审计出口：取工具元数据（未注册时传 None + 保留原始工具名）+ 最终 result。"""
+        elapsed = time.monotonic() - started_at
+        audit_params = (
+            parameters
+            if isinstance(parameters, dict)
+            else {"raw": str(parameters)[:500]}
+        )
+        timeout = (
+            self._observation_timeout
+            if observation_timeout is None
+            else observation_timeout
+        )
+        if timeout <= 0:
+            logger.warning("工具审计跳过：观察预算已耗尽")
+            return
+        try:
+            await asyncio.wait_for(
+                self._auditor.record(
+                    tool_name=tool.name if tool else (tool_name or "unknown"),
+                    risk_level=tool.risk_level if tool else RiskLevel.L0_READONLY,
+                    category=tool.category if tool else "unknown",
+                    success=result.success,
+                    elapsed=elapsed,
+                    parameters=audit_params,
+                    error=result.error,
+                    error_code=result.error_code,
+                    retry_count=result.retry_count,
+                    content_preview=result.content,
+                ),
+                timeout=timeout,
+            )
+        except Exception as e:  # noqa: BLE001 — 审计失败不阻断工具执行
+            logger.warning("工具审计失败（不影响执行）: %s", e)
 
     async def _execute_with_retry(
         self,
@@ -204,7 +269,7 @@ class ToolExecutor:
         timeout: int,
         max_retries: int,
         retry_delay: float,
-    ) -> ToolResult:
+    ) -> tuple[ToolResult, float]:
         """重试循环：超时保护 + 渐进式退避 + 成功截断 + 统计 + 钩子。
 
         超时语义：`wait_for` 超时取消的是执行协程；工具内部经 `asyncio.to_thread`
@@ -217,6 +282,7 @@ class ToolExecutor:
         last_error_code: ErrorCode | None = None
         last_result: ToolResult | None = None
         actual_retries = 0
+        observation_remaining = self._observation_timeout
 
         for attempt in range(max_retries):
             start_time = time.monotonic()
@@ -225,7 +291,36 @@ class ToolExecutor:
                     tool.execute(**parameters),
                     timeout=timeout,
                 )
+            except TimeoutError as error:
+                failure: ToolResult | BaseException = error
+                last_error = self._normalize_error(f"工具执行超时（{timeout}秒）")
+                last_error_code = ErrorCode.TIMEOUT
+                # 覆盖上次业务失败结果：全败收尾统一归因「最近一次失败」（超时优先于更早的业务失败）
+                last_result = None
+                elapsed = time.monotonic() - start_time
+                observation_remaining = self._record_stats(
+                    name,
+                    success=False,
+                    elapsed=elapsed,
+                    observation_remaining=observation_remaining,
+                )
 
+            except Exception as error:  # noqa: BLE001
+                failure = error
+                last_error = self._normalize_error(f"工具执行异常: {error!s}")
+                last_error_code = ErrorCode.UNKNOWN
+                # 同上：异常覆盖更早的业务失败，避免错误归因错位（审计 / 证据链按最终失败归类）
+                last_result = None
+                elapsed = time.monotonic() - start_time
+                observation_remaining = self._record_stats(
+                    name,
+                    success=False,
+                    elapsed=elapsed,
+                    observation_remaining=observation_remaining,
+                )
+
+            else:
+                # 真实调用已返回；以下处理不属于调用失败，异常不得触发工具重放。
                 # 填充执行元数据：retry_count = 实际执行次数（第 1 次尝试 = 1，0 基索引 +1），
                 # 成功 / 失败路径口径一致（全败路径用 actual_retries = 同一语义）
                 elapsed = time.monotonic() - start_time
@@ -233,48 +328,43 @@ class ToolExecutor:
                 result.retry_count = attempt + 1
 
                 if result.success:
-                    # 统一结果截断（head+tail），随后统计、钩子、返回
-                    self._result_processor.truncate_result(
-                        result, max_length=tool.max_output_length
+                    # 原始结果已归调用层所有；展示处理在副本上执行，失败时保留原结果。
+                    try:
+                        processed_result = copy.deepcopy(result)
+                        self._result_processor.truncate_result(
+                            processed_result, max_length=tool.max_output_length
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        logger.warning("工具结果展示处理失败（保留原结果）: %s", error)
+                        processed_result = result
+                    observation_remaining = self._record_stats(
+                        name,
+                        success=True,
+                        elapsed=elapsed,
+                        observation_remaining=observation_remaining,
                     )
-                    self._stats.record(name, success=True, elapsed=elapsed)
-                    await self._hooks.run(name, parameters, result)
-                    return result
+                    return processed_result, observation_remaining
 
                 # 执行返回失败（如文件不存在）→ 记录错误与业务码，准备重试
-                last_error = self._result_processor.normalize_error(
-                    result.error or "工具执行失败"
-                )
+                last_error = self._normalize_error(result.error or "工具执行失败")
                 last_error_code = result.error_code  # 透传工具业务码（默认 None）
                 last_result = result
-                self._stats.record(name, success=False, elapsed=elapsed)
-
-            except TimeoutError:
-                last_error = self._result_processor.normalize_error(
-                    f"工具执行超时（{timeout}秒）"
+                failure = result
+                observation_remaining = self._record_stats(
+                    name,
+                    success=False,
+                    elapsed=elapsed,
+                    observation_remaining=observation_remaining,
                 )
-                last_error_code = ErrorCode.TIMEOUT
-                # 覆盖上次业务失败结果：全败收尾统一归因「最近一次失败」（超时优先于更早的业务失败）
-                last_result = None
-                elapsed = time.monotonic() - start_time
-                self._stats.record(name, success=False, elapsed=elapsed)
-
-            except Exception as e:  # noqa: BLE001
-                last_error = self._result_processor.normalize_error(
-                    f"工具执行异常: {e!s}"
-                )
-                last_error_code = ErrorCode.UNKNOWN
-                # 同上：异常覆盖更早的业务失败，避免错误归因错位（审计 / 证据链按最终失败归类）
-                last_result = None
-                elapsed = time.monotonic() - start_time
-                self._stats.record(name, success=False, elapsed=elapsed)
 
             actual_retries += 1
 
-            # 重试前等待（渐进式退避：1s, 2s, 4s...）
-            if attempt < max_retries - 1:
-                wait = retry_delay * (2**attempt)
-                await asyncio.sleep(wait)
+            if attempt >= max_retries - 1 or not self._can_retry(tool, failure):
+                break
+
+            # 已同时满足安全声明和次数预算，才进入下一次真实执行。
+            wait = retry_delay * (2**attempt)
+            await asyncio.sleep(wait)
 
         # 所有重试均失败：retry_count = 实际执行次数（每轮循环 +1，与成功路径 attempt+1 口径一致）
         # last_result 仅保留「最近一次业务失败」；最后一次为超时 / 异常时回退到 last_error / last_error_code
@@ -288,7 +378,43 @@ class ToolExecutor:
         result.retry_count = actual_retries
         if result.execution_time is None:
             result.execution_time = 0.0
-        return result
+        return result, observation_remaining
+
+    @staticmethod
+    def _can_retry(tool: BaseTool, failure: ToolResult | BaseException) -> bool:
+        """读取适配器的安全声明；声明逻辑失败时按不可重试处理。"""
+        try:
+            return tool.can_retry(failure)
+        except Exception as error:  # noqa: BLE001
+            logger.warning("工具重试安全判断失败（停止重试）: %s", error)
+            return False
+
+    def _record_stats(
+        self,
+        name: str,
+        *,
+        success: bool,
+        elapsed: float,
+        observation_remaining: float,
+    ) -> float:
+        """统计属于非关键观测，失败不能覆盖真实工具结果。"""
+        observation_started_at = time.monotonic()
+        try:
+            self._stats.record(name, success=success, elapsed=elapsed)
+        except Exception as error:  # noqa: BLE001
+            logger.warning("工具统计记录失败（不影响执行）: %s", error)
+        return max(
+            0.0,
+            observation_remaining - (time.monotonic() - observation_started_at),
+        )
+
+    def _normalize_error(self, error: str) -> str:
+        """错误展示处理失败时保留原始归因，不覆盖执行事实。"""
+        try:
+            return self._result_processor.normalize_error(error)
+        except Exception as processing_error:  # noqa: BLE001
+            logger.warning("工具错误展示处理失败（保留原错误）: %s", processing_error)
+            return error
 
     def _tool_lock(self, name: str) -> asyncio.Lock:
         """惰性 per-tool 锁（asyncio.Lock 3.10+ 不绑定事件循环，惰性创建安全）。"""
@@ -305,35 +431,3 @@ class ToolExecutor:
         lock = self._tool_locks.get(name)
         if lock is not None and not lock.locked():
             self._tool_locks.pop(name, None)
-
-    async def _audit(
-        self,
-        tool: BaseTool | None,
-        parameters: dict[str, Any] | str,
-        result: ToolResult,
-        *,
-        started_at: float,
-        tool_name: str | None = None,
-    ) -> None:
-        """统一审计出口：取工具元数据（未注册时传 None + 保留原始工具名）+ 最终 result。"""
-        elapsed = time.monotonic() - started_at
-        audit_params = (
-            parameters
-            if isinstance(parameters, dict)
-            else {"raw": str(parameters)[:500]}
-        )
-        try:
-            await self._auditor.record(
-                tool_name=tool.name if tool else (tool_name or "unknown"),
-                risk_level=tool.risk_level if tool else RiskLevel.L0_READONLY,
-                category=tool.category if tool else "unknown",
-                success=result.success,
-                elapsed=elapsed,
-                parameters=audit_params,
-                error=result.error,
-                error_code=result.error_code,
-                retry_count=result.retry_count,
-                content_preview=result.content,
-            )
-        except Exception as e:  # noqa: BLE001 — 审计失败不阻断工具执行
-            logger.warning("工具审计失败（不影响执行）: %s", e)
