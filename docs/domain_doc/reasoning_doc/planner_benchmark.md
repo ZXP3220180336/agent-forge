@@ -49,7 +49,7 @@
 | 2 | 规划器只产计划不执行 | ✅ | `_plan` / `_replan` 仅 `generate_structured`；工具调用权只在每步执行器（ReAct） |
 | 3 | 执行器逐「步」跑 agent 循环 | ✅ | 每步复用 `ReActStrategy.execute(step.description, 步隔离消息)`——被步骤约束的 ReAct 小跑，护栏全套免费 |
 | 4 | 步骤自包含 + depends_on | ✅ | `PLAN_STEP_SCHEMA`：description 目标式单步可独立完成 + depends_on 必填（防跳过排序思考） |
-| 5 | 依赖纪律断言 | ✅ | `_normalize_steps` 程序化单调 id + 丢弃自引/前瞻/未知引用；列表序即合法拓扑序 |
+| 5 | 依赖纪律断言 | ✅ | `_planner_steps.normalize_steps` 程序化单调 id + 丢弃自引/前瞻/未知引用；列表序即合法拓扑序 |
 | 6 | 重规划（失败恢复） | ✅ | 仅步骤失败触发 `_replan_loop`（≤ max_replan_rounds）；基于已完成步骤产新尾替换未执行部分，绝不重复已完成工作 |
 | 7 | 重规划 id 续接单调 | ✅ | 新尾 id = max(executed.id)+1 起单调重编号（防依赖错位） |
 | 8 | 结构化最终输出（证据链报告） | ✅ | `RESULT_SCHEMA`：summary + conclusions（claim/evidence/confidence）+ explicit_abstention——对齐产品主链路报告规范 |

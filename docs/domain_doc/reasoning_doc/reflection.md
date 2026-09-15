@@ -1,7 +1,7 @@
 # ReflectionStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/reflection.py`
-> **更新日期**：2026-09-13
+> **更新日期**：2026-09-16
 > **职责**：Reflection 原子推理策略——生成 → 自查 → 修正三阶段，模型自我评估输出质量并改进
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/reflection.py](../agent_doc/agent.md)；工业级对标见 [reflection_benchmark.md](reflection_benchmark.md)
@@ -116,6 +116,10 @@ ReflectionStrategy.execute()（三阶段）
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, output_schema=None, critique_schema=None, critique_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema 可注入覆盖 |
 | `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_tool_protocol_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, max_refine_rounds=2, cancel_event=None)` | 三阶段主流程；yield SSE 事件，结果写入 `outcome`；协议修正上限透传初稿 ReAct |
 
+内部阶段方法：`_finalize_after_critique` 只在 critique 可用后判定提交当前稿或继续修正，保留
+REASON-020 的 after-turn cancel/成本与 strict deadline 差异；`_adopt_refined_draft` 只在修正
+返回完整稿时更新最近稿和完成轮数。`_critique`、`_refine`、usage 归并与 `_finalize` 仍由策略持有。
+
 ### ReflectionOutcome（结果载体）
 
 | 字段 | 说明 |
@@ -145,11 +149,11 @@ ReflectionStrategy.execute()（三阶段）
   while True:
     ├─ 护栏①（自查调用前准入）：cancel > deadline > cost 命中 → 采用最近完整稿降级停机
     ├─ 自查 current（CRITIQUE_SCHEMA）→ 无结果先恢复 cancel/deadline/context，再判普通失败
-    ├─ critique.ok → strict deadline 复查；按时采用 current，迟到保留事实并 TIMEOUT
-    ├─ refine_round >= max_refine_rounds-1 → strict deadline 复查；按时采用 current
+    ├─ _finalize_after_critique：ok 或达到上限 → strict deadline 复查后提交 current；否则继续
     ├─ 护栏②（修正调用前准入）：命中 → 采用最近稿降级停机，不发起修正
     └─ issues → 修正（REFINE_PROMPT + 证据链 + current + issues）→
-        成功 current = refined → 护栏③（归账并接管新稿后复查）→ 命中则采用 refined 降级停机；
+        _adopt_refined_draft 先接管完整稿与完成轮数 → 护栏③（归账并接管新稿后复查）→
+        命中则采用 refined 降级停机；
         否则回到循环顶部重新自查修正稿
 ```
 
@@ -229,6 +233,7 @@ ReflectionStrategy.execute()（三阶段）
 
 ## 相关文档
 
+- [领域推理纯边界 ADR](../../../adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md)
 - [reflection_benchmark.md](reflection_benchmark.md)（工业级对标基准）
 - [推理策略模块](reasoning.md)（主文档）
 - [ReActStrategy 策略组件](react.md)（同级组件）

@@ -1,7 +1,7 @@
 # 领域层说明文档
 
 > **对应代码**：`app/domain/`
-> **更新日期**：2026-09-13
+> **更新日期**：2026-09-16
 > **文档定位**：领域层（`app/domain/`）—— Agent 内核、提示词、记忆与推理策略；是系统的**决策与行动核心**，只依赖领域端口与共享内核，零外部框架依赖。
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。边界：（✅ react / reflection / planner；CoT 预留）（⬜ 预留）
 > ReAct 最终答案的本地 Schema 校验复用[共享 2020-12 契约](../shared_doc/json_schema.md)，定义在模型调用前预检。
@@ -69,6 +69,8 @@ app/domain/
 │   └── templates/             ← system.py / tools.py / planning.py / reflection.py 模板
 └── reasoning/                 ← 原子推理策略库
     ├── _common.py             ← 共享执行护栏与工具（GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量）
+    ├── _planner_steps.py      ← Planner 步骤、计划快照与审计记录纯转换
+    ├── _react_protocol.py     ← ReAct final_answer、调用身份与动作指纹纯协议转换
     ├── react.py               ← ReActStrategy（✅）
     ├── reflection.py          ← ReflectionStrategy（✅）
     ├── planner.py             ← PlannerStrategy（✅）
@@ -173,6 +175,8 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | `ReflectionStrategy` | reflection.py | 生成 → 自查 → 修正（证据链语义自查） | [见对齐表](../ALIGNMENT.md) |
 | `PlannerStrategy` | planner.py | Plan-then-Execute 三阶段（规划 → 逐步骤执行 → 汇总，每步复用 ReAct） | [见对齐表](../ALIGNMENT.md) |
 | 共享执行护栏与工具 | _common.py | GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量 | [见对齐表](../ALIGNMENT.md) |
+| Planner 步骤转换 | _planner_steps.py | 规范化步骤、构造公开计划快照和单步审计记录 | [见对齐表](../ALIGNMENT.md) |
+| ReAct 工具协议转换 | _react_protocol.py | final_answer、调用身份检查和动作指纹 | [见对齐表](../ALIGNMENT.md) |
 | CoT | chain_of_thought.py | 纯推理引导 | [见对齐表](../ALIGNMENT.md) |
 
 ---

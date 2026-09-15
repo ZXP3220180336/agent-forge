@@ -1,6 +1,11 @@
 # 循环停滞检测（动作指纹 + STALLED 分发硬终止）
 
 > 日期：2026-08-30 ｜ 层级：domain + shared
+>
+> 后继与现状：R4 只将实现位置迁至 `_react_protocol.action_fingerprint`，见
+> [领域推理纯边界 ADR](2026-09-16-strategy-pure-boundaries.md)。本记录保留下述历史决定；当前
+> `final_answer` 契约以 [ReAct 组件说明](../../../docs/domain_doc/reasoning_doc/react.md)为准：启用
+> output schema 时由终止分支先接管，未启用时同名普通工具参与动作指纹。
 
 ## Context
 

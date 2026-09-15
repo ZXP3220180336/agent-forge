@@ -1,7 +1,7 @@
 # PlannerStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/planner.py`
-> **更新日期**：2026-09-14
+> **更新日期**：2026-09-16
 > **职责**：Planner 原子推理策略——Plan-then-Execute 单 Agent 编排（规划 → 执行 → 汇总）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/planner.py](../agent_doc/agent.md)；工业级对标见 [planner_benchmark.md](planner_benchmark.md)
@@ -62,7 +62,7 @@
 
 ### depends_on 顺序纪律断言（串行单 Agent）
 
-`PLAN_STEP_SCHEMA.depends_on` 必填（防模型跳过排序思考）；`_normalize_steps` 程序化赋值单调 id（初始 1 起），丢弃自引 / 前瞻 / 未知引用——normalize 后依赖必然 ⊆ `completed` ∪ 本列表更前位置。单 Agent 串行下列表序即合法拓扑序，`depends_on` 是纪律断言而非调度依据；并行 DAG 调度留 Phase C Orchestrator。
+`PLAN_STEP_SCHEMA.depends_on` 必填（防模型跳过排序思考）；`_planner_steps.normalize_steps` 程序化赋值单调 id（初始 1 起），丢弃自引 / 前瞻 / 未知引用——normalize 后依赖必然 ⊆ `completed` ∪ 本列表更前位置。单 Agent 串行下列表序即合法拓扑序，`depends_on` 是纪律断言而非调度依据；并行 DAG 调度留 Phase C Orchestrator。
 
 ### introspection 工具目录（规划器最小权限）
 
@@ -119,7 +119,9 @@ PlannerStrategy.execute()（三阶段）
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, plan_schema=None, replan_schema=None, result_schema=None, plan_model_key="fast", summarize_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema / 结构化模型键可注入覆盖 |
 | `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_tool_protocol_retries=2, max_same_action_turns=3, max_replan_rounds=2, tool_timeout=None, tool_max_retries=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 三阶段主流程（见「执行流程」）；yield SSE 事件，结果写入 `outcome`；协议修正上限透传每步 ReAct |
 
-私有辅助：`_absorb_react`（react 子跑 usage/iterations 归并）· `_tool_catalog` / `_step_messages`（工具目录 / 每步隔离上下文，已完成步骤摘要已并入）· `_prompt_context_error`（最小语义骨架的本地零调用准入）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_finalize_guarded_summary`（汇总成功后护栏命中时保留已生成结构化结果）· `_normalize_steps`（id 单调赋值 + 依赖清洗）· `_plan` / `_replan` / `_summarize`（结构化调用；调用前经 PromptManager 形成 token 受限只读视图，每笔调用前与 usage 归账后经共享 `_common.evaluate_guard` 复查；每步 / 兜底 react 子跑经 `_run_react` 透传 planner 累计作 `baseline_usage`；PLAN_FAILED 分发经 `_common.dispatch_error`）· `_finalize`（收尾 outcome + done 事件）。
+包内纯转换：`_planner_steps.normalize_steps`（id 单调赋值 + 依赖清洗）、`build_plan_payload`（公开计划快照）、`build_step_record`（保持二维步骤成功判据并构造审计记录）。这些函数不接管子运行、replan、usage 或终态。
+
+策略私有辅助：`_absorb_react`（react 子跑 usage/iterations 归并）· `_tool_catalog` / `_step_messages`（工具目录 / 每步隔离上下文，已完成步骤摘要已并入）· `_prompt_context_error`（最小语义骨架的本地零调用准入）· `_finalize_partial` / `_plain_summary`（纯文本降级）· `_finalize_guarded_summary`（汇总成功后护栏命中时保留已生成结构化结果）· `_plan` / `_replan` / `_summarize`（结构化调用；调用前经 PromptManager 形成 token 受限只读视图，每笔调用前与 usage 归账后经共享 `_common.evaluate_guard` 复查；每步 / 兜底 react 子跑经 `_run_react` 透传 planner 累计作 `baseline_usage`；PLAN_FAILED 分发经 `_common.dispatch_error`）· `_finalize`（收尾 outcome + done 事件）。
 
 ### PlannerOutcome（结果载体）
 
@@ -207,7 +209,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 | 成本超限（cost_limiter） | 每步 react 子跑带 planner 累计 `baseline_usage`；plan/replan/summarize 调用前和归账后经 `evaluate_guard` 复查；超限后不空转 fallback/replan/summarize |
 | 结构化降级链内取消/超时（E） | plan/replan/summarize 透传 `cancel_event` + 绝对 `deadline`；信号约束每笔 reserve/create/retry，并在 extract 最外层收敛 None；`plan is None` 后 guard 复查拦截 ReAct 兜底 |
 | Planner 语义载荷超过策略预算 | 三入口复用 `ContextBudgetPort.count_tokens`；PromptManager 先扣固定模板并形成只读分层投影，最小骨架仍超限则零 SDK 调用并按 Context Guard 收尾；原 plan/executed/tool_calls 不被覆盖 |
-| 规划后护栏命中（plan 已产出但未开工） | 仍给出契约形状 plan 快照（`_plan_payload` + normalize 赋 id、不含 `depends_on`），`steps_executed=[]`；文案区分「规划后中止」与「规划失败后中止」 |
+| 规划后护栏命中（plan 已产出但未开工） | 仍给出契约形状 plan 快照（`build_plan_payload` + `normalize_steps` 赋 id、不含 `depends_on`），`steps_executed=[]`；文案区分「规划后中止」与「规划失败后中止」 |
 | 子跑达迭代上限但有产出 | 判步骤成功（二维判据：react success 且产出非空），`sub.error` 只记录停机原因；不进入 replan |
 | 每步隔离前提被破坏（需上一步数值未带进摘要） | 步骤自包含约束要求；未覆盖应合并成一步（提示层纪律） |
 | 同一实例并发 / 多次 execute | 不并发复用——outcome 与累计态在每次 execute 覆盖，每次运行新建或串行读取 |
@@ -259,6 +261,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 
 ## 相关文档
 
+- [领域推理纯边界 ADR](../../../adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md)
 - [planner_benchmark.md](planner_benchmark.md)（工业级对标基准）
 - [推理策略模块](reasoning.md)（主文档）
 - [ReActStrategy 策略组件](react.md)（每步执行器，同级组件）

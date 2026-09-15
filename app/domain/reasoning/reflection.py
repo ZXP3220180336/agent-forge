@@ -413,75 +413,18 @@ class ReflectionStrategy:
                     yield e
                 return
 
-            if critique.get("ok"):
-                # REASON-020 保留成本/after-turn cancel 成功语义；绝对 deadline 是 strict，
-                # 迟到的合格稿保留，但不能标记为按时成功。
-                deadline_guard = evaluate_guard(
-                    cancel_event=None,
-                    deadline=deadline,
-                    cost_limiter=None,
-                    running_usage=merge_usage(
-                        react_outcome.usage, self._structured_usage
-                    ),
-                )
-                if deadline_guard is not None:
-                    for e in self._finalize_guard(
-                        deadline_guard,
-                        react_outcome,
-                        draft,
-                        current,
-                        refine_round,
-                        critique=critique,
-                    ):
-                        yield e
-                    return
-                # 自查通过 → 采用当前稿（degraded=False）
-                for e in self._finalize(
-                    react_outcome,
-                    draft=draft,
-                    structured=current,
-                    critique=critique,
-                    refine_rounds=refine_round,
-                    success=True,
-                    info="自查通过，采用当前稿",
-                ):
-                    yield e
-                return
-
-            # 有 issues 且已达修正上限 → best-effort 采用当前稿（未通过自查）
-            # max_refine_rounds = 报告生成尝试总次数（初稿 + 至多 max_refine_rounds-1 次修正）
-            if refine_round >= max_refine_rounds - 1:
-                deadline_guard = evaluate_guard(
-                    cancel_event=None,
-                    deadline=deadline,
-                    cost_limiter=None,
-                    running_usage=merge_usage(
-                        react_outcome.usage, self._structured_usage
-                    ),
-                )
-                if deadline_guard is not None:
-                    for e in self._finalize_guard(
-                        deadline_guard,
-                        react_outcome,
-                        draft,
-                        current,
-                        refine_round,
-                        critique=critique,
-                    ):
-                        yield e
-                    return
-                for e in self._finalize(
-                    react_outcome,
-                    draft=draft,
-                    structured=current,
-                    critique=critique,
-                    refine_rounds=refine_round,
-                    success=bool(current),
-                    degraded=True,
-                    error=f"达到修正上限({max_refine_rounds})，采用最近稿（未通过自查）",
-                    info=f"达到修正上限({max_refine_rounds})，采用最近稿",
-                ):
-                    yield e
+            terminal_events = self._finalize_after_critique(
+                react_outcome,
+                draft,
+                current,
+                critique,
+                refine_round,
+                max_refine_rounds,
+                deadline,
+            )
+            if terminal_events is not None:
+                for event in terminal_events:
+                    yield event
                 return
 
             # 护栏（P3）：执行到此处 = 自查未通过且未达修正上限，即将发起修正这笔付费调用——
@@ -525,10 +468,11 @@ class ReflectionStrategy:
             if ref_usage:
                 self._structured_usage = merge_usage(self._structured_usage, ref_usage)
 
-            completed_rounds = refine_round - 1
-            if refined is not None:
-                current = refined
-                completed_rounds = refine_round
+            current, completed_rounds = self._adopt_refined_draft(
+                current,
+                refined,
+                refine_round,
+            )
 
             guard = evaluate_guard(
                 cancel_event=cancel_event,
@@ -568,6 +512,75 @@ class ReflectionStrategy:
             # 回到循环顶部 → 重新自查修正稿（真迭代的关键：新反馈驱动下一轮）
 
     # ── 内部辅助 ──
+
+    def _finalize_after_critique(
+        self,
+        react_outcome: ReActOutcome,
+        draft: dict[str, Any],
+        current: dict[str, Any],
+        critique: dict[str, Any],
+        refine_round: int,
+        max_refine_rounds: int,
+        deadline: float | None,
+    ) -> list[str] | None:
+        """在 critique 可用后决定提交当前稿，或允许进入下一轮修正。"""
+        if not critique.get("ok") and refine_round < max_refine_rounds - 1:
+            return None
+
+        # REASON-020：成本和 after-turn cancel 不改判已形成的结论；绝对 deadline
+        # 是 strict，迟到稿保留，但不能标记为按时成功。
+        deadline_guard = evaluate_guard(
+            cancel_event=None,
+            deadline=deadline,
+            cost_limiter=None,
+            running_usage=merge_usage(
+                react_outcome.usage,
+                self._structured_usage,
+            ),
+        )
+        if deadline_guard is not None:
+            return self._finalize_guard(
+                deadline_guard,
+                react_outcome,
+                draft,
+                current,
+                refine_round,
+                critique=critique,
+            )
+
+        if critique.get("ok"):
+            return self._finalize(
+                react_outcome,
+                draft=draft,
+                structured=current,
+                critique=critique,
+                refine_rounds=refine_round,
+                success=True,
+                info="自查通过，采用当前稿",
+            )
+
+        return self._finalize(
+            react_outcome,
+            draft=draft,
+            structured=current,
+            critique=critique,
+            refine_rounds=refine_round,
+            success=bool(current),
+            degraded=True,
+            error=f"达到修正上限({max_refine_rounds})，采用最近稿（未通过自查）",
+            info=f"达到修正上限({max_refine_rounds})，采用最近稿",
+        )
+
+    @staticmethod
+    def _adopt_refined_draft(
+        current: dict[str, Any],
+        refined: dict[str, Any] | None,
+        attempted_rounds: int,
+    ) -> tuple[dict[str, Any], int]:
+        """只接管完整修正稿，并返回真实完成的修正轮数。"""
+        if refined is None:
+            return current, attempted_rounds - 1
+        return refined, attempted_rounds
 
     def _finalize_guard(
         self,

@@ -666,6 +666,49 @@ async def test_reflect_refined_adopted_on_cost_limit_after_refine():
 
 
 @pytest.mark.asyncio
+async def test_reflect_refined_and_usage_adopted_before_cancel_after_refine():
+    """修正返回同时取消时，先接管完整稿与 usage，再按 Guard 终止。"""
+    critique = {
+        "ok": False,
+        "issues": [
+            {
+                "severity": "critical",
+                "dimension": "grounding",
+                "description": "证据不足",
+            }
+        ],
+    }
+    llm = _ReflectionLLM(
+        react_scripts=_react_scripts_with_draft(DRAFT),
+        structured_scripts=[critique, REFINED],
+        usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+    )
+    cancel_event = asyncio.Event()
+    generate_structured = llm.generate_structured
+
+    async def generate_and_cancel(*args, **kwargs):
+        result = await generate_structured(*args, **kwargs)
+        if llm.structured_calls == 2:
+            cancel_event.set()
+        return result
+
+    llm.generate_structured = generate_and_cancel
+    strategy = _make_strategy(llm)
+
+    events = await _run(strategy, cancel_event=cancel_event)
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.structured == REFINED
+    assert strategy.outcome.critique == critique
+    assert strategy.outcome.refine_rounds == 1
+    assert strategy.outcome.usage["total_tokens"] == 60
+    assert strategy.outcome.degraded is True
+    assert "取消" in strategy.outcome.error
+    assert llm.structured_calls == 2
+    assert sum('"type": "done"' in event for event in events) == 1
+
+
+@pytest.mark.asyncio
 async def test_reflect_critique_ok_after_cost_limit_is_clean_success():
     """自查通过时累计已超限 → 仍产出干净成功（不因预算把合格稿改判降级）。
 

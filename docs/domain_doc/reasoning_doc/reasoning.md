@@ -1,9 +1,9 @@
 # 推理策略模块对外接口文档
 
 > **对应代码**：`app/domain/reasoning/`
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-16
 > **文档定位**：推理策略模块对外接口文档——策略类契约 + 内部组件导航；服务对象为 agent/ 层编排（ReActAgent / PlannerAgent / ReflectionAgent）
-> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。边界：（react.py ✅；reflection.py ✅；planner.py ✅；chain_of_thought 预留）
+> 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。边界：（react.py ✅；reflection.py ✅；planner.py ✅；包内纯转换 ✅；chain_of_thought 预留）
 
 ---
 
@@ -41,6 +41,8 @@
 app/domain/reasoning/
 ├── __init__.py          # 子包导出（ReAct / Reflection / Planner 策略 + Outcome）
 ├── _common.py           # 策略共享小工具（GuardResult / evaluate_guard / dispatch_error / merge_usage）
+├── _planner_steps.py    # Planner 步骤、计划快照与审计记录纯转换
+├── _react_protocol.py   # ReAct final_answer、调用身份与动作指纹纯协议转换
 ├── react.py             # ReAct 推理（ReActStrategy + ReActOutcome，✅）
 ├── reflection.py        # Reflection 推理（ReflectionStrategy + ReflectionOutcome，✅）
 ├── planner.py           # Planner 推理（PlannerStrategy + PlannerOutcome，✅）
@@ -91,6 +93,8 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 | [react.md](react.md) | `react.py` | ReAct 推理（ReActStrategy + ReActOutcome） | [见对齐表](../../ALIGNMENT.md) |
 | [reflection.md](reflection.md) | `reflection.py` | Reflection 推理（生成 → 自查 → 修正） | [见对齐表](../../ALIGNMENT.md) |
 | [planner.md](planner.md) | `planner.py` | Planner 推理（规划 → 逐步骤执行 → 汇总，Plan-then-Execute） | [见对齐表](../../ALIGNMENT.md) |
+| [planner.md](planner.md) | `_planner_steps.py` | Planner 步骤规范化、计划快照和单步审计记录纯转换 | [见对齐表](../../ALIGNMENT.md) |
+| [react.md](react.md) | `_react_protocol.py` | ReAct 终止工具、调用身份与动作指纹纯协议转换 | [见对齐表](../../ALIGNMENT.md) |
 | [_common.md](_common.md) | `_common.py` | 类型化执行护栏、错误分发与 usage 合并（无状态共享） | [见对齐表](../../ALIGNMENT.md) |
 | chain_of_thought.py | `chain_of_thought.py` | CoT 推理（纯推理引导） | [见对齐表](../../ALIGNMENT.md) |
 
@@ -108,6 +112,7 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 
 ## 相关文档
 
+- [领域推理纯边界 ADR](../../../adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md)
 - [ReActStrategy 策略组件](react.md) + [ReAct 工业级对标基准](react_benchmark.md)
 - [ReflectionStrategy 策略组件](reflection.md) + [Reflection 工业级对标基准](reflection_benchmark.md)
 - [PlannerStrategy 策略组件](planner.md) + [Planner 工业级对标基准](planner_benchmark.md)

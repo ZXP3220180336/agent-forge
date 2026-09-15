@@ -10,18 +10,25 @@ RAISE/STOP + schema 严格性 + done 抑制/口径一致 + usage 累计。
 """
 
 import asyncio
+import copy
 import json
 import time
 
 import pytest
 
 from app.domain.reasoning import PlannerOutcome, PlannerStrategy
+from app.domain.reasoning._planner_steps import (
+    build_plan_payload,
+    build_step_record,
+    normalize_steps,
+)
 from app.domain.reasoning.planner import (
     PLAN_SCHEMA,
     PLAN_STEP_SCHEMA,
     REPLAN_SCHEMA,
     RESULT_SCHEMA,
 )
+from app.domain.reasoning.react import ReActOutcome
 from app.shared.error_handling import (
     AgentErrorAction,
     AgentErrorContext,
@@ -592,7 +599,7 @@ async def test_guard_after_plan_returns_contract_plan_snapshot():
 
     触发：plan 这笔付费调用返回后立即置位 cancel_event（模拟运行中用户取消）→ 段首护栏
     拦下，plan is not None 分支生效（文案「规划后中止，未开始执行」），零步骤 ReAct 调用。
-    断言重点：快照由 _normalize_steps 赋 id、不含 depends_on（raw plan 的 depends_on 只作
+    断言重点：快照由 normalize_steps 赋 id、不含 depends_on（raw plan 的 depends_on 只作
     顺序纪律断言），与 plan_result 同源——消费方 PlannerAgent.metadata["plan"] 口径唯一。
     """
     cancel_event = asyncio.Event()
@@ -771,3 +778,71 @@ async def test_planner_passes_cancel_deadline_to_structured():
     assert captured["cancel_event"] is cancel_event, "规划收到同一取消信号"
     assert captured["deadline"] is not None, "传了 max_execution_time 时 deadline 应非 None"
     assert before + 60.0 <= captured["deadline"] <= time.monotonic() + 60.0
+
+
+def test_normalize_steps_keeps_ids_dependencies_and_input_immutable():
+    raw_steps = [
+        {"description": " first ", "depends_on": [1, 4, 5]},
+        {"description": "second", "depends_on": [2, 5, 9]},
+        {"description": "   ", "depends_on": []},
+    ]
+    original = copy.deepcopy(raw_steps)
+
+    normalized = normalize_steps(raw_steps, completed={1, 2}, start_no=5)
+
+    assert normalized == [
+        {"id": 5, "description": "first", "deps": {1}},
+        {"id": 6, "description": "second", "deps": {2, 5}},
+    ]
+    assert raw_steps == original
+
+
+def test_build_plan_payload_hides_internal_dependencies():
+    steps = [{"id": 3, "description": "collect", "deps": {1, 2}}]
+
+    assert build_plan_payload("goal", steps) == {
+        "goal": "goal",
+        "steps": [{"id": 3, "description": "collect"}],
+    }
+
+
+def test_build_step_record_preserves_two_dimensional_success_contract():
+    outcome = ReActOutcome(
+        content="x" * 600,
+        tool_calls=[{"id": "call-1"}],
+        iterations=3,
+        total_tokens=21,
+        error="达到迭代上限",
+        success=True,
+    )
+
+    record = build_step_record(
+        {"id": 2, "description": "collect", "deps": {1}},
+        outcome,
+    )
+
+    assert record["success"] is True
+    assert record["error"] is None
+    assert record["summary"] == "x" * 500
+    assert record["content"] == "x" * 600
+    assert record["depends_on"] == [1]
+    assert record["tool_calls"] == [{"id": "call-1"}]
+    assert record["iterations"] == 3
+    assert record["total_tokens"] == 21
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_error"),
+    [
+        (None, "ReAct 子跑未产出结果"),
+        (ReActOutcome(content="", success=True), "步骤产出为空"),
+    ],
+)
+def test_build_step_record_handles_missing_or_empty_outcome(outcome, expected_error):
+    record = build_step_record(
+        {"id": 1, "description": "collect", "deps": set()},
+        outcome,
+    )
+
+    assert record["success"] is False
+    assert record["error"] == expected_error

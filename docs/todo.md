@@ -1,14 +1,14 @@
 # 项目待办
 
-更新：2026-09-15。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
+更新：2026-09-16。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
 <a id="refactoring-plan"></a>
 
-## R-01：代码职责与编排边界重构（R3 已完成）
+## R-01：代码职责与编排边界重构（R4 已完成）
 
 日期：2026-09-14。目标：降低推理、LLM 调用和聊天主链路的阅读与修改成本，让编排入口表达阶段与转换，让协议处理、资源与成果接管有明确归属，服务良率 RCA 的拆分、排查与证据报告交付。
 
-**授权边界**：用户已先后授权执行 R1、R2 与 R3；本轮实施单流消费边界拆分及必要验证、文档同步，R4～R6 未获实施授权。现有 [C-02](#c-02-lifecycle) 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧全部纳入纯结构重构。本轮按用户要求不提交 Git。
+**授权边界**：用户已先后授权执行 R1～R4；本轮实施 Planner、Reflection、ReAct 三个策略切片及必要验证、文档同步，R5～R6 未获实施授权。现有 [C-02](#c-02-lifecycle) 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧全部纳入纯结构重构。
 
 规范入口：[产品](project/product.md)、[工程 Gate 与最小结构变化](engineering/ai-engineering-rules.md#abstraction)、[工作流](engineering/project-workflow.md)、[编码规范文档](engineering/编码规范文档.txt)。2026-09-14 已按用户提供的目录找到并读取编码规范，来源状态统一见[来源核对记录](../issues/documentation/2026-09-12-reference-gaps.md#外部来源边界)；不复制规范正文，也不据此宣称现有代码已全部合规。
 
@@ -40,9 +40,9 @@
 | R1 结构化纯逻辑 / 已完成 | 新增 `app/integration/llm/structured_codec.py`：schema 规范化、JSON 解析校验、错误摘要、回喂消息构造；修改 `structured.py`：导入纯函数，保留调用、usage、降级和错误边界；适配 `tests/unit/test_generate_structured.py`。 | 使用函数，不新建 Codec 类。定向 62 项、全量 1046 项通过；保留三级降级、扩容/回喂预算、最后一次成果解析及短路；见 [LLM-ADR-017](../adr/integration/llm/2026-09-14-structured-codec-boundary.md)。 |
 | R2 请求执行 / 已完成 | 新增 `app/integration/llm/request_execution.py`：迁入请求计划、请求 kwargs 与 `_budget_guarded_call`；`llm_service.py` 保留 Facade 编排。 | 定向 91 项、全量 1204 项通过；请求执行契约现由 [request_execution 组件说明](integration_doc/llm_doc/request_execution.md)维护，见 [LLM-ADR-018](../adr/integration/llm/2026-09-15-request-execution-boundary.md)。 |
 | R3 单流消费 / 已完成 | 新增 `app/integration/llm/stream_consumption.py`：流读取、chunk 累积、关闭、接缝处理；修改 `streaming_rectifier.py`：显式传入结果、控制信号与看门狗参数；`llm_service.py` 显式传播 Facade 关闭；新增直接测试并适配整流器/请求边界测试。 | 定向 89 项、全量 1213 项通过；消费组件不依赖整流器私有上下文，`StreamParser` 保留 SDK 解码，整流器保留预算、续接和唯一结算；见 [LLM-ADR-019](../adr/integration/llm/2026-09-15-stream-consumption-boundary.md)。 |
-| R4-A Planner / 待实施 | 新增 `app/domain/reasoning/_planner_steps.py`：步骤规范化、计划载荷及单步结果的纯记录转换；修改 `planner.py`：在原类整理步骤执行与完整/部分汇总提交；适配 `test_planner.py`、`test_planner_agent.py`。 | `_replan_loop` 保持预算归属；子运行继承 deadline、baseline usage 和运行身份，父级在子策略重置前接管事实。 |
-| R4-B Reflection / 待实施 | 修改 `app/domain/reasoning/reflection.py`：提取审查后提交/修正判定及完整稿接管步骤；适配 `test_reflection.py`、`test_reflection_agent.py`。 | 先接管最近完整稿再判护栏；保留 `_critique`、`_refine`。暂不创建状态类或共享结构化阶段执行器。 |
-| R4-C ReAct / 待实施 | 新增 `app/domain/reasoning/_react_protocol.py`：工具调用身份检查、final_answer 构造/校验、动作指纹；修改 `react.py`：整理准入、上下文、LLM 单轮、成果接管、分派、收尾阶段；适配 `test_react_strategy.py`、`test_react_strategy_nonstream.py`。 | 成果、usage、终态继续由现有运行作用域负责；纯协议文件不接管工具调用或结算。批次生命周期留给 R5，不重复搬迁。 |
+| R4-A Planner / 已完成 | 新增 `app/domain/reasoning/_planner_steps.py`：步骤规范化、计划载荷及单步结果的纯记录转换；修改 `planner.py`：显式调用纯转换并保留执行与提交；新增直接测试并回归 `test_planner_agent.py`。 | `_replan_loop` 保持预算归属；子运行继承 deadline、baseline usage 和运行身份，父级在子策略重置前接管事实。见 [领域推理纯边界 ADR](../adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md)。 |
+| R4-B Reflection / 已完成 | 修改 `reflection.py`：提取 critique 后提交判定与完整修正稿接管步骤；新增修正返回同时取消的高层测试并回归 `test_reflection_agent.py`。 | 先接管最近完整稿与 usage 再判护栏；保留 `_critique`、`_refine`、唯一 done Owner，不新增状态类或共享阶段框架。 |
+| R4-C ReAct / 已完成 | 新增 `app/domain/reasoning/_react_protocol.py`：工具调用身份检查、final_answer 构造/校验、动作指纹；`react.py` 保留分阶段主循环与协议预算；新增纯协议测试并回归双通道。 | 成果、usage、历史、终态和工具批次继续由现有运行作用域负责；R5 生命周期未迁移。三切片合并定向 250 项、全量 1230 项通过。 |
 | R5 工具与批次 / 随 C-02 | `executor.py` 按既定准备/尝试/完成阶段整理；`app/integration/tools/admission.py` 负责共享容量、排队和许可；`app/integration/tools/execution.py` 负责真实执行句柄和有界接管；现有 `app/domain/reasoning/tool_batch.py` 按 ADR 扩展批次边界；`react.py` 接入。 | 对应 [Piece ③④⑤](#c-02-implementation-pieces)，具体规格、文件联动、测试与状态只在 C-02/ADR 维护。结构迁移与新增运行保证分别验收，不能以搬完文件宣称能力完成。 |
 | R6 聊天用例 / 待实施 | 新增 `app/application/chat/chat_service.py` 及必要包入口：会话用例、运行身份、Agent 创建、上下文、成果保存；修改 `app/api/routes/chat.py`：HTTP/SSE 和断连适配；修改 `app/api/deps.py`、`app/container.py`：注入与装配；适配 `tests/integration/test_chat_flow.py`、`tests/unit/test_container.py`，为真实用例行为补测试。 | Application 不依赖 FastAPI Request/Response；明确生成器关闭、断连信号和 finally 持久化责任。保持会话取消范围、运行隔离、消息与 SSE 顺序，不引入通用 AgentFactory。 |
 
@@ -155,6 +155,29 @@ Facade、主流与续接三条测试均验证 response close 发生在 Reservati
 1213 项通过（44.57 秒），仅有既有 Starlette/httpx 弃用提示。文档对齐、模块编译和已跟踪/未跟踪
 文件的差异格式检查均通过。真实 provider 与计费网络调用未执行，结构重构由本地解析、控制与
 结算测试保护。按用户要求，本批保留为未提交工作区。
+
+R4 实施评审（2026-09-16）：采用两个包内纯函数组件和 Reflection 原类内两个阶段方法，没有引入
+共享 State、Policy 或通用策略执行框架。`_planner_steps.py` 只转换步骤、计划快照与单步审计记录；
+Planner 继续拥有串行子运行、replan 预算、父子控制、usage/工具事实接管和完整/部分提交。
+`_react_protocol.py` 只处理 final_answer、批内调用身份与动作指纹；ReAct 继续拥有消息历史、协议修正
+预算、真实工具批次、Guard、usage 和终态。Reflection 在修正调用归账后先接管非空完整稿及完成
+轮数，再执行取消、期限、成本和上下文 Guard；`_critique`、`_refine` 与唯一 done 责任未移动。
+
+结构迁移保持 Planner replan、Reflection refine 和 ReAct 协议修正的既有 0/1/N 上界与重置点；
+子 ReAct 继续继承同一 run_id/run_stop/workflow/cancel，并按父级剩余时长与累计 baseline usage
+运行。R5 的 ToolBatchCollector、真实工具执行、批次/operation 身份、事实 revision 和协议历史
+提交均未迁移。
+
+实际验证：实施前六个策略/Agent 基线 196 项通过；R4 合并定向套件覆盖 Planner、Reflection、
+ReAct 双通道、Agent 桥接、父子运行事实、生成器所有权和工具事实，250 项通过。完整运行
+`.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r4-all-tests`，
+1230 项通过（47.46 秒），仅有既有 Starlette/httpx 弃用提示。最终文档对齐、编译与差异格式
+检查通过。独立复核未发现生产代码、G0 生命周期、依赖方向或 R5 越界问题；复核指出并已修正
+Planner 旧符号引用、旧 ADR 历史语义改写，以及新 ADR 缺少备选、工业参照与后果的问题。
+
+未纳入的既有边缘项：Planner 空描述步骤的依赖编号、final_answer 与普通工具混用、反向
+finish_reason 不一致及畸形 function 载荷。它们没有已确认的新行为契约，不能在纯结构重构中
+静默改变；后续若处理，须独立补失败测试并确认预期。
 
 <a id="c-02-lifecycle"></a>
 

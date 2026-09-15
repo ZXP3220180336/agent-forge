@@ -113,6 +113,7 @@
 - [adr/domain/reasoning/2026-08-31-reflection-strategy.md](../adr/domain/reasoning/2026-08-31-reflection-strategy.md)
 - [adr/domain/reasoning/2026-09-04-react-stream-channel.md](../adr/domain/reasoning/2026-09-04-react-stream-channel.md)
 - [adr/domain/reasoning/2026-09-05-planner-strategy.md](../adr/domain/reasoning/2026-09-05-planner-strategy.md)
+- [adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md](../adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md)
 - [adr/domain/trace/2026-08-31-trace-persistence.md](../adr/domain/trace/2026-08-31-trace-persistence.md)
 - [adr/integration/embedding/2026-08-24-embedding-port.md](../adr/integration/embedding/2026-08-24-embedding-port.md)
 - [adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md](../adr/integration/llm/2026-08-01-circuit-breaker-window-semantics.md)

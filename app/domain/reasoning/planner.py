@@ -57,6 +57,7 @@ from ._common import (
     merge_usage,
     reject_concurrent_runs,
 )
+from ._planner_steps import build_plan_payload, build_step_record, normalize_steps
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -419,9 +420,9 @@ class PlannerStrategy:
             msg = f"{guard.message}，{suffix}"
             for e in self._finalize(
                 plan=(
-                    self._plan_payload(
+                    build_plan_payload(
                         plan["goal"],
-                        self._normalize_steps(plan["steps"], completed=completed),
+                        normalize_steps(plan["steps"], completed=completed),
                     )
                     if plan
                     else None
@@ -482,7 +483,7 @@ class PlannerStrategy:
             return
 
         goal = plan["goal"]
-        pending = self._normalize_steps(plan["steps"], completed=completed)
+        pending = normalize_steps(plan["steps"], completed=completed)
         if not pending:
             for e in self._finalize(
                 plan=None,
@@ -494,7 +495,7 @@ class PlannerStrategy:
             ):
                 yield e
             return
-        plan_result = self._plan_payload(goal, pending)
+        plan_result = build_plan_payload(goal, pending)
 
         # ── 阶段 B：执行（串行；ready 守卫 depends_on ⊆ completed）──
         while pending:
@@ -523,28 +524,10 @@ class PlannerStrategy:
             # 子跑返回后先吸收其真实成果、usage 与迭代，再按统一优先级决定是否继续。
             sub = self._react.outcome
             self._absorb_react(sub)
-            # 步骤判成功 = react success 且产出非空（无产出工件视为失败）。
-            # sub.error 只记录子跑停机原因，不参与判据：MAX_TURNS / UNKNOWN 等终态可以有产出；
-            # 取消 / 超时 / 成本类终态由下方 _current_guard() 先行接管，不落到本判据。
-            if sub is None:
-                ok, fail_reason = False, "ReAct 子跑未产出结果"
-            else:
-                ok = sub.success and bool(sub.content.strip())
-                fail_reason = sub.error or ("" if ok else "步骤产出为空")
-            executed.append(
-                {
-                    "id": step["id"],
-                    "description": step["description"],
-                    "depends_on": sorted(step["deps"]),
-                    "success": ok,
-                    "summary": (sub.content if ok and sub else "")[:500],
-                    "error": None if ok else fail_reason,
-                    "content": sub.content if sub else "",
-                    "tool_calls": (sub.tool_calls if sub else []),
-                    "iterations": (sub.iterations if sub else 0),
-                    "total_tokens": (sub.total_tokens if sub else 0),
-                }
-            )
+            # 记录后再检查 Guard：取消 / 超时 / 成本同时到达时保留当前步骤事实。
+            step_record = build_step_record(step, sub)
+            executed.append(step_record)
+            ok = step_record["success"]
 
             guard = _current_guard()
             if guard is not None:
@@ -791,7 +774,7 @@ class PlannerStrategy:
             # 新尾 id 续接已执行步最大 id 之后（单调计数，防依赖错位）
             completed_ids = {r["id"] for r in executed if r["success"]}
             start_no = max([r["id"] for r in executed], default=0) + 1
-            pending = self._normalize_steps(
+            pending = normalize_steps(
                 new_tail, completed=completed_ids, start_no=start_no
             )
             if pending:
@@ -1156,50 +1139,6 @@ class PlannerStrategy:
                 f"步骤 {rec['id']}（{status}）：{rec['summary'] or rec['content'] or ''}"
             )
         return "\n".join(parts)
-
-    @staticmethod
-    def _plan_payload(goal: str, steps: list[dict]) -> dict:
-        """对外生效计划的契约形状：{goal, steps:[{id, description}]}。
-
-        normalize 后的步骤只取 id + description：depends_on（normalize 输出为 deps）是
-        normalize 期的顺序纪律断言，不属对外契约。护栏分支与 plan_result 共用本方法，
-        保证 PlannerOutcome.plan 形状唯一。
-        """
-        return {
-            "goal": goal,
-            "steps": [{"id": s["id"], "description": s["description"]} for s in steps],
-        }
-
-    def _normalize_steps(
-        self,
-        steps: list[dict],
-        completed: set[int],
-        start_no: int = 1,
-    ) -> list[dict]:
-        """步骤规范化：程序化赋值 id（start_no 起单调）；depends_on 丢弃不可解引用编号。
-
-        单 Agent 串行下列表序即合法拓扑序；depends_on 是顺序纪律断言。丢弃自引/
-        前瞻/未知引用（normalize 后依赖必然 ⊆ completed ∪ 本列表更前位置）。
-        """
-        pending: list[dict] = []
-        seen: set[int] = set()
-        for i, step in enumerate(steps):
-            sid = start_no + i
-            deps = {
-                d
-                for d in step.get("depends_on", [])
-                if d in completed or (d in seen and d >= start_no)
-            }
-            seen.add(sid)
-            pending.append(
-                {
-                    "id": sid,
-                    "description": str(step.get("description", "")).strip(),
-                    "deps": deps,
-                }
-            )
-        # 过滤空 description 步骤（规范化失败防御）
-        return [s for s in pending if s["description"]]
 
     # ==================================================================
     # _finalize 收尾（同步 list[str]）

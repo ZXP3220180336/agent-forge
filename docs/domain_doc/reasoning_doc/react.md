@@ -1,7 +1,7 @@
 # ReActStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/react.py`
-> **更新日期**：2026-09-10
+> **更新日期**：2026-09-16
 > **职责**：ReAct 原子推理策略——推理 ↔ 工具调用的完整循环算法（含工具并行原语、错误分发、结构化最终答案、上下文预算 + 成本上限 + 循环停滞护栏）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [executor.md](../agent_doc/executor.md)（`ReActAgent`）；工业级对标见 [react_benchmark.md](react_benchmark.md)
@@ -53,6 +53,7 @@
 6. **统一执行护栏**：每轮付费调用前和成功归账后通过 `_common.evaluate_guard` 检查取消、绝对 deadline 与累计成本；最终请求上下文超限进入同一类型化优先级
 7. **纯算法依赖方向**：只依赖 ports + shared + 标准库，收标量参数（非 `AgentContext`）——可独立测试、可被任意编排复用
 8. **运行与事实隔离**：`run_id/run_stop` 为每次 execute 的必填控制身份；每轮工具调用创建新 batch，每个合法 call 创建 operation，并在控制异常传播前接管当前事实
+9. **纯协议边界**：`_react_protocol.py` 负责 final_answer 工具定义、批内调用身份检查、结构化参数校验与动作指纹；策略继续持有预算、历史、工具执行和终态
 
 ---
 
@@ -190,6 +191,11 @@ ReActStrategy.execute()（ReAct 主循环）
 | `_handle_final_answer` | 检测到 final_answer 工具调用 | 成功提取 → 终止写 `outcome.structured`；校验失败 → `STRUCTURED_INVALID` 分发（默认回喂自纠，连续超过 `max_tool_protocol_retries` 共享预算硬终止） |
 
 ### 支撑方法（_finalize_outcome / _finalize_terminal / _dispatch）
+
+`_react_protocol.py` 是包内纯函数组件：`build_final_answer_tool` 构造注入工具，
+`tool_call_identity_error` 在写历史和真实执行前校验批内 id，`extract_final_answer` 解析并按固定
+Draft 2020-12 校验结果，`action_fingerprint` 为停滞检测规范化参数。它不更新协议修正计数，
+不写消息历史，也不执行工具或提交 `ReActOutcome`。
 
 - `_finalize_outcome(*, success, content, reasoning, iteration, total_usage, error, info_message, structured) -> list[str]`：统一收尾——组装 outcome + 返回收尾事件列表（可选 info + done 恰一次），供各终结 / STOP 分支复用（dispatch 由调用方负责——CONTINUE 语义各异：重试 / 回喂 / 忽略）；普通 def（无 await）
 - `_finalize_terminal(kind, message, iteration, *, success, content, reasoning, total_usage, error, info_message, structured) -> list[str]`：终结性错误统一收尾——dispatch（RAISE 上抛，CONTINUE 忽略）→ 复用 `_finalize_outcome`；供执行护栏、拒答、UNKNOWN、达到最大轮次及硬重试上限等无恢复语义的分支复用
@@ -413,6 +419,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 相关文档
 
+- [领域推理纯边界 ADR](../../../adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md)
 - [推理策略模块](reasoning.md)（主文档）
 - [ReActAgent 桥接组件](../agent_doc/executor.md)（同级组件）
 - [Agent 模块对外接口文档](../agent_doc/agent.md)

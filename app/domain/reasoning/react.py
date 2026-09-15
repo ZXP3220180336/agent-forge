@@ -39,8 +39,6 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
-from jsonschema.exceptions import best_match
-
 from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway, StreamResult
@@ -86,6 +84,13 @@ from ._common import (
     merge_usage,
     reject_concurrent_runs,
 )
+from ._react_protocol import (
+    _FINAL_ANSWER_TOOL,
+    action_fingerprint,
+    build_final_answer_tool,
+    extract_final_answer,
+    tool_call_identity_error,
+)
 
 # 策略层标准库日志（对齐「只依赖 ports + shared + 标准库」依赖方向，不用 platform 的
 # get_logger）；logger 名对齐 app.* 命名空间，可被 setup_logging 的 handler 捕获。
@@ -93,12 +98,6 @@ _logger = logging.getLogger("app.domain.reasoning.react")
 
 # 工具结果回喂截断标记：截断时追加，模型可知结果不完整（而非误以为完整）
 _TRUNCATED_MARKER = "\n[结果已截断]"
-
-# 结构化最终答案工具名（Final Answer 模式，SMOL / OpenAI 官方）：模型最后调用提交
-# schema 约束的结构化结果并终止循环。注入工具（非注册工具），react 主循环识别调用。
-# 注：Reflection 载荷组件按字面量剔除 final_answer 条目（校验失败记录非真实证据）；
-# prompts 不 import reasoning，以避免反向依赖，因此不引用本常量。
-_FINAL_ANSWER_TOOL = "final_answer"
 
 # max_execution_time 是 ReAct 业务循环的取消触发点。内部 LLM deadline 提前预留一小段
 # 时间用于 close / settle / 日志等终止清理，避免与外层 asyncio.timeout 同刻二次取消。
@@ -135,73 +134,6 @@ def _truncate_with_marker(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - len(_TRUNCATED_MARKER)] + _TRUNCATED_MARKER
-
-
-def _build_final_answer_tool(schema: dict) -> dict:
-    """构造 final_answer 工具定义（OpenAI tool schema，参数 = output_schema）。"""
-    return {
-        "type": "function",
-        "function": {
-            "name": _FINAL_ANSWER_TOOL,
-            "description": (
-                "完成任务后调用一次，以符合给定 JSON Schema 的结构化格式提交最终答案。"
-                "不得与其他工具混用。"
-            ),
-            "parameters": schema,
-        },
-    }
-
-
-def _tool_call_identity_error(tool_calls: list[dict]) -> str | None:
-    """在写入协议历史前验证当前批次的工具调用身份。"""
-    seen: set[str] = set()
-    for tool_call in tool_calls:
-        call_id = tool_call.get("id")
-        if not isinstance(call_id, str) or not call_id.strip():
-            return "工具调用 id 缺失（协议异常）"
-        if call_id in seen:
-            return f"工具调用 id 在当前批次重复: {call_id}（协议异常）"
-        seen.add(call_id)
-    return None
-
-
-def _extract_final_answer(
-    tool_call: dict, schema: dict
-) -> tuple[dict | None, str | None]:
-    """解析并校验 final_answer 参数；返回 (结构化结果, 错误)。成功时 error 为 None。"""
-    try:
-        args = json.loads(tool_call["function"]["arguments"])
-    except (json.JSONDecodeError, KeyError) as e:
-        return None, f"参数 JSON 解析失败: {e}"
-    if not isinstance(args, dict):
-        return None, "参数应为 JSON 对象"
-    try:
-        error = best_match(create_schema_validator(schema).iter_errors(args))
-        if error is not None:
-            raise error
-    except Exception as e:  # noqa: BLE001 — jsonschema 校验失败，回喂模型自纠
-        return None, f"不符合 schema: {e}"
-    return args, None
-
-
-def _action_fingerprint(tool_calls: list[dict]) -> str:
-    """工具调用动作指纹：本轮所有工具（名 + 规范化参数）序列化，供停滞检测。
-
-    参数 json.loads 后 sort_keys 重 dump——语义相同的不同 key 顺序 / 空白指纹一致
-    （对齐 ml-intern doom-loop args 规范化）；参数 JSON 非法时回退原始字符串。
-    真正的 final_answer 会在停滞检测前完成提取或进入协议修正，不会走到本函数；
-    未启用 output_schema 时它只是普通工具名，按名排除会让其参数不参与指纹——
-    整轮仅该调用时指纹恒为 "[]"，参数各异的连续轮次被误判为同一动作。
-    """
-    sig = []
-    for tc in tool_calls:
-        name = tc["function"]["name"]
-        try:
-            args = json.loads(tc["function"]["arguments"])
-        except json.JSONDecodeError, KeyError:
-            args = tc.get("function", {}).get("arguments", "")
-        sig.append((name, args))
-    return json.dumps(sig, sort_keys=True, ensure_ascii=False, default=str)
 
 
 @dataclass
@@ -371,7 +303,7 @@ class ReActStrategy:
         # 结构化最终答案：注入 final_answer 工具（模型最后调用提交结构化结果并终止）
         if output_schema is not None:
             create_schema_validator(output_schema)
-            tool_defs = [*(tool_defs or []), _build_final_answer_tool(output_schema)]
+            tool_defs = [*(tool_defs or []), build_final_answer_tool(output_schema)]
         has_tools = bool(tool_defs)
 
         self._tool_call_records = []
@@ -564,7 +496,7 @@ class ReActStrategy:
                     # 身份异常（id 缺失 / 批内重复）同归本类：tool 消息靠 tool_call_id 与前置
                     # assistant.tool_calls 配对，身份不可用即无法配对，与「没有 tool_calls」等价，
                     # 同样必须先拦截、共用协议修正预算，不得写进历史。
-                    identity_error = _tool_call_identity_error(stream_result.tool_calls)
+                    identity_error = tool_call_identity_error(stream_result.tool_calls)
                     if finish_reason == "tool_calls" and (
                         not stream_result.tool_calls
                         or not has_tools
@@ -646,7 +578,7 @@ class ReActStrategy:
                             continue  # final_answer CONTINUE：回喂后继续
 
                         # ----- 循环停滞检测：相同工具 + 参数连续重复 → STALLED 分发硬终止 -----
-                        fp = _action_fingerprint(stream_result.tool_calls)
+                        fp = action_fingerprint(stream_result.tool_calls)
                         if fp and fp == self._last_action_fp:
                             self._stall_count += 1
                         else:
@@ -941,7 +873,7 @@ class ReActStrategy:
         if not run_id.strip():
             raise ValueError("run_id 必须是非空字符串")
 
-        identity_error = _tool_call_identity_error(tool_calls)
+        identity_error = tool_call_identity_error(tool_calls)
         if identity_error is not None:
             raise ValueError(identity_error)
 
@@ -1290,7 +1222,7 @@ class ReActStrategy:
         final_tcs = [
             tc for tc in tool_calls if tc["function"]["name"] == _FINAL_ANSWER_TOOL
         ]
-        structured, err = _extract_final_answer(final_tcs[0], output_schema)
+        structured, err = extract_final_answer(final_tcs[0], output_schema)
         if structured is not None:
             self._tool_protocol_retries = 0
             # 成功：终止循环，结构化进 outcome
