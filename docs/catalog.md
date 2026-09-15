@@ -61,6 +61,7 @@
 - [docs/integration_doc/llm_doc/request_budget.md](integration_doc/llm_doc/request_budget.md)
 - [docs/integration_doc/llm_doc/retry.md](integration_doc/llm_doc/retry.md)
 - [docs/integration_doc/llm_doc/streaming.md](integration_doc/llm_doc/streaming.md)
+- [docs/integration_doc/llm_doc/stream_consumption.md](integration_doc/llm_doc/stream_consumption.md)
 - [docs/integration_doc/llm_doc/streaming_rectifier.md](integration_doc/llm_doc/streaming_rectifier.md)
 - [docs/integration_doc/llm_doc/structure.md](integration_doc/llm_doc/structure.md)
 - [docs/integration_doc/llm_doc/token_counter.md](integration_doc/llm_doc/token_counter.md)

@@ -33,7 +33,7 @@ LLMService.generate_structured
        → LLMService.generate
 ```
 
-`async_generate` 保留流式整流、半流续接和部分结果语义；`generate` 负责非流式响应解析、最终 Reservation 结算、观测隔离及返回前的取消/deadline 复查。`generate_structured` 只负责结构化降级链的 Facade 委托，schema 和 JSON 转换见 [结构化输出说明](structure.md)。
+`async_generate` 保留流式整流、半流续接和部分结果语义，并显式向下传播消费者 `aclose()`，确保当前 response 在 Reservation 兜底结算前关闭；`generate` 负责非流式响应解析、最终 Reservation 结算、观测隔离及返回前的取消/deadline 复查。`generate_structured` 只负责结构化降级链的 Facade 委托，schema 和 JSON 转换见 [结构化输出说明](structure.md)。
 
 ## 公开结果边界
 
@@ -48,7 +48,7 @@ LLMService.generate_structured
 | --- | --- |
 | `request_execution` | 提供一次调用的请求计划和每笔真实 create 的执行边界 |
 | `RetryHandler` | 保护 create 阶段的重试、熔断和 fallback 决策 |
-| `StreamingRectifier` | 流式读取、整流、续接和流内结果接管 |
+| `StreamingRectifier` | 整流、续接、流内结果 Owner 与 Reservation 结算；单流读取委托 `stream_consumption` |
 | `StreamParser` | 非流式响应解析 |
 | `StructuredOutput` | 结构化输出的多级降级与调用计数 |
 | `CostTracker` / `TiktokenTokenCounter` | 成本与 token 计数代理 |
@@ -58,12 +58,14 @@ LLMService.generate_structured
 
 ## 验证入口
 
-Facade 接线、异常翻译、流式与非流式结果边界见 `tests/unit/test_llm_service.py`；请求执行生命周期见 `tests/unit/test_llm_request_budget.py`；流式整流见 `tests/unit/test_streaming_rectifier.py`。实现状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准。
+Facade 接线、异常翻译、流式与非流式结果边界见 `tests/unit/test_llm_service.py`；请求执行生命周期及 Facade 关闭传播见 `tests/unit/test_llm_request_budget.py`；流式整流见 `tests/unit/test_streaming_rectifier.py`。实现状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准。
 
 ## 相关文档
 
 - [LLM 模块接口](llm.md)
 - [请求执行组件](request_execution.md)
+- [单流消费](stream_consumption.md)
 - [结构化输出](structure.md)
 - [流式整流](streaming_rectifier.md)
 - [LLM-ADR-018](../../../adr/integration/llm/2026-09-15-request-execution-boundary.md)
+- [LLM-ADR-019](../../../adr/integration/llm/2026-09-15-stream-consumption-boundary.md)

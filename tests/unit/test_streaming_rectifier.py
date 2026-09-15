@@ -19,6 +19,7 @@ import pytest
 
 from app.integration.llm.errors import _DeadlineExceeded, _StreamCancel
 from app.integration.llm.retry import RetryConfig, RetryHandler
+from app.integration.llm.stream_consumption import drain_stream
 from app.integration.llm.streaming_rectifier import RectifierContext, StreamingRectifier
 from app.domain.ports.llm_gateway import StreamResult
 from app.shared.exceptions import ContextWindowExceededError
@@ -61,13 +62,14 @@ def _usage_chunk(prompt: int, completion: int):
 class _FakeStream:
     """异步可迭代流：按序 yield chunks，可在指定位置抛异常模拟中断。"""
 
-    def __init__(self, chunks, fail_at=None, exc=None):
+    def __init__(self, chunks, fail_at=None, exc=None, lifecycle=None):
         self._chunks = list(chunks)
         self._fail_at = fail_at
         # 默认可恢复异常（TimeoutError → RETRYABLE，能触发整流）
         self._exc = exc or TimeoutError("connection reset")
         self._i = 0
         self.close_calls = 0
+        self._lifecycle = lifecycle
 
     def __aiter__(self):
         return self
@@ -84,6 +86,8 @@ class _FakeStream:
 
     async def close(self):
         self.close_calls += 1
+        if self._lifecycle is not None:
+            self._lifecycle.append("close")
 
 
 class _FakeCircuitBreaker:
@@ -116,14 +120,17 @@ class _FakeRetry:
 class _FakeReservation:
     """模拟 Reservation：settle/cancel 计数。"""
 
-    def __init__(self):
+    def __init__(self, lifecycle=None):
         self.settled = False
         self.settle_calls = 0
         self.cancel_calls = 0
+        self._lifecycle = lifecycle
 
     async def settle(self, actual=None):
         self.settled = True
         self.settle_calls += 1
+        if self._lifecycle is not None:
+            self._lifecycle.append("settle")
 
     async def cancel(self):
         self.settled = True
@@ -191,14 +198,16 @@ async def test_drain_absorbs_completed_usage_chunk_before_cancel_and_closes_stre
     cancel_event.set()
     stream = _FakeStream([_usage_chunk(10, 3)])
     result = StreamResult()
-    context = RectifierContext(result, {}, {})
 
     with pytest.raises(_StreamCancel):
-        async for _ in StreamingRectifier._drain(
+        async for _ in drain_stream(
             stream,
-            context=context,
+            result=result,
             tool_deltas=[],
             cancel_event=cancel_event,
+            deadline=None,
+            first_token_timeout=1.0,
+            chunk_idle_timeout=1.0,
         ):
             pass
 
@@ -208,6 +217,33 @@ async def test_drain_absorbs_completed_usage_chunk_before_cancel_and_closes_stre
         "total_tokens": 13,
     }
     assert stream.close_calls == 1
+
+
+async def test_outer_aclose_closes_active_response_before_settlement():
+    """关闭公开整流流时，同步关闭当前 response 后再结算 Reservation。"""
+    lifecycle: list[str] = []
+    stream = _FakeStream(
+        [_content_chunk("A"), _content_chunk("B")],
+        lifecycle=lifecycle,
+    )
+    result = StreamResult()
+    reservation = _FakeReservation(lifecycle=lifecycle)
+    context = RectifierContext(result, {"res": reservation}, {})
+    retry = _FakeRetry([stream])
+    consumer = StreamingRectifier.rectified_stream(
+        create_fn=lambda: _FakeStream([]),
+        retry=retry,
+        cancel_event=None,
+        stream_max_retries=0,
+        context=context,
+    )
+
+    await anext(consumer)
+    await consumer.aclose()
+
+    assert stream.close_calls == 1
+    assert reservation.settle_calls == 1
+    assert lifecycle == ["close", "settle"]
 
 
 async def test_continuation_backoff_obeys_deadline_and_never_calls_provider(monkeypatch):
@@ -965,6 +1001,56 @@ def _run_continue(
         with pytest.raises(expected_exception):
             asyncio.run(collect())
     return events, result, retry, reservation, prefixes
+
+
+async def test_outer_aclose_propagates_through_continuation_chain():
+    """外层关闭穿透续接委托链，先关闭续接 response 再结算其 Reservation。"""
+    saved = _tiny_watchdog()
+    try:
+        lifecycle: list[str] = []
+        primary_stream = _FakeStream(
+            [_content_chunk("部分")],
+            fail_at=1,
+            exc=TimeoutError("reset"),
+        )
+        continuation_stream = _FakeStream(
+            [_content_chunk("续写一"), _content_chunk("续写二")],
+            lifecycle=lifecycle,
+        )
+        result = StreamResult()
+        context = RectifierContext(result, {"res": _FakeReservation()}, {})
+        retry = _FakeRetry([primary_stream])
+        continuation_reservation = _FakeReservation(lifecycle=lifecycle)
+        continuation_calls = 0
+
+        async def continue_fn(prefix):
+            nonlocal continuation_calls
+            continuation_calls += 1
+            assert prefix == "部分"
+            context.active["res"] = continuation_reservation
+            return continuation_stream
+
+        consumer = StreamingRectifier.rectified_stream(
+            create_fn=lambda: _FakeStream([]),
+            retry=retry,
+            cancel_event=None,
+            stream_max_retries=0,
+            context=context,
+            continue_fn=continue_fn,
+            continuation_max_retries=1,
+        )
+
+        await anext(consumer)
+        await anext(consumer)
+        await consumer.aclose()
+
+        assert continuation_calls == 1
+        assert primary_stream.close_calls == 1
+        assert continuation_stream.close_calls == 1
+        assert continuation_reservation.settle_calls == 1
+        assert lifecycle == ["close", "settle"]
+    finally:
+        _restore_watchdog(saved)
 
 
 def test_continuation_resumes_after_content_interrupt():

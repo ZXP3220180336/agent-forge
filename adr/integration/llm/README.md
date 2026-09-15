@@ -26,5 +26,6 @@
 | [LLM-ADR-016](2026-09-06-request-context-budget.md) | Provider 请求上下文准入：语义预算与最终请求预算分离 | ✅ 已采纳 | request_budget / llm_service / token_counter | 2026-09-06 |
 | [LLM-ADR-017](2026-09-14-structured-codec-boundary.md) | 结构化输出的数据转换与编排分离：纯 codec、原观测边界 | 已接受；验证见记录 | structured / structured_codec | 2026-09-14 |
 | [LLM-ADR-018](2026-09-15-request-execution-boundary.md) | 请求执行边界与 Facade 编排分离 | 已接受；验证见记录 | llm_service / request_execution | 2026-09-15 |
+| [LLM-ADR-019](2026-09-15-stream-consumption-boundary.md) | 单流消费与整流策略分离 | 已接受；已验证 | streaming_rectifier / stream_consumption | 2026-09-15 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

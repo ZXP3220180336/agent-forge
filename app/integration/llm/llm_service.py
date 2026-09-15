@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any, ClassVar
 
 from app.domain.ports.llm_gateway import StreamResult
@@ -154,7 +155,7 @@ class LLMService:
         # shared 领域出口抛给领域层（domain 不依赖 integration 私有异常）；其余流式
         # 失败已折为 error 事件 / result.error，不抛异常。
         try:
-            async for event in StreamingRectifier.rectified_stream(
+            rectified_events = StreamingRectifier.rectified_stream(
                 create_fn=plan.call_fn,
                 retry=plan.retry,
                 cancel_event=cancel_event,
@@ -164,8 +165,10 @@ class LLMService:
                 continue_fn=plan.continue_fn,
                 continuation_max_retries=self._continuation_max_retries,
                 deadline=deadline,
-            ):
-                yield event
+            )
+            async with aclosing(rectified_events):
+                async for event in rectified_events:
+                    yield event
         except _ExecutionAbort as e:
             raise translate_abort(e) from None
 

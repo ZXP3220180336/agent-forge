@@ -4,11 +4,11 @@
 
 <a id="refactoring-plan"></a>
 
-## R-01：代码职责与编排边界重构（R2 已完成，R3～R6 未启动）
+## R-01：代码职责与编排边界重构（R3 已完成）
 
 日期：2026-09-14。目标：降低推理、LLM 调用和聊天主链路的阅读与修改成本，让编排入口表达阶段与转换，让协议处理、资源与成果接管有明确归属，服务良率 RCA 的拆分、排查与证据报告交付。
 
-**授权边界**：用户已先后授权执行 R1 与 R2；本轮实施请求执行边界拆分及必要验证、文档同步，R3～R6 未获实施授权。现有 [C-02](#c-02-lifecycle) 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧全部纳入纯结构重构。
+**授权边界**：用户已先后授权执行 R1、R2 与 R3；本轮实施单流消费边界拆分及必要验证、文档同步，R4～R6 未获实施授权。现有 [C-02](#c-02-lifecycle) 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧全部纳入纯结构重构。本轮按用户要求不提交 Git。
 
 规范入口：[产品](project/product.md)、[工程 Gate 与最小结构变化](engineering/ai-engineering-rules.md#abstraction)、[工作流](engineering/project-workflow.md)、[编码规范文档](engineering/编码规范文档.txt)。2026-09-14 已按用户提供的目录找到并读取编码规范，来源状态统一见[来源核对记录](../issues/documentation/2026-09-12-reference-gaps.md#外部来源边界)；不复制规范正文，也不据此宣称现有代码已全部合规。
 
@@ -39,7 +39,7 @@
 | --- | --- | --- |
 | R1 结构化纯逻辑 / 已完成 | 新增 `app/integration/llm/structured_codec.py`：schema 规范化、JSON 解析校验、错误摘要、回喂消息构造；修改 `structured.py`：导入纯函数，保留调用、usage、降级和错误边界；适配 `tests/unit/test_generate_structured.py`。 | 使用函数，不新建 Codec 类。定向 62 项、全量 1046 项通过；保留三级降级、扩容/回喂预算、最后一次成果解析及短路；见 [LLM-ADR-017](../adr/integration/llm/2026-09-14-structured-codec-boundary.md)。 |
 | R2 请求执行 / 已完成 | 新增 `app/integration/llm/request_execution.py`：迁入请求计划、请求 kwargs 与 `_budget_guarded_call`；`llm_service.py` 保留 Facade 编排。 | 定向 91 项、全量 1204 项通过；请求执行契约现由 [request_execution 组件说明](integration_doc/llm_doc/request_execution.md)维护，见 [LLM-ADR-018](../adr/integration/llm/2026-09-15-request-execution-boundary.md)。 |
-| R3 单流消费 / 待实施 | 新增 `app/integration/llm/stream_consumption.py`：流读取、chunk 累积、关闭、接缝处理；修改 `streaming_rectifier.py`：显式传入结果、控制信号与看门狗参数；适配 `test_streaming_rectifier.py`、`test_llm_request_budget.py`。 | 不依赖整流器私有上下文，避免双向 import。现有 `StreamParser` 保留 SDK 解码职责；整流器保留预算、续接和唯一结算。 |
+| R3 单流消费 / 已完成 | 新增 `app/integration/llm/stream_consumption.py`：流读取、chunk 累积、关闭、接缝处理；修改 `streaming_rectifier.py`：显式传入结果、控制信号与看门狗参数；`llm_service.py` 显式传播 Facade 关闭；新增直接测试并适配整流器/请求边界测试。 | 定向 89 项、全量 1213 项通过；消费组件不依赖整流器私有上下文，`StreamParser` 保留 SDK 解码，整流器保留预算、续接和唯一结算；见 [LLM-ADR-019](../adr/integration/llm/2026-09-15-stream-consumption-boundary.md)。 |
 | R4-A Planner / 待实施 | 新增 `app/domain/reasoning/_planner_steps.py`：步骤规范化、计划载荷及单步结果的纯记录转换；修改 `planner.py`：在原类整理步骤执行与完整/部分汇总提交；适配 `test_planner.py`、`test_planner_agent.py`。 | `_replan_loop` 保持预算归属；子运行继承 deadline、baseline usage 和运行身份，父级在子策略重置前接管事实。 |
 | R4-B Reflection / 待实施 | 修改 `app/domain/reasoning/reflection.py`：提取审查后提交/修正判定及完整稿接管步骤；适配 `test_reflection.py`、`test_reflection_agent.py`。 | 先接管最近完整稿再判护栏；保留 `_critique`、`_refine`。暂不创建状态类或共享结构化阶段执行器。 |
 | R4-C ReAct / 待实施 | 新增 `app/domain/reasoning/_react_protocol.py`：工具调用身份检查、final_answer 构造/校验、动作指纹；修改 `react.py`：整理准入、上下文、LLM 单轮、成果接管、分派、收尾阶段；适配 `test_react_strategy.py`、`test_react_strategy_nonstream.py`。 | 成果、usage、终态继续由现有运行作用域负责；纯协议文件不接管工具调用或结算。批次生命周期留给 R5，不重复搬迁。 |
@@ -107,6 +107,7 @@ R1 实施评审（2026-09-14）：采用 E9 的独立数据策略边界，按 E6
 再次审核（2026-09-14）：主执行者与独立子智能体对照源码及 C-02，未发现 R2/R3 所有权或 R5 规格冲突；补齐 R6 流前预检、真实 HTTP 验证、首事件前失败及生成器关闭的回归入口。原先只在计划声明编码规范已找到，遗漏了未跟踪文件与正式来源状态：本次将用户原文件纳入提交，更新工程导航、原来源记录及其索引，并将经验补入既有 lessons 条目。未改变模块映射、配置、部署或 C-02 正文，无需更新 ALIGNMENT 或模块说明。修订后运行 `.venv/Scripts/python.exe -m scripts.verify_alignment` 与 `git diff --check` 均通过，另核对 C-02 原文、计划锚点、测试路径和扫描统计，结果一致。上述遗漏已补齐，计划可提交；本轮未运行业务测试，代码实施仍未开始。
 
 R2 文档漂移修正（2026-09-15，用户已授权）：
+
 - [x] 修正 ADR-018 的薄委托描述，明确 Facade 直接调用 `build_request_plan`。
 - [x] 同步组件说明的调用图、编排表和包内接口清单。
 - [x] 合并文档维护教训，检查残留引用、文档对齐及差异格式并记录评审。
@@ -130,6 +131,30 @@ Owner 表述。定向命令覆盖 `test_llm_service.py`、`test_llm_request_budg
 `.venv/Scripts/python.exe -m scripts.verify_alignment`、模块编译与 `git diff --check` 均通过。
 残余验证边界是 provider 与 Reservation 使用测试替身，未发起真实计费网络调用；R2 是结构拆分，
 不需要为验证制造外部副作用。
+
+R3 实施评审（2026-09-15）：`stream_consumption.py` 接管单个 provider response 的逐 chunk
+读取、解析后累积、SSE 构造、cancel/deadline/idle 竞争、续接接缝和提前关闭；
+`StreamingRectifier` 保留 attempt/续接循环、恢复判定、退避、tool-call 最终合并、熔断、日志、
+`active` 与 Reservation 唯一结算。消费函数显式接收结果、attempt 内 tool deltas、控制信号和
+看门狗阈值，不读取整流器私有上下文，也不依赖 retry、limiter 或请求执行组件。
+
+竞争顺序保持为已完成 chunk 事实接管 → cancel → deadline → 事件产出；EOF 后仍复查终止，
+idle 仅在 chunk 与终止均未完成时成立。非自然退出主动关闭 response，每轮读取与终止等待任务
+均 cancel + gather；正常 EOF 继续由 SDK 收尾。新增直接测试覆盖同刻竞争、EOF、idle、消费者
+`aclose()` 与跨 chunk 接缝，原整流、请求预算和 Facade 测试覆盖跨组件 Owner。
+
+独立复核先发现外层异步生成器 `aclose()` 不会自动同步关闭正在迭代的子生成器，导致公开链可能
+先结算 Reservation、再由异步生成器 finalizer 延迟关闭 response。补高层红测复现后，主流及
+`LLMService` Facade、主流、`_abandon_path` 和续接链的每层委托均使用显式 `aclosing` 传播关闭；
+Facade、主流与续接三条测试均验证 response close 发生在 Reservation settle 前。复核提出的新文档 EOF 空行也已删除，经验已更新到
+[lessons](lessons.md)。修复后再次检查，未发现其余行为迁移、结算、依赖或文档映射问题。
+
+实际验证：R3 定向命令覆盖 `test_stream_consumption.py`、`test_streaming_rectifier.py`、
+`test_llm_request_budget.py`、`test_stream_rectify.py`，89 项通过；完整运行
+`.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r3-all-tests-facade`，
+1213 项通过（44.57 秒），仅有既有 Starlette/httpx 弃用提示。文档对齐、模块编译和已跟踪/未跟踪
+文件的差异格式检查均通过。真实 provider 与计费网络调用未执行，结构重构由本地解析、控制与
+结算测试保护。按用户要求，本批保留为未提交工作区。
 
 <a id="c-02-lifecycle"></a>
 

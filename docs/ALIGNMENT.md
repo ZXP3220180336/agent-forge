@@ -75,6 +75,7 @@
 | app/integration/llm/retry.py | ✅ | docs/integration_doc/llm_doc/retry.md | tests/unit/test_retry.py | 熔断/重试机制（错误分类/归一迁至 llm/errors.py，经 classify_error 消费分类） |
 | app/integration/llm/execution_control.py | ✅ | docs/integration_doc/llm_doc/execution_control.md | tests/unit/test_execution_control.py | 执行控制等待原语（retry/整流/request_execution 共用；reserve 排队取消/流读取竞态等调用方边界另由 test_llm_request_budget.py / test_streaming_rectifier.py 覆盖） |
 | app/integration/llm/streaming.py | ✅ | docs/integration_doc/llm_doc/streaming.md | tests/unit/test_streaming.py | 流式解析 |
+| app/integration/llm/stream_consumption.py | ✅ | docs/integration_doc/llm_doc/stream_consumption.md | tests/unit/test_stream_consumption.py | R3 单流读取、结果累积、终止竞争、接缝处理与提前关闭；不接管 Reservation 结算 |
 | app/integration/llm/streaming_rectifier.py | ✅ | docs/integration_doc/llm_doc/streaming_rectifier.md | tests/unit/test_streaming_rectifier.py | 流式整流/续接；业务取消先收尾再类型化冒泡且不生成取消 SSE；EOF 完成态禁止重发，必要结算可见 |
 | app/integration/llm/structured.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | 结构化三级降级 |
 | app/integration/llm/structured_codec.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | R1 纯转换与校验；公开调用测试覆盖双副本与回喂边界 |

@@ -51,6 +51,7 @@ app/integration/
 │   ├── execution_control.py      ← 取消/deadline 受控等待原语
 │   ├── retry.py                  ← RetryHandler + CircuitBreaker
 │   ├── streaming.py              ← StreamParser 流式解析
+│   ├── stream_consumption.py     ← 单流读取、累积、接缝与关闭
 │   ├── streaming_rectifier.py    ← StreamingRectifier 流式整流重试
 │   ├── structured.py             ← StructuredOutput 结构化输出
 │   ├── structured_codec.py       ← 结构化 schema/JSON 纯转换与校验
@@ -145,6 +146,7 @@ app/integration/
 | 执行控制 | execution_control.py | 取消/deadline 快检与可中断等待，供 retry/整流/request_execution 共用 |
 | `RetryHandler` | retry.py | 指数退避 + 抖动 + CircuitBreaker 熔断 + fallback 降级链 |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式响应（纯函数，无状态） |
+| 单流消费 | stream_consumption.py | 单个 provider 流的读取、结果累积、接缝处理与提前关闭 |
 | `StreamingRectifier` | streaming_rectifier.py | 流式整流重试：首 token 前中断才重试（防重复输出 / 双倍计费） |
 | `StructuredOutput` | structured.py / structured_codec.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则提取） |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流，双 Token Bucket（RPM + TPM），reserve/settle 形态 |
@@ -217,7 +219,7 @@ app/integration/
 - [架构设计](../project/architecture.md)（集成层在 7 层架构中的位置与演进路径）
 - [应用层说明](../application_doc/README.md)
 - [领域层说明](../domain_doc/README.md)
-- [LLM 层详解](llm_doc/llm.md) · [传输错误处理](llm_doc/error.md) · [执行控制](llm_doc/execution_control.md) · [StreamParser](llm_doc/streaming.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md) · [TokenCounter](llm_doc/token_counter.md) · [请求预算](llm_doc/request_budget.md)
+- [LLM 层详解](llm_doc/llm.md) · [传输错误处理](llm_doc/error.md) · [执行控制](llm_doc/execution_control.md) · [StreamParser](llm_doc/streaming.md) · [单流消费](llm_doc/stream_consumption.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md) · [TokenCounter](llm_doc/token_counter.md) · [请求预算](llm_doc/request_budget.md)
 - [ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md) · [外部工具热加载](tools_doc/external.md) · [执行调度](tools_doc/executor.md) · [注册中心](tools_doc/registry.md) · [校验](tools_doc/validator.md) · [结果处理](tools_doc/result_processor.md) · [安全审计](tools_doc/security.md) · [选择器](tools_doc/selector.md) · [统计](tools_doc/stats.md)
 - [Embedding 详解](embedding_doc/embedding.md)
 - [配置说明](../config_doc/config.md)

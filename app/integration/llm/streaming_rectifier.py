@@ -7,7 +7,7 @@ StreamingRectifier — 流式整流重试策略
     - 整流重试循环（首 token 前才整流 / 整流上限 / cancel 不整流）
     - 非整流收尾路径（已产出中断：取消守卫 → 半流续接 → 放弃，_abandon_path）
     - 半流续接链（已产出 content 带前缀续写，尽力而为，LLM-ADR-015）
-    - chunk 解析分发（StreamParser → StreamResult 累积 + 事件产出）
+    - 委托 stream_consumption 完成单流读取、累积、接缝与关闭
     - settle/cancel 结算（reservation 闭环）
     - 熔断 feeding（迭代放弃时 record_failure）
     - 事件日志（llm_call）
@@ -42,29 +42,22 @@ StreamingRectifier — 流式整流重试策略
 from __future__ import annotations
 
 import asyncio
-import inspect
 import random
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.integration.llm.streaming import StreamParser, ToolCallDelta
 from app.platform.observability.logger import fill_llm_event_fields, get_logger
-from app.shared.events import (
-    build_error_event,
-    build_message_event,
-    build_reasoning_event,
-)
+from app.shared.events import build_error_event
 from app.shared.exceptions import ContextWindowExceededError
 
 from .errors import ErrorCategory, _DeadlineExceeded, _StreamCancel, classify_error
-from .execution_control import (
-    _abort_trigger,
-    _raise_if_aborted,
-    wait_with_execution_control,
-)
+from .execution_control import wait_with_execution_control
 from .retry import RetryHandler
+from .stream_consumption import drain_stream
 
 if TYPE_CHECKING:
     from app.domain.ports.llm_gateway import StreamResult
@@ -144,19 +137,6 @@ async def _backoff_sleep(
     )
 
 
-async def _close_stream(response: Any) -> None:
-    """尽力关闭未自然读完的 provider 流，释放底层 HTTP 连接。"""
-    close = getattr(response, "close", None)
-    if not callable(close):
-        return
-    try:
-        result = close()
-        if inspect.isawaitable(result):
-            await result
-    except Exception as exc:  # noqa: BLE001 — 清理失败不得覆盖原始终止/传输异常
-        logger.warning("关闭 LLM 流失败: %s", type(exc).__name__)
-
-
 def _reset_dead_meta(result: StreamResult) -> None:
     """清死流元数据残留（finish_reason/usage/refusal）：整流/续接下一尝试前调用。
 
@@ -201,10 +181,6 @@ def _should_rectify(
 # 半流续接（LLM-ADR-015）辅助
 # =====================================================================
 
-# 接缝重叠剥离上限：续接流首部与已产 content 尾部重叠检测的窗口（字符数）。
-# 只缓冲该长度内的首部即可判定重叠，超过仍无法判明时按新内容产出（重复有界）。
-_SEAM_OVERLAP_LIMIT = 64
-
 
 @dataclass
 class _ContinuationOutcome:
@@ -217,55 +193,6 @@ class _ContinuationOutcome:
 
     completed: bool = False
     error: Exception | None = None
-
-
-class _SeamStripper:
-    """接缝重叠剥离器：续接流首部若与已产 content 尾部重叠则剥离重复后再产出。
-
-    已产部分 token 已实时发给客户端，续接若从头重复会造成可见拼接缝。逐 token
-    缓冲并与已产尾部做最长前缀重叠比对：命中重叠且未判明 → 继续缓冲；出现不匹配
-    （或缓冲达 _SEAM_OVERLAP_LIMIT）→ 剥离重叠部分产出余下内容。流结束仍完全
-    命中重叠 → 视为纯重放，丢弃。语义前提：续接（DeepSeek prefix）极少长重复。
-    """
-
-    def __init__(self, prev_content: str):
-        self._tail = prev_content[-_SEAM_OVERLAP_LIMIT:] if prev_content else ""
-        self._pending = ""
-        self._done = not bool(self._tail)
-
-    def push(self, token: str) -> str:
-        """送入一个 content token，返回本次应产出的文本（空串 = 仍在缓冲/纯重叠）。"""
-        if self._done:
-            return token
-        self._pending += token
-        overlap = _seam_overlap_len(self._tail, self._pending)
-        if overlap < len(self._pending):
-            # 出现不匹配：前 overlap 个字符为重叠（已在 result.content），剥离后产出
-            self._done = True
-            out = self._pending[overlap:]
-            self._pending = ""
-            return out
-        if len(self._pending) >= _SEAM_OVERLAP_LIMIT:
-            # 缓冲达上限仍未判明：视为新内容产出（重复有界，不无限缓冲）
-            self._done = True
-            out = self._pending
-            self._pending = ""
-            return out
-        return ""
-
-    def flush(self) -> None:
-        """流自然结束仍持有缓冲（全部命中重叠且未达上限）→ 视为重叠，丢弃。"""
-        self._pending = ""
-        self._done = True
-
-
-def _seam_overlap_len(tail: str, s: str) -> int:
-    """tail 的**后缀**与 s 的**前缀**的最长重叠长度（接缝去重用）。"""
-    limit = min(len(tail), len(s))
-    for k in range(limit, -1, -1):
-        if tail.endswith(s[:k]):
-            return k
-    return 0
 
 
 def _should_continue(
@@ -375,7 +302,7 @@ class StreamingRectifier:
                 追加为 assistant 消息续写并返回新流式响应；None 则禁用续接
             continuation_max_retries: 半流续接轮次上限（默认 0=禁用）
             deadline: 整体执行期限（monotonic 绝对，LLM-044）——整流/续接 attempt 入口、
-                退避、create/reserve（经 create_fn 内 ctx）与 _drain 读取期按同一期限
+                退避、create/reserve（经 create_fn 内 ctx）与 drain_stream 读取期按同一期限
                 受控；命中即执行终止（不整流/不续接），与业务取消同为类型化出口。
         """
         result = context.result
@@ -449,15 +376,19 @@ class StreamingRectifier:
             stream_done = False
 
             try:
-                # 逐 chunk 看门狗 + 累积 + 事件产出（整流与续接共用 _drain）
-                async for event in StreamingRectifier._drain(
+                # 逐 chunk 看门狗 + 累积 + 事件产出（整流与续接共用 drain_stream）
+                stream_events = drain_stream(
                     response,
-                    context=context,
+                    result=context.result,
                     tool_deltas=tool_deltas,
                     cancel_event=cancel_event,
                     deadline=deadline,
-                ):
-                    yield event
+                    first_token_timeout=StreamingRectifier._first_token_timeout,
+                    chunk_idle_timeout=StreamingRectifier._chunk_idle_timeout,
+                )
+                async with aclosing(stream_events):
+                    async for event in stream_events:
+                        yield event
                 # 正常结束：合并 tool_calls + 结算退差 + 成功日志
                 if tool_deltas:
                     result.tool_calls = StreamParser.merge_tool_calls(tool_deltas)
@@ -486,7 +417,7 @@ class StreamingRectifier:
                     attempt_start=attempt_start,
                 )
                 # 终止信号跨 Facade 翻译后仍携带已收到的 usage，供领域层归入成本总账。
-                # `_drain` 可能在 usage chunk 与 deadline 同时完成时先吸收该 chunk。
+                # `drain_stream` 可能在 usage chunk 与 deadline 同时完成时先吸收该 chunk。
                 e = _DeadlineExceeded(usage=result.usage)
                 raise e
             except Exception as e:
@@ -513,7 +444,7 @@ class StreamingRectifier:
                 )
                 # emitted_any 由累积产物推导：usage/finish_reason/refusal 不算
                 # "首 token"，content/reasoning/tool_deltas 任一非空即视为已产出
-                # （累积语义在编排层从 result 状态推导，不进 _apply_chunk，LLM-035）。
+                # （累积语义在编排层从 result 状态推导，不依赖单 chunk 返回值，LLM-035）。
                 emitted_any = bool(
                     result.content or result.reasoning_content or tool_deltas
                 )
@@ -552,7 +483,7 @@ class StreamingRectifier:
 
                 # 不整流 → 收尾路径（LLM-011 取消守卫 → 半流续接 → 放弃），
                 # 由 _abandon_path 产出其全部事件，结束即整流流结束。
-                async for event in StreamingRectifier._abandon_path(
+                abandon_events = StreamingRectifier._abandon_path(
                     context,
                     retry=retry,
                     cancel_event=cancel_event,
@@ -561,8 +492,10 @@ class StreamingRectifier:
                     continue_fn=continue_fn,
                     continuation_max_retries=continuation_max_retries,
                     deadline=deadline,
-                ):
-                    yield event
+                )
+                async with aclosing(abandon_events):
+                    async for event in abandon_events:
+                        yield event
                 return
 
             finally:
@@ -579,143 +512,6 @@ class StreamingRectifier:
                     await res.settle(
                         None
                     )  # 请求已发出（硬取消兜底）：保留全部预留，不 cancel（防配额虚增→429）
-
-    # ------------------------------------------------------------------
-    # 流迭代与解析
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    async def _drain(
-        response: Any,
-        *,
-        context: RectifierContext,
-        tool_deltas: list[ToolCallDelta],
-        cancel_event: asyncio.Event | None,
-        deadline: float | None = None,
-        seam: _SeamStripper | None = None,
-    ) -> AsyncGenerator[str]:
-        """迭代单个流式响应并产出 SSE 事件（整流 attempt 与续接 attempt 共用）。
-
-        首包/空闲双阈值看门狗：首 chunk 等「首包宽」（覆盖模型思考），其后每 chunk
-        等「空闲窄」（>阈值判定断流，不等 httpx read 整档）——看门狗超时抛传输
-        TimeoutError 冒泡给调用方分类（LLM-ADR-014）。迭代中用户取消置位抛
-        _StreamCancel、整体期限到期抛 _DeadlineExceeded（LLM-044，与 anext 直接竞争，
-        不等当前 chunk await 返回）。正常读完自然返回，由调用方负责合并 tool_calls +
-        结算。seam 非空时 content 首部经接缝重叠剥离（LLM-ADR-015）。
-        """
-        stream_iter = response.__aiter__()
-        first_chunk = True
-        stream_exhausted = False
-        try:
-            while True:
-                idle = (
-                    StreamingRectifier._first_token_timeout
-                    if first_chunk
-                    else StreamingRectifier._chunk_idle_timeout
-                )
-                # LLM-044 四方竞争：anext 到达 / cancel 置位 / deadline 到期 / idle 上限。
-                # 确定性判定序：anext 先完成则吸收（含 usage chunk 已由 _apply_chunk 累积），
-                # 随后 cancel → _StreamCancel、deadline → _DeadlineExceeded；cancel/deadline
-                # 先到（anext 未完成）→ 直接终止（不等当前 chunk await 返回）；三者皆未完成
-                # 且 idle 到期 → 传输超时（可整流/续接）。
-                anext_task = asyncio.ensure_future(anext(stream_iter))
-                abort_task = asyncio.ensure_future(
-                    _abort_trigger(cancel_event, deadline)
-                )
-                try:
-                    done, _ = await asyncio.wait(
-                        {anext_task, abort_task},
-                        timeout=idle,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    if anext_task in done:
-                        try:
-                            chunk = anext_task.result()
-                        except StopAsyncIteration:
-                            stream_exhausted = True
-                            _raise_if_aborted(cancel_event, deadline)
-                            break
-                        first_chunk = False
-                        # anext 与终止同刻完成：先吸收 chunk（尤其 usage），再让终止优先。
-                        events = StreamingRectifier._apply_chunk(
-                            chunk, context.result, tool_deltas, seam=seam
-                        )
-                        _raise_if_aborted(cancel_event, deadline)
-                    elif abort_task in done:
-                        reason = abort_task.result()
-                        if reason == "cancel":
-                            raise _StreamCancel()
-                        raise _DeadlineExceeded()
-                    else:
-                        # idle 到期（首包宽 / 空闲窄）且 anext/abort 均未完成 → 传输断流
-                        raise TimeoutError(
-                            "流式读取空闲超时"
-                            if not first_chunk
-                            else "流式读取首包超时"
-                        )
-                finally:
-                    # 中断清理：cancel + await anext 与 abort waiter（防后台 task 泄漏）
-                    for task in (anext_task, abort_task):
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(anext_task, abort_task, return_exceptions=True)
-
-                for event in events:
-                    yield event
-            if seam is not None:
-                seam.flush()
-        finally:
-            # AsyncStream 正常读完会自行关闭；取消、deadline、idle 超时、消费者 aclose
-            # 等提前退出必须主动释放响应连接。
-            if not stream_exhausted:
-                await _close_stream(response)
-
-    @staticmethod
-    def _apply_chunk(
-        chunk: Any,
-        result: StreamResult,
-        tool_deltas: list[ToolCallDelta],
-        *,
-        seam: _SeamStripper | None = None,
-    ) -> list[str]:
-        """解析单个 chunk：累积到 result、产出事件列表。
-
-        seam 非空（续接 attempt）时，content token 经接缝剥离器处理——与已产 content
-        尾部重叠的首部剥离后再累积/产出，避免客户端看到重复拼接（LLM-ADR-015）。
-        不在此判定/返回「是否已产出 token」：整流用累积语义由编排层从 result 状态
-        推导（LLM-035），单 chunk 局部信号对整流判定无意义，故只返回事件。
-        """
-        parsed = StreamParser.parse_chunk(chunk)
-        events: list[str] = []
-
-        if parsed.reasoning_token:
-            result.reasoning_content += parsed.reasoning_token
-            events.append(build_reasoning_event(parsed.reasoning_token))
-
-        if parsed.has_reasoning:
-            result.has_reasoning = True
-
-        if parsed.message_token:
-            text = parsed.message_token
-            if seam is not None:
-                text = seam.push(text)
-            if text:
-                result.content += text
-                events.append(build_message_event(text))
-
-        if parsed.finish_reason:
-            result.finish_reason = parsed.finish_reason
-
-        if parsed.refusal:
-            result.refusal = parsed.refusal
-
-        if parsed.tool_call_deltas:
-            tool_deltas.extend(parsed.tool_call_deltas)
-
-        if parsed.usage:
-            result.usage = parsed.usage
-
-        return events
 
     # ------------------------------------------------------------------
     # 中断恢复策略（整流不适用时的收尾 / 半流续接链）
@@ -756,7 +552,7 @@ class StreamingRectifier:
             # 半流续接链：带前缀重发，不整轮重启。链内已处理终态（completed）→
             # 直接结束；否则退化到下方放弃分支——部分 content 保留 + 失败信号。
             outcome = _ContinuationOutcome()
-            async for event in StreamingRectifier._try_continuations(
+            continuation_events = StreamingRectifier._try_continuations(
                 context,
                 continue_fn=continue_fn,
                 cancel_event=cancel_event,
@@ -766,8 +562,10 @@ class StreamingRectifier:
                 first_tool_emitted=tool_emitted,
                 outcome=outcome,
                 deadline=deadline,
-            ):
-                yield event
+            )
+            async with aclosing(continuation_events):
+                async for event in continuation_events:
+                    yield event
             if outcome.completed:
                 return
             if outcome.error is not None:
@@ -891,16 +689,19 @@ class StreamingRectifier:
             # 的 stream_done 守卫同语义——两条路径共用同一完成态守卫。
             cont_stream_done = False
             try:
-                seam = _SeamStripper(result.content)
-                async for event in StreamingRectifier._drain(
+                stream_events = drain_stream(
                     response,
-                    context=context,
+                    result=context.result,
                     tool_deltas=cont_tool_deltas,
                     cancel_event=cancel_event,
                     deadline=deadline,
-                    seam=seam,
-                ):
-                    yield event
+                    first_token_timeout=StreamingRectifier._first_token_timeout,
+                    chunk_idle_timeout=StreamingRectifier._chunk_idle_timeout,
+                    seam_prefix=result.content,
+                )
+                async with aclosing(stream_events):
+                    async for event in stream_events:
+                        yield event
                 if cont_tool_deltas:
                     result.tool_calls = StreamParser.merge_tool_calls(cont_tool_deltas)
                 cont_stream_done = True

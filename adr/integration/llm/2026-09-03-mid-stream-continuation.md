@@ -2,8 +2,8 @@
 
 > **状态**：✅ 已采纳（2026-09-03 实施，含单元/集成测试）
 > **决策日期**：2026-09-03
-> **涉及模块**：`app/integration/llm/streaming_rectifier.py`（整流循环拆 `_drain` + 半流续接链 `_try_continuations` / `_SeamStripper`）· `app/integration/llm/llm_service.py`（`continue_fn` 续接请求构造）· `app/config/settings.py` / `app/container.py`（`llm_stream_max_continuations` 接线）· `app/domain/ports/llm_gateway.py`（usage 口径说明）
-> **关联文档**：[streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md) · [llm.md](../../../docs/integration_doc/llm_doc/llm.md) · [config.md](../../../docs/config_doc/config.md) · [ADR-005（整流）](2026-08-01-streaming-rectification-retry.md)
+> **涉及模块**：`app/integration/llm/streaming_rectifier.py`（半流续接策略）· `app/integration/llm/stream_consumption.py`（单流读取与接缝）· `app/integration/llm/llm_service.py`（`continue_fn` 续接请求构造）· `app/config/settings.py` / `app/container.py`（`llm_stream_max_continuations` 接线）· `app/domain/ports/llm_gateway.py`（usage 口径说明）
+> **关联文档**：[streaming_rectifier.md](../../../docs/integration_doc/llm_doc/streaming_rectifier.md) · [stream_consumption.md](../../../docs/integration_doc/llm_doc/stream_consumption.md) · [llm.md](../../../docs/integration_doc/llm_doc/llm.md) · [config.md](../../../docs/config_doc/config.md) · [ADR-005（整流）](2026-08-01-streaming-rectification-retry.md) · [ADR-019（当前单流边界）](2026-09-15-stream-consumption-boundary.md)
 
 ---
 
@@ -50,8 +50,8 @@
 
 ### 3. 整流循环改造（`streaming_rectifier`）
 
-- 迭代主体（首包/空闲看门狗 + chunk 累积/事件产出）抽为 **`_drain`**，整流 attempt 与续接 attempt 共用；
-- except 分支顺序：**整流判定 → 续接判定 → 放弃**。续接链 `_try_continuations`：退避 → 清死流元数据（`finish_reason/usage/refusal=None`，**content 保留**）→ `continue_fn(result.content)` → `_drain` 迭代；create 失败（如非 prefix 端点拒字段）→ 记录日志后退化放弃（`result.error` 用**原中断原因**，对用户更贴切）；迭代再断且预算余 → 带新前缀再续；超预算 → 放弃（喂熔断 + 失败信号照旧）。
+- 迭代主体（首包/空闲看门狗 + chunk 累积/事件产出）最初抽为 **`_drain`**，整流 attempt 与续接 attempt 共用；其当前归属已按 [LLM-ADR-019](2026-09-15-stream-consumption-boundary.md) 迁入 `stream_consumption.drain_stream`；
+- except 分支顺序：**整流判定 → 续接判定 → 放弃**。续接链 `_try_continuations`：退避 → 清死流元数据（`finish_reason/usage/refusal=None`，**content 保留**）→ `continue_fn(result.content)` → 单流消费函数迭代；create 失败（如非 prefix 端点拒字段）→ 记录日志后退化放弃（`result.error` 用**原中断原因**，对用户更贴切）；迭代再断且预算余 → 带新前缀再续；超预算 → 放弃（喂熔断 + 失败信号照旧）。
 - **续接请求不经 `retry.execute` / fallback**——尽力而为单链（非主干路径），次数有界（`llm_stream_max_continuations`，默认 1）。
 - **接缝重叠剥离** `_SeamStripper`：续接流首部若与已产 content 尾部重叠（窗口 ≤ `_SEAM_OVERLAP_LIMIT`=64 字符）剥离后再产出/累积——已发给客户端的不重复显示；流自然结束仍全命中重叠视为纯重放丢弃。前提 `prefix:true` 使长重复极罕见，剥离只兜小尾巴。
 

@@ -5,7 +5,7 @@
 > **职责**：流式整流/半流续接策略——「首 token 前中断 → 重新 create + 重新迭代（整流）」；「已产出 content 中断 → 带前缀续写（半流续接，[LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）」；其余已产出中断则放弃
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **定位**：从 `LLMService.async_generate` 拆出的独立策略类（无状态静态类，不实例化），让 Facade 保持编排职责
-> **配套**：`StreamParser`（chunk 解析）、`request_execution`（构造 `create_fn` / `continue_fn`）、`LLMService.async_generate`（通道编排与整流接线）、`RetryHandler`（create 阶段重试/熔断）、`llm/errors.py`（`classify_error` 整流/续接可恢复判定）
+> **配套**：`stream_consumption`（单流读取、累积、接缝与关闭）、`StreamParser`（chunk 解码）、`request_execution`（构造 `create_fn` / `continue_fn`）、`LLMService.async_generate`（通道编排与整流接线）、`RetryHandler`（create 阶段重试/熔断）、`llm/errors.py`（`classify_error` 整流/续接可恢复判定）
 
 ---
 
@@ -80,7 +80,7 @@
 
 **尽力而为链**：续接请求**不经 `retry.execute` / fallback**（非主干路径）；续接再断且预算余 → 带新前缀（`result.content` 最新值）再续，超预算 → 放弃（喂熔断照旧）。
 
-**接缝重叠剥离**（`_SeamStripper`）：续接流首部若与已产 content 尾部重叠（窗口 ≤ `_SEAM_OVERLAP_LIMIT`=64 字符）剥离后再产出/累积——已发给客户端的内容不重复显示；流自然结束仍全命中重叠视为纯重放丢弃。前提 `prefix:true` 使长重复极罕见，剥离只兜小尾巴。
+**接缝重叠剥离**由 `stream_consumption` 内部完成：续接流首部若与已产 content 尾部重叠（窗口 ≤ 64 字符）剥离后再产出/累积——已发给客户端的内容不重复显示；流自然结束仍全命中重叠视为纯重放丢弃。前提 `prefix:true` 使长重复极罕见，剥离只兜小尾巴。
 
 ### 结算闭环（reservation）
 
@@ -143,18 +143,17 @@ usage 的 `_StreamCancel`，由 `LLMService` Facade 翻译为 `LLMCancelledError
 create_fn（限流闭环 reserve + create）
     → retry.execute() 保护 create 阶段
     → rectified_stream 整流/续接循环
-        ├─ _drain：逐 chunk 看门狗（首包宽/空闲窄）→ 累积 + 产出事件（整流/续接共用）
+        ├─ drain_stream：委托单流组件做逐 chunk 看门狗、累积、事件与关闭
         ├─ _should_rectify：判断是否整流（首 token 前）
         ├─ _abandon_path：整流不适用时的收尾（LLM-011 取消守卫 → 半流续接 → 放弃）
         ├─ _try_continuations：半流续接链（已产出 content 带前缀续写，LLM-ADR-015）
-        ├─ _SeamStripper：续接流首部接缝重叠剥离
-        ├─ _apply_chunk：解析 chunk → 累积 StreamResult + 产出事件
         └─ _finish_interrupted：中断收尾（settle + 日志）
 ```
 
 | 层 | 组件 | 职责 |
 | --- | --- | --- |
 | 策略层 | `StreamingRectifier` | 整流循环（无状态静态类）：整流判定 / emitted_any / 结算闭环 / 熔断 feeding / 事件日志 |
+| 消费层 | `stream_consumption` | 单个 response 的读取竞争、结果累积、SSE、接缝和提前关闭；不接管结算 |
 | 状态层 | `RectifierContext` | 整流会话共享状态（result / active / event_fields），跨 attempt 传递 |
 | 编排层 | `LLMService.async_generate` / `request_execution` | Facade 委托请求计划并接线 `rectified_stream`；请求执行组件构造 `create_fn` / `continue_fn` |
 | 支撑层 | `RetryHandler` / `ReservationLimiter` / `StreamParser` | create 阶段重试熔断 / 结算 / chunk 解析 |
@@ -185,12 +184,13 @@ async for event in StreamingRectifier.rectified_stream(
 
 **整流/续接循环内部**：
 
-- `_drain`：迭代单个流式响应——逐 chunk 看门狗（首包宽/空闲窄，LLM-ADR-014）+ `_apply_chunk` 累积 + 事件产出；迭代中用户取消置位抛内部 `_StreamCancel` 信号（与硬取消 CancelledError 区分）。整流 attempt 与续接 attempt 共用
-- `_apply_chunk`：解析 chunk → 累积 `StreamResult` + 产出事件（**不判定/返回 emitted_any**）；整流用的「是否已产出」由编排层从 `result` 状态用累积语义推导——usage/finish/refusal 不算首 token、元数据 chunk 不冲掉已产出标记（[LLM-035](../../../issues/integration/llm/2026-08-10-rectify-emitted-any-marker-reset.md)）；整流/续接中断的半成品 tool_deltas 不跨 attempt 残留（每 attempt 全新列表、仅成功轮合并，[LLM-030](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）；续接 attempt 时 content token 经 `seam` 接缝剥离
+- `drain_stream`：显式接收 result、attempt 内 tool deltas、控制信号与看门狗阈值；读取、累积、SSE、接缝和 response 关闭统一见 [单流消费说明](stream_consumption.md)
+- 主流、放弃与续接的生成器委托边界均显式传播 `aclose()`，保证关闭最外层整流流时先释放当前 response，再由外层 `finally` 结算未终态 Reservation
+- 整流器从累积 `result` 推导「是否已产出」：usage/finish/refusal 不算首 token，元数据 chunk 不冲掉已产出标记（[LLM-035](../../../issues/integration/llm/2026-08-10-rectify-emitted-any-marker-reset.md)）；每 attempt 创建独立 tool deltas，只有 EOF 后合并（[LLM-030](../../../issues/integration/llm/2026-08-07-stream-parser-robustness.md)）
 - 取消分支：资源由所处阶段先完成收尾，再直接抛携可得 usage 的 `_StreamCancel`；Facade 统一翻译，Integration 不提交取消 SSE、不写 `result.error`
 - `_should_rectify`：整流判定（见「核心概念解释·整流条件」）
 - `_abandon_path`：整流不适用时的收尾路径——LLM-011 取消守卫（取消非下游故障，不喂熔断）→ 半流续接链（尽力而为，completed 即结束）→ 放弃（RETRYABLE 喂熔断 + 失败信号，部分 content 保留）；产出其 SSE 事件即整流流结束
-- `_should_continue` / `_try_continuations`：半流续接判定与尽力而为续接链（见「核心概念解释·半流续接」）；`_SeamStripper` 接缝重叠剥离
+- `_should_continue` / `_try_continuations`：半流续接判定与尽力而为续接链（见「核心概念解释·半流续接」）；把当前 content 快照作为 `seam_prefix` 交给单流组件
 - `_finish_interrupted`：中断收尾（settle + 日志）
 
 ### RectifierContext — 会话共享状态
@@ -222,7 +222,7 @@ StreamingRectifier.register_config(
 
 退避公式与 create 阶段一致：`base_delay × 2^attempt`，上限 `max_delay`，可选随机抖动。**Retry-After 叠加**：RATE_LIMITED（429）中断整流时，提取服务端 `Retry-After` 参与退避，且与 create 阶段同样封顶到 `max_delay`——合理区间 `0 < retry_after ≤ max_delay` 内尊重，超出忽略回退指数退避（防异常大值挂死，对齐 retry.py 的 `_calculate_delay` 语义）。
 
-**首包/空闲双阈值看门狗**（LLM-ADR-014）：`_drain` 让 `anext(stream)` 与 cancel/deadline 触发任务竞争，并用 wait timeout 表示 idle 上限——首 chunk 用宽阈值 `first_token_timeout`（区分「模型思考慢」，不误杀），其后每 chunk 用窄阈值 `chunk_idle_timeout`（判「流已断」，不等 httpx read 整档）。idle 先到抛传输 `TimeoutError`，走既有整流/放弃分支；cancel/deadline 先到则即时终止并禁止新 attempt。同刻已有 chunk 时先吸收 chunk（包括 usage），再执行终止复查。看门狗超时的空串 `TimeoutError` 经 `_describe_exception` 回退类型名——`result.error` 以非空为失败信号（react 短路依赖），空串会把失败误当成功空回。
+**首包/空闲双阈值看门狗**（LLM-ADR-014）：整流器把已注入的阈值显式传给 `drain_stream`；读取竞争、事实接管与关闭契约见 [单流消费说明](stream_consumption.md)。idle 超时仍以 `TimeoutError` 回到本策略的整流/放弃分支；`_describe_exception` 继续保证 `result.error` 非空。
 
 ---
 
@@ -233,7 +233,7 @@ async_generate → rectified_stream（整流/续接循环）
     for attempt in 0..stream_max_retries：
         ├─ 整流入口守卫：cancel_event / deadline 命中 → 不再发起 reserve + create（不发新副作用）
         ├─ create_fn()（重新 reserve + create，经 retry.execute 保护 create 阶段）
-        ├─ 迭代：_drain 逐 chunk 做 anext/cancel/deadline/idle 竞争 + 累积 + 产出事件
+        ├─ 迭代：drain_stream 逐 chunk 做 anext/cancel/deadline/idle 竞争 + 累积 + 产出事件
         │    └─ 异常/看门狗超时 → _should_rectify？
         │         ├─ 是（首 token 前 + 可恢复 + 未取消）→ 退避（含 Retry-After）→ 下一 attempt 整流
         │         └─ 否（不整流）→ _abandon_path（整流不适用收尾）
@@ -312,6 +312,7 @@ async_generate → rectified_stream（整流/续接循环）
 
 > 整流重试策略（首 token 前中断自动恢复）的完整决策（Context → Decision → Consequences，含工业级参照）已归档至 [ADR LLM-ADR-005](../../../adr/integration/llm/2026-08-01-streaming-rectification-retry.md)。
 > 半流中断接续策略（已产出 content 带前缀续写，text-only prefix continuation）的完整决策已归档至 [ADR LLM-ADR-015](../../../adr/integration/llm/2026-09-03-mid-stream-continuation.md)。
+> 单流读取、事实累积和资源关闭的职责分离见 [LLM-ADR-019](../../../adr/integration/llm/2026-09-15-stream-consumption-boundary.md)。
 
 ---
 
@@ -334,6 +335,7 @@ async_generate → rectified_stream（整流/续接循环）
 ## 相关文档
 
 - [LLM 层总览](llm.md)（async_generate 编排）
+- [单流消费](stream_consumption.md)（逐 chunk 读取、结果累积、接缝与关闭）
 - [StreamParser](streaming.md)（chunk 解析，`ParsedChunk`）
 - [重试与熔断](retry.md)（`RetryHandler` / 熔断 feeding）· [传输错误处理](error.md)（`classify_error` 分类）
 - [限流器](limiter.md)（reserve/settle 结算闭环）

@@ -50,6 +50,7 @@ app/integration/llm/
 ├── execution_control.py       ← 取消/deadline 受控等待原语
 ├── retry.py                   ← RetryHandler + CircuitBreaker
 ├── streaming.py               ← StreamParser 流式/非流式解析
+├── stream_consumption.py      ← 单流读取、结果累积、接缝与关闭
 ├── streaming_rectifier.py     ← StreamingRectifier 流式整流/续接重试
 ├── structured.py              ← StructuredOutput 结构化输出
 ├── structured_codec.py        ← 结构化 schema/JSON 纯转换与校验
@@ -194,6 +195,7 @@ cost = LLMService.calculate_cost(
 | 请求执行 | request_execution.py | 请求参数与计划；每笔真实 create 的预算、预留、执行控制和阶段结算 | [request_execution.md](request_execution.md) |
 | `RetryHandler` + `CircuitBreaker` | retry.py | 指数退避 + 抖动 + 滑动窗口熔断 + 半开探针 + fallback 降级链 | [retry.md](retry.md) |
 | `StreamParser` | streaming.py | 逐 chunk 解析流式 / 非流式响应（纯函数无状态） | [streaming.md](streaming.md) |
+| 单流消费 | stream_consumption.py | 单个 provider 流的读取、结果累积、接缝处理与提前关闭 | [stream_consumption.md](stream_consumption.md) |
 | `StreamingRectifier` | streaming_rectifier.py | 流式整流/半流续接（首 token 前中断整流重试；已产出 content 中断带前缀续写，LLM-ADR-015） | [streaming_rectifier.md](streaming_rectifier.md) |
 | `StructuredOutput` | structured.py / structured_codec.py | 结构化输出三级降级（JSON Schema → JSON Mode → 正则） | [structure.md](structure.md) |
 | `ReservationLimiter` | reservation_limiter.py | 客户端限流（RPM + TPM 双桶，reserve/settle + 自适应预留） | [limiter.md](limiter.md) |
@@ -228,7 +230,7 @@ cost = LLMService.calculate_cost(
 ## 相关文档
 
 - [集成层说明](../README.md)（层总览：LLM 网关在集成层中的位置）
-- 组件子文档：client / retry / errors / execution_control / streaming / streaming_rectifier /
+- 组件子文档：client / retry / errors / execution_control / streaming / stream_consumption / streaming_rectifier /
   structure / limiter / cost_tracker / token_counter / request_budget（见「内部实现组织」）
 - [架构设计](../../project/architecture.md)（分层与演进路径）
 - [全局日志框架](../../platform_doc/observability/logging.md)（`llm_call` 业务事件）

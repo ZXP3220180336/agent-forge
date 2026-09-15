@@ -75,10 +75,12 @@ class _CancelTrackingReservation:
 class _ScriptedBoundaryStream:
     """按给定 chunk 产出，并可在 EOF 位置抛一次异常的流桩。"""
 
-    def __init__(self, chunks, *, error=None):
+    def __init__(self, chunks, *, error=None, order=None):
         self._chunks = iter(chunks)
         self._error = error
         self._raised = False
+        self._order = order
+        self.close_calls = 0
 
     def __aiter__(self):
         return self
@@ -93,7 +95,9 @@ class _ScriptedBoundaryStream:
             raise StopAsyncIteration
 
     async def close(self):
-        return None
+        self.close_calls += 1
+        if self._order is not None:
+            self._order.append("close")
 
 
 class _HangingBoundaryStream:
@@ -203,6 +207,34 @@ def _install_fallback_waiting_limiter(monkeypatch, *, on_tpm_acquire=None):
 
     monkeypatch.setattr(ReservationLimiterManager, "get", _get_limiter)
     return limiter, tpm_waiting, captured, requested_keys
+
+
+async def test_facade_aclose_propagates_to_response_before_settlement(
+    boundary, monkeypatch
+):
+    """关闭 LLM Facade 流时，同步关闭 provider response 后再结算。"""
+    monkeypatch.setattr(LLMService, "_stream_max_retries", 0)
+    monkeypatch.setattr(LLMService, "_continuation_max_retries", 0)
+    order: list[str] = []
+    stream = _ScriptedBoundaryStream(
+        [_boundary_content_chunk("A"), _boundary_content_chunk("B")],
+        order=order,
+    )
+    reservation = _OrderedReservation(order)
+    boundary.create.return_value = stream
+    boundary.limiter.reserve.return_value = reservation
+    consumer = boundary.service.async_generate(
+        [{"role": "user", "content": "hi"}],
+        model_key="fast",
+        max_tokens=20,
+    )
+
+    await anext(consumer)
+    await consumer.aclose()
+
+    assert stream.close_calls == 1
+    assert reservation.settle_calls == 1
+    assert order == ["close", "settle"]
 
 
 @pytest.mark.parametrize("channel", ["generate", "structured", "stream"])
