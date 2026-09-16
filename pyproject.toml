@@ -28,8 +28,25 @@ dev = [
     "debugpy>=1.8.21",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "ruff>=0.16.8",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+# 行宽取项目编码规范的上限（docs/engineering/编码规范文档.txt：「行长度不超过 120 字符」），
+# 不是 Ruff 默认的 88；改回默认会让既有 120 字符以内的生产代码全部变成 E501。
+line-length = 120
+
+[tool.ruff.lint]
+# E501 属于 E5，不在 Ruff 默认规则集内（默认只覆盖 E4/E7/E9/F 及部分新增规则）。
+# 不扩展选择，上面的 line-length 不会生效。
+extend-select = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# 声明式数据表：一行一条记录（批次良率样例），拆行反而降低可读性。
+# 依据 docs/engineering/ai-engineering-rules.md#indicators「生成代码和声明式数据按性质
+# 判断，不机械套用行数」。该文件只含字面量，行宽不构成维护成本。
+"app/integration/tools/builtin/rca/data.py" = ["E501"]
