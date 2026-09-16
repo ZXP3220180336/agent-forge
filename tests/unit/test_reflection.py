@@ -34,6 +34,7 @@ from app.shared.exceptions import (
     NonRetryableError,
     StructuredRefusalError,
 )
+from tests.reasoning_execution import reasoning_execution_args
 
 DRAFT = {
     "summary": "良率下降归因于设备 A 告警",
@@ -163,11 +164,14 @@ async def _run(strategy, max_refine_rounds=2, **execute_kwargs) -> list[str]:
     async for ev in strategy.execute(
         "分析良率下降原因",
         [{"role": "user", "content": "分析良率下降原因"}],
-        max_iterations=5,
-        temperature=0.2,
-        max_tokens=1024,
-        max_refine_rounds=max_refine_rounds,
-        **execute_kwargs,
+        **reasoning_execution_args(
+            "reflection",
+            max_iterations=5,
+            temperature=0.2,
+            max_tokens=1024,
+            max_refine_rounds=max_refine_rounds,
+            **execute_kwargs,
+        ),
     ):
         events.append(ev)
     return events
@@ -446,10 +450,15 @@ async def test_reflect_guardrails_passthrough_to_react():
     cancel_event = asyncio.Event()
     async for _ in strategy.execute(
         "x", [{"role": "user", "content": "x"}],
-        max_iterations=5, temperature=0.2, max_tokens=1024,
-        cancel_event=cancel_event,
-        run_id="run-reflection-wiring",
-        run_stop=asyncio.Event(),
+        **reasoning_execution_args(
+            "reflection",
+            max_iterations=5,
+            temperature=0.2,
+            max_tokens=1024,
+            cancel_event=cancel_event,
+            run_id="run-reflection-wiring",
+            run_stop=asyncio.Event(),
+        ),
     ):
         pass
 
@@ -951,12 +960,15 @@ async def test_reflect_cancel_event_stops_degrades_to_draft():
     async for ev in strategy.execute(
         "分析良率下降原因",
         [{"role": "user", "content": "分析良率下降原因"}],
-        max_iterations=5,
-        temperature=0.2,
-        max_tokens=1024,
-        cancel_event=cancel_event,
-        run_id="run-reflection-cancel",
-        run_stop=asyncio.Event(),
+        **reasoning_execution_args(
+            "reflection",
+            max_iterations=5,
+            temperature=0.2,
+            max_tokens=1024,
+            cancel_event=cancel_event,
+            run_id="run-reflection-cancel",
+            run_stop=asyncio.Event(),
+        ),
     ):
         events.append(ev)
 
@@ -1106,13 +1118,16 @@ async def test_reflect_passes_cancel_deadline_to_structured():
     async for _ in strategy.execute(
         "分析良率下降原因",
         [{"role": "user", "content": "分析良率下降原因"}],
-        max_iterations=5,
-        temperature=0.2,
-        max_tokens=1024,
-        max_execution_time=60.0,
-        cancel_event=cancel_event,
-        run_id="run-reflection-deadline",
-        run_stop=asyncio.Event(),
+        **reasoning_execution_args(
+            "reflection",
+            max_iterations=5,
+            temperature=0.2,
+            max_tokens=1024,
+            max_execution_time=60.0,
+            cancel_event=cancel_event,
+            run_id="run-reflection-deadline",
+            run_stop=asyncio.Event(),
+        ),
     ):
         pass
 

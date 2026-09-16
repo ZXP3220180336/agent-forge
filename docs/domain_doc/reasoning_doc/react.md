@@ -2,7 +2,7 @@
 
 > **模块**：`app/domain/reasoning/react.py`
 > **更新日期**：2026-09-16
-> **职责**：ReAct 原子推理策略——推理 ↔ 工具调用的完整循环算法（含工具并行原语、错误分发、结构化最终答案、上下文预算 + 成本上限 + 循环停滞护栏）
+> **职责**：ReAct 领域推理流程——推理 ↔ 工具调用的完整循环（含工具并行原语、错误分发、结构化最终答案、上下文预算 + 成本上限 + 循环停滞护栏）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [executor.md](../agent_doc/executor.md)（`ReActAgent`）；工业级对标见 [react_benchmark.md](react_benchmark.md)
 
@@ -45,13 +45,13 @@
 
 ## 设计目标
 
-1. **原子推理算法**：`execute()` 承载完整 ReAct 主循环，被 agent/ 层编排调用——编排职责（生命周期 / 状态 / 结果组装）在 agent/，算法在本模块
-2. **可复用工具原语**：`execute_tool_calls()` 独立成原语（并行执行 + 保序），供 ReAct 循环自身执行工具、并经 `ReActAgent._execute_tool_calls` 转发保持既有测试兼容；Reflection / Planner 的收集 / 执行阶段复用完整 `ReActStrategy.execute`（而非裸原语，见 [reflection.md](reflection.md) / [planner.md](planner.md)）
+1. **独立领域流程**：`execute()` 承载完整 ReAct 主循环，被 ReActAgent 桥接，也被 PlannerStrategy / ReflectionStrategy 组合；Agent 生命周期、状态和结果映射留在 agent/
+2. **可复用工具原语**：`execute_tool_calls()` 独立成原语（并行执行 + 保序），由 ReAct 循环自身调用并在策略层直接测试；Reflection / Planner 的收集 / 执行阶段复用完整 `ReActStrategy.execute`（而非裸原语，见 [reflection.md](reflection.md) / [planner.md](planner.md)）
 3. **错误处理横切**：各终止 / 可恢复错误经 `ErrorHandlerRegistry` 按 kind 分发（CONTINUE / STOP / RAISE），默认行为 = 现有逻辑，调用方可注册覆盖
 4. **结构化最终答案**：`output_schema` 启用时注入 final_answer 工具，模型最后调用提交 schema 约束结果并终止循环（兼作终止机制，无额外 LLM 调用）
 5. **上下文预算护栏**：模型下次调用前经 `ContextBudgetPort` 裁剪（轮次 + token 双层），防上下文膨胀
 6. **统一执行护栏**：每轮付费调用前和成功归账后通过 `_common.evaluate_guard` 检查取消、绝对 deadline 与累计成本；最终请求上下文超限进入同一类型化优先级
-7. **纯算法依赖方向**：只依赖 ports + shared + 标准库，收标量参数（非 `AgentContext`）——可独立测试、可被任意编排复用
+7. **单向依赖**：只依赖 ports + shared + 标准库，接收按语义分组的不可变执行参数值对象（非 `AgentContext`）；实例持有单次执行结果和事实，但不依赖 Agent 生命周期
 8. **运行与事实隔离**：`run_id/run_stop` 为每次 execute 的必填控制身份；每轮工具调用创建新 batch，每个合法 call 创建 operation，并在控制异常传播前接管当前事实
 9. **纯协议边界**：`_react_protocol.py` 负责 final_answer 工具定义、批内调用身份检查、结构化参数校验与动作指纹；策略继续持有预算、历史、工具执行和终态
 
@@ -284,7 +284,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 | 方法 | 同步/异步 | 说明 |
 | --- | --- | --- |
 | `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
-| `execute(user_input, messages, *, max_iterations, temperature, max_tokens, run_id, run_stop, ..., workflow_id=None, parent_cancel_events=()) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；`run_id/run_stop` 必填，同实例并发 execute 明确拒绝；Planner/Reflection 子跑继承父 run 控制。其余预算与通道参数语义保持原契约 |
+| `execute(user_input, messages, *, run, model, limits, context_window, recovery, tool_execution, output_schema=None, stream_mode=True, baseline_usage=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；六类值对象分别承载运行身份、模型、执行限制、上下文、恢复预算和工具执行限制。同实例并发 execute 明确拒绝，Planner/Reflection 子跑继承父 run 控制 |
 | `execute_tool_calls(..., *, run_id, run_stop, workflow_id=None, cancel_event=None, parent_cancel_events=(), deadline=None, cleanup_deadline=None) -> AsyncGenerator[str]` | 异步生成器 | 为当前批次创建唯一 batch/operation 身份，强制向 Gateway 传 `call/facts`；调用 ID 缺失或同批重复时零真实工具请求；控制异常先接管 facts 再原样传播。并行兄弟收尾与最终历史提交仍属 C-02 Piece ⑤ |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
 | `tool_facts` | 只读属性 | 返回本次运行已接管事实的深复制元组；不会暴露策略内部列表或可变 `ToolResult.metadata` 引用 |
@@ -292,14 +292,21 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 **最小调用示例**：
 
 ```python
-from app.domain.reasoning import ReActStrategy
+from app.domain.reasoning import (
+    ContextWindowLimits, ExecutionLimits, ModelOptions, ReasoningRunScope,
+    ReActStrategy, RecoveryBudget, ToolExecutionOptions,
+)
 
 strategy = ReActStrategy(llm=llm_service, tools=tool_service)
 messages = [{"role": "user", "content": "30C 转华氏"}]
 async for event in strategy.execute(
     "30C 转华氏", messages,
-    max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=30.0,
-    run_id=run_id, run_stop=run_stop,
+    run=ReasoningRunScope(run_id=run_id, run_stop=run_stop),
+    model=ModelOptions(temperature=0.2, max_tokens=1024),
+    limits=ExecutionLimits(max_iterations=3, max_execution_time=30.0),
+    context_window=ContextWindowLimits(),
+    recovery=RecoveryBudget(),
+    tool_execution=ToolExecutionOptions(),
 ):
     yield event  # 转发 SSE 事件
 result = strategy.outcome  # ReActOutcome
@@ -337,7 +344,8 @@ result = strategy.outcome  # ReActOutcome
 
 配置键的完整定义与默认值见 [配置参考](../../config_doc/config.md)；本节仅记录与本组件相关的行为。
 
-配置经装配根注入 `AgentContext` → `ReActStrategy.execute()`（生产值覆盖，字段默认 None 向后兼容）：
+配置经装配根注入 `AgentContext`，再由 ReActAgent 显式映射为六类值对象传给
+`ReActStrategy.execute()`：
 
 | 配置 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -386,7 +394,7 @@ result = strategy.outcome  # ReActOutcome
 
 | ADR | 一句话结论 |
 | --- | --- |
-| [react-strategy-extraction](../../../adr/domain/agent/2026-08-27-react-strategy-extraction.md) | ReAct 算法从 agent/ 抽离至 reasoning/（原子策略），`execute_tool_calls` 原语化 |
+| [react-strategy-extraction](../../../adr/domain/agent/2026-08-27-react-strategy-extraction.md) | ReAct 完整流程从 agent/ 抽离至 reasoning/，`execute_tool_calls` 原语化；当前职责口径由后续实现与模块说明细化 |
 | [agent-error-handling](../../../adr/domain/agent/2026-08-28-agent-error-handling.md) | 错误处理横切 ErrorHandlerRegistry，按 kind 分发（可恢复默认回喂、终结性默认终止） |
 | [structured-output](../../../adr/domain/reasoning/2026-08-28-structured-output.md) | 结构化用 Final Answer 工具（模型原生，兼作终止）而非事后提取；`generate_structured` 留非 Agent 场景 |
 | [context-budget](../../../adr/domain/reasoning/2026-08-28-context-budget.md) | 上下文预算归 context_manager（横切），经 ContextBudgetPort 注入；选 trimming 而非摘要（保证据链） |

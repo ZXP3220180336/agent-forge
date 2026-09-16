@@ -1,7 +1,7 @@
 # Agent 模块对外接口文档
 
 > **对应代码**：`app/domain/agent/`
-> **更新日期**：2026-09-06
+> **更新日期**：2026-09-16
 > **文档定位**：Agent 模块对外接口文档——`BaseAgent` 统一入口的接口契约 + 内部组件导航；
 > 服务对象为 Agent 模块的**外部调用方**（应用层 / API 层）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -42,7 +42,7 @@ Agent 模块是系统的**决策与行动核心**，负责编排 LLM 推理与�
 
 - **统一入口**：`BaseAgent.run()` 流式产出 SSE 事件，屏蔽策略差异——外部调用方以统一方式驱动任何 Agent
 - **策略模式**：`BaseAgent` 定义统一入口与生命周期，具体推理策略由子类 `_strategy_cycle()` 实现
-- **无状态设计**：每次 `run()` 新建实例，上下文经 `AgentContext` 传入
+- **单次运行隔离**：上下文经 `AgentContext` 逐次传入；同一实例可顺序复用，但拒绝并发 `run()`
 - **事件流驱动**：推理过程 / 工具调用 / 结果实时推送为 SSE 事件
 
 ### 模块结构
@@ -59,8 +59,9 @@ app/domain/agent/
 ### 设计原则
 
 1. **策略模式**：`BaseAgent.run()` 统一入口管理异常 / 状态 / 事件；`_strategy_cycle()` 抽象策略接口，子类选择并组合具体推理策略
-2. **编排与实现分离**：agent/ 层管策略编排与生命周期，reasoning/ 层管策略实现（原子推理算法）——依赖方向 `agent → reasoning`，策略层不反向依赖
-3. **无状态**：Agent 实例每次 run 新建，运行期间上下文不变
+2. **生命周期与策略分离**：agent/ 层提供统一运行入口、上下文和结果桥接，reasoning/ 层实现可独立复用并可相互组合的领域推理流程——依赖方向 `agent → reasoning`，策略层不反向依赖
+3. **运行隔离**：每次 run 的上下文在运行期间不变；同一实例拒绝并发复用
+4. **显式边界映射**：三个 Agent 桥接把 `AgentContext` 映射为 reasoning 的六类不可变执行参数值对象；reasoning 不反向依赖 AgentContext，Planner/Reflection 的专属恢复次数进入 `RecoveryBudget`
 4. **LLM / Agent 分层清晰**：LLM 层单轮推理、Token 提取、连接重试；Agent 层循环编排、工具调用、结果判定
 
 ### 依赖关系
@@ -86,9 +87,12 @@ ReActAgent（executor.py）── BaseAgent（base.py）── 依赖倒置
 #### `AgentState`（状态枚举）
 
 ```text
-IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMPLETED / FAILED
-                                                      ↘ CANCELLED（用户取消）
+IDLE → THINKING → COMPLETED / FAILED
+              ↘ CANCELLED（外部取消或工具取消）
 ```
+
+该枚举描述 BaseAgent 对外暴露的粗粒度运行状态；LLM 调用、工具等待和策略阶段通过事件流及策略
+内部状态表达，不由 BaseAgent 推断细粒度状态。
 
 #### `AgentContext`（上下文，不可变值对象）
 
@@ -135,9 +139,11 @@ IDLE → THINKING →（工具调用）→ WAITING → THINKING → ... → COMP
 | `run(user_input, messages, context)` | 异步生成器 | 统一入口：管理状态 / 异常 / 事件路由；yield SSE 事件字符串；完成后经 `result` 读取 |
 | `state` | 属性 | 当前状态（`AgentState`） |
 | `result` | 属性 | 最终结果（`run()` 完成后调用；失败为 `success=False` + `error`） |
-| `on_thought` / `on_tool_call` / `on_tool_result` / `on_complete` | 异步钩子 | 子类可覆盖的扩展点 |
 
-`run()` 职责：上下文保存 → 状态重置 → `_strategy_cycle()` 事件转发 → 按 `_result.success` 置 COMPLETED/FAILED；取消（`CancelledError`）与未捕获异常经 `ErrorHandlerRegistry` 分发（默认转 CANCELLED / FAILED 并产对应事件，见「对外异常契约」）。
+`run()` 职责：上下文保存 → 状态重置 → `_strategy_cycle()` 事件转发与关闭 → 按
+`_result.success` 置 COMPLETED/FAILED；取消（`CancelledError`）与未捕获异常经
+`ErrorHandlerRegistry` 分发（默认转 CANCELLED / FAILED 并产对应事件，见「对外异常契约」）。
+三个桥接通过 BaseAgent 受保护方法 `_require_context()` 取得当前上下文；它不是模块外部调用面。
 
 ### ReActAgent
 
@@ -164,7 +170,7 @@ agent = PlannerAgent(llm=llm_service, tools=tool_service)
 ```
 
 1. 构造：`PlannerAgent(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, cancel_event=None)`——内部构造 `PlannerStrategy`（构造参数同构 ReActAgent / ReflectionAgent）
-2. `_strategy_cycle` 委托 `PlannerStrategy.execute()`（三阶段主流程），`AgentContext` 全护栏透传；replan 预算复用 `ctx.max_refine_rounds`（Reflection 修正 / Planner replan 共用语义）
+2. `_strategy_cycle` 将 `AgentContext` 映射为六类执行参数值对象后委托 `PlannerStrategy.execute()`；`ctx.max_refine_rounds` 映射为 `RecoveryBudget.max_replan_rounds`
 3. `_map_outcome`：`PlannerOutcome` → `AgentResult`——`plan` / `steps_executed` / `replan_rounds` / `degraded` 进 `metadata`（供 Phase C Orchestrator 与证据链报告消费），`structured` 为 `RESULT_SCHEMA` 证据链报告
 4. 算法实现细节见 [planner.md](../reasoning_doc/planner.md)（PlannerStrategy）与 [planner_benchmark.md](../reasoning_doc/planner_benchmark.md)（工业对标）
 
@@ -179,7 +185,7 @@ agent = ReflectionAgent(llm=llm_service, tools=tool_service)
 ```
 
 1. 构造：`ReflectionAgent(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, cancel_event=None, output_schema=None, critique_schema=None)`——内部构造 `ReflectionStrategy`；`output_schema` / `critique_schema` 为 None 时策略回退模块常量 `REFLECTION_SCHEMA` / `CRITIQUE_SCHEMA`
-2. `_strategy_cycle` 委托 `ReflectionStrategy.execute()`（生成结构化初稿 → 证据链自查 → 修正终稿，修正至 `ctx.max_refine_rounds` 上限），`AgentContext` 全护栏透传
+2. `_strategy_cycle` 将 `AgentContext` 映射为六类执行参数值对象后委托 `ReflectionStrategy.execute()`；`ctx.max_refine_rounds` 映射为 `RecoveryBudget.max_refine_rounds`
 3. `_map_outcome`：`ReflectionOutcome` → `AgentResult`——`draft` / `critique` / `refine_rounds` / `degraded` 进 `metadata`（供证据链报告消费），`structured` 为修正后终稿
 4. 算法实现细节见 [reflection.md](../reasoning_doc/reflection.md)（ReflectionStrategy）与 [reflection_benchmark.md](../reasoning_doc/reflection_benchmark.md)（工业对标）
 
@@ -237,14 +243,14 @@ print(result.content, result.tool_calls, result.usage)
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
 | [executor.md](executor.md) | `executor.py` | ReActAgent：桥接 ReActStrategy 到 BaseAgent 生命周期 | [见对齐表](../../ALIGNMENT.md) |
-| planner.py | `planner.py` | PlannerAgent：Plan-then-Execute 编排（规划→执行→汇总，桥接 reasoning/planner.py 的 PlannerStrategy） | [见对齐表](../../ALIGNMENT.md) |
-| reflection.py | `reflection.py` | ReflectionAgent：Reflection 编排（生成→自查→修正，桥接 reasoning/reflection.py 的 ReflectionStrategy） | [见对齐表](../../ALIGNMENT.md) |
+| planner.py | `planner.py` | PlannerAgent：桥接 PlannerStrategy 到 BaseAgent 生命周期并映射结果 | [见对齐表](../../ALIGNMENT.md) |
+| reflection.py | `reflection.py` | ReflectionAgent：桥接 ReflectionStrategy 到 BaseAgent 生命周期并映射结果 | [见对齐表](../../ALIGNMENT.md) |
 
 **配套策略库**（[reasoning 模块](../reasoning_doc/reasoning.md)）：
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| [react.md](../reasoning_doc/react.md) | `reasoning/react.py` | ReActStrategy：推理 ↔ 工具循环原子算法 | [见对齐表](../../ALIGNMENT.md) |
+| [react.md](../reasoning_doc/react.md) | `reasoning/react.py` | ReActStrategy：推理 ↔ 工具循环领域流程，可被其他策略组合 | [见对齐表](../../ALIGNMENT.md) |
 | reflection | `reasoning/reflection.py` | Reflection 策略（见 [reflection.md](../reasoning_doc/reflection.md)） | [见对齐表](../../ALIGNMENT.md) |
 | planner | `reasoning/planner.py` | Planner 策略（见 [planner.md](../reasoning_doc/planner.md)） | [见对齐表](../../ALIGNMENT.md) |
 | chain_of_thought | `reasoning/chain_of_thought.py` | CoT 策略 | [见对齐表](../../ALIGNMENT.md) |
@@ -297,3 +303,5 @@ Agent 模块与 `settings.py` 配置项关联（完整表见 [config 文档](../
 - [配置管理模块](../../config_doc/config.md)
 - [工具模块说明](../../integration_doc/tools_doc/tools.md)
 - [ADR agent-error-handling](../../../adr/domain/agent/2026-08-28-agent-error-handling.md)（错误处理横切入口）
+- [ADR BaseAgent 只保留已兑现的运行契约](../../../adr/domain/agent/2026-09-16-base-agent-contract.md)
+- [AGENT-001：BaseAgent 扩展契约与实际运行脱节](../../../issues/domain/agent/2026-09-16-base-contract-drift.md)

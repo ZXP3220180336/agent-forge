@@ -37,8 +37,8 @@
 
 领域层是系统的**决策与行动核心**，位于应用层（用例/调度）之下、集成层（LLM/工具/嵌入）之上，负责：
 
-- **Agent 推理编排**：`BaseAgent.run()` 统一入口，编排 LLM 推理与工具调用的循环流程（策略模式）
-- **推理策略实现**：`reasoning/` 提供原子推理算法（ReAct / Reflection / Planner ✅，CoT 预留），被 agent/ 编排调用
+- **Agent 生命周期桥接**：`BaseAgent.run()` 提供统一运行入口，具体 Agent 将领域推理流程接入上下文、状态、异常与结果契约
+- **推理流程实现**：`reasoning/` 提供可独立运行并可相互组合的领域流程（ReAct / Reflection / Planner ✅，CoT 预留）
 - **提示词管理**：`prompts/` 提供系统/工具/规划等场景的提示词模板（指令层）
 - **记忆能力**：`memory/` 规划短期/长期/工作三层记忆（预留）
 - **端口契约**：`ports/` 定义领域层对能力层的抽象（依赖倒置，集成层实现）
@@ -47,7 +47,7 @@
 
 ```text
 app/domain/
-├── agent/                     ← Agent 编排层（策略编排 + 生命周期）
+├── agent/                     ← Agent 运行入口、上下文、生命周期与结果桥接
 │   ├── base.py                ← AgentState / AgentContext / AgentResult / BaseAgent
 │   ├── executor.py            ← ReActAgent（桥接 reasoning/react.py 的 ReActStrategy）
 │   ├── planner.py             ← PlannerAgent（桥接 reasoning/planner.py 的 PlannerStrategy，Plan-then-Execute）
@@ -67,7 +67,8 @@ app/domain/
 │   ├── _reflection_payload.py ← Reflection 动态载荷缩减
 │   ├── _planner_payload.py    ← Planner 三阶段动态载荷缩减
 │   └── templates/             ← system.py / tools.py / planning.py / reflection.py 模板
-└── reasoning/                 ← 原子推理策略库
+└── reasoning/                 ← 可独立复用的领域推理流程
+    ├── execution.py           ← 六类不可变执行参数值对象
     ├── _common.py             ← 共享执行护栏与工具（GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量）
     ├── _planner_steps.py      ← Planner 步骤、计划快照与审计记录纯转换
     ├── _react_protocol.py     ← ReAct final_answer、调用身份与动作指纹纯协议转换
@@ -80,10 +81,10 @@ app/domain/
 ### 设计原则
 
 1. **策略模式**：`BaseAgent.run()` 统一入口，`_strategy_cycle()` 抽象策略接口；子类（ReActAgent / PlannerAgent / ReflectionAgent）选择并组合推理策略
-2. **编排与实现分离**：agent/ 管策略编排与生命周期，reasoning/ 管策略实现（原子推理算法）——依赖方向 `agent → reasoning`，策略层不反向依赖
+2. **生命周期与策略分离**：agent/ 管统一运行入口、上下文与结果桥接，reasoning/ 管可独立复用并可相互组合的领域推理流程——依赖方向 `agent → reasoning`，策略层不反向依赖
 3. **依赖倒置**：领域层定义端口（`LLMGateway` / `ToolGateway` / `EmbeddingPort` 等），集成层结构实现，装配根 `container.py` 注入
 4. **零外部框架依赖**：领域层只依赖标准库 + `shared` + `ports`，禁止 import 集成层 / 基础设施 / 外部框架
-5. **无状态设计**：Agent 每次 `run()` 新建实例，上下文经 `AgentContext` 传入，运行期间不变
+5. **单次运行隔离**：上下文经 `AgentContext` 传入，运行期间不变；同一实例可顺序复用，但拒绝并发 `run()`
 
 ### 依赖关系
 
@@ -91,7 +92,7 @@ app/domain/
 应用层 / API 层（task_service / chat 路由）
         ▼ 调用 run()
 app/domain/
-  ├── agent/ ──→ reasoning/（编排调用原子策略）
+  ├── agent/ ──→ reasoning/（桥接领域推理流程）
   ├── reasoning/ ──→ prompts/（Reflection / Planner 提示词组装）
   ├── agent/ / memory/ ──→ ports/（依赖倒置：LLMGateway / ToolGateway / EmbeddingPort 等）
   └── 全部 ──→ shared/（events / exceptions / types，共享内核）
@@ -131,8 +132,8 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | --- | --- | --- | --- |
 | `BaseAgent` | base.py | 生命周期骨架（run/状态/事件路由/结果）+ 数据契约 | [见对齐表](../ALIGNMENT.md) |
 | `ReActAgent` | executor.py | 桥接 ReActStrategy 到 BaseAgent 生命周期 | [见对齐表](../ALIGNMENT.md) |
-| `PlannerAgent` | planner.py | Plan-then-Execute 编排（规划→执行→汇总，桥接 PlannerStrategy） | [见对齐表](../ALIGNMENT.md) |
-| `ReflectionAgent` | reflection.py | Reflection 编排（生成→自查→修正） | [见对齐表](../ALIGNMENT.md) |
+| `PlannerAgent` | planner.py | 桥接 PlannerStrategy 到 BaseAgent 生命周期并映射结果 | [见对齐表](../ALIGNMENT.md) |
+| `ReflectionAgent` | reflection.py | 桥接 ReflectionStrategy 到 BaseAgent 生命周期并映射结果 | [见对齐表](../ALIGNMENT.md) |
 
 ---
 
@@ -167,13 +168,14 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 
 **代码**：`app/domain/reasoning/` · **文档**：[推理策略](reasoning_doc/reasoning.md) · [ReActStrategy](reasoning_doc/react.md) · [ReflectionStrategy](reasoning_doc/reflection.md) · [PlannerStrategy](reasoning_doc/planner.md) · [共享小工具](reasoning_doc/_common.md)
 
-领域层的**原子推理策略库**，为 Agent 提供推理方式实现（被 agent/ 层编排调用）：
+领域层的**可独立复用推理流程库**：由 Agent 桥接到统一生命周期，也可在 reasoning 内部组合：
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| `ReActStrategy` | react.py | 推理 ↔ 工具循环算法（含工具并行原语） | [见对齐表](../ALIGNMENT.md) |
+| `ReActStrategy` | react.py | 推理 ↔ 工具完整循环（含工具并行原语） | [见对齐表](../ALIGNMENT.md) |
 | `ReflectionStrategy` | reflection.py | 生成 → 自查 → 修正（证据链语义自查） | [见对齐表](../ALIGNMENT.md) |
 | `PlannerStrategy` | planner.py | Plan-then-Execute 三阶段（规划 → 逐步骤执行 → 汇总，每步复用 ReAct） | [见对齐表](../ALIGNMENT.md) |
+| 执行参数值对象 | execution.py | 运行身份、模型、执行限制、上下文、恢复预算和工具执行六类不可变参数 | [见对齐表](../ALIGNMENT.md) |
 | 共享执行护栏与工具 | _common.py | GuardResult / evaluate_guard / dispatch_error / merge_usage / 常量 | [见对齐表](../ALIGNMENT.md) |
 | Planner 步骤转换 | _planner_steps.py | 规范化步骤、构造公开计划快照和单步审计记录 | [见对齐表](../ALIGNMENT.md) |
 | ReAct 工具协议转换 | _react_protocol.py | final_answer、调用身份检查和动作指纹 | [见对齐表](../ALIGNMENT.md) |

@@ -7,12 +7,12 @@ ReAct 推理策略（ReActStrategy）
 
 推理（Reason）→ 行动（Act）→ 观察（Observe），循环直到完成。
 
-本模块是领域层推理策略库的 ReAct 实现（原子推理策略），被 agent/ 层编排调用：
+本模块是领域层推理策略库的 ReAct 实现，可独立调用或被其他策略组合：
   ReActAgent._strategy_cycle() → ReActStrategy.execute()
-  PlannerAgent 执行阶段 / ReflectionAgent 收集阶段 → ReActStrategy.execute_tool_calls()
+  PlannerStrategy 执行阶段 / ReflectionStrategy 收集阶段 → ReActStrategy.execute()
 
-依赖方向：本模块只依赖 ports + shared + 标准库，不 import agent/（策略是纯算法，
-收标量参数而非 AgentContext），可独立测试、可被任意编排复用。
+依赖方向：本模块只依赖 ports + shared + 标准库，不 import agent/；策略持有本次 execute
+的 outcome、计数和工具事实，并通过 reasoning 值对象接收运行参数，可独立测试和组合复用。
 
 事件流输出设计（与 executor.py 原 ReActAgent 一致）：
     LLM 原始流 → type=reasoning（逐 token）
@@ -91,6 +91,14 @@ from ._react_protocol import (
     extract_final_answer,
     tool_call_identity_error,
 )
+from .execution import (
+    ContextWindowLimits,
+    ExecutionLimits,
+    ModelOptions,
+    ReasoningRunScope,
+    RecoveryBudget,
+    ToolExecutionOptions,
+)
 
 # 策略层标准库日志（对齐「只依赖 ports + shared + 标准库」依赖方向，不用 platform 的
 # get_logger）；logger 名对齐 app.* 命名空间，可被 setup_logging 的 handler 捕获。
@@ -155,7 +163,7 @@ class ReActOutcome:
 
 class ReActStrategy:
     """
-    ReAct 循环策略（纯算法，不持有 Agent 状态）。
+    ReAct 领域推理流程；持有单次 execute 的结果，不持有 Agent 生命周期状态。
 
     构造注入端口依赖，execute() 完成后通过 outcome 读取结果。
     """
@@ -198,26 +206,15 @@ class ReActStrategy:
         user_input: str,
         messages: list[dict[str, str]],
         *,
-        max_iterations: int,
-        temperature: float,
-        max_tokens: int,
-        run_id: str,
-        run_stop: asyncio.Event,
-        max_execution_time: float | None = None,
-        max_context_rounds: int | None = None,
-        max_context_tokens: int | None = None,
-        max_empty_retries: int = 2,
-        max_llm_fail_retries: int = 2,
-        max_tool_protocol_retries: int = 2,
-        max_same_action_turns: int = 3,
-        tool_timeout: int | None = None,
-        tool_max_retries: int | None = None,
+        run: ReasoningRunScope,
+        model: ModelOptions,
+        limits: ExecutionLimits,
+        context_window: ContextWindowLimits,
+        recovery: RecoveryBudget,
+        tool_execution: ToolExecutionOptions,
         output_schema: dict | None = None,
         stream_mode: bool = True,
-        cancel_event: asyncio.Event | None = None,
         baseline_usage: dict | None = None,
-        workflow_id: str | None = None,
-        parent_cancel_events: tuple[asyncio.Event, ...] = (),
     ) -> AsyncGenerator[str]:
         """
         ReAct 主循环。
@@ -247,32 +244,15 @@ class ReActStrategy:
         Args:
             user_input: 用户原始输入（保留兼容，循环内部以 messages 为准）
             messages: 可修改的消息列表副本
-            max_iterations: 最大迭代轮数
-            temperature: LLM 采样温度
-            max_tokens: 单轮最大输出 token
-            max_execution_time: ReAct 业务循环的超时取消触发点（秒），None=不设限；
-                LLM 内部 deadline 会提前预留有界清理窗口，用于关闭流和结算用量。
-                触发后的领域终态组装位于 timeout scope 外，不再发起 LLM/工具副作用
-            max_context_rounds: 上下文预算——保留最近 N 轮 assistant/tool 配对（None=不裁剪）
-            max_context_tokens: 上下文预算——消息总 token 上限（None=不裁剪）
-            max_empty_retries: 连续空输出重试上限——空输出最多重试 N 次，第
-                N+1 次仍空输出则终止（0=首次空输出即终止）；达上限走 EMPTY_OUTPUT
-                分发硬终止（防模型空转烧钱）
-            max_llm_fail_retries: LLM 失败重试上限——LLM 调用失败最多重试 N 次，第
-                N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏）；达上限走
-                LLM_FAILED 分发硬终止——即使 handler 返回 CONTINUE 也不继续（防
-                handler 配置失误 / LLM 持续失败时无限重试烧钱）
-            max_tool_protocol_retries: 工具调用协议修正上限——信号不一致、final_answer
-                校验失败、工具参数 JSON 解析失败共享连续计数；最多修正 N 次，第 N+1
-                次仍异常则硬终止（0=首次异常即终止）。合法工具协议轮清零；LLM 失败
-                或空输出不代表协议恢复，不清零
-            max_same_action_turns: 循环停滞检测——连续相同工具调用（工具+参数）
-                超过 N 轮后，下一轮仍相同则终止（默认 3）；达上限走 STALLED
-                分发硬终止（防死循环烧钱/重复副作用）
-            tool_timeout: 工具执行超时（秒）——透传给 ToolGateway.execute；None=
-                走执行器全局/工具自声明（settings.tool_timeout → ToolService）
-            tool_max_retries: 工具执行最大次数——透传给 ToolGateway.execute；None=
-                走执行器全局（settings.tool_max_retries；语义=执行次数，重试=次数-1）
+            run: 本次运行身份、完成信号和取消传播链；取消信号同时传给流式与
+                非流式 LLM 调用，并参与各护栏检查
+            model: LLM 采样温度与单轮最大输出 token
+            limits: 最大迭代轮数、总执行墙钟和连续相同动作上限；墙钟到期后的
+                领域终态组装不再发起 LLM 或工具副作用
+            context_window: 最近消息轮次与消息 token 上限；None 表示对应维度不裁剪
+            recovery: 空输出、LLM 失败和工具协议异常的连续恢复预算；N 表示最多
+                恢复 N 次，第 N+1 次仍失败则硬终止，0 表示首次失败即终止
+            tool_execution: 工具执行超时和最大执行次数；None 时采用工具执行器配置
             output_schema: 最终答案结构化 JSON Schema（None=不启用），固定 2020-12。
                 定义非法时在模型调用前抛 SchemaError；启用时注入
                 final_answer 工具，模型最后调用提交结构化结果并终止循环
@@ -281,10 +261,6 @@ class ReActStrategy:
                 后台子 Agent 无人订阅场景，Phase C）。主循环护栏语义（成本/失败/拒答/
                 工具/停滞/空输出）两通道一致；差异：False 下 reasoning/message 事件为
                 整条一次性，并在 LLM 失败时补 error 事件
-            cancel_event: 优雅取消信号（asyncio.Event，None=不启用）——调用前、
-                成功归账后及类型化异常出口均参与统一护栏判定；同时传给流式与
-                非流式 LLM 调用，约束 reserve/create/retry/流读取，命中后按
-                CANCELLED 分发且不重试，并保留部分进度
             baseline_usage: 跨阶段复用方注入的累计用量基线（dict，None/空=不启用）——
                 本 execute 开始前已累计的 token 用量（如 planner 步骤子跑：已完成步骤
                 react + plan/replan 结构化用量）。仅参与成本判定（成本检查 = 基线 +
@@ -296,10 +272,9 @@ class ReActStrategy:
             SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）；
             流式下 reasoning/message 逐 token，非流式下为整条一次性（协议同构）
         """
+
         self.outcome = None
         tool_defs = self._tools.get_openai_tools() if self._tools else None
-        if not run_id.strip():
-            raise ValueError("run_id 必须是非空字符串")
         # 结构化最终答案：注入 final_answer 工具（模型最后调用提交结构化结果并终止）
         if output_schema is not None:
             create_schema_validator(output_schema)
@@ -336,11 +311,11 @@ class ReActStrategy:
         # 受控（集成 reserve/create/整流读取期执行控制）。内部 deadline 早于外层
         # timeout 取消触发点一个有界窗口，使 close/settle/日志有机会先完成收尾。
         execution_start = time.monotonic()
-        if max_execution_time is None:
+        if limits.max_execution_time is None:
             deadline = None
             hard_timeout_at = None
         else:
-            duration = max(0.0, max_execution_time)
+            duration = max(0.0, limits.max_execution_time)
             hard_timeout_at = asyncio.get_running_loop().time() + duration
             cleanup_grace = min(
                 _MAX_EXECUTION_CLEANUP_GRACE,
@@ -351,10 +326,10 @@ class ReActStrategy:
         hard_timeout_scope: asyncio.Timeout | None = None
         try:
             async with asyncio.timeout_at(hard_timeout_at) as hard_timeout_scope:
-                for iteration in range(1, max_iterations + 1):
+                for iteration in range(1, limits.max_iterations + 1):
                     # ----- 1. 每次付费调用前统一执行护栏：包括用户取消、执行超时以及成本超限 -----
                     guard = evaluate_guard(
-                        cancel_event=cancel_event,
+                        cancel_event=run.cancel_event,
                         deadline=deadline,
                         cost_limiter=self._cost_limiter,
                         running_usage=merge_usage(baseline_usage, total_usage),
@@ -365,7 +340,7 @@ class ReActStrategy:
                             last_visible_result,
                             iteration,
                             total_usage,
-                            max_execution_time,
+                            limits.max_execution_time,
                         ):
                             yield e
                         return
@@ -379,8 +354,8 @@ class ReActStrategy:
                     if self._context_budget is not None:
                         self._context_budget.trim_messages(
                             messages,
-                            max_rounds=max_context_rounds,
-                            max_tokens=max_context_tokens,
+                            max_rounds=context_window.max_rounds,
+                            max_tokens=context_window.max_tokens,
                         )
 
                     # ----- 3. LLM 推理 -----
@@ -396,10 +371,10 @@ class ReActStrategy:
                         async for event in self._llm.async_generate(
                             messages=messages,
                             tools=tool_defs,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
+                            temperature=model.temperature,
+                            max_tokens=model.max_tokens,
                             result=stream_result,
-                            cancel_event=cancel_event,
+                            cancel_event=run.cancel_event,
                             deadline=deadline,
                         ):
                             yield event
@@ -408,9 +383,9 @@ class ReActStrategy:
                             stream_result,
                             messages,
                             tool_defs,
-                            temperature,
-                            max_tokens,
-                            cancel_event=cancel_event,
+                            model.temperature,
+                            model.max_tokens,
+                            cancel_event=run.cancel_event,
                             deadline=deadline,
                         ):
                             yield event
@@ -436,7 +411,7 @@ class ReActStrategy:
                     # 取消、期限和成本可能在 await 期间发生；先吸收本轮成果与 usage，
                     # 再按固定优先级收尾，且不允许继续工具副作用或下一次付费调用。
                     guard = evaluate_guard(
-                        cancel_event=cancel_event,
+                        cancel_event=run.cancel_event,
                         deadline=deadline,
                         cost_limiter=self._cost_limiter,
                         running_usage=merge_usage(baseline_usage, total_usage),
@@ -447,7 +422,7 @@ class ReActStrategy:
                             last_visible_result,
                             iteration,
                             total_usage,
-                            max_execution_time,
+                            limits.max_execution_time,
                         ):
                             yield e
                         return
@@ -462,7 +437,10 @@ class ReActStrategy:
                         # LLM 调用失败 → 错误分发（默认 STOP 短路；handler 可重试/上抛，
                         # 重试受 max_llm_fail_retries 上限硬终止）
                         for e in await self._handle_llm_failed(
-                            stream_result, iteration, total_usage, max_llm_fail_retries
+                            stream_result,
+                            iteration,
+                            total_usage,
+                            recovery.max_llm_fail_retries,
                         ):
                             yield e
                         if self.outcome is not None:
@@ -516,7 +494,7 @@ class ReActStrategy:
                             full_reasoning,
                             iteration,
                             total_usage,
-                            max_tool_protocol_retries,
+                            recovery.max_tool_protocol_retries,
                         ):
                             yield e
                         if self.outcome is not None:
@@ -570,7 +548,7 @@ class ReActStrategy:
                                 output_schema,
                                 total_usage,
                                 full_reasoning,
-                                max_tool_protocol_retries,
+                                recovery.max_tool_protocol_retries,
                             ):
                                 yield e
                             if self.outcome is not None:
@@ -584,7 +562,7 @@ class ReActStrategy:
                         else:
                             self._stall_count = 1
                             self._last_action_fp = fp
-                        if self._stall_count > max_same_action_turns:
+                        if self._stall_count > limits.max_same_action_turns:
                             for e in await self._finalize_stalled(
                                 stream_result.tool_calls,
                                 iteration,
@@ -601,14 +579,14 @@ class ReActStrategy:
                             iteration,
                             total_usage,
                             full_reasoning,
-                            tool_timeout,
-                            tool_max_retries,
-                            max_tool_protocol_retries,
-                            run_id=run_id,
-                            run_stop=run_stop,
-                            workflow_id=workflow_id,
-                            cancel_event=cancel_event,
-                            parent_cancel_events=parent_cancel_events,
+                            tool_execution.timeout,
+                            tool_execution.max_attempts,
+                            recovery.max_tool_protocol_retries,
+                            run_id=run.run_id,
+                            run_stop=run.run_stop,
+                            workflow_id=run.workflow_id,
+                            cancel_event=run.cancel_event,
+                            parent_cancel_events=run.parent_cancel_events,
                             deadline=deadline,
                             cleanup_deadline=hard_timeout_at,
                         ):
@@ -632,7 +610,10 @@ class ReActStrategy:
                         # ----- （3）空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）
                         self._empty_retries += 1  # 本轮空输出 → 空输出连续计数 +1
                         for e in await self._handle_empty_output(
-                            full_reasoning, iteration, total_usage, max_empty_retries
+                            full_reasoning,
+                            iteration,
+                            total_usage,
+                            recovery.max_empty_retries,
                         ):
                             yield e
                         if self.outcome is not None:
@@ -641,7 +622,7 @@ class ReActStrategy:
 
                 # ----- 10. 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
                 for e in await self._finalize_max_turns(
-                    last_visible_result, max_iterations, total_usage
+                    last_visible_result, limits.max_iterations, total_usage
                 ):
                     yield e
         # ----- 11. 异常处理 -----
@@ -687,7 +668,7 @@ class ReActStrategy:
                 merge_usage(total_usage, _unaccounted_usage(current_result))
             )
             guard = evaluate_guard(
-                cancel_event=cancel_event,
+                cancel_event=run.cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
                 running_usage=merge_usage(baseline_usage, total_usage),
@@ -699,7 +680,7 @@ class ReActStrategy:
                 terminal_result,
                 iteration,
                 total_usage,
-                max_execution_time,
+                limits.max_execution_time,
             ):
                 yield e
             return
@@ -719,7 +700,7 @@ class ReActStrategy:
                 )
             )
             guard = evaluate_guard(
-                cancel_event=cancel_event,
+                cancel_event=run.cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
                 running_usage=merge_usage(baseline_usage, total_usage),
@@ -735,7 +716,7 @@ class ReActStrategy:
                 terminal_result,
                 iteration,
                 total_usage,
-                max_execution_time,
+                limits.max_execution_time,
             ):
                 yield event
             return
@@ -857,8 +838,8 @@ class ReActStrategy:
         一致——OpenAI 兼容 API 要求 tool 消息与前置 assistant.tool_calls 的
         tool_call_id 配对，顺序不能乱。
 
-        独立使用场景：PlannerAgent 执行阶段（程序执行计划步骤的工具）、
-        ReflectionAgent 收集阶段。此时调用方需自行读取结果（tool 消息已写入 messages）。
+        独立使用场景：需要直接执行已给定工具调用的策略或测试。PlannerStrategy 和
+        ReflectionStrategy 当前复用完整 execute()，不通过本原语承担子流程生命周期。
 
         tool_timeout / tool_max_retries：透传给 ToolGateway.execute（None=走执行器
         全局/工具自声明，见 execute() docstring）——供原语复用方按需指定。

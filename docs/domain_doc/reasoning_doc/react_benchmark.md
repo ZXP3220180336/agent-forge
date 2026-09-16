@@ -1,7 +1,7 @@
 # ReAct 策略工业级对标（完成度基准）
 
 > **对象**：`app/domain/reasoning/react.py`（ReActStrategy）
-> **更新日期**：2026-09-06
+> **更新日期**：2026-09-16
 > **定位**：ReAct 推理策略的工业级能力基准与差距清单——供策略增强、Reflection / CoT 实现参考
 > **依据**：LangChain / LangGraph / OpenAI Agents SDK / SMOLagents / Claude Agent SDK 源码级调研（2026-08-27）
 
@@ -94,7 +94,7 @@
 | 8 | LLM 错误分类重试 | ✅ | 分工正确：LLM 层 RetryHandler（分类 + 指数退避 + fallback + 熔断），ReAct 层对 `StreamResult.error` 短路不空转（`execute` LLM error 分支） |
 | 9 | 工具结果回喂 | ✅ | tool_call_id 配对（防 400）+ 截断 2000 字符并带 `[结果已截断]` 标记（`execute_tool_calls`），模型可知结果不完整 |
 | 10 | 上下文预算管理 | ✅ | context_manager 统一提供（经 ContextBudgetPort 注入 Agent）：轮次滑动窗口（保 assistant/tool 配对）+ token 预算硬上限（经 LLMGateway.count_* 计数），模型调用前作为 gatekeeper |
-| 11 | 事件 / 回调体系 | ✅ | SSE 事件（reasoning/message/tool_call/tool_result/info/done）+ BaseAgent 钩子（on_thought/on_tool_call/on_tool_result/on_complete），与工业级 `on_tool_start/end` 同构 |
+| 11 | 事件体系 | ✅ | SSE 事件（reasoning/message/tool_call/tool_result/info/done）覆盖当前调用方；项目尚未实现独立生命周期 Hook 对象，不把未接线 no-op 方法计为能力 |
 | 12 | 步数 / token 统计 | ✅ | outcome 含 iterations/total_tokens/usage/tool_calls（duration/success）+ ToolStats + Auditor |
 | 13 | 流式输出 | ✅ | reasoning_content 与 content 分事件流式输出（`execute` 流式事件产出）；并支持非流式通道（`stream_mode=False` 走 `generate`，整条事件，见 [react.md](react.md)） |
 

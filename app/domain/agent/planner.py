@@ -6,7 +6,7 @@ Planner Agent 实现（桥接）
 ===========================
 
 Plan-then-Execute 逻辑已实现在 `app/domain/reasoning/planner.py` 的
-`PlannerStrategy`（纯算法策略：规划 → 执行 → 汇总）。
+`PlannerStrategy`（可独立复用的领域推理流程：规划 → 执行 → 汇总）。
 本模块的 PlannerAgent 作为 agent/ 编排层：继承 BaseAgent 生命周期，
 在 _strategy_cycle 中委托 PlannerStrategy.execute()，并把策略产出
 （PlannerOutcome）组装为 AgentResult（plan/steps_executed/replan_rounds/
@@ -21,6 +21,14 @@ from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
+from app.domain.reasoning.execution import (
+    ContextWindowLimits,
+    ExecutionLimits,
+    ModelOptions,
+    ReasoningRunScope,
+    RecoveryBudget,
+    ToolExecutionOptions,
+)
 from app.domain.reasoning.planner import PlannerOutcome, PlannerStrategy
 from app.shared.error_handling import ErrorHandlerRegistry
 
@@ -60,32 +68,40 @@ class PlannerAgent(BaseAgent):
         messages: list[dict[str, str]],
     ) -> AsyncGenerator[str]:
         """Planner 主流程：委托 PlannerStrategy.execute，产出事件；结果组装为 AgentResult。"""
-        ctx = self._context
-        if ctx is None:
-            raise RuntimeError("AgentContext 未设置")
+        ctx = self._require_context()
 
         stream = self._strategy.execute(
             user_input,
             messages,
-            max_iterations=ctx.max_iterations,
-            temperature=ctx.temperature,
-            max_tokens=ctx.max_tokens,
-            max_execution_time=ctx.max_execution_time,
-            max_context_rounds=ctx.max_context_rounds,
-            max_context_tokens=ctx.max_context_tokens,
-            max_empty_retries=ctx.max_empty_retries,
-            max_llm_fail_retries=ctx.max_llm_fail_retries,
-            max_tool_protocol_retries=ctx.max_tool_protocol_retries,
-            max_same_action_turns=ctx.max_same_action_turns,
-            # replan 预算复用 max_refine_rounds 语义（修复尝试上限：Reflection 修正 /
-            # Planner replan 共用；字段名语义在 ADR 声明）
-            max_replan_rounds=ctx.max_refine_rounds,
+            run=ReasoningRunScope(
+                run_id=ctx.run_id,
+                run_stop=ctx.run_stop,
+                workflow_id=ctx.workflow_id,
+                parent_cancel_events=ctx.parent_cancel_events,
+                cancel_event=self._cancel_event,
+            ),
+            model=ModelOptions(
+                temperature=ctx.temperature,
+                max_tokens=ctx.max_tokens,
+            ),
+            limits=ExecutionLimits(
+                max_iterations=ctx.max_iterations,
+                max_execution_time=ctx.max_execution_time,
+                max_same_action_turns=ctx.max_same_action_turns,
+            ),
+            context_window=ContextWindowLimits(
+                max_rounds=ctx.max_context_rounds,
+                max_tokens=ctx.max_context_tokens,
+            ),
+            recovery=RecoveryBudget(
+                max_empty_retries=ctx.max_empty_retries,
+                max_llm_fail_retries=ctx.max_llm_fail_retries,
+                max_tool_protocol_retries=ctx.max_tool_protocol_retries,
+                # 现有 AgentContext 字段同时承载 Reflection 修订与 Planner replan。
+                max_replan_rounds=ctx.max_refine_rounds,
+            ),
+            tool_execution=ToolExecutionOptions(),
             stream_mode=ctx.stream_mode,
-            cancel_event=self._cancel_event,
-            run_id=ctx.run_id,
-            run_stop=ctx.run_stop,
-            workflow_id=ctx.workflow_id,
-            parent_cancel_events=ctx.parent_cancel_events,
         )
         async with aclosing(stream):
             async for event in stream:

@@ -1,6 +1,6 @@
 # 研发教训
 
-更新：2026-09-16。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
+更新：2026-09-17。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
 
 ## 规则与文档维护
 
@@ -17,6 +17,7 @@
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
 | 一次循环可因多个协议错误再次付费 | 只有总循环上限，或按错误分支分别清零，都会漏掉跨分支恢复消耗；合法工具协议才是该预算的恢复信号。空输出与 LLM 失败不是协议恢复。 | [REASON-017](../issues/domain/reasoning/2026-09-10-tool-protocol-retry-limit.md)；[重试规范](engineering/agent-runtime-rules.md#retry)。 |
+| 把平铺参数收敛为不可变参数对象 | 只冻结字段不能保证对象有效；本次复核发现负恢复预算形成 `None/0` 之外的第三种状态，非法运行作用域还可能让直接策略调用先发起外部请求。参数对象应在构造边界保护其声明的不变量，使非法输入在副作用前失败。 | [REASON-026](../issues/domain/reasoning/2026-09-16-execute-parameter-drift.md)；[参数分组 ADR](../adr/domain/reasoning/2026-09-16-semantic-execution-parameters.md)。 |
 | 增加 terminal 工具或停滞指纹 | 全局按 `final_answer` 名字过滤参数曾把不同参数误判为相同行为；只有结构化输出模式下该名字才有终止工具语义。 | [REASON-017](../issues/domain/reasoning/2026-09-10-tool-protocol-retry-limit.md)；[终止工具规范](engineering/agent-runtime-rules.md#terminal)。 |
 | 统一策略 Guard 或调整调用后顺序 | 调用前 Guard 负责拒绝下一副作用；调用后必须先接管响应、usage 与资源，再按 Guard 类型决定提交。Reflection 的成本/after-turn 早退仍保留，但 strict deadline 的迟到稿不能标为按时成功。 | [ADR-003](../adr/2026-09-12-sdk-call-guard-response-commit.md)、[REASON-020](../issues/domain/reasoning/2026-09-11-reflection-guard-checkpoint.md)、[REASON-022](../issues/domain/reasoning/2026-09-12-structured-guard-terminal-loss.md)。 |
 | 当前轮只有工具意图，随后取消或超限 | 辅助函数单测通过，主循环仍曾无条件覆盖上一轮可见成果；未执行的 tool_calls 不足以证明已有可交付结果。测试需走完整状态迁移。 | [REASON-016](../issues/domain/reasoning/2026-09-10-cross-strategy-guard-priority.md)；[所有权规范](engineering/agent-runtime-rules.md#ownership)。 |

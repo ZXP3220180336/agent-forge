@@ -4,6 +4,8 @@ import asyncio
 
 import pytest
 
+from tests.reasoning_execution import reasoning_execution_args
+
 from app.domain.agent import AgentContext, PlannerAgent, ReActAgent, ReflectionAgent
 from app.domain.agent.base import AgentState
 from app.domain.reasoning import PlannerStrategy, ReflectionStrategy
@@ -30,16 +32,20 @@ def _tool_script(call_id):
 
 
 async def _execute(strategy, run_id):
+    strategy_kind = "planner" if isinstance(strategy, PlannerStrategy) else "reflection"
     return [
         event
         async for event in strategy.execute(
             "task",
             [],
-            max_iterations=5,
-            temperature=0.2,
-            max_tokens=32,
-            run_id=run_id,
-            run_stop=asyncio.Event(),
+            **reasoning_execution_args(
+                strategy_kind,
+                max_iterations=5,
+                temperature=0.2,
+                max_tokens=32,
+                run_id=run_id,
+                run_stop=asyncio.Event(),
+            ),
         )
     ]
 
@@ -160,14 +166,18 @@ async def test_parent_close_takes_child_facts_before_releasing_running_flag(mode
     )
     strategy_type = ReflectionStrategy if mode == "reflection" else PlannerStrategy
     strategy = strategy_type(llm=llm, tools=_FactGateway())
+    strategy_kind = "reflection" if mode == "reflection" else "planner"
     stream = strategy.execute(
         "task",
         [],
-        max_iterations=3,
-        temperature=0.2,
-        max_tokens=32,
-        run_id="run",
-        run_stop=asyncio.Event(),
+        **reasoning_execution_args(
+            strategy_kind,
+            max_iterations=3,
+            temperature=0.2,
+            max_tokens=32,
+            run_id="run",
+            run_stop=asyncio.Event(),
+        ),
     )
     async for event in stream:
         if '"type": "tool_result"' in event:

@@ -1,7 +1,7 @@
 # 领域层 Reasoning 模块问题追踪
 
 > **用途**：登记 Domain 层 Reasoning 模块（`app/domain/reasoning/`）的问题记录（发现 → 分析 → 修复 → 验证 → 教训）。
-> **更新日期**：2026-09-13
+> **更新日期**：2026-09-16
 > **关联**：[推理策略说明文档](../../../docs/domain_doc/reasoning_doc/reasoning.md) · [ADR context-budget](../../../adr/domain/reasoning/2026-08-28-context-budget.md)
 
 ## 问题索引
@@ -32,5 +32,6 @@
 | [REASON-023](2026-09-13-reflection-semantic-context-reduction.md) | Reflection 自查/修正载荷缺少字段级语义缩减，修正终止丢 critique | ✅ 已修复 | prompts · reasoning/reflection · ports/context_budget | 2026-09-13 |
 | [REASON-024](2026-09-13-reflection-evidence-budget-underestimate.md) | Reflection 证据需求量与实际序列化形状不一致，充足预算仍误省略证据 | ✅ 已修复 | prompts | 2026-09-13 |
 | [REASON-025](2026-09-13-planner-semantic-context-reduction.md) | Planner 三个结构化入口缺少字段级语义缩减，固定头部截断会丢步骤因果与证据参数 | ✅ 已修复 | prompts · reasoning/planner · ports/context_budget | 2026-09-13 |
+| [REASON-026](2026-09-16-execute-parameter-drift.md) | 三策略 execute 平铺标量持续扩张，调用面和嵌套透传易漂移 | ✅ 已修复 | reasoning · agent bridges | 2026-09-16 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

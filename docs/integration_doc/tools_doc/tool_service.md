@@ -1,6 +1,6 @@
 # ToolService 工具服务说明文档
 
-> **更新日期**：2026-09-14
+> **更新日期**：2026-09-16
 > **模块**：`app/integration/tools/tool_service.py`
 > **文档定位**：ToolService 独立说明 —— 工具系统的对外统一入口（容器 + 执行 + 统计 + 钩子 + 内置工具装配 + 选择 + 校验 + 截断 + 审计）。
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -185,5 +185,5 @@ await container.tool_service.refresh_external_tools()
 - [工具模块接口文档](tools.md)（BaseTool / ToolResult / 内置工具）
 - [外部工具热加载](external.md)（ExternalToolLoader：execute 惰性检查 / 生命周期钩子 / 编写约定）
 - 子组件：[executor.md](executor.md) · [registry.md](registry.md) · [validator.md](validator.md) · [result_processor.md](result_processor.md) · [security.md](security.md) · [selector.md](selector.md) · [stats.md](stats.md)
-- [Agent 模块](../../domain_doc/agent_doc/agent.md)（`_execute_tool_calls` 并行执行，本模块上游调用方）
+- [ReAct 推理流程](../../domain_doc/reasoning_doc/react.md)（`ReActStrategy.execute_tool_calls` 并行执行，本模块上游调用方）
 - [架构设计](../../project/architecture.md) · [配置说明](../../config_doc/config.md)

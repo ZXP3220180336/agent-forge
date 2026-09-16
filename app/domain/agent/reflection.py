@@ -6,7 +6,7 @@ Reflection Agent 实现（桥接）
 ============================
 
 Reflection 三阶段逻辑已实现在 `app/domain/reasoning/reflection.py` 的
-`ReflectionStrategy`（原子推理策略：生成 → 自查 → 修正）。
+`ReflectionStrategy`（可独立复用的领域推理流程：生成 → 自查 → 修正）。
 本模块的 ReflectionAgent 作为 agent/ 编排层：继承 BaseAgent 生命周期，
 在 _strategy_cycle 中委托 ReflectionStrategy.execute()，并把策略产出
 （ReflectionOutcome）组装为 AgentResult（draft/critique/refine_rounds/degraded
@@ -21,6 +21,14 @@ from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
+from app.domain.reasoning.execution import (
+    ContextWindowLimits,
+    ExecutionLimits,
+    ModelOptions,
+    ReasoningRunScope,
+    RecoveryBudget,
+    ToolExecutionOptions,
+)
 from app.domain.reasoning.reflection import (
     ReflectionOutcome,
     ReflectionStrategy,
@@ -67,29 +75,38 @@ class ReflectionAgent(BaseAgent):
         messages: list[dict[str, str]],
     ) -> AsyncGenerator[str]:
         """Reflection 主流程：委托 ReflectionStrategy.execute，产出事件；结果组装为 AgentResult。"""
-        ctx = self._context
-        if ctx is None:
-            raise RuntimeError("AgentContext 未设置")
+        ctx = self._require_context()
 
         stream = self._strategy.execute(
             user_input,
             messages,
-            max_iterations=ctx.max_iterations,
-            temperature=ctx.temperature,
-            max_tokens=ctx.max_tokens,
-            max_execution_time=ctx.max_execution_time,
-            max_context_rounds=ctx.max_context_rounds,
-            max_context_tokens=ctx.max_context_tokens,
-            max_empty_retries=ctx.max_empty_retries,
-            max_llm_fail_retries=ctx.max_llm_fail_retries,
-            max_tool_protocol_retries=ctx.max_tool_protocol_retries,
-            max_same_action_turns=ctx.max_same_action_turns,
-            max_refine_rounds=ctx.max_refine_rounds,
-            cancel_event=self._cancel_event,
-            run_id=ctx.run_id,
-            run_stop=ctx.run_stop,
-            workflow_id=ctx.workflow_id,
-            parent_cancel_events=ctx.parent_cancel_events,
+            run=ReasoningRunScope(
+                run_id=ctx.run_id,
+                run_stop=ctx.run_stop,
+                workflow_id=ctx.workflow_id,
+                parent_cancel_events=ctx.parent_cancel_events,
+                cancel_event=self._cancel_event,
+            ),
+            model=ModelOptions(
+                temperature=ctx.temperature,
+                max_tokens=ctx.max_tokens,
+            ),
+            limits=ExecutionLimits(
+                max_iterations=ctx.max_iterations,
+                max_execution_time=ctx.max_execution_time,
+                max_same_action_turns=ctx.max_same_action_turns,
+            ),
+            context_window=ContextWindowLimits(
+                max_rounds=ctx.max_context_rounds,
+                max_tokens=ctx.max_context_tokens,
+            ),
+            recovery=RecoveryBudget(
+                max_empty_retries=ctx.max_empty_retries,
+                max_llm_fail_retries=ctx.max_llm_fail_retries,
+                max_tool_protocol_retries=ctx.max_tool_protocol_retries,
+                max_refine_rounds=ctx.max_refine_rounds,
+            ),
+            tool_execution=ToolExecutionOptions(),
         )
         async with aclosing(stream):
             async for event in stream:

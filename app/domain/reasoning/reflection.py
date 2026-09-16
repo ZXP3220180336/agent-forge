@@ -52,6 +52,14 @@ from ._common import (
     merge_usage,
     reject_concurrent_runs,
 )
+from .execution import (
+    ContextWindowLimits,
+    ExecutionLimits,
+    ModelOptions,
+    ReasoningRunScope,
+    RecoveryBudget,
+    ToolExecutionOptions,
+)
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -231,35 +239,29 @@ class ReflectionStrategy:
         user_input: str,
         messages: list[dict[str, str]],
         *,
-        max_iterations: int,
-        temperature: float,
-        max_tokens: int,
-        run_id: str,
-        run_stop: asyncio.Event,
-        max_execution_time: float | None = None,
-        max_context_rounds: int | None = None,
-        max_context_tokens: int | None = None,
-        max_empty_retries: int = 2,
-        max_llm_fail_retries: int = 2,
-        max_tool_protocol_retries: int = 2,
-        max_same_action_turns: int = 3,
-        tool_timeout: int | None = None,
-        tool_max_retries: int | None = None,
-        max_refine_rounds: int = 2,
-        cancel_event: asyncio.Event | None = None,
-        workflow_id: str | None = None,
-        parent_cancel_events: tuple[asyncio.Event, ...] = (),
+        run: ReasoningRunScope,
+        model: ModelOptions,
+        limits: ExecutionLimits,
+        context_window: ContextWindowLimits,
+        recovery: RecoveryBudget,
+        tool_execution: ToolExecutionOptions,
     ) -> AsyncGenerator[str]:
         """
         Reflection 主流程：收集+初稿 → 自查 → 修正（三阶段显式分离）。
 
-        迭代上限语义：max_refine_rounds = 报告生成尝试总次数（初稿 1 + 至多 N-1 次修正）。
+        迭代上限语义：``recovery.max_refine_rounds`` 是报告生成尝试总次数
+        （初稿 1 + 至多 N-1 次修正）；Reflection 要求该值非 None，0 与 1
+        都不会发起修正。运行身份、模型、执行、上下文、恢复和工具限制分别由
+        对应不可变值对象承载，收集阶段 ReAct 复用同一组语义参数。
         降级路由（best-effort，不抛错）：react 失败 / 无 structured / 自查失败 / 修正失败
         → 采用最近稿（degraded=True）。
 
         Yields:
             SSE 事件字符串（react 事件 + 阶段 info + done）
         """
+        if recovery.max_refine_rounds is None:
+            raise ValueError("ReflectionStrategy 要求设置 max_refine_rounds")
+
         # 每次 execute 独立：重置自查/修正阶段 token 用量累计
         self.outcome = None
         self._tool_facts = []
@@ -269,31 +271,22 @@ class ReflectionStrategy:
         # E：结构化调用（自查/修正）的绝对截止——与循环顶部护栏同一时间预算（monotonic
         # 绝对时刻，不逐级重计），随 generate_structured 下沉到降级链每笔子调用前。
         deadline = (
-            start_time + max_execution_time if max_execution_time is not None else None
+            start_time + limits.max_execution_time
+            if limits.max_execution_time is not None
+            else None
         )
 
         # ── 阶段一：收集 + 初稿（复用 ReAct，工具证据链 + final_answer 结构化）──
         child = self._react.execute(
             user_input,
             messages,
-            max_iterations=max_iterations,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            max_execution_time=max_execution_time,
-            max_context_rounds=max_context_rounds,
-            max_context_tokens=max_context_tokens,
-            max_empty_retries=max_empty_retries,
-            max_llm_fail_retries=max_llm_fail_retries,
-            max_tool_protocol_retries=max_tool_protocol_retries,
-            max_same_action_turns=max_same_action_turns,
-            tool_timeout=tool_timeout,
-            tool_max_retries=tool_max_retries,
+            run=run,
+            model=model,
+            limits=limits,
+            context_window=context_window,
+            recovery=recovery,
+            tool_execution=tool_execution,
             output_schema=self._output_schema,
-            cancel_event=cancel_event,
-            run_id=run_id,
-            run_stop=run_stop,
-            workflow_id=workflow_id,
-            parent_cancel_events=parent_cancel_events,
         )
         try:
             async with aclosing(child):
@@ -349,7 +342,7 @@ class ReflectionStrategy:
             # 终止/成本护栏（P3）：发起新付费调用前检查——取消/超时/成本超限
             # → 停机降级采用最近稿（保留进度）
             guard = evaluate_guard(
-                cancel_event=cancel_event,
+                cancel_event=run.cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
                 running_usage=merge_usage(react_outcome.usage, self._structured_usage),
@@ -371,8 +364,8 @@ class ReflectionStrategy:
                 evidence,
                 current,
                 react_outcome.iterations,
-                max_context_tokens=max_context_tokens,
-                cancel_event=cancel_event,
+                max_context_tokens=context_window.max_tokens,
+                cancel_event=run.cancel_event,
                 deadline=deadline,
             )
 
@@ -383,7 +376,7 @@ class ReflectionStrategy:
             # _critique 显式返回。无可用 critique 时先恢复终止原因，再判普通自查失败。
             if critique is None:
                 guard = evaluate_guard(
-                    cancel_event=cancel_event,
+                    cancel_event=run.cancel_event,
                     deadline=deadline,
                     cost_limiter=None,
                     running_usage=merge_usage(
@@ -419,7 +412,7 @@ class ReflectionStrategy:
                 current,
                 critique,
                 refine_round,
-                max_refine_rounds,
+                recovery.max_refine_rounds,
                 deadline,
             )
             if terminal_events is not None:
@@ -432,7 +425,7 @@ class ReflectionStrategy:
             # 付费，故复查不置于其前：已产出的合格稿不因累计预算被改判为降级、自查结论不丢失。
             # 命中（取消 / 超时 / 成本超限）→ 停机降级采用最近稿（保留进度），不发起修正。
             guard = evaluate_guard(
-                cancel_event=cancel_event,
+                cancel_event=run.cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
                 running_usage=merge_usage(react_outcome.usage, self._structured_usage),
@@ -460,8 +453,8 @@ class ReflectionStrategy:
                 current,
                 issues,
                 react_outcome.iterations,
-                max_context_tokens=max_context_tokens,
-                cancel_event=cancel_event,
+                max_context_tokens=context_window.max_tokens,
+                cancel_event=run.cancel_event,
                 deadline=deadline,
             )
 
@@ -475,7 +468,7 @@ class ReflectionStrategy:
             )
 
             guard = evaluate_guard(
-                cancel_event=cancel_event,
+                cancel_event=run.cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
                 running_usage=merge_usage(react_outcome.usage, self._structured_usage),

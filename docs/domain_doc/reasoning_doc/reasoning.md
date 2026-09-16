@@ -28,7 +28,9 @@
 
 ### 核心功能
 
-推理策略模块是领域层的**原子推理策略库**，为 Agent 提供推理方式实现，被 agent/ 层编排调用（agent/ 管策略编排与生命周期，reasoning/ 管策略实现）：
+推理策略模块保存**可独立复用的领域推理流程**。它们由 agent/ 桥接到统一生命周期，也可在
+reasoning 内部组合；agent/ 管运行入口、上下文与结果映射，reasoning/ 管策略阶段、调用检查点、
+成果接管和策略终态：
 
 - **ReAct**：推理 ↔ 工具循环（已实现）
 - **Reflection**：生成 → 自查 → 修正（已实现，证据链语义自查）
@@ -39,7 +41,8 @@
 
 ```text
 app/domain/reasoning/
-├── __init__.py          # 子包导出（ReAct / Reflection / Planner 策略 + Outcome）
+├── __init__.py          # 子包导出（策略、Outcome 与执行参数值对象）
+├── execution.py         # 六类不可变执行参数值对象
 ├── _common.py           # 策略共享小工具（GuardResult / evaluate_guard / dispatch_error / merge_usage）
 ├── _planner_steps.py    # Planner 步骤、计划快照与审计记录纯转换
 ├── _react_protocol.py   # ReAct final_answer、调用身份与动作指纹纯协议转换
@@ -51,8 +54,8 @@ app/domain/reasoning/
 
 ### 设计原则
 
-1. **原子策略**：每个文件是一个可独立跑通的推理算法，不持有 Agent 状态
-2. **可复用原语**：策略内提供工具执行等原语，供不同编排复用
+1. **独立领域流程**：每个已实现策略可独立跑通，也可组合其他策略；不持有 Agent 生命周期状态
+2. **显式组合**：Planner / Reflection 复用完整 ReAct 流程；工具执行等较小原语保留明确的直接入口
 3. **契约随策略发布**：策略级 Schema / 结果载体随策略模块发布，编排方引用
 
 ### 依赖关系
@@ -67,13 +70,17 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
     └── ...
 ```
 
-**依赖方向**：`reasoning/` 只依赖 ports + shared + prompts（提示词组装；不 import `agent/`，策略收标量参数而非 AgentContext），被 agent/ 层编排调用。
+**依赖方向**：`reasoning/` 只依赖 ports + shared + prompts（提示词组装；不 import `agent/`）。
+agent/ 桥接把 `AgentContext` 显式映射为 `execution.py` 的六类语义值对象，reasoning 不读取
+Agent 生命周期上下文。
 
 ---
 
 ## 对外接口
 
-> 对外接口 = 被 agent/ 层编排依赖的策略类。策略收标量参数，经 `outcome` / 返回暴露结果。
+> 对外接口 = 被 agent/ 层编排依赖的策略类和执行参数值对象。三种策略的 `execute()` 接收
+> `ReasoningRunScope`、`ModelOptions`、`ExecutionLimits`、`ContextWindowLimits`、
+> `RecoveryBudget`、`ToolExecutionOptions`；业务输入、可变消息及策略专属输出参数保持显式。
 
 | 策略类 | 契约（方法） | 状态 | 说明 |
 | --- | --- | --- | --- |
@@ -82,7 +89,7 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 | `PlannerStrategy` | `execute(...)` + `outcome` | ✅ | 完整契约见 [planner.md](planner.md) |
 | CoT | 预留 | ⬜ | — |
 
-被编排方式：`ReActAgent._strategy_cycle()` 委托 `ReActStrategy.execute()`；`ReflectionAgent._strategy_cycle()` 委托 `ReflectionStrategy.execute()`；`PlannerAgent._strategy_cycle()` 委托 `PlannerStrategy.execute()`（其每步执行再复用内部 `ReActStrategy.execute` 做被步骤约束的 agent 循环，见 [planner.md](planner.md)）。`execute_tool_calls()` 是无护栏的裸工具并行原语，保留作 ReActAgent 转发入口。
+被编排方式：`ReActAgent._strategy_cycle()` 委托 `ReActStrategy.execute()`；`ReflectionAgent._strategy_cycle()` 委托 `ReflectionStrategy.execute()`；`PlannerAgent._strategy_cycle()` 委托 `PlannerStrategy.execute()`（其每步执行再复用内部 `ReActStrategy.execute` 做被步骤约束的 agent 循环，见 [planner.md](planner.md)）。`execute_tool_calls()` 是不承担完整策略级 Guard 与终态的工具并行原语，仍执行调用身份检查并接收取消、期限和清理控制；它只在 reasoning 策略边界公开，不经 ReActAgent 重复转发。
 
 ---
 
@@ -96,7 +103,14 @@ BaseAgent._strategy_cycle()  ← 策略接口（agent/ 层）
 | [planner.md](planner.md) | `_planner_steps.py` | Planner 步骤规范化、计划快照和单步审计记录纯转换 | [见对齐表](../../ALIGNMENT.md) |
 | [react.md](react.md) | `_react_protocol.py` | ReAct 终止工具、调用身份与动作指纹纯协议转换 | [见对齐表](../../ALIGNMENT.md) |
 | [_common.md](_common.md) | `_common.py` | 类型化执行护栏、错误分发与 usage 合并（无状态共享） | [见对齐表](../../ALIGNMENT.md) |
+| 执行参数值对象 | `execution.py` | 按运行身份、模型、执行限制、上下文、恢复预算和工具执行六种变化原因组织参数 | [见对齐表](../../ALIGNMENT.md) |
 | chain_of_thought.py | `chain_of_thought.py` | CoT 推理（纯推理引导） | [见对齐表](../../ALIGNMENT.md) |
+
+`RecoveryBudget.max_replan_rounds` / `max_refine_rounds` 为 `None` 表示当前策略不适用，
+`0` 表示适用但不允许对应恢复动作。值对象冻结字段引用，但其中的 `asyncio.Event` 仍由
+既有 Owner 设置。运行作用域在构造时校验非空身份与 Event 控制链，恢复预算拒绝负数，
+使直接策略调用也在外部副作用前失败。Planner 子 ReAct 复用同一组对象，只通过
+`dataclasses.replace` 更新剩余墙钟。
 
 ---
 

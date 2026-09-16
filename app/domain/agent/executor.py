@@ -5,8 +5,8 @@
 ReAct Agent 实现（桥接）
 =======================
 
-ReAct 循环逻辑已抽离到 `app/domain/reasoning/react.py` 的 ReActStrategy（原子推理策略）。
-本模块的 ReActAgent 作为 agent/ 编排层：继承 BaseAgent 生命周期（run()/状态/事件路由），
+ReAct 循环逻辑已抽离到 `app/domain/reasoning/react.py` 的 ReActStrategy（领域推理流程）。
+本模块的 ReActAgent 作为 agent/ 桥接类型：继承 BaseAgent 生命周期（run()/状态/事件路由），
 在 _strategy_cycle 中委托 ReActStrategy.execute()，并把策略产出（ReActOutcome）组装为 AgentResult。
 
 事件流设计（由 ReActStrategy 产出）：
@@ -28,6 +28,14 @@ from app.domain.ports.context_budget import ContextBudgetPort
 from app.domain.ports.cost_limiter import CostLimiterPort
 from app.domain.ports.llm_gateway import LLMGateway
 from app.domain.ports.tool_gateway import ToolGateway
+from app.domain.reasoning.execution import (
+    ContextWindowLimits,
+    ExecutionLimits,
+    ModelOptions,
+    ReasoningRunScope,
+    RecoveryBudget,
+    ToolExecutionOptions,
+)
 from app.domain.reasoning.react import ReActOutcome, ReActStrategy
 from app.shared.error_handling import ErrorHandlerRegistry
 
@@ -36,10 +44,9 @@ from .base import AgentResult, BaseAgent
 
 class ReActAgent(BaseAgent):
     """
-    ReAct 策略编排（桥接 ReActStrategy 到 BaseAgent 生命周期）。
+    ReAct 流程桥接（把 ReActStrategy 接入 BaseAgent 生命周期）。
 
-    对外 API（run / result / state）与事件流与抽离前一致；
-    _execute_tool_calls 转发到策略原语，供既有测试与编排复用。
+    对外 API（run / result / state）与事件流与抽离前一致。
     """
 
     def __init__(
@@ -68,59 +75,44 @@ class ReActAgent(BaseAgent):
         messages: list[dict[str, str]],
     ) -> AsyncGenerator[str]:
         """ReAct 主循环：委托 ReActStrategy.execute，产出事件；结果组装为 AgentResult。"""
-        ctx = self._context
-        if ctx is None:
-            raise RuntimeError("AgentContext 未设置")
+        ctx = self._require_context()
 
         stream = self._strategy.execute(
             user_input,
             messages,
-            max_iterations=ctx.max_iterations,
-            temperature=ctx.temperature,
-            max_tokens=ctx.max_tokens,
-            max_execution_time=ctx.max_execution_time,
-            max_context_rounds=ctx.max_context_rounds,
-            max_context_tokens=ctx.max_context_tokens,
-            max_empty_retries=ctx.max_empty_retries,
-            max_llm_fail_retries=ctx.max_llm_fail_retries,
-            max_tool_protocol_retries=ctx.max_tool_protocol_retries,
-            max_same_action_turns=ctx.max_same_action_turns,
+            run=ReasoningRunScope(
+                run_id=ctx.run_id,
+                run_stop=ctx.run_stop,
+                workflow_id=ctx.workflow_id,
+                parent_cancel_events=ctx.parent_cancel_events,
+                cancel_event=self._cancel_event,
+            ),
+            model=ModelOptions(
+                temperature=ctx.temperature,
+                max_tokens=ctx.max_tokens,
+            ),
+            limits=ExecutionLimits(
+                max_iterations=ctx.max_iterations,
+                max_execution_time=ctx.max_execution_time,
+                max_same_action_turns=ctx.max_same_action_turns,
+            ),
+            context_window=ContextWindowLimits(
+                max_rounds=ctx.max_context_rounds,
+                max_tokens=ctx.max_context_tokens,
+            ),
+            recovery=RecoveryBudget(
+                max_empty_retries=ctx.max_empty_retries,
+                max_llm_fail_retries=ctx.max_llm_fail_retries,
+                max_tool_protocol_retries=ctx.max_tool_protocol_retries,
+            ),
+            tool_execution=ToolExecutionOptions(),
             stream_mode=ctx.stream_mode,
-            cancel_event=self._cancel_event,
-            run_id=ctx.run_id,
-            run_stop=ctx.run_stop,
-            workflow_id=ctx.workflow_id,
-            parent_cancel_events=ctx.parent_cancel_events,
         )
         async with aclosing(stream):
             async for event in stream:
                 yield event
 
         self._result = self._map_outcome(self._strategy.outcome)
-
-    async def _execute_tool_calls(
-        self,
-        tool_calls: list[dict],
-        messages: list[dict],
-        iteration: int,
-    ) -> AsyncGenerator[str]:
-        """工具并行执行原语转发（行为与抽离前一致；供 PlannerAgent 等复用语义参照）。"""
-        ctx = self._context
-        if ctx is None:
-            raise RuntimeError("AgentContext 未设置")
-        stream = self._strategy.execute_tool_calls(
-            tool_calls,
-            messages,
-            iteration,
-            run_id=ctx.run_id,
-            run_stop=ctx.run_stop,
-            workflow_id=ctx.workflow_id,
-            cancel_event=self._cancel_event,
-            parent_cancel_events=ctx.parent_cancel_events,
-        )
-        async with aclosing(stream):
-            async for event in stream:
-                yield event
 
     def _map_outcome(self, outcome: ReActOutcome | None) -> AgentResult:
         """ReActOutcome → AgentResult。"""

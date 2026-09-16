@@ -2,6 +2,8 @@ import asyncio
 
 import pytest
 
+from tests.reasoning_execution import reasoning_execution_args
+
 from app.domain.agent import AgentContext, PlannerAgent, ReActAgent, ReflectionAgent
 from app.domain.ports.llm_gateway import StreamResult
 from app.domain.ports.tool_execution import (
@@ -46,11 +48,11 @@ async def test_strategy_and_agent_reject_concurrent_instance_reuse():
             strategy.execute(
                 "x",
                 [],
-                max_iterations=1,
+                **reasoning_execution_args("react", max_iterations=1,
                 temperature=0.2,
                 max_tokens=32,
                 run_id="run-1",
-                run_stop=asyncio.Event(),
+                run_stop=asyncio.Event()),
             )
         )
     )
@@ -60,11 +62,11 @@ async def test_strategy_and_agent_reject_concurrent_instance_reuse():
             strategy.execute(
                 "y",
                 [],
-                max_iterations=1,
+                **reasoning_execution_args("react", max_iterations=1,
                 temperature=0.2,
                 max_tokens=32,
                 run_id="run-2",
-                run_stop=asyncio.Event(),
+                run_stop=asyncio.Event()),
             )
         )
     llm.release.set()
@@ -120,10 +122,11 @@ async def test_nested_strategy_inherits_parent_run_controls(agent_type):
         parent_cancel_events=(parent_cancel,),
     )
     await _consume(agent.run("x", [], ctx))
-    assert captured["run_id"] == "parent-run"
-    assert captured["run_stop"] is run_stop
-    assert captured["workflow_id"] == "workflow-1"
-    assert captured["parent_cancel_events"] == (parent_cancel,)
+    run = captured["run"]
+    assert run.run_id == "parent-run"
+    assert run.run_stop is run_stop
+    assert run.workflow_id == "workflow-1"
+    assert run.parent_cancel_events == (parent_cancel,)
 
 
 class _FactGateway:
@@ -262,12 +265,12 @@ async def test_invalid_batch_call_identity_never_reaches_gateway_or_history():
         strategy.execute(
             "x",
             messages,
-            max_iterations=1,
+            **reasoning_execution_args("react", max_iterations=1,
             temperature=0.2,
             max_tokens=32,
             max_tool_protocol_retries=0,
             run_id="run-1",
-            run_stop=asyncio.Event(),
+            run_stop=asyncio.Event()),
         )
     )
     assert gateway.calls == []

@@ -18,6 +18,8 @@ import time
 import pytest
 from jsonschema import SchemaError
 
+from tests.reasoning_execution import reasoning_execution_args
+
 from app.config import settings
 from app.domain.ports.llm_gateway import StreamResult
 from app.domain.reasoning import ReActStrategy as _ProductionReActStrategy
@@ -37,12 +39,6 @@ from app.shared.exceptions import ContextWindowExceededError, LLMDeadlineExceede
 
 class ReActStrategy(_ProductionReActStrategy):
     """测试直连入口：显式提供每次独立运行的生命周期身份。"""
-
-    async def execute(self, *args, **kwargs):
-        kwargs.setdefault("run_id", "run-react-test")
-        kwargs.setdefault("run_stop", asyncio.Event())
-        async for event in super().execute(*args, **kwargs):
-            yield event
 
     async def execute_tool_calls(self, *args, **kwargs):
         kwargs.setdefault("run_id", "run-react-test")
@@ -273,7 +269,7 @@ async def test_react_execute_tool_loop_ends_on_stop():
     messages = [{"role": "user", "content": "30C 转华氏"}]
     events = []
     async for ev in strategy.execute(
-        "30C 转华氏", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+        "30C 转华氏", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024)
     ):
         events.append(ev)
 
@@ -297,7 +293,7 @@ async def test_react_execute_short_circuits_on_llm_error():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -320,7 +316,7 @@ async def test_react_execute_empty_output_retries_then_stops():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -337,7 +333,7 @@ async def test_react_execute_max_iterations_fallback():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=2, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=2, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -359,7 +355,7 @@ async def test_react_empty_output_retry_limit_stops():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
 
@@ -384,7 +380,7 @@ async def test_react_empty_output_retry_limit_recovers():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=5, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -401,8 +397,8 @@ async def test_react_empty_output_retry_limit_configurable():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=5, temperature=0.2, max_tokens=1024,
-        max_empty_retries=1,
+        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024,
+        max_empty_retries=1),
     ):
         pass
 
@@ -440,7 +436,7 @@ async def test_react_empty_output_count_resets_after_output():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -469,7 +465,7 @@ async def test_react_empty_output_retry_limit_handler_raise():
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=6, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -516,7 +512,7 @@ async def test_react_stall_same_action_stops():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
 
@@ -542,7 +538,7 @@ async def test_react_stall_allows_below_limit():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -568,7 +564,7 @@ async def test_react_stall_different_args_resets():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -599,7 +595,7 @@ async def test_react_stall_change_tool_resets():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -620,8 +616,8 @@ async def test_react_stall_limit_configurable():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
-        max_same_action_turns=1,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024,
+        max_same_action_turns=1),
     ):
         pass
 
@@ -650,8 +646,8 @@ async def test_react_stall_final_answer_not_counted():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA),
     ):
         events.append(ev)
 
@@ -681,7 +677,7 @@ async def test_react_stall_handler_raise():
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=6, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -715,7 +711,7 @@ async def test_react_stall_args_normalized():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -748,7 +744,7 @@ async def test_react_refused_stops():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
 
@@ -769,7 +765,7 @@ async def test_react_refused_content_filter_stops():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -797,7 +793,7 @@ async def test_react_refused_handler_raise():
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=3, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -821,7 +817,7 @@ async def test_react_refused_continue_ignored():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -852,7 +848,7 @@ async def test_react_unknown_exception_keeps_partial_progress():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
 
@@ -879,7 +875,7 @@ async def test_react_unknown_exception_handler_raise():
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=3, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -934,9 +930,9 @@ async def test_post_call_cost_with_tool_calls_only_keeps_previous_visible_result
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
-        max_tokens=1024,
+        max_tokens=1024),
     ):
         pass
 
@@ -982,11 +978,11 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
         # 余量放大：第一轮（脚本 LLM + echo）必须在预算内跑完，否则慢机器上假失败
-        max_execution_time=1.0,
+        max_execution_time=1.0),
     ):
         pass
 
@@ -1012,7 +1008,7 @@ async def test_react_context_window_exceeded_is_terminal():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
 
@@ -1046,10 +1042,10 @@ async def test_react_cancel_wins_when_context_error_arrives() -> None:
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        cancel_event=cancel_event,
+        cancel_event=cancel_event),
     ):
         pass
 
@@ -1079,7 +1075,7 @@ async def test_react_unknown_exception_continue_ignored():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -1111,8 +1107,8 @@ async def test_react_cancel_event_stops():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        cancel_event=cancel_event,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        cancel_event=cancel_event),
     ):
         events.append(ev)
 
@@ -1132,8 +1128,8 @@ async def test_react_cancel_event_not_treated_as_llm_failed():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        cancel_event=cancel_event,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        cancel_event=cancel_event),
     ):
         pass
 
@@ -1152,8 +1148,8 @@ async def test_react_cancel_event_untouched_normal():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        cancel_event=cancel_event,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        cancel_event=cancel_event),
     ):
         pass
 
@@ -1186,10 +1182,10 @@ async def test_react_post_call_cancel_wins_over_cost_and_keeps_usage():
     async for event in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        cancel_event=cancel_event,
+        cancel_event=cancel_event),
     ):
         events.append(event)
 
@@ -1208,8 +1204,8 @@ async def test_react_execute_timeout_first_iteration():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=0.05,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        max_execution_time=0.05),
     ):
         events.append(ev)
 
@@ -1250,8 +1246,8 @@ async def test_react_execute_timeout_keeps_partial_progress():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=0.5,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        max_execution_time=0.5),
     ):
         pass
 
@@ -1282,10 +1278,10 @@ async def test_internal_deadline_keeps_current_round_partial_result_and_usage():
     async for event in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=5.0,
+        max_execution_time=5.0),
     ):
         events.append(event)
 
@@ -1332,10 +1328,10 @@ async def test_internal_deadline_empty_current_round_keeps_previous_result():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=5.0,
+        max_execution_time=5.0),
     ):
         pass
 
@@ -1366,10 +1362,10 @@ async def test_inner_timeout_error_is_unknown_and_keeps_current_round(
     async for event in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=1,
+        **reasoning_execution_args("react", max_iterations=1,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=max_execution_time,
+        max_execution_time=max_execution_time),
     ):
         events.append(event)
 
@@ -1397,9 +1393,9 @@ async def test_unknown_exception_keeps_current_round():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=1,
+        **reasoning_execution_args("react", max_iterations=1,
         temperature=0.2,
-        max_tokens=1024,
+        max_tokens=1024),
     ):
         pass
 
@@ -1427,10 +1423,10 @@ async def test_external_task_cancel_still_propagates_cancelled_error():
         async for event in strategy.execute(
             "hi",
             [{"role": "user", "content": "hi"}],
-            max_iterations=1,
+            **reasoning_execution_args("react", max_iterations=1,
             temperature=0.2,
             max_tokens=1024,
-            max_execution_time=5.0,
+            max_execution_time=5.0),
         ):
             events.append(event)
 
@@ -1451,10 +1447,10 @@ async def test_execute_aclose_from_another_task_has_no_terminal_event():
     stream = strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=1,
+        **reasoning_execution_args("react", max_iterations=1,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=5.0,
+        max_execution_time=5.0),
     )
     first_event = await anext(stream)
     assert '"type": "agent_info"' in first_event
@@ -1487,10 +1483,10 @@ async def test_internal_deadline_cleanup_finishes_before_hard_timeout(monkeypatc
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=1,
+        **reasoning_execution_args("react", max_iterations=1,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=0.2,
+        max_execution_time=0.2),
     ):
         pass
 
@@ -1518,10 +1514,10 @@ async def test_hard_timeout_keeps_current_round_partial_result(monkeypatch):
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=1,
+        **reasoning_execution_args("react", max_iterations=1,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=0.05,
+        max_execution_time=0.05),
     ):
         pass
 
@@ -1547,10 +1543,10 @@ async def test_deadline_unaware_llm_is_cancelled_at_timeout_trigger(monkeypatch)
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=1,
+        **reasoning_execution_args("react", max_iterations=1,
         temperature=0.2,
         max_tokens=1024,
-        max_execution_time=0.05,
+        max_execution_time=0.05),
     ):
         pass
     elapsed = time.monotonic() - started
@@ -1568,8 +1564,8 @@ async def test_react_execute_loose_timeout_does_not_trigger():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=5.0,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        max_execution_time=5.0),
     ):
         pass
 
@@ -1587,8 +1583,8 @@ async def test_react_execute_none_timeout_no_limit():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=None,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        max_execution_time=None),
     ):
         pass
 
@@ -1628,10 +1624,10 @@ async def test_react_baseline_cost_exceeded_stops_before_llm_call():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        baseline_usage={"prompt_tokens": 1000, "completion_tokens": 0},
+        baseline_usage={"prompt_tokens": 1000, "completion_tokens": 0}),
     ):
         pass
 
@@ -1659,7 +1655,7 @@ async def test_react_execute_cost_exceeded_stops():
     events = []
     async for ev in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
 
@@ -1704,7 +1700,7 @@ async def test_react_execute_cost_exceeded_keeps_partial_progress():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -1729,7 +1725,7 @@ async def test_react_execute_loose_cost_does_not_trigger():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -1747,7 +1743,7 @@ async def test_react_execute_none_cost_no_limit():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -1782,7 +1778,7 @@ async def test_react_cost_exceeded_handler_raise():
     with pytest.raises(AgentRunError) as exc:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=3, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -1814,7 +1810,7 @@ async def test_react_cost_exceeded_handler_continue_ignored():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -1868,7 +1864,7 @@ async def test_react_cost_baseline_usage_participates_in_check():
     )
     async for _ in ctrl.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
     assert ctrl.outcome is not None and ctrl.outcome.success is True
@@ -1880,8 +1876,8 @@ async def test_react_cost_baseline_usage_participates_in_check():
     )
     async for _ in base.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        baseline_usage={"prompt_tokens": 600, "completion_tokens": 200},
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        baseline_usage={"prompt_tokens": 600, "completion_tokens": 200}),
     ):
         pass
     assert base.outcome is not None
@@ -1930,11 +1926,11 @@ async def test_react_cost_baseline_usage_not_in_reported_usage():
     )
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
         # baseline token 800 不计入报告；成本 0.03 + 局部 0.027 = 0.057 → 第 3 轮停
         baseline_usage={
             "prompt_tokens": 600, "completion_tokens": 200, "total_tokens": 800,
-        },
+        }),
     ):
         pass
 
@@ -1966,7 +1962,7 @@ async def test_react_tool_failure_feedback_to_model():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024)
     ):
         pass
 
@@ -1998,7 +1994,7 @@ async def test_react_tool_failure_records_error_in_evidence():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2087,7 +2083,7 @@ async def test_react_long_tool_result_truncated_marker():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024)
     ):
         pass
 
@@ -2124,7 +2120,7 @@ async def test_react_short_tool_result_no_marker():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024)
     ):
         pass
 
@@ -2162,7 +2158,7 @@ async def test_react_reasoning_feedback_when_has_reasoning():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024)
     ):
         pass
 
@@ -2182,7 +2178,7 @@ async def test_react_reasoning_no_feedback_without_signal():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024
+        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024)
     ):
         pass
 
@@ -2219,8 +2215,8 @@ async def test_react_context_budget_trims_rounds():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=4, temperature=0.2, max_tokens=1024,
-        max_context_rounds=2,
+        "hi", messages, **reasoning_execution_args("react", max_iterations=4, temperature=0.2, max_tokens=1024,
+        max_context_rounds=2),
     ):
         pass
 
@@ -2248,8 +2244,8 @@ async def test_react_context_budget_trims_on_no_tool_retry():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=6, temperature=0.2, max_tokens=1024,
-        max_context_rounds=2, max_empty_retries=5,  # 大上限保持 6 轮空输出重试，验证预算裁剪
+        "hi", messages, **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024,
+        max_context_rounds=2, max_empty_retries=5),  # 大上限保持 6 轮空输出重试，验证预算裁剪
     ):
         pass
 
@@ -2282,7 +2278,7 @@ async def test_final_answer_schema_preflight_stops_before_llm(schema: dict) -> N
     strategy = ReActStrategy(llm=llm, tools=None)
     with pytest.raises(SchemaError):
         async for _ in strategy.execute(
-            "hi", [], output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024,
+            "hi", [], **reasoning_execution_args("react", output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
     assert llm.calls == 0
@@ -2306,7 +2302,7 @@ async def test_final_answer_202012_dependency_feedback_then_success() -> None:
     strategy = ReActStrategy(llm=llm, tools=None)
     events = [
         event async for event in strategy.execute(
-            "hi", [], output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024,
+            "hi", [], **reasoning_execution_args("react", output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024),
         )
     ]
     assert llm.calls == 2
@@ -2343,8 +2339,8 @@ async def test_react_final_answer_success():
     messages = [{"role": "user", "content": "hi"}]
     events = []
     async for ev in strategy.execute(
-        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA,
+        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA),
     ):
         events.append(ev)
 
@@ -2380,8 +2376,8 @@ async def test_react_final_answer_validation_failure_feedback():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=3, temperature=0.2, max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA,
+        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA),
     ):
         pass
 
@@ -2406,7 +2402,7 @@ async def test_react_no_output_schema_structured_none():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2434,7 +2430,7 @@ async def test_react_llm_failed_handler_continue_retries():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2460,7 +2456,7 @@ async def test_react_llm_failed_handler_raise():
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=3, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -2482,7 +2478,7 @@ async def test_react_empty_output_handler_stop():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2521,7 +2517,7 @@ async def test_react_tool_failed_handler_stop():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2561,8 +2557,8 @@ async def test_react_structured_invalid_handler_stop():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        output_schema=_FA_REPORT_SCHEMA),
     ):
         pass
 
@@ -2605,7 +2601,7 @@ async def test_react_tool_failures_grouped_by_kind():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2653,7 +2649,7 @@ async def test_react_tool_failures_stop_arbitration():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2697,7 +2693,7 @@ async def test_react_tool_failures_raise_arbitration():
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=3, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -2788,7 +2784,7 @@ async def test_react_protocol_error_retry_then_success():
     events = []
     async for event in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(event)
 
@@ -2816,7 +2812,7 @@ async def test_react_protocol_error_not_counted_as_empty_output():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2843,7 +2839,7 @@ async def test_react_protocol_error_handler_stop():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -2871,7 +2867,7 @@ async def test_react_protocol_error_handler_raise():
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=3, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -2892,7 +2888,7 @@ async def test_react_protocol_error_no_tools():
     events = []
     async for event in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(event)
 
@@ -2929,7 +2925,7 @@ async def test_react_protocol_error_no_tools_with_tool_calls():
     events = []
     async for event in strategy.execute(
         "hi", messages,
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(event)
 
@@ -2958,10 +2954,10 @@ async def test_react_tool_protocol_retry_limit_hard_stops():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=10,
+        **reasoning_execution_args("react", max_iterations=10,
         temperature=0.2,
         max_tokens=1024,
-        max_tool_protocol_retries=2,
+        max_tool_protocol_retries=2),
     ):
         pass
 
@@ -2980,10 +2976,10 @@ async def test_react_tool_protocol_retry_limit_zero_stops_first_failure():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=10,
+        **reasoning_execution_args("react", max_iterations=10,
         temperature=0.2,
         max_tokens=1024,
-        max_tool_protocol_retries=0,
+        max_tool_protocol_retries=0),
     ):
         pass
 
@@ -3008,10 +3004,10 @@ async def test_react_tool_protocol_retry_count_resets_after_valid_tool_round():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=6,
+        **reasoning_execution_args("react", max_iterations=6,
         temperature=0.2,
         max_tokens=1024,
-        max_tool_protocol_retries=1,
+        max_tool_protocol_retries=1),
     ):
         pass
 
@@ -3043,10 +3039,10 @@ async def test_react_llm_failure_does_not_reset_tool_protocol_retry_count():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=6,
+        **reasoning_execution_args("react", max_iterations=6,
         temperature=0.2,
         max_tokens=1024,
-        max_tool_protocol_retries=1,
+        max_tool_protocol_retries=1),
     ):
         pass
 
@@ -3071,11 +3067,11 @@ async def test_react_invalid_final_answer_obeys_tool_protocol_retry_limit():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=10,
+        **reasoning_execution_args("react", max_iterations=10,
         temperature=0.2,
         max_tokens=1024,
         output_schema=_FA_REPORT_SCHEMA,
-        max_tool_protocol_retries=1,
+        max_tool_protocol_retries=1),
     ):
         pass
 
@@ -3110,10 +3106,10 @@ async def test_react_invalid_tool_arguments_obey_tool_protocol_retry_limit():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=10,
+        **reasoning_execution_args("react", max_iterations=10,
         temperature=0.2,
         max_tokens=1024,
-        max_tool_protocol_retries=1,
+        max_tool_protocol_retries=1),
     ):
         pass
 
@@ -3138,10 +3134,10 @@ async def test_react_unknown_final_answer_name_does_not_bypass_stall_limit():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=5,
+        **reasoning_execution_args("react", max_iterations=5,
         temperature=0.2,
         max_tokens=1024,
-        max_same_action_turns=1,
+        max_same_action_turns=1),
     ):
         pass
 
@@ -3175,10 +3171,10 @@ async def test_react_unknown_final_answer_arguments_enter_stall_fingerprint():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        max_same_action_turns=1,
+        max_same_action_turns=1),
     ):
         pass
 
@@ -3212,7 +3208,7 @@ async def test_react_llm_fail_retries_hard_stop():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=5, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -3246,8 +3242,8 @@ async def test_react_llm_fail_retries_resets_on_success():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=6, temperature=0.2, max_tokens=1024,
-        max_llm_fail_retries=1,
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024,
+        max_llm_fail_retries=1),
     ):
         pass
 
@@ -3284,7 +3280,7 @@ async def test_react_llm_fail_retries_handler_raise():
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=5, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -3305,8 +3301,8 @@ async def test_react_llm_fail_retries_zero():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=5, temperature=0.2, max_tokens=1024,
-        max_llm_fail_retries=0,
+        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024,
+        max_llm_fail_retries=0),
     ):
         pass
 
@@ -3323,7 +3319,7 @@ async def test_react_llm_fail_retries_default_stop_unchanged():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=5, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -3352,7 +3348,7 @@ async def test_react_empty_output_retry_no_blank_assistant():
     messages = [{"role": "user", "content": "hi"}]
 
     async for _ in strategy.execute(
-        "hi", messages, max_iterations=5, temperature=0.2, max_tokens=1024
+        "hi", messages, **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024)
     ):
         pass
 
@@ -3430,8 +3426,8 @@ async def test_react_tool_timeout_retries_passed_to_gateway():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
-        tool_timeout=60, tool_max_retries=5,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
+        tool_timeout=60, tool_max_retries=5),
     ):
         pass
 
@@ -3456,7 +3452,7 @@ async def test_react_tool_timeout_retries_default_none():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -3486,7 +3482,7 @@ async def test_react_handler_exception_llm_failed_default_stop():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -3526,7 +3522,7 @@ async def test_react_handler_exception_tool_failed_default_continue():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -3555,7 +3551,7 @@ async def test_react_unknown_handler_exception_not_breaking():
 
     async for _ in strategy.execute(
         "hi", [{"role": "user", "content": "hi"}],
-        max_iterations=3, temperature=0.2, max_tokens=1024,
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -3584,7 +3580,7 @@ async def test_react_unknown_error_redacts_exception_message(caplog):
     with caplog.at_level("ERROR", logger="app.domain.reasoning.react"):
         async for _ in strategy.execute(
             "hi", [{"role": "user", "content": "hi"}],
-            max_iterations=3, temperature=0.2, max_tokens=1024,
+            **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
 
@@ -3620,10 +3616,10 @@ async def test_react_empty_output_round_does_not_reset_protocol_budget():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=10,
+        **reasoning_execution_args("react", max_iterations=10,
         temperature=0.2,
         max_tokens=1024,
-        max_tool_protocol_retries=1,
+        max_tool_protocol_retries=1),
     ):
         pass
 
@@ -3667,10 +3663,10 @@ async def test_react_protocol_hard_limit_preempts_same_round_business_failure():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=3,
+        **reasoning_execution_args("react", max_iterations=3,
         temperature=0.2,
         max_tokens=1024,
-        max_tool_protocol_retries=0,
+        max_tool_protocol_retries=0),
     ):
         pass
 

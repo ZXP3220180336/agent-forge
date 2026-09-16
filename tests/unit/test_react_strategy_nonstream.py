@@ -32,6 +32,7 @@ from app.shared.exceptions import (
     LLMAPIError,
     LLMDeadlineExceededError,
 )
+from tests.reasoning_execution import reasoning_execution_args
 
 
 class _NonStreamingScriptedLLM:
@@ -129,10 +130,13 @@ async def _run(strategy, messages, **kw):
     async for ev in strategy.execute(
         "测试输入",
         messages,
-        max_iterations=10,
-        temperature=0.2,
-        max_tokens=1024,
-        **kw,
+        **reasoning_execution_args(
+            "react",
+            max_iterations=10,
+            temperature=0.2,
+            max_tokens=1024,
+            **kw,
+        ),
     ):
         events.append(ev)
     return events

@@ -2,7 +2,7 @@
 
 > **模块**：`app/domain/reasoning/reflection.py`
 > **更新日期**：2026-09-16
-> **职责**：Reflection 原子推理策略——生成 → 自查 → 修正三阶段，模型自我评估输出质量并改进
+> **职责**：Reflection 领域推理流程——生成 → 自查 → 修正三阶段，模型自我评估输出质量并改进
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/reflection.py](../agent_doc/agent.md)；工业级对标见 [reflection_benchmark.md](reflection_benchmark.md)
 
@@ -42,7 +42,7 @@
 2. **Grounding 为核心**：Critic 必须对照工具记录（证据链）自查，杜绝纯内在自查（Huang et al. 反证：内在自查会让模型把对的改错）——每条结论可回溯工具记录（工业基准 #3）
 3. **复用 ReAct 收集**：生成阶段复用 `ReActStrategy.execute(output_schema=...)`——工具收集 + final_answer 结构化初稿一次完成（Reflexion「生成即工具增强」），证据链在 `outcome.tool_calls`
 4. **失败降级不抛错**：自查 / 修正失败采用最近稿（degraded=True），返回 best-effort（工业基准 #9）
-5. **纯算法依赖方向**：只依赖 ports + shared + prompts（指令层），收标量参数——可独立测试、被 agent/ 编排调用
+5. **单向依赖**：只依赖 ports + shared + prompts（指令层），接收按语义分组的不可变执行参数值对象而非 AgentContext；实例持有单次执行结果，可独立测试并组合 ReActStrategy
 
 ## 核心概念解释
 
@@ -114,7 +114,7 @@ ReflectionStrategy.execute()（三阶段）
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, output_schema=None, critique_schema=None, critique_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema 可注入覆盖 |
-| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_tool_protocol_retries=2, max_same_action_turns=3, tool_timeout=None, tool_max_retries=None, max_refine_rounds=2, cancel_event=None)` | 三阶段主流程；yield SSE 事件，结果写入 `outcome`；协议修正上限透传初稿 ReAct |
+| `execute` | `(user_input, messages, *, run, model, limits, context_window, recovery, tool_execution)` | 三阶段主流程；`recovery.max_refine_rounds` 必须非 None，0/1 均不发起修正；收集阶段 ReAct 复用同一组语义对象；结果写入 `outcome` |
 
 内部阶段方法：`_finalize_after_critique` 只在 critique 可用后判定提交当前稿或继续修正，保留
 REASON-020 的 after-turn cancel/成本与 strict deadline 差异；`_adopt_refined_draft` 只在修正
@@ -197,7 +197,7 @@ REASON-020 的 after-turn cancel/成本与 strict deadline 差异；`_adopt_refi
 
 | 配置 | 说明 |
 | --- | --- |
-| `agent_max_refine_rounds` | Reflection 报告生成最大尝试轮数（初稿 1 + 至多 N-1 次修正）；经 `AgentContext.max_refine_rounds` 注入 |
+| `agent_max_refine_rounds` | Reflection 报告生成最大尝试轮数（初稿 1 + 至多 N-1 次修正）；经 `AgentContext.max_refine_rounds` 映射为 `RecoveryBudget.max_refine_rounds` |
 | `agent_max_tool_protocol_retries` | 初稿 ReAct 的工具调用协议修正上限；三类协议错误共享连续预算 |
 
 ## 测试状态

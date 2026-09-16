@@ -2,7 +2,7 @@
 
 > **模块**：`app/domain/reasoning/planner.py`
 > **更新日期**：2026-09-16
-> **职责**：Planner 原子推理策略——Plan-then-Execute 单 Agent 编排（规划 → 执行 → 汇总）
+> **职责**：Planner 领域推理流程——Plan-then-Execute 单 Agent 编排（规划 → 执行 → 汇总）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [agent/planner.py](../agent_doc/agent.md)；工业级对标见 [planner_benchmark.md](planner_benchmark.md)
 
@@ -117,7 +117,7 @@ PlannerStrategy.execute()（三阶段）
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
 | `__init__` | `(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None, plan_schema=None, replan_schema=None, result_schema=None, plan_model_key="fast", summarize_model_key="fast")` | 构造 `_react = ReActStrategy(...)`（护栏透传）；schema / 结构化模型键可注入覆盖 |
-| `execute` | `(user_input, messages, *, max_iterations, temperature, max_tokens, max_execution_time=None, max_context_rounds=None, max_context_tokens=None, max_empty_retries=2, max_llm_fail_retries=2, max_tool_protocol_retries=2, max_same_action_turns=3, max_replan_rounds=2, tool_timeout=None, tool_max_retries=None, stream_mode=True, cancel_event=None) -> AsyncGenerator[str]` | 三阶段主流程（见「执行流程」）；yield SSE 事件，结果写入 `outcome`；协议修正上限透传每步 ReAct |
+| `execute` | `(user_input, messages, *, run, model, limits, context_window, recovery, tool_execution, stream_mode=True) -> AsyncGenerator[str]` | 三阶段主流程（见「执行流程」）；`recovery.max_replan_rounds` 必须非 None，0 表示禁用重规划；每步 ReAct 复用语义对象，只替换剩余执行时间；结果写入 `outcome` |
 
 包内纯转换：`_planner_steps.normalize_steps`（id 单调赋值 + 依赖清洗）、`build_plan_payload`（公开计划快照）、`build_step_record`（保持二维步骤成功判据并构造审计记录）。这些函数不接管子运行、replan、usage 或终态。
 
@@ -223,7 +223,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 
 | 配置 | 说明 |
 | --- | --- |
-| `agent_max_refine_rounds` | replan 预算经 `AgentContext.max_refine_rounds` 注入 `execute(max_replan_rounds)`（Reflection 修正 / Planner replan 共用语义） |
+| `agent_max_refine_rounds` | 经 `AgentContext.max_refine_rounds` 映射为 `RecoveryBudget.max_replan_rounds`（Reflection 修正 / Planner replan 共用配置来源） |
 | `agent_max_iterations` 等 ReAct 护栏字段 | `max_iterations` = **每步** ReAct 小跑迭代上限（步骤级）；temperature / max_tokens / max_execution_time（全局，每步转剩余）/ max_context_rounds·tokens / max_empty_retries / max_llm_fail_retries / max_tool_protocol_retries / max_same_action_turns / stream_mode 全部透传每步 ReAct |
 | `llm_structured_max_tokens` | 结构化调用（plan / replan / summarize）走 generate_structured 默认预算；截断由集成层短路返回 None → 走 None 降级（不崩溃） |
 | 结构化模型键 | `plan_model_key` / `summarize_model_key` 构造注入（默认 fast），不进 AgentContext |
@@ -245,7 +245,7 @@ execute 入口：重置全部累计态（_structured_usage / _react_total_usage 
 
 决策要点均归档 [ADR planner-strategy](../../../adr/domain/reasoning/2026-09-05-planner-strategy.md)（Context → Decision → Consequences）：
 
-- **两层结构分界**：`reasoning/planner.py`（原子策略）+ `agent/planner.py`（编排桥接，生命周期依赖归 agent/）
+- **两层结构分界**：`reasoning/planner.py`（可独立组合 ReAct 的领域流程）+ `agent/planner.py`（生命周期与结果桥接）
 - **每步复用 `ReActStrategy.execute`** 取代裸 `execute_tool_calls`：步骤级护栏 / 上下文隔离随策略
 - **replan 预算复用 `max_refine_rounds` 语义**（与 Reflection 修正共用）
 - **新增 `PLAN_FAILED`**（规划 / 重规划 / 汇总失败降级）

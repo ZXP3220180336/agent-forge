@@ -8,8 +8,8 @@ Agent 基类定义
 设计目标：
 - 策略模式：BaseAgent.run() 是统一入口，_strategy_cycle() 由子类实现具体策略
 - 运行隔离：每次 run() 传入独立身份；同一实例并发复用明确拒绝
-- 流式友好：通过 _emit_event() 生成 SSE 事件，内层逻辑与外层输出解耦
-- 可扩展：钩子方法 on_tool_call / on_thought / on_complete 供子类覆盖
+- 流式友好：run() 统一转发策略产生的 SSE 事件并确定性关闭子生成器
+- 桥接复用：子类通过 _require_context() 取得当前运行上下文
 
 支持策略：
 - ReAct：推理 → 工具 → 推理 → 工具 → ...（ReActAgent，见 executor.py）
@@ -48,7 +48,6 @@ class AgentState(Enum):
 
     IDLE = "idle"  # 空闲，等待输入
     THINKING = "thinking"  # LLM 推理中
-    WAITING = "waiting"  # 等待工具执行结果
     COMPLETED = "completed"  # 任务完成
     FAILED = "failed"  # 任务失败
     CANCELLED = "cancelled"  # 被取消
@@ -155,7 +154,6 @@ class BaseAgent(ABC):
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
         self._context: AgentContext | None = None
         self._state = AgentState.IDLE
-        self._tool_call_history: list[dict[str, Any]] = []
         self._result: AgentResult | None = None  # 子类在策略循环中设置
         self._running = False
 
@@ -208,12 +206,13 @@ class BaseAgent(ABC):
         self._running = True
         self._context = context
         self._state = AgentState.THINKING
-        self._tool_call_history = []
         self._result = None
 
         try:
             yield build_info_event("Agent 开始处理")
-            async with aclosing(self._strategy_cycle(user_input, list(messages))) as cycle:
+            async with aclosing(
+                self._strategy_cycle(user_input, list(messages))
+            ) as cycle:
                 async for event in cycle:
                     yield event
 
@@ -266,6 +265,14 @@ class BaseAgent(ABC):
             self._context = None
             self._running = False
 
+    # ===== 受保护辅助方法 =====
+
+    def _require_context(self) -> AgentContext:
+        """返回当前运行上下文；只能在 run() 驱动的策略循环中调用。"""
+        if self._context is None:
+            raise RuntimeError("AgentContext 未设置")
+        return self._context
+
     # ===== 子类必须实现 =====
 
     @abstractmethod
@@ -289,17 +296,3 @@ class BaseAgent(ABC):
             SSE 事件字符串
         """
         raise NotImplementedError
-
-    # ===== 钩子方法（可选覆盖） =====
-
-    async def on_thought(self, content: str) -> None:
-        """每次 LLM 输出思考内容时调用"""
-
-    async def on_tool_call(self, name: str, params: dict) -> None:
-        """工具即将执行时调用"""
-
-    async def on_tool_result(self, name: str, result) -> None:
-        """工具执行完成后调用"""
-
-    async def on_complete(self, result: AgentResult) -> None:
-        """Agent 完成时调用"""

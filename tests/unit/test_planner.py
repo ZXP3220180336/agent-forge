@@ -38,6 +38,7 @@ from app.shared.error_handling import (
 )
 from app.shared.events import build_message_event
 from app.shared.exceptions import ContextWindowExceededError, LLMAPIError
+from tests.reasoning_execution import reasoning_execution_args
 
 PLAN = {
     "goal": "分析批次 A 良率下降原因",
@@ -149,10 +150,13 @@ async def _run(strategy, messages, **kw):
     async for ev in strategy.execute(
         "分析批次 A 良率下降原因",
         messages,
-        max_iterations=5,
-        temperature=0.2,
-        max_tokens=1024,
-        **kw,
+        **reasoning_execution_args(
+            "planner",
+            max_iterations=5,
+            temperature=0.2,
+            max_tokens=1024,
+            **kw,
+        ),
     ):
         events.append(ev)
     return events

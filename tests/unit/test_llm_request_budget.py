@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from tests.reasoning_execution import reasoning_execution_args
+
 from app.domain.ports.llm_gateway import StreamResult
 from app.domain.reasoning import ReActStrategy
 from app.integration.llm.client import ClientManager
@@ -943,12 +945,12 @@ async def test_llm_call_log_failure_does_not_override_completed_stream(
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=1,
+        **reasoning_execution_args("react", max_iterations=1,
         temperature=0.2,
         max_tokens=20,
         max_execution_time=5.0,
         run_id="run-log-failure",
-        run_stop=asyncio.Event(),
+        run_stop=asyncio.Event()),
     ):
         pass
 
@@ -991,12 +993,12 @@ async def test_continuation_context_overflow_keeps_current_result_and_usage(
     async for event in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        max_iterations=1,
+        **reasoning_execution_args("react", max_iterations=1,
         temperature=0.2,
         max_tokens=20,
         max_execution_time=5.0,
         run_id="run-continuation-overflow",
-        run_stop=asyncio.Event(),
+        run_stop=asyncio.Event()),
     ):
         events.append(event)
 
@@ -1043,12 +1045,12 @@ async def test_react_deadline_completes_real_stream_cleanup_before_hard_timeout(
         async for _ in strategy.execute(
             "hi",
             [{"role": "user", "content": "hi"}],
-            max_iterations=1,
+            **reasoning_execution_args("react", max_iterations=1,
             temperature=0.2,
             max_tokens=20,
             max_execution_time=0.5,
             run_id="run-cleanup-before-wall",
-            run_stop=asyncio.Event(),
+            run_stop=asyncio.Event()),
         ):
             pass
 
@@ -1089,12 +1091,12 @@ async def test_react_hard_timeout_cancels_slow_close_and_finally_settles(
         async for _ in strategy.execute(
             "hi",
             [{"role": "user", "content": "hi"}],
-            max_iterations=1,
+            **reasoning_execution_args("react", max_iterations=1,
             temperature=0.2,
             max_tokens=20,
             max_execution_time=0.5,
             run_id="run-hard-timeout-cleanup",
-            run_stop=asyncio.Event(),
+            run_stop=asyncio.Event()),
         ):
             pass
 

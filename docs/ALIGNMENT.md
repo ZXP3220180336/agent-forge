@@ -52,6 +52,7 @@
 | app/domain/prompts/templates/reflection.py | ✅ | docs/domain_doc/prompts_doc/prompts.md | tests/unit/test_reflection.py | Reflection 自查/修正提示词模板 |
 | app/domain/reasoning/_common.py | ✅ | docs/domain_doc/reasoning_doc/_common.md | tests/unit/test_reasoning_common.py | 策略共享小工具与实例并发执行拒绝装饰器；实例拒绝另经 test_tool_lifecycle_wiring.py 覆盖 |
 | app/domain/reasoning/chain_of_thought.py | ⬜ | docs/domain_doc/reasoning_doc/reasoning.md | (无) | 空文件待实现 |
+| app/domain/reasoning/execution.py | ✅ | docs/domain_doc/reasoning_doc/reasoning.md | tests/unit/test_reasoning_execution.py | 三策略共享的六类不可变执行参数值对象；策略专属恢复预算以 None 表示不适用 |
 | app/domain/reasoning/planner.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 三阶段编排与语义预算接线；上下文超限保留 usage/plan/步骤事实且不进入同语义 fallback |
 | app/domain/reasoning/_planner_steps.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 步骤规范化、公开计划快照和单步审计记录纯转换；不接管 replan/usage/终态 |
 | app/domain/reasoning/reflection.py | ✅ | docs/domain_doc/reasoning_doc/reflection.md | tests/unit/test_reflection.py | Reflection 自查/修正；语义缩减只影响 prompt 视图；Guard 终止保留最近稿、原始证据、critique 与 usage |

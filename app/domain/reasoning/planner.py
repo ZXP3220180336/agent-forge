@@ -29,7 +29,7 @@ import copy
 import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.domain.ports.context_budget import ContextBudgetPort
@@ -58,6 +58,14 @@ from ._common import (
     reject_concurrent_runs,
 )
 from ._planner_steps import build_plan_payload, build_step_record, normalize_steps
+from .execution import (
+    ContextWindowLimits,
+    ExecutionLimits,
+    ModelOptions,
+    ReasoningRunScope,
+    RecoveryBudget,
+    ToolExecutionOptions,
+)
 from .react import ReActOutcome, ReActStrategy
 
 # ─────────────────────────────────────────────────────────────
@@ -261,33 +269,24 @@ class PlannerStrategy:
         user_input: str,
         messages: list[dict[str, str]],
         *,
-        max_iterations: int,
-        temperature: float,
-        max_tokens: int,
-        run_id: str,
-        run_stop: asyncio.Event,
-        max_execution_time: float | None = None,
-        max_context_rounds: int | None = None,
-        max_context_tokens: int | None = None,
-        max_empty_retries: int = 2,
-        max_llm_fail_retries: int = 2,
-        max_tool_protocol_retries: int = 2,
-        max_same_action_turns: int = 3,
-        max_replan_rounds: int = 2,
-        tool_timeout: int | None = None,
-        tool_max_retries: int | None = None,
+        run: ReasoningRunScope,
+        model: ModelOptions,
+        limits: ExecutionLimits,
+        context_window: ContextWindowLimits,
+        recovery: RecoveryBudget,
+        tool_execution: ToolExecutionOptions,
         stream_mode: bool = True,
-        cancel_event: asyncio.Event | None = None,
-        workflow_id: str | None = None,
-        parent_cancel_events: tuple[asyncio.Event, ...] = (),
     ) -> AsyncGenerator[str]:
         """
         Planner 主流程：规划 → 执行 → 汇总（三阶段显式分离）。
 
         语义：
-        - max_iterations = 每步 ReAct 小跑迭代上限（步骤级）；总预算由
-          max_execution_time（全局墙钟，每步转剩余预算）+ cost_limiter 兜底
-        - max_replan_rounds = 步骤失败触发的重规划次数上限（复用 max_refine_rounds 语义）
+        - ``limits.max_iterations`` 是每步 ReAct 小跑迭代上限；总预算由
+          ``limits.max_execution_time``（全局墙钟，每步转剩余预算）与 cost_limiter 兜底
+        - ``recovery.max_replan_rounds`` 是步骤失败触发的重规划次数上限；Planner
+          要求该值非 None，0 表示不允许重规划
+        - 运行身份、模型、上下文、恢复和工具限制分别由对应不可变值对象承载；
+          每步 ReAct 复用同一运行作用域，并只替换剩余墙钟
         - depends_on = 顺序纪律断言（串行单 Agent，列表序即合法拓扑序）；执行前守卫
           depends_on ⊆ 已完成（normalize 阶段已丢弃未知/自引/前瞻引用）
         - 降级路由（best-effort，不抛错）：规划失败 → 全量 ReAct 兜底；步骤失败
@@ -296,6 +295,9 @@ class PlannerStrategy:
         Yields:
             SSE 事件字符串（阶段 info + 步骤 tool 事件透传 + 收尾 done）
         """
+        if recovery.max_replan_rounds is None:
+            raise ValueError("PlannerStrategy 要求设置 max_replan_rounds")
+
         # 每次 execute 独立：重置全部累计态
         self.outcome = None
         self._tool_facts = []
@@ -308,7 +310,9 @@ class PlannerStrategy:
         # E：结构化调用（规划/汇总）的绝对截止——与各阶段 guard 同一时间预算（monotonic
         # 绝对时刻，不逐级重计），随 generate_structured 下沉到降级链每笔子调用前。
         deadline = (
-            start_time + max_execution_time if max_execution_time is not None else None
+            start_time + limits.max_execution_time
+            if limits.max_execution_time is not None
+            else None
         )
         executed: list[dict] = []  # 步骤审计记录（含失败步）
         completed: set[int] = set()  # 成功步骤 id（depends_on 守卫）
@@ -319,7 +323,7 @@ class PlannerStrategy:
         ) -> GuardResult | None:
             """按 Planner 全阶段累计 usage 判定是否允许继续副作用。"""
             return evaluate_guard(
-                cancel_event=cancel_event,
+                cancel_event=run.cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
                 running_usage=merge_usage(
@@ -344,31 +348,26 @@ class PlannerStrategy:
             child = self._react.execute(
                 text,
                 sub_messages,
-                max_iterations=max_iterations,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                max_execution_time=max(
-                    0.05, max_execution_time - (time.monotonic() - start_time)
-                )
-                if max_execution_time is not None
-                else None,
-                max_context_rounds=max_context_rounds,
-                max_context_tokens=max_context_tokens,
-                max_empty_retries=max_empty_retries,
-                max_llm_fail_retries=max_llm_fail_retries,
-                max_tool_protocol_retries=max_tool_protocol_retries,
-                max_same_action_turns=max_same_action_turns,
-                tool_timeout=tool_timeout,
-                tool_max_retries=tool_max_retries,
+                run=run,
+                model=model,
+                limits=replace(
+                    limits,
+                    max_execution_time=(
+                        max(
+                            0.05,
+                            limits.max_execution_time - (time.monotonic() - start_time),
+                        )
+                        if limits.max_execution_time is not None
+                        else None
+                    ),
+                ),
+                context_window=context_window,
+                recovery=recovery,
+                tool_execution=tool_execution,
                 stream_mode=stream_mode,
-                cancel_event=cancel_event,
                 baseline_usage=merge_usage(
                     self._react_total_usage, self._structured_usage
                 ),
-                run_id=run_id,
-                run_stop=run_stop,
-                workflow_id=workflow_id,
-                parent_cancel_events=parent_cancel_events,
             )
             try:
                 async with aclosing(child):
@@ -400,8 +399,8 @@ class PlannerStrategy:
         plan, plan_action, plan_usage, plan_context_error = await self._plan(
             user_input,
             tool_catalog,
-            max_context_tokens=max_context_tokens,
-            cancel_event=cancel_event,
+            max_context_tokens=context_window.max_tokens,
+            cancel_event=run.cancel_event,
             deadline=deadline,
         )
 
@@ -555,9 +554,9 @@ class PlannerStrategy:
                 executed,
                 failed_step,
                 deadline,
-                cancel_event,
-                max_replan_rounds,
-                max_context_tokens,
+                run.cancel_event,
+                recovery.max_replan_rounds,
+                context_window.max_tokens,
             )
 
             if replan_guard is not None:
@@ -599,8 +598,8 @@ class PlannerStrategy:
                     sub_result, _, sub_usage, sub_context_error = await self._summarize(
                         goal,
                         executed,
-                        max_context_tokens=max_context_tokens,
-                        cancel_event=cancel_event,
+                        max_context_tokens=context_window.max_tokens,
+                        cancel_event=run.cancel_event,
                         deadline=deadline,
                     )
 
@@ -658,8 +657,8 @@ class PlannerStrategy:
         result, action, result_usage, result_context_error = await self._summarize(
             goal,
             executed,
-            max_context_tokens=max_context_tokens,
-            cancel_event=cancel_event,
+            max_context_tokens=context_window.max_tokens,
+            cancel_event=run.cancel_event,
             deadline=deadline,
         )
 

@@ -210,6 +210,80 @@ TaskService 信号量。两轮复核完成后未发现剩余 P0～P3 问题。
 1247 项通过（43.39 秒），仅有既有 Starlette/httpx 弃用提示。最终文档对齐、模块编译与差异格式
 检查通过。R5 与 C-02 Piece ③～⑧均未修改，本批按用户要求保留为未提交工作区。
 
+## R-02：Agent 基类契约与桥接整理（已完成）
+
+日期：2026-09-16。目标：保持 `agent/` 管理统一运行生命周期、`reasoning/` 管理可独立复用的领域
+推理流程，在不改变三策略算法、Guard、usage、重试或终态语义的前提下，清理 BaseAgent 未兑现的
+扩展承诺和冗余状态，并收敛三个桥接重复的上下文前置检查。
+
+| 文件组 | 修改目的 | 边界 |
+| --- | --- | --- |
+| `app/domain/agent/base.py` | 删除未接线的四个 `on_*` 钩子、未使用的 `_tool_call_history` 与无转换路径的 `WAITING`；新增 `_require_context()` 统一桥接前置检查 | 不增加通用执行模板，不接管策略 Guard、usage、结果或重试 |
+| `app/domain/agent/executor.py`、`planner.py`、`reflection.py` | 复用 `_require_context()`；修正“纯算法”等过时说明 | 参数仍显式映射，不引入 `**kwargs` 参数包，不上移 `_cancel_event` |
+| `app/domain/reasoning/react.py` | 修正 Planner/Reflection 的真实复用调用方和策略定位注释 | 不改变 `execute` / `execute_tool_calls` 行为 |
+| Agent/ReAct 模块说明、问题记录与索引 | 同步公共状态、方法表、两层职责和修复证据 | `max_refine_rounds` / `max_replan_rounds` 拆分仅保留独立候选，不随本任务实施 |
+
+验收：三个 Agent 桥接继续传递原有全部参数；策略可直接执行和嵌套；生成器关闭、事实接管、状态与
+异常行为不变。运行 Agent/Planner/Reflection、策略生成器和嵌套事实定向测试，再运行全量测试、
+文档对齐、编译及差异格式检查。问题闭环见 [AGENT-001](../issues/domain/agent/2026-09-16-base-contract-drift.md)。
+
+### 评审
+
+已完成计划范围。BaseAgent 只保留真实运行生命周期与唯一必要的 `_strategy_cycle` 抽象契约；四个
+无调用钩子、无消费者的工具历史和无转换路径的 `WAITING` 已删除。三个桥接主循环的相同上下文
+前置检查提取为 `_require_context()`，并仍逐项显式传递原有参数。E9 复核结论为无需新增 State、Policy 或
+通用执行模板；Guard、usage、重试、成果接管和策略终态继续留在 reasoning。
+
+定向回归 50 项通过；全量回归 1248 项通过（47.05 秒），仅有既有 Starlette/httpx 弃用提示。
+ALIGNMENT 校验、`app`/`tests` 编译及过时符号检索通过。对外兼容边缘仅限仓库外调用方若曾引用未
+兑现的钩子或 `WAITING`；项目内无消费者，故不保留空壳，并以
+[BaseAgent 契约 ADR](../adr/domain/agent/2026-09-16-base-agent-contract.md) 记录该公共契约取舍。两轮独立
+复核未发现运行行为 P0/P1 问题；其指出的 ADR 缺口、残留旧术语、代码分区标题、导航和记录状态
+均已修正。
+参数拆分仍是独立候选，R5 与 C-02 未改动。
+
+### R-02 补充：移除 ReActAgent 工具原语转发（已授权）
+
+`ReActAgent._execute_tool_calls()` 无生产调用，Planner / Reflection 组合的是完整
+`ReActStrategy.execute()`；并行与保序在策略测试中已有等价覆盖。删除该转发和 Agent 层重复测试，
+同步当前模块说明、ADR 与工具调用导航。保持 `ReActStrategy.execute_tool_calls()` 的协议、取消、期限、
+清理、事件及消息行为不变；R5 与 C-02 不纳入本补充任务。
+
+补充评审：转发方法及 Agent 层两项重复测试已删除；策略层既有并行与保序测试继续通过。定向回归
+25 项、全量回归 1246 项通过（47.90 秒），测试总数减少 2 项与删除的重复测试一致，仅有 1 项既有
+Starlette/httpx 弃用提示。未改变 `ReActStrategy.execute_tool_calls()` 或任何运行契约。
+
+<a id="r-03-reasoning-execution-parameters"></a>
+
+## R-03：Reasoning 执行参数语义分组（已完成）
+
+日期：2026-09-16。目标：把 ReAct、Planner、Reflection `execute()` 共享的二十余个标量参数按变化
+原因收敛为不可变值对象，降低新增参数对桥接、嵌套策略和测试调用面的扩散，同时保持三策略现有
+Guard、重试计数、取消、deadline、usage、工具执行和终态语义。
+
+| 文件组 | 修改目的 | 边界 |
+| --- | --- | --- |
+| `app/domain/reasoning/execution.py`、包导出 | 新增 `ReasoningRunScope`、`ModelOptions`、`ExecutionLimits`、`ContextWindowLimits`、`RecoveryBudget`、`ToolExecutionOptions` 六个 `frozen=True, slots=True` 值对象 | 不建立扁平万能 Context；`None` 在 replan/refine 字段仅表示策略不适用，`0` 表示适用但无恢复次数 |
+| 三份 reasoning 策略 | `execute()` 改收语义对象；Planner/Reflection 向子 ReAct 显式透传，Planner 仅以剩余时间替换 `ExecutionLimits` | `user_input`、可变 `messages`、`output_schema`、`baseline_usage`、`stream_mode` 保持显式；策略专属恢复预算从 `RecoveryBudget` 读取 |
+| 三份 Agent 桥接 | 将 `AgentContext` 显式映射为六类 reasoning 值对象 | 保持 `agent → reasoning` 单向依赖；不让 reasoning import `AgentContext`，不引入 `**kwargs` 参数袋 |
+| 直接策略测试与正式文档 | 迁移所有调用方，增加值对象及 `None/0` 契约测试，同步接口、调用链、ADR/Issue/ALIGNMENT 导航 | 不保留新旧签名双入口，不借机修改策略行为或 R5/C-02 |
+
+验收：三种 Agent 主链路、三策略直接运行、Planner/Reflection 嵌套 ReAct、双通道、重试预算、取消、
+deadline、usage 与工具事实测试通过；再运行全量测试、ALIGNMENT、编译、过时标量调用检索和差异检查。
+
+### R-03 评审
+
+- [x] 六类 `frozen=True, slots=True` 值对象已落地；`ReasoningRunScope` 在副作用前校验运行身份和
+  Event 控制链，`RecoveryBudget` 拒绝负数并保留 `None`（不适用）与 `0`（适用但无恢复）区别。
+- [x] 三策略入口、三个 Agent 桥接及 Planner/Reflection 子 ReAct 已迁移；Planner 仅替换剩余墙钟，
+  run、stream、retry、usage 基线、取消、deadline 和工具事实所有权保持原契约。
+- [x] `user_input`、可变 `messages`、`output_schema`、`baseline_usage`、`stream_mode` 保持显式；没有
+  旧签名兼容层，也没有把 `AgentContext` 或工具原语并入 reasoning 参数对象。
+- [x] 接口 docstring、Reasoning/Agent 模块说明、父导航、ALIGNMENT、ADR、REASON-026 与 lessons 已同步。
+- [x] 合并定向回归 280 项通过；最终全量 `1261 passed`（唯一警告为 Starlette TestClient 的已知弃用
+  提示）。`scripts/verify_alignment.py`、`compileall`、过时标量签名检索和 `git diff --check` 均通过。
+- [x] 独立只读复核发现的运行作用域/负预算不变量已修复并复审关闭；最终无 P0–P2 遗留。
+
 <a id="c-02-lifecycle"></a>
 
 ## C-02：工具执行生命周期（P0 规格已形成，待实施评审）
