@@ -1,7 +1,7 @@
 # API 层说明文档
 
 > **对应代码**：`app/api/`
-> **更新日期**：2026-08-29
+> **更新日期**：2026-09-16
 > **文档定位**：API 层（`app/api/`）—— 系统对外暴露边界，HTTP 协议适配 + 鉴权 + 统一错误信封；是客户端（前端 / 外部系统）与服务层的桥梁。
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。边界：（🔶 error_handler ✅ + auth / rate_limit 预留）
 > **配套**：端点契约见 [routes.md](routes_doc/routes.md) · 错误信封见 [middleware.md](middleware_doc/middleware.md)
@@ -34,7 +34,7 @@
 API 层是系统的**对外暴露边界**，位于客户端与服务层之间，负责：
 
 - **HTTP 协议适配**：将 HTTP 请求 / 响应与内部领域模型互转，定义请求校验模型（Pydantic）与接口语义
-- **路由编排**：`routes/` 定义端点，经依赖注入驱动服务层（SessionManager / ContextManager / TaskService / LLMService / ToolService）
+- **路由适配**：`routes/` 定义端点；聊天路由注入 `ChatService`，保留 HTTP/SSE、断连与响应关闭边界
 - **横切处理**：`middleware/` 统一处理认证、限流与异常（当前 error_handler 已落地，认证 / 限流预留）
 - **数据契约**：`schemas/` 集中管理请求 / 响应 DTO，路由层只 import 使用
 - **统一错误信封**：`AppError` 经 error_handler 翻译为 `{code, message, details}`（业务码与 HTTP 状态解耦）
@@ -65,9 +65,9 @@ app/api/
 
 ### 设计原则
 
-1. **薄路由**：路由函数只做「参数校验 → 服务编排 → 响应组装」，业务逻辑下沉服务层，不承载领域实现
+1. **薄路由**：路由函数只做协议参数、传输信号和响应组装，聊天业务编排下沉 `ChatService`
 2. **依赖倒置注入**：服务经 `deps.py` 从 `container` 全局单例按请求注入，路由内不直接实例化
-3. **Agent 运行隔离**：每次请求新建 `ReActAgent` 实例，上下文携带唯一 `run_id`；实例持有运行期结果，不并发复用
+3. **Agent 运行隔离**：`ChatService` 每次请求创建独立 Agent 与唯一 `run_id`；API 不直接构造 Agent
 4. **鉴权前置**：受保护端点注入 `get_current_user`，访问会话前校验 `user_id` 归属（403）
 5. **统一错误语义**：API 层不抛 `HTTPException`，全走统一异常树（`AppError`），error_handler 在对外边界翻译
 
@@ -80,7 +80,7 @@ app/main.py（装配路由 + 注册 error_handler + CORS / SPA 回退）
     ↓
 app/api/（deps 注入用户身份 + 服务单例）
     ↓
-app/application/（SessionManager / ContextManager / TaskService）
+app/application/（ChatService → SessionManager / ContextManager / TaskService）
 app/integration/（LLMService / ToolService / EmbeddingService）
 ```
 
@@ -137,7 +137,7 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 **代码**：`app/api/schemas/` + `app/api/deps.py` · **文档**：[routes.md](routes_doc/routes.md)（请求 / 响应模型与认证方式）
 
 - **Schema**：`request.py` 定义 `SendMessageRequest` / `CreateSessionRequest`；`response.py` 定义 `CreateSessionResponse`。路由层只 import 使用，不在路由内定义
-- **依赖注入**：`deps.py` 提供 `get_current_user`（模拟 Token 解析）与 `get_session_manager` / `get_context_manager` / `get_llm_service` / `get_tool_service` / `get_task_service` / `get_agent_params`（从 `container` 取单例，未初始化抛 `RuntimeError`）
+- **依赖注入**：聊天路由使用 `get_chat_service` 与 `get_current_user`；其余细粒度依赖仍供对应路由使用。所有依赖从 `container` 取已装配实例，未初始化时抛 `RuntimeError`
 
 ---
 
@@ -145,10 +145,9 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 
 ```text
 客户端 → HTTP 请求 → main.py（CORS / SPA 回退 / error_handler 兜底）
-    → 路由（chat / session，经 deps 注入用户身份 + 服务单例）
-        → 服务层：SessionManager（会话验证）→ ContextManager（组装 messages）
-        → TaskService.run_agent → ReActAgent 闭环（LLM 思考 ↔ 工具调用）
-    → SSE 事件流回客户端（流结束保存 assistant 回复）
+    → chat 路由（用户身份 + ChatService；断连/SSE/响应关闭）
+        → ChatService → Session / Context / Task → ReActAgent
+    → SSE 事件流回客户端 → ChatRun 关闭并保存 assistant
 ```
 
 错误路径：任一层抛 `AppError` → error_handler 翻译为 `{code, message, details}` 信封返回客户端。
@@ -157,7 +156,7 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 
 ## 配置关联
 
-- Agent 运行参数（含 `agent_max_iterations`、`agent_max_tool_protocol_retries` 与其它模型/执行/上下文护栏）经 `container.agent_params` → `get_agent_params` 注入 chat 路由
+- Agent 运行参数由 `container.agent_params` 在启动时注入 `ChatService`，请求仅可覆盖 `max_iterations`
 - 并发约束（`agent_max_concurrent_tasks` / `agent_max_concurrent_tools`）作用于 TaskService / ToolService
 - 全部配置项见 [config 文档](../config_doc/config.md)
 

@@ -103,6 +103,7 @@ def test_container_default_state():
     assert c.llm_service is None
     assert c.tool_service is None
     assert c.task_service is None
+    assert c.chat_service is None
     assert c.embedding_service is None
     assert c.agent_params == {}
     assert c.initialized is False
@@ -130,6 +131,12 @@ async def test_initialize_happy_path(monkeypatch):
     assert len(c.tool_service.list_tools()) == 11
     assert "http_api" in c.tool_service.list_tools()
     assert c.task_service is not None
+    assert c.chat_service is not None
+    assert c.chat_service._session_manager is c.session_manager
+    assert c.chat_service._context_manager is c.context_manager
+    assert c.chat_service._task_service is c.task_service
+    assert c.chat_service._llm is c.llm_service
+    assert c.chat_service._tools is c.tool_service
     assert c.embedding_service is not None
     assert c.agent_params == {
         "max_iterations": settings.agent_max_iterations,
@@ -193,6 +200,7 @@ async def test_initialize_redis_failure_degrades(monkeypatch):
     assert c.initialized is True
     assert c.session_manager is not None
     assert c.session_manager.redis is None
+    assert c.chat_service is not None
 
 
 @pytest.mark.asyncio
@@ -213,6 +221,7 @@ async def test_initialize_engine_failure_degrades(monkeypatch):
     assert c.db_session_factory is None
     assert c.session_manager is not None
     assert c.session_manager.db_session is None
+    assert c.chat_service is not None
     assert c._errors and "数据库初始化失败" in c._errors[0]
     assert c.initialized is True
 

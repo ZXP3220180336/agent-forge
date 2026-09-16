@@ -119,6 +119,46 @@ async def test_run_agent_releases_semaphore_on_error():
 
 
 @pytest.mark.asyncio
+async def test_run_agent_aclose_closes_agent_stream_and_releases_semaphore():
+    """消费者提前关闭时同步关闭 Agent 子生成器，并释放并发许可。"""
+    ts = TaskService(max_concurrent=1)
+
+    class _ClosingAgent:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def run(self, user_input, messages, context):
+            try:
+                yield "data: first\n\n"
+                yield "data: second\n\n"
+            finally:
+                self.closed = True
+
+    agent = _ClosingAgent()
+    stream = ts.run_agent(
+        user_input="x",
+        messages=[],
+        context=_context(),
+        agent=agent,
+    )
+
+    assert await anext(stream) == "data: first\n\n"
+    await stream.aclose()
+
+    assert agent.closed is True
+    follow_up = _FakeAgent(delay=0, events=1)
+    assert [
+        event
+        async for event in ts.run_agent(
+            user_input="next",
+            messages=[],
+            context=_context("run-next"),
+            agent=follow_up,
+        )
+    ] == ["data: event0\n\n"]
+
+
+@pytest.mark.asyncio
 async def test_max_concurrent_property():
     """max_concurrent 属性反映配置值。"""
     ts = TaskService(max_concurrent=4)

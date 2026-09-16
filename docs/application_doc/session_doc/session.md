@@ -40,7 +40,7 @@ SessionManager ──► Redis（热缓存：session:{id} / user_sessions:... / 
 ```
 
 - 构造依赖 `redis_client`（`redis.asyncio.Redis | None`）与 `db_session_factory`（`async_sessionmaker`），均由 `Container.initialize()` 创建后注入，本模块不直接读取配置
-- 上游调用方：`app/api/routes/session.py`（会话 CRUD）与 `app/api/routes/chat.py`（存消息）
+- 上游调用方：`app/api/routes/session.py`（会话 CRUD）与 `ChatService`（聊天预检、消息与结果提交）
 
 ### 构造参数
 
@@ -59,8 +59,8 @@ SessionManager ──► Redis（热缓存：session:{id} / user_sessions:... / 
 | --- | --- | --- |
 | `create_session` | `(user_id, system_prompt=None, title=None) -> dict` | 创建会话：UUID + DB 持久化 + 预热 Redis，默认 system_prompt「你是一个友好的AI助手」/ title「新对话」 |
 | `get_session` | `(session_id) -> dict \| None` | Redis → DB 缓存穿透保护，DB 命中回写 Redis |
-| `get_messages` | `(session_id, limit=50, offset=0) -> list[dict]` | 历史消息（仅 user / assistant），`created_at` 升序，OFFSET 分页 |
-| `add_message` | `(session_id, role, content, reasoning_content=None, token_count=0) -> int` | 写入消息记录，返回消息 ID（`inserted_primary_key[0]`） |
+| `get_messages` | `(session_id, limit=50, offset=0, before_message_id=None) -> list[dict]` | 历史消息；可用消息 ID 建立排他的运行快照上界 |
+| `add_message` | `(session_id, role, content, reasoning_content=None, token_count=0) -> int` | 写入并返回正消息 ID；数据库未返回有效主键时失败 |
 | `delete_session` | `(session_id) -> None` | 软删除：删 Redis 键 + DB 更新 `status="deleted"` |
 | `hard_delete_session` | `(session_id) -> None` | 物理删除：先删消息（外键约束）再删会话，仅管理员 / 定时任务 |
 | `list_sessions` | `(user_id, limit=20, offset=0, include_stats=True) -> list[dict]` | 活跃会话列表，第一页走 Redis 缓存 |
@@ -145,7 +145,7 @@ WHERE session_id = ? AND role IN ('user', 'assistant')
 | Redis 不可用（`redis_client=None`） | 缓存读写经 `_cache_*` 判空辅助降级，直查 DB |
 | `limit` 越界 | 收敛到 `[1, 100]` |
 | `offset` 为负 | 归零 |
-| `add_message` 无主键回读 | 返回 `0` |
+| `add_message` 无有效主键回读 | 抛 `RuntimeError`，调用方不得继续构建无边界上下文 |
 | `get_session` DB 未命中 | 返回 `None`（不缓存空值，存在穿透攻击面） |
 | 消息查询 | 只返回 `role` / `content` 两字段，`reasoning_content` / `token_count` 不随历史返回 |
 | 统计开启 | 逐会话一次聚合查询（或缓存命中），列表较长时注意 N+1 压力 |
@@ -199,6 +199,6 @@ sessions, total = await container.session_manager.list_sessions_v2(
 
 - [应用层说明](../README.md)（SessionManager 的定位）
 - [ContextManager 上下文管理](../context_doc/context.md)（下游依赖方：经 `get_session` / `get_messages` 组装上下文）
-- [路由模块](../../api_doc/routes_doc/routes.md)（`session.py` / `chat.py` 路由，本模块上游调用方）
+- [ChatService](../chat_doc/chat.md)（聊天用例调用方）与[路由模块](../../api_doc/routes_doc/routes.md)（会话 CRUD）
 - [配置说明](../../config_doc/config.md)
 - [架构设计](../../project/architecture.md)

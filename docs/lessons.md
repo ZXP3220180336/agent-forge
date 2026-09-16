@@ -1,6 +1,6 @@
 # 研发教训
 
-更新：2026-09-15。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，本轮文档维护未重新验证这些业务结论。当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
+更新：2026-09-16。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
 
 ## 规则与文档维护
 
@@ -41,6 +41,8 @@
 | 一次 Facade 调用内部含 retry/fallback/降级/等待 | 阶段入口有 Guard 并未覆盖内部真实 attempt；新增控制参数只出现在签名，也不证明每条再调用边已经透传。 | [LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)、[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)；[请求规范](engineering/integration-rules.md)。 |
 | 同一业务取消信号跨流式阶段 | 底层既返回取消 SSE 又可能抛异常，会让公开终态取决于取消时刻。资源拥有者应先 close/settle，Facade 统一传播类型化控制信号，领域状态机独占最终用户事件；已产事实不能随取消被抹除。 | [LLM-050](../issues/integration/llm/2026-09-13-stream-business-cancellation-contract.md)；[生命周期规范](engineering/agent-runtime-rules.md#lifecycle)、[请求规范](engineering/integration-rules.md)。 |
 | 异步生成器逐层委托事件并拥有资源 | `async for` 不会保证外层 `aclose()` 同步传给当前子生成器；只测最内层关闭会掩盖公开链先结算、后由 finalizer 延迟关闭 response。每个 yield 委托边界应显式关闭子生成器，并从最外层测试 close/settle 顺序。 | [LLM-ADR-019](../adr/integration/llm/2026-09-15-stream-consumption-boundary.md)；[G0-3](engineering/ai-engineering-rules.md#g0)。 |
+| SSE 运行清理只放在 body 生成器或响应后台任务 | ASGI `send()` 失败可从响应调用边界退出，body 生成器的 `finally` 和发送完成后的后台任务都不足以单独证明 run 已关闭。拥有运行的响应类型应在 `__call__` 外层兜底关闭 body iterator 与 run，并验证信号量可被下一请求取得。该结论只能由**有判别力**的用例证明：uvicorn 声明 ASGI 2.3，其取消由任务组投递，落点取决于生成器当时是否在 `await` 中——在 await 中时生成器随取消自行展开，同一用例在有无边界清理时都会通过；只有 `send()` 抛错的 2.4 分支会失败。新增回归测试先用「移除修复」确认它会失败，再写明它证明了哪条分支。 | [CHAT-ADR-001](../adr/application/chat/2026-09-16-chat-run-owner.md)；[G0-3](engineering/ai-engineering-rules.md#g0)。 |
+| 先保存当前消息再读取历史 | 只用 `!= current_id` 去重会让并发期间稍后提交的同会话消息越界进入当前运行；快照边界应使用单调主键 `id < current_id`，并在主键缺失或非正数时失败，不能用占位值继续。 | [CHAT-001](../issues/application/chat/2026-09-16-current-message-duplicated.md)；[ChatService 说明](application_doc/chat_doc/chat.md)。 |
 | abort 后 factory 吞取消并迟回资源 | helper 的正常返回曾被误当业务成功或直接丢弃；迟回值承载资源所有权，abort 判定与 settle/close 责任并不互斥。 | [LLM-045](../issues/integration/llm/2026-09-09-execution-control-late-result-drop.md)；[请求规范](engineering/integration-rules.md)。 |
 | create 已调度而终止、抛普通异常，或退款被取消打断 | 没有成功响应不证明远端未执行；create 一旦调度，未知 usage 也要保守结算。重复退款和过度退款可能虚增可用配额。 | [LLM-042](../issues/integration/llm/2026-09-07-reserve-r5-cancel-interrupted-rpm-leak.md)、[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)、[LLM-048](../issues/integration/llm/2026-09-12-create-started-ordinary-error-settlement.md)；[请求规范](engineering/integration-rules.md)。 |
 | 多次真实响应合并一次返回 | 只回填末次成功漏掉前序消耗，`not target` 又曾把合法空 dict 当无累加对象；实际可得 usage 与不可得消耗要分开，估算不能冒充实际计量。 | [LLM-038/039](../issues/integration/llm/2026-09-02-usage-accounting.md)、[LLM-047](../issues/integration/llm/2026-09-09-deadline-usage-propagation-closed-loop.md)；[流式规范](engineering/integration-rules.md)。 |

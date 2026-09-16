@@ -1,7 +1,7 @@
 # 路由模块对外接口文档
 
 > **对应代码**：`app/api/routes/`
-> **更新日期**：2026-09-14
+> **更新日期**：2026-09-16
 > **文档定位**：路由模块对外接口文档——端点契约（请求 / 响应模型 / 认证 / 异常）+ 内部组件导航；服务对象为路由的外部调用方（客户端 / 前端）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：错误信封经 [middleware.md](../middleware_doc/middleware.md)（error_handler）；SSE 帧格式见 [events.md](../../shared_doc/events.md)；层总览见 [README.md](../README.md)
@@ -38,7 +38,7 @@
 路由模块是 API 的**对外暴露层**，位于中间件之后、服务层之前，承担「协议适配」职责：
 
 - **暴露 REST API**：将 HTTP 请求 / 响应与内部领域模型互转，定义请求校验模型（Pydantic）与接口语义
-- **鉴权后驱动 Agent**：通过 `app/api/deps.py` 注入当前用户与各服务单例，在完成会话授权后驱动 Agent 闭环（LLM 思考 → 工具调用 → LLM 总结）
+- **聊天传输适配**：注入 `ChatService`，把 HTTP 断连转换为取消信号，并输出 SSE error / `[DONE]` 与响应头
 - **薄路由原则**：路由函数只做「参数校验 → 服务编排 → 响应组装」，业务逻辑下沉到服务层（SessionManager / ContextManager / TaskService 等），不承载领域实现
 
 路由模块与相邻层的职责边界：
@@ -66,8 +66,8 @@ app/api/routes/
 ### 设计原则
 
 1. **无状态路由**：路由函数不持有跨请求状态，所有依赖（用户、服务）通过 FastAPI 依赖注入按请求获取
-2. **Agent 运行隔离**：每次请求新建 `ReActAgent` 实例并传入唯一 `run_id` 的 `AgentContext`；实例持有运行期结果，禁止跨请求并发复用
-3. **鉴权前置**：每个受保护端点都注入 `get_current_user`，并在访问会话前校验 `user_id` 归属（403 无权访问）
+2. **用例下沉**：聊天预检、运行身份、Agent 创建和结果提交由 Application `ChatService` 负责
+3. **鉴权前置**：每个受保护端点注入 `get_current_user`；会话归属由对应应用用例或会话路由校验
 4. **统一错误语义**：路由不抛 `HTTPException`，抛统一异常树（`AppError` 子类），由 error_handler 翻译为信封（见 [middleware.md](../middleware_doc/middleware.md)）
 
 ### 依赖关系
@@ -76,8 +76,8 @@ app/api/routes/
 客户端 / 前端
     ↓ HTTP
 路由（chat / session）
-    ↓ deps 注入（get_current_user + 服务单例）
-服务层：SessionManager / ContextManager / TaskService / LLMService / ToolService
+    ↓ deps 注入（get_current_user + ChatService / 会话服务）
+应用层：ChatService → SessionManager / ContextManager / TaskService → Agent
     ↓
 SSE 事件流回客户端（chat/send）
 ```
@@ -174,37 +174,26 @@ Authorization: Bearer <token>
 
 **处理流程**：
 
-1. **会话验证与授权**：`session_manager.get_session(session_id)`，不存在 → `404 会话不存在`；`session["user_id"] != user_id` → `403 无权访问`
-2. **保存用户消息**：`session_manager.add_message(role="user", content=message, token_count=context_manager.count_tokens(message))`，token 数由 ContextManager 经 `LLMGateway` 的计数能力统计（实现细节见 [token_counter.md](../../integration_doc/llm_doc/token_counter.md)）
-3. **构建上下文**：`context_manager.build_messages(session_id, user_message)` 组装发送给 LLM 的消息序列
-4. **定义流式生成器 `generate()`**：
-   - Application 为本次请求生成唯一 `run_id`，按 `run_id` 登记取消事件，并创建只属于该运行的 `run_stop`；同一会话可以同时登记多个 run
-   - 新建 `AgentContext`（携带 `run_id`、`run_stop`、模型参数、执行/上下文护栏及各类重试上限）与 `ReActAgent(llm=llm_service, tools=tool_service, context_budget=context_manager)`；Agent/策略持有运行期可变结果，因此每次请求创建独立实例，禁止并发复用同一实例
-   - `async for event in task_service.run_agent(user_input, messages, context, agent)` 驱动 ReAct 闭环（LLM 思考 → 工具调用 → LLM 总结），并**在任务级并发信号量 `agent_max_concurrent_tasks` 保护下运行**
-   - 每个事件 `yield` 给 `StreamingResponse` 逐帧推送
-   - 异常兜底：捕获异常后 `yield build_error_event(...)`，错误以 SSE 事件透出而非中断连接
-   - `finally`：先 `yield "data: [DONE]\n\n"` 收尾，再按 `run_id` 释放自己的取消登记；最后从 `agent.result` 取最终答复，非空时 `session_manager.add_message(role="assistant", content=..., reasoning_content=..., token_count=...)` 持久化
-5. **返回 `StreamingResponse`**：`media_type="text/event-stream"`
+1. `ChatService.prepare_message(...)` 在响应头前完成会话 404/403、user 提交、上下文快照、run 登记及每请求 Agent 创建。
+2. 路由消费 `ChatRun.events()`；逐事件检查 `Request.is_disconnected()`，首次断连转换为会话级取消，之后继续排水但不再推送。
+3. 普通运行异常翻译为 SSE error；未断连且未提前关闭时追加一次 `[DONE]`。
+4. 路由专用 `_ChatStreamingResponse` 在 ASGI `send()` 失败时也从调用边界关闭 body iterator 与 ChatRun，避免悬挂子流、登记或信号量。
+5. `ChatRun.aclose()` 按 run 清登记，并在 `[DONE]` 后保存非空 assistant 结果。
 
-**依赖注入**（5 个服务 + 1 个参数 + 用户）：
+**依赖注入**：
 
 | 依赖 | 用途 |
 | --- | --- |
 | `get_current_user` | 解析请求身份（user_id），鉴权前置 |
-| `get_session_manager` | 会话读取 / 消息持久化 |
-| `get_context_manager` | 构建 messages + token 计数 |
-| `get_llm_service` | 作为 `ReActAgent` 的 LLM 后端 |
-| `get_tool_service` | 提供工具定义与执行（`ReActAgent` 工具侧） |
-| `get_task_service` | 在任务级并发约束下运行 Agent |
-| `get_agent_params` | 提供 Agent 运行参数（模型参数、执行/上下文护栏、空输出/LLM 失败/工具协议修正/停滞上限） |
+| `get_chat_service` | 获取已装配的聊天用例；内部依赖由 Container 注入 |
 
-> ✅ **客户端被动断连自动取消**：`send` 流式生成逐事件轮询 `request.is_disconnected()`——客户端关页 / 刷新 / 断网时调用 `cancel_session(session_id)`，置位该会话当时登记的全部运行取消事件；停止向断连端推送并继续排水，让 Agent 在控制边界收尾。每个生成器最终只释放自己的 `run_id` 登记，不会误删同会话兄弟运行。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
+> ✅ **客户端被动断连自动取消**：逐事件探测断连时取消该会话当时全部运行并继续排水；若断开发生在 ASGI 实际发送 chunk 的窗口，专用响应边界仍关闭当前 body iterator 和 run。每个 ChatRun 最终只释放自己的登记。链路见 [ChatService 说明](../../application_doc/chat_doc/chat.md)。
 
 #### `POST /api/chat/stop` — 停止生成
 
 `session_id` 为**查询参数**（函数参数未绑定 Pydantic 模型，FastAPI 默认按 query 解析）。
 
-处理流程：会话验证与授权（404 / 403，同 `chat/send`）→ `task_service.cancel_session(session_id)` 置位会话取消事件 → 返回 `{"message": "已发送停止信号", "cancelled": bool}`。
+处理流程：`ChatService.stop` 完成会话验证与授权（404 / 403）→ 按 session 置位活动运行 → 返回 `{"message": "已发送停止信号", "cancelled": bool}`。
 
 > ✅ **会话级停止**：`/chat/stop` 保留对外 session 语义，内部置位该会话全部活动 run 的取消事件；一个 run 自然结束只清理自己的登记。工具调用还携带所属 run 的 `run_stop`，该信号只关闭该 run 的新工具准入。`cancelled=false` 表示该会话当前无活动运行。链路与语义见 [REASON-003](../../../issues/domain/reasoning/2026-08-30-cancel-event-semantics.md)。
 
@@ -226,7 +215,7 @@ Authorization: Bearer <token>
 
 | 组件 | 文件 | 职责 | 状态 |
 | --- | --- | --- | --- |
-| 聊天路由 | chat.py | SSE 流式发送（ReAct 闭环）+ 停止（优雅取消） | [见对齐表](../../ALIGNMENT.md) |
+| 聊天路由 | chat.py | HTTP/SSE、断连适配、专用响应关闭边界与停止端点 | [见对齐表](../../ALIGNMENT.md) |
 | 会话路由 | session.py | 会话创建 / 详情 / 历史 / 列表 / 删除 | [见对齐表](../../ALIGNMENT.md) |
 | 管理路由 | admin.py | 管理接口（系统状态、统计、运维；鉴权需高于普通用户） | [见对齐表](../../ALIGNMENT.md) |
 | 任务路由 | agent.py | 异步任务受理（规划 `POST /api/tasks/submit` + `GET /api/tasks/{id}`，承接 TaskService 调度，演进见 [architecture Phase C](../../project/architecture.md)） | [见对齐表](../../ALIGNMENT.md) |
@@ -238,7 +227,7 @@ Authorization: Bearer <token>
 
 路由模块通过 `app/api/deps.py` 提供的依赖函数获取服务与用户身份（见 [deps.py](../../../app/api/deps.py)），而非在路由内直接实例化，原因：
 
-1. **单例复用**：`SessionManager` / `ContextManager` / `LLMService` / `ToolService` / `TaskService` 均持有重量级资源（Redis 连接池、数据库连接池、OpenAI 异步客户端），依赖函数返回 `container` 中的全局单例，避免每个请求重复创建
+1. **单例复用**：聊天路由只注入 `ChatService`；其 Session、Context、Task、LLM、Tool 与配置依赖在 Container 统一装配
 2. **启动期校验**：各 `get_*_service` 在 `container` 对应实例为 `None` 时抛 `RuntimeError`，提示「请确保在应用启动时调用了 `container.initialize()`」——即服务必须在启动时完成初始化
 3. **测试友好**：路由函数显式声明依赖，便于在测试中替换实现
 
@@ -247,18 +236,14 @@ Authorization: Bearer <token>
 | 依赖 | 返回 | 注入端点 |
 | --- | --- | --- |
 | `get_current_user` | `str`（user_id） | 所有端点 |
-| `get_session_manager` | `SessionManager` | chat / session 所有端点 |
-| `get_context_manager` | `ContextManager` | `POST /api/chat/send` |
-| `get_llm_service` | `LLMService` | `POST /api/chat/send` |
-| `get_tool_service` | `ToolService` | `POST /api/chat/send` |
-| `get_task_service` | `TaskService` | `POST /api/chat/send` |
-| `get_agent_params` | `dict`（Agent 运行参数） | `POST /api/chat/send` |
+| `get_chat_service` | `ChatService` | `POST /api/chat/send`、`POST /api/chat/stop` |
+| `get_session_manager` | `SessionManager` | session 路由 |
 
 ---
 
 ## 配置关联
 
-- Agent 运行参数（含 `agent_max_iterations`、`agent_max_tool_protocol_retries` 与其它模型/执行/上下文护栏）经 `container.agent_params` → `get_agent_params` 注入 chat 路由
+- Agent 运行参数（含 `agent_max_iterations`、`agent_max_tool_protocol_retries` 与其它模型/执行/上下文护栏）由 `container.agent_params` 注入 `ChatService`
 - 并发约束（`agent_max_concurrent_tasks` / `agent_max_concurrent_tools`）作用于 TaskService / ToolService
 - 完整配置项见 [config 文档](../../config_doc/config.md)
 

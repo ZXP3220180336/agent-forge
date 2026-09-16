@@ -71,7 +71,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    API["chat.py<br/>验证会话、接收问题"]
+    API["ChatService<br/>验证会话、准备运行"]
     CTX["ContextManager<br/>组装历史与上下文"]
     TASK["TaskService<br/>任务并发与取消登记"]
     BASE["BaseAgent / ReActAgent<br/>运行生命周期与结果"]
@@ -120,9 +120,10 @@ flowchart TB
 
 ### 第一步：准备工作
 
-`chat.py` 验证会话、保存问题；`ContextManager` 整理历史；为本次运行创建身份、预算和取消信号。
+`ChatService` 验证会话、保存问题；`ContextManager` 按消息 ID 快照整理历史；ChatService 为本次运行
+创建身份、预算和取消信号，路由只负责 HTTP/SSE 与断连适配。
 
-对应链路：`chat.py → ContextManager → TaskService → BaseAgent.run`。
+对应链路：`chat.py → ChatService → ContextManager → TaskService → BaseAgent.run`。
 
 ### 第二步：模型提出调查动作
 
@@ -183,5 +184,5 @@ ReAct 将工具结果加入历史。模型据此继续查询设备告警、腔�
 - [Anthropic：模型、Harness、Session 与执行环境的分离](https://www.anthropic.com/engineering/managed-agents)
 - [Anthropic：长任务 Harness 的进度交接与验证](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)
 - [项目架构与分层](architecture.md)、[产品定位](product.md)、[实现状态](../ALIGNMENT.md)
-- [聊天入口](../../app/api/routes/chat.py)、[任务服务](../../app/application/task/task_service.py)、[ReAct Agent 桥接](../../app/domain/agent/executor.py)
+- [聊天入口](../../app/api/routes/chat.py)、[聊天用例](../../app/application/chat/chat_service.py)、[任务服务](../../app/application/task/task_service.py)、[ReAct Agent 桥接](../../app/domain/agent/executor.py)
 - [交互 HTML 图解](agent-harness.html)

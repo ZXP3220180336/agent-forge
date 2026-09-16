@@ -1,5 +1,6 @@
 # 问题导航
 
+- [Chat 应用用例](application/chat/README.md)
 - [Agent](domain/agent/README.md)
 - [推理策略](domain/reasoning/README.md)
 - [LLM 集成](integration/llm/README.md)

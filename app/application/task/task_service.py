@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -103,9 +104,12 @@ class TaskService:
         Yields:
             SSE 事件字符串
 
-        并发超限时在此等待（async with 天然保证异常/取消时释放信号量，
-        不会挂死占坑）。
+        并发超限时在此等待。退出时先显式关闭 Agent 子生成器，再由信号量
+        上下文释放并发许可；异常、取消和消费者提前关闭走同一收尾顺序。
         """
-        async with self._semaphore:
-            async for event in agent.run(user_input, messages, context):
+        async with (
+            self._semaphore,
+            aclosing(agent.run(user_input, messages, context)) as stream,
+        ):
+            async for event in stream:
                 yield event

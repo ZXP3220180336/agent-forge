@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from app.application.chat import ChatService
 from app.application.context.context_manager import ContextManager
 from app.application.context.cost_limiter import CostLimiter
 from app.application.session.session_manager import SessionManager
@@ -70,10 +71,11 @@ class Container:
         self.llm_service: LLMService | None = None
         self.tool_service: ToolService | None = None
         self.task_service: TaskService | None = None
+        self.chat_service: ChatService | None = None
         self.embedding_service: EmbeddingService | None = None
         # 成本上限判定器（无状态纯函数，可共享单例；agent_max_cost 未配置时为 None=不启用）
         self.cost_limiter: CostLimiter | None = None
-        # Agent 运行参数（initialize 时从 settings 填充，供 chat 路由构造 AgentContext）
+        # Agent 运行参数（initialize 时从 settings 填充，供 ChatService 构造 AgentContext）
         self.agent_params: dict = {}
         # 记录初始化状态
         self.initialized = False
@@ -299,7 +301,7 @@ class Container:
             dimensions=settings.llm_embedding_dimensions,
         )
 
-        # Agent 运行参数（装配根读 settings 后下发，供 chat 路由构造 AgentContext）
+        # Agent 运行参数（装配根读取 settings 后注入 ChatService）
         self.agent_params = {
             "temperature": settings.llm_temperature,
             "max_tokens": settings.llm_max_tokens,
@@ -330,6 +332,17 @@ class Container:
             )
             if settings.agent_max_cost is not None and self.llm_service is not None
             else None
+        )
+
+        # 聊天应用用例在全部运行依赖和参数完成后装配；API 只注入该用例。
+        self.chat_service = ChatService(
+            session_manager=self.session_manager,
+            context_manager=self.context_manager,
+            task_service=self.task_service,
+            llm=self.llm_service,
+            tools=self.tool_service,
+            agent_params=self.agent_params,
+            cost_limiter=self.cost_limiter,
         )
 
         self.initialized = True

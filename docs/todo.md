@@ -4,11 +4,11 @@
 
 <a id="refactoring-plan"></a>
 
-## R-01：代码职责与编排边界重构（R4 已完成）
+## R-01：代码职责与编排边界重构（R1～R4、R6 已完成；R5 随 C-02 暂缓）
 
 日期：2026-09-14。目标：降低推理、LLM 调用和聊天主链路的阅读与修改成本，让编排入口表达阶段与转换，让协议处理、资源与成果接管有明确归属，服务良率 RCA 的拆分、排查与证据报告交付。
 
-**授权边界**：用户已先后授权执行 R1～R4；本轮实施 Planner、Reflection、ReAct 三个策略切片及必要验证、文档同步，R5～R6 未获实施授权。现有 [C-02](#c-02-lifecycle) 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧全部纳入纯结构重构。
+**授权边界**：用户已先后授权执行 R1～R4 与 R6；因 [C-02](#c-02-lifecycle) 尚未闭环，用户明确要求暂不执行 R5。本轮只实施聊天用例迁移及必要验证、文档同步，不借 R6 改动工具生命周期。现有 C-02 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧纳入本次结构重构。
 
 规范入口：[产品](project/product.md)、[工程 Gate 与最小结构变化](engineering/ai-engineering-rules.md#abstraction)、[工作流](engineering/project-workflow.md)、[编码规范文档](engineering/编码规范文档.txt)。2026-09-14 已按用户提供的目录找到并读取编码规范，来源状态统一见[来源核对记录](../issues/documentation/2026-09-12-reference-gaps.md#外部来源边界)；不复制规范正文，也不据此宣称现有代码已全部合规。
 
@@ -31,7 +31,7 @@
 
 ### 批次、文件分工与依赖
 
-建议顺序：R1 → R2 → R3 → R4 → R5 → R6。R1 作为首批样板；R2 先稳定请求接管边界，再开展 R3。R4 内按单策略拆小提交；R5 沿 C-02 的能力依赖执行；R6 在运行/批次接口稳定后迁移。该顺序是审查与集成安排，不代表所有候选都已获得实施授权。
+原建议顺序为 R1 → R2 → R3 → R4 → R5 → R6。R1 作为首批样板；R2 先稳定请求接管边界，再开展 R3。R4 内按单策略拆小提交；R5 沿 C-02 的能力依赖执行。因 C-02 尚未闭环，用户明确暂缓 R5 并先授权 R6；该调整不改变 R5 规格或状态。
 
 除 C-02 已冻结的路径外，新文件名均为建议；每批启动时核对导出约定、引用与最新契约。新文件必须同时接上实际调用者，不创建空壳或临时兼容层；需要修改超过三个文件时，按下表切片逐一列明职责。仅文件迁移造成的内部导入变更与对外契约变化分别审查。
 
@@ -44,7 +44,7 @@
 | R4-B Reflection / 已完成 | 修改 `reflection.py`：提取 critique 后提交判定与完整修正稿接管步骤；新增修正返回同时取消的高层测试并回归 `test_reflection_agent.py`。 | 先接管最近完整稿与 usage 再判护栏；保留 `_critique`、`_refine`、唯一 done Owner，不新增状态类或共享阶段框架。 |
 | R4-C ReAct / 已完成 | 新增 `app/domain/reasoning/_react_protocol.py`：工具调用身份检查、final_answer 构造/校验、动作指纹；`react.py` 保留分阶段主循环与协议预算；新增纯协议测试并回归双通道。 | 成果、usage、历史、终态和工具批次继续由现有运行作用域负责；R5 生命周期未迁移。三切片合并定向 250 项、全量 1230 项通过。 |
 | R5 工具与批次 / 随 C-02 | `executor.py` 按既定准备/尝试/完成阶段整理；`app/integration/tools/admission.py` 负责共享容量、排队和许可；`app/integration/tools/execution.py` 负责真实执行句柄和有界接管；现有 `app/domain/reasoning/tool_batch.py` 按 ADR 扩展批次边界；`react.py` 接入。 | 对应 [Piece ③④⑤](#c-02-implementation-pieces)，具体规格、文件联动、测试与状态只在 C-02/ADR 维护。结构迁移与新增运行保证分别验收，不能以搬完文件宣称能力完成。 |
-| R6 聊天用例 / 待实施 | 新增 `app/application/chat/chat_service.py` 及必要包入口：会话用例、运行身份、Agent 创建、上下文、成果保存；修改 `app/api/routes/chat.py`：HTTP/SSE 和断连适配；修改 `app/api/deps.py`、`app/container.py`：注入与装配；适配 `tests/integration/test_chat_flow.py`、`tests/unit/test_container.py`，为真实用例行为补测试。 | Application 不依赖 FastAPI Request/Response；明确生成器关闭、断连信号和 finally 持久化责任。保持会话取消范围、运行隔离、消息与 SSE 顺序，不引入通用 AgentFactory。 |
+| R6 聊天用例 / 已完成 | 新增 `app/application/chat/chat_service.py` 及包入口：会话预检、消息快照、运行身份、Agent 创建、停止和成果保存；路由只保留 HTTP/SSE、断连适配及 ASGI 发送失败时的外层关闭；Container 统一装配。 | Application 不依赖 FastAPI；每个 ChatRun 独立并幂等关闭。历史按 `id < current_message_id` 固定快照；定向 73 项、全量 1247 项通过，不引入通用 AgentFactory，R5 未改动。 |
 
 表中省略目录的 `test_*.py` 均位于 `tests/unit/`。每个小提交同步其实际变化的模块/组件说明；新增模块登记到 ALIGNMENT，父 README 增加导航。新增聊天用例的模块说明与应用层导航随 R6 创建；其余说明沿既有 LLM、reasoning、工具、路由文档更新。公开契约、配置或部署事实未变化时记录无需修改的依据，不为模板增加无事实变化的文档。
 
@@ -93,6 +93,9 @@ R6 预检与流执行分阶段：当前 `chat.py::send_message` 在构造 `Strea
 - [x] 获得 R1 实施授权并核对基线：结构化输出既有 60 项测试通过。
 - [x] R1：先补嵌套 schema 双副本与完整回喂/日志分离行为测试，再提取纯 codec。
 - [x] R1：定向与全量回归、独立审查、结构文档及对齐检查完成。
+- [x] R6：聊天用例迁入 Application，路由收敛为 HTTP/SSE 与断连适配。
+- [x] R6：消息快照、首事件前失败、消费者关闭和 ASGI 发送失败回归完成。
+- [x] R6：定向与全量回归、独立生命周期复核、结构文档及对齐检查完成。
 
 R1 文件分工：`structured_codec.py` 承担无 I/O 的转换与校验，`structured.py` 保留日志/异常翻译和运行编排，`test_generate_structured.py` 保护公开调用行为；`docs/integration_doc/llm_doc/structure.md` 维护内部边界，`llm.md` 与集成层 README 更新结构导航，ALIGNMENT 登记新模块；LLM ADR 及索引记录函数模块分离的取舍，本计划追踪执行证据。校验器异常的日志责任留在原模块，codec 不引入 logger/配置/LLM 依赖。后继变更见 [ADR-004](../adr/2026-09-14-json-schema-dialect.md)：三级本地校验已统一为固定 Draft 2020-12（原「前两级 Draft7Validator 与 fallback 的 jsonschema.validate 语义分别保留」条款由该 ADR 替代）。
 
@@ -178,6 +181,34 @@ Planner 旧符号引用、旧 ADR 历史语义改写，以及新 ADR 缺少备�
 未纳入的既有边缘项：Planner 空描述步骤的依赖编号、final_answer 与普通工具混用、反向
 finish_reason 不一致及畸形 function 载荷。它们没有已确认的新行为契约，不能在纯结构重构中
 静默改变；后续若处理，须独立补失败测试并确认预期。
+
+R6 实施评审（2026-09-16）：`ChatService.prepare_message` 在响应头前完成会话 404/403、user 消息
+提交、历史快照、run 登记和每请求 Agent 创建；`ChatRun` 成为本次运行、取消登记与 assistant 提交的
+幂等 Owner。路由只负责 HTTP/SSE、断连转换、error/`[DONE]` 和传输关闭；`TaskService` 显式关闭
+Agent 子生成器。不存在或越权保持零消息、零 run、零 LLM 调用，同会话自然结束只清自己的 run，
+公开 stop 与被动断连仍按 session 取消全部活动运行。
+
+基线复现发现旧链先保存当前 user 再读历史，使当前消息进入 LLM 两次；先补失败测试后，以数据库
+消息主键 `id < current_message_id` 固定持久化快照。该边界同时排除当前消息和并发期间稍后提交的
+兄弟消息，主键缺失或非正数直接失败。独立生命周期复核还发现 ASGI `send()` 失败可绕过 body
+生成器收尾；聊天专用响应改在 `__call__` 外层关闭 body iterator 与 run，并验证后续运行可重新取得
+TaskService 信号量。两轮复核完成后未发现剩余 P0～P3 问题。
+
+复核后补充（2026-09-16）：ASGI 断连用例原先只覆盖 `spec_version 2.4`，而 uvicorn 声明的是
+2.3，Starlette 按 `spec_version >= (2, 4)` 分成两条互不覆盖的路径。现已参数化覆盖两条分支，
+并注明判别力差异——2.4 参数证明响应边界清理必要，2.3 参数是路径覆盖与「无悬挂运行 / 许可可
+回收」的回归保护（其取消落点取决于生成器是否在 await 中）。同轮登记候选 [C-13](#candidates)
+承接 CHAT-001 明确排除的「历史查询取最早 N 条」边界，未改动生产代码。
+
+收尾复核同步修正了 R6 触达代码的注释与 docstring：Container 不再描述由路由构造 AgentContext；
+聊天端点按当前 Application/传输职责说明流程；ContextManager、SessionManager 与 TaskService 明确
+消息快照上界、有效主键失败和子生成器先关闭再释放并发许可的契约。
+
+实际验证：R6 定向套件覆盖 ChatService、TaskService、ContextManager、SessionManager、Container、
+聊天集成与真实 HTTP 端点，73 项通过；完整运行
+`.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r6-all-final`，
+1247 项通过（43.39 秒），仅有既有 Starlette/httpx 弃用提示。最终文档对齐、模块编译与差异格式
+检查通过。R5 与 C-02 Piece ③～⑧均未修改，本批按用户要求保留为未提交工作区。
 
 <a id="c-02-lifecycle"></a>
 
@@ -360,6 +391,8 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 
 历史背景见 [C-02 文档设计交接](history/completed-work.md#c-02-p0-design-history)，不在活动计划中重复各轮验证叙述。
 
+<a id="candidates"></a>
+
 ## 独立边界与候选建设
 
 以下均需先重新确认必要性和执行范围；目前没有在实施的代码任务。候选不是必须实现清单。
@@ -376,3 +409,4 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 | C-09 | 配置扩展、默认值调优、热更新与多环境配置。 | 2026-08-29 config 文档重构留下研究性 backlog；没有真实消费方、负载或运维证据的默认值建议不保留为目标值。出现明确需求后重新设计，而不是照抄旧数值。 |
 | C-10 | 工具选择器向量召回与工具加载/安全边界的后续增强。 | 旧工具重构与[TOOLS-049](../issues/integration/tools/2026-08-20-code-review-fixes.md)有明确延后项；以工具规模、性能、安全边界或真实故障为触发，已完成的审计脱敏不重开。 |
 | C-11 | 其他非关键观测入口的异常与阻塞边界。 | LLM 调用日志已由 [LLM-049](../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md) 实施有界隔离；其他日志、指标和审计入口若进入终态路径，仍须逐入口核验 G0-6，不能把局部实现宣称为全仓完成。 |
+| C-13 | `ContextManager.build_messages` 的历史查询取「最早 N 条」而非最近的 N 轮。 | R6 复核 [CHAT-001](../issues/application/chat/2026-09-16-current-message-duplicated.md) 时确认：`SessionManager.get_messages` 用 `order_by(created_at.asc())` + `limit`，会话超过 `max_rounds * 2` 条（默认 40）后送给模型的是**最早**的历史，而 `build_messages` docstring 写的是「保留最近的 N 轮对话」。两者只有一个是对的：先确认产品意图（锚定最早对话，还是保留最近上下文），再决定改查询还是改文档。不属于 CHAT-001 的当前消息边界问题，R6 未改动该分页行为。 |

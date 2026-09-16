@@ -48,6 +48,7 @@ class ContextManager:
         session_id: SessionId,
         user_message: str,
         max_rounds: int = 20,
+        current_message_id: int | None = None,
     ) -> tuple[list[dict], int, int]:
         """
         构建发送给 LLM 的 messages
@@ -62,6 +63,8 @@ class ContextManager:
             session_id: 会话ID
             user_message: 用户当前输入
             max_rounds: 保留的最大对话轮数
+            current_message_id: 当前输入的持久化消息 ID；传入时历史只读取
+                `id < current_message_id` 的快照，未传时沿用普通历史查询
 
         Returns:
             (messages, total_tokens, truncated_history): 组装好的消息列表、Token 总数、
@@ -73,10 +76,11 @@ class ContextManager:
         if not session:
             raise ValueError(f"Session {session_id} not found")
 
-        # 2. 获取历史消息（最近 max_rounds 轮）
+        # 2. 获取当前消息提交时的历史快照；排除当前行和稍后提交的兄弟消息
         history = await self.session_manager.get_messages(
             session_id,
             limit=max_rounds * 2,  # 每轮 user + assistant
+            before_message_id=current_message_id,
         )
 
         # 3. 组装 messages

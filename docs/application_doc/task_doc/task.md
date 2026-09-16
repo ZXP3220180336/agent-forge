@@ -1,7 +1,7 @@
 # TaskService 任务调度说明文档
 
 > **对应代码**：`app/application/task/task_service.py`
-> **更新日期**：2026-09-14
+> **更新日期**：2026-09-16
 > **职责**：任务级并发调度与活动 run 取消索引；队列 / 状态追踪 / 多 Agent 编排（规划蓝图）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
@@ -40,7 +40,7 @@ TaskService 是系统的任务调度入口。当前实现覆盖 Agent 并发闸�
 ### 与 Agent 层的关系
 
 ```text
-API 层（chat / agent 路由）
+ChatService（chat 路由的应用用例）/ 未来 agent 用例
     ↓
 TaskService（任务调度枢纽）          ← 本模块
     ├── 并发闸门（Semaphore）        ← 已实现
@@ -77,7 +77,7 @@ Agent 层（BaseAgent / ReActAgent / 子Agent）
 **最小调用示例**：
 
 ```python
-# chat 路由经 TaskService 在任务级并发信号量保护下运行 Agent（见 app/api/routes/chat.py）
+# ChatRun 经 TaskService 在任务级并发信号量保护下运行 Agent
 async for event in task_service.run_agent(
     user_input=request.message,
     messages=messages,
@@ -164,7 +164,7 @@ submit_task(user_request, priority="normal")
 
 | 模式 | 触发 | TaskService 行为 |
 | --- | --- | --- |
-| 交互式（chat 路由） | HTTP 请求直接驱动 | 当前：仅并发闸门，流式返回 |
+| 交互式（ChatService） | HTTP 路由准备并消费 ChatRun | 当前：并发闸门、run 取消索引、显式关闭 Agent 子流 |
 | 批量（未来 agent 路由） | `submit_task` 异步提交 | 完整调度：队列 + 优先级 + 状态查询 |
 
 ### 多 Agent 编排
@@ -263,6 +263,7 @@ TaskService 相关配置（`app/config/settings.py`）：
 ## 相关文档
 
 - [应用层说明](../README.md)（TaskService 的定位）
+- [ChatService](../chat_doc/chat.md)（交互式聊天调用方与运行 Owner）
 - [Agent 模块说明](../../domain_doc/agent_doc/agent.md)（Agent 层：单任务执行）
 - [集成层说明](../../integration_doc/README.md)（LLM / Tools 能力）
 - [配置管理模块](../../config_doc/config.md)（任务/并发配置）

@@ -7,22 +7,25 @@ chat_router → ReActAgent 桥接集成测试
 不依赖外部 API / 数据库：用 Fake LLM 编排"首轮调工具、次轮给最终答复"，
 真实 ToolService + WriteFileTool 验证工具真实执行。
 
-用法：直接调用 send_message()（手动传入依赖），消费 StreamingResponse.body_iterator。
+用法：装配 ChatService 后直接调用 send_message()，消费 StreamingResponse.body_iterator。
 """
 
+import asyncio
 import json
 from typing import cast
 
 import pytest
 from fastapi import Request
+from starlette.requests import ClientDisconnect
 
 from app.api.routes.chat import SendMessageRequest, send_message
-from app.integration.tools.tool_service import ToolService
+from app.application.chat import ChatService
 from app.application.context.context_manager import ContextManager
-from app.domain.ports.llm_gateway import StreamResult
 from app.application.task.task_service import TaskService
-from app.integration.tools.builtin import WriteFileTool
+from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm.token_counter import TiktokenTokenCounter
+from app.integration.tools.builtin import WriteFileTool
+from app.integration.tools.tool_service import ToolService
 
 
 class _FakeRawRequest:
@@ -47,7 +50,13 @@ class FakeSessionManager:
     async def get_session(self, session_id: str) -> dict | None:
         return self._session
 
-    async def get_messages(self, session_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
+    async def get_messages(
+        self,
+        session_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        before_message_id: int | None = None,
+    ) -> list[dict]:
         return []  # 无历史，模拟新会话
 
     async def add_message(
@@ -68,6 +77,44 @@ class FakeSessionManager:
             }
         )
         return len(self.saved_messages)
+
+
+class _PersistedHistorySessionManager(FakeSessionManager):
+    """模拟真实持久化：刚写入的用户消息会立即出现在历史查询中。"""
+
+    async def get_messages(
+        self,
+        session_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        before_message_id: int | None = None,
+    ) -> list[dict]:
+        return [
+            {"role": item["role"], "content": item["content"]}
+            for index, item in enumerate(self.saved_messages, start=1)
+            if before_message_id is None or index < before_message_id
+        ][offset : offset + limit]
+
+
+def _chat_service(
+    *,
+    session_manager: FakeSessionManager,
+    context_manager: ContextManager,
+    llm: "FakeLLM",
+    tools: ToolService,
+    task_service: TaskService,
+    agent_params: dict,
+) -> ChatService:
+    """按生产装配形状创建聊天用例。"""
+    return ChatService(
+        session_manager=session_manager,
+        context_manager=context_manager,
+        task_service=task_service,
+        llm=llm,
+        tools=tools,
+        agent_params=agent_params,
+        cost_limiter=None,
+    )
 
 
 class FakeLLM:
@@ -161,13 +208,14 @@ async def test_chat_send_message_react_loop(tmp_path, agent_params):
     response = await send_message(
         request=request,
         user_id="user_x",
-        session_manager=fake_sm,
-        context_manager=context_manager,
-        llm_service=fake_llm,
-        tool_service=registry,
-        task_service=TaskService(),
-        agent_params=agent_params,
-        cost_limiter=None,  # 直接调用绕过 FastAPI DI，显式传 None（不启用成本上限）
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=fake_llm,
+            tools=registry,
+            task_service=TaskService(),
+            agent_params=agent_params,
+        ),
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持（不触发断连）
     )
 
@@ -231,13 +279,14 @@ async def test_chat_send_message_no_tools_plain_answer(agent_params):
     response = await send_message(
         request=request,
         user_id="user_x",
-        session_manager=fake_sm,
-        context_manager=context_manager,
-        llm_service=fake_llm,
-        tool_service=registry,
-        task_service=TaskService(),
-        agent_params=agent_params,
-        cost_limiter=None,  # 直接调用绕过 FastAPI DI，显式传 None（不启用成本上限）
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=fake_llm,
+            tools=registry,
+            task_service=TaskService(),
+            agent_params=agent_params,
+        ),
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持（不触发断连）
     )
 
@@ -258,6 +307,47 @@ async def test_chat_send_message_no_tools_plain_answer(agent_params):
 
 
 @pytest.mark.asyncio
+async def test_chat_current_user_message_is_not_duplicated_in_llm_context(agent_params):
+    """刚持久化的当前消息不能又作为历史与当前输入各出现一次。"""
+    fake_sm = _PersistedHistorySessionManager(
+        {"id": "s-current", "user_id": "user_x", "system_prompt": "sys"}
+    )
+    context_manager = ContextManager(
+        session_manager=fake_sm,
+        llm=TiktokenTokenCounter("gpt-4"),
+    )
+    fake_llm = FakeLLM([{"type": "stop", "content": "回答"}])
+
+    response = await send_message(
+        request=SendMessageRequest(
+            session_id="s-current",
+            message="同一条当前问题",
+            max_iterations=5,
+        ),
+        user_id="user_x",
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=fake_llm,
+            tools=ToolService(),
+            task_service=TaskService(),
+            agent_params=agent_params,
+        ),
+        http_request=cast(Request, _FakeRawRequest()),
+    )
+
+    async for _ in response.body_iterator:
+        pass
+
+    current = [
+        item
+        for item in fake_llm.requests[0]
+        if item == {"role": "user", "content": "同一条当前问题"}
+    ]
+    assert len(current) == 1
+
+
+@pytest.mark.asyncio
 async def test_chat_stop_cancels_running_agent(agent_params):
     """/chat/stop 置位 → 运行中的 Agent 优雅取消（CANCELLED），流带取消事件结束。"""
     fake_sm = FakeSessionManager(
@@ -273,13 +363,14 @@ async def test_chat_stop_cancels_running_agent(agent_params):
     response = await send_message(
         request=request,
         user_id="user_x",
-        session_manager=fake_sm,
-        context_manager=context_manager,
-        llm_service=fake_llm,
-        tool_service=registry,
-        task_service=ts,
-        agent_params=agent_params,
-        cost_limiter=None,
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=fake_llm,
+            tools=registry,
+            task_service=ts,
+            agent_params=agent_params,
+        ),
         http_request=cast(Request, _FakeRawRequest()),  # 直调桩：连接保持
     )
 
@@ -338,13 +429,14 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch, agent_params):
     response = await send_message(
         request=request,
         user_id="user_x",
-        session_manager=fake_sm,
-        context_manager=context_manager,
-        llm_service=fake_llm,
-        tool_service=registry,
-        task_service=ts,
-        agent_params=agent_params,
-        cost_limiter=None,
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=fake_llm,
+            tools=registry,
+            task_service=ts,
+            agent_params=agent_params,
+        ),
         # 前 1 次检查正常、之后视为断连：模拟首个事件推送后连接断开
         http_request=cast(Request, _FakeRawRequest(disconnect_after=1)),
     )
@@ -362,6 +454,189 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch, agent_params):
         f"断连后应停止向断连客户端推送后续事件: {types}"
     )
     assert ts.cancel_session("s4") is False, "流结束应清理该会话的活动运行"
+
+
+@pytest.mark.asyncio
+async def test_chat_failure_before_first_event_clears_run_and_finishes_sse(
+    monkeypatch,
+    agent_params,
+):
+    """运行登记后、首事件前失败仍输出 error/DONE，并释放自己的登记。"""
+    fake_sm = FakeSessionManager(
+        {"id": "s-fail", "user_id": "user_x", "system_prompt": "sys"}
+    )
+    context_manager = ContextManager(
+        session_manager=fake_sm,
+        llm=TiktokenTokenCounter("gpt-4"),
+    )
+    task_service = TaskService()
+
+    async def fail_before_event(**kwargs):
+        if False:
+            yield ""
+        raise RuntimeError("start failed")
+
+    monkeypatch.setattr(task_service, "run_agent", fail_before_event)
+    response = await send_message(
+        request=SendMessageRequest(
+            session_id="s-fail",
+            message="hello",
+            max_iterations=5,
+        ),
+        user_id="user_x",
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=FakeLLM([]),
+            tools=ToolService(),
+            task_service=task_service,
+            agent_params=agent_params,
+        ),
+        http_request=cast(Request, _FakeRawRequest()),
+    )
+
+    chunks = [chunk async for chunk in response.body_iterator]
+    events = _parse_sse(chunks)
+
+    assert [event["type"] for event in events] == ["error", "DONE_FRAME"]
+    assert task_service.cancel_session("s-fail") is False
+    assert [item["role"] for item in fake_sm.saved_messages] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_chat_consumer_aclose_cancels_and_cleans_without_done(agent_params):
+    """消费者提前关闭会同步关闭子流、清登记，且关闭路径不额外产出 DONE。"""
+    fake_sm = FakeSessionManager(
+        {"id": "s-close", "user_id": "user_x", "system_prompt": "sys"}
+    )
+    context_manager = ContextManager(
+        session_manager=fake_sm,
+        llm=TiktokenTokenCounter("gpt-4"),
+    )
+    task_service = TaskService()
+    response = await send_message(
+        request=SendMessageRequest(
+            session_id="s-close",
+            message="hello",
+            max_iterations=5,
+        ),
+        user_id="user_x",
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=FakeLLM([{"type": "stop", "content": "answer"}]),
+            tools=ToolService(),
+            task_service=task_service,
+            agent_params=agent_params,
+        ),
+        http_request=cast(Request, _FakeRawRequest()),
+    )
+
+    first = await anext(response.body_iterator)
+    await response.body_iterator.aclose()
+
+    assert first != "data: [DONE]\n\n"
+    assert task_service.cancel_session("s-close") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+async def test_chat_asgi_disconnect_closes_run_and_body_iterator(
+    spec_version, monkeypatch, agent_params
+):
+    """ASGI 两条断连分支都必须完成清理。
+
+    2.4 由 `send()` 抛 OSError 触发（Starlette 转 `ClientDisconnect`）；2.3 由
+    `receive()` 返回 http.disconnect 取消整个任务组。uvicorn 声明的是 2.3，
+    Starlette 按 `spec_version >= (2, 4)` 分成两条互不覆盖的路径。
+
+    判别力不同：2.4 的取消落在 body 生成器挂起于 `yield` 时，生成器的 finally
+    不执行，只有响应调用边界的清理能兜住，因此该参数是包装器必要性的证明；2.3
+    的取消由任务组投递，落点取决于生成器当时是否在 `await` 中——在 await 中时
+    生成器随取消自然展开，清理会自行完成。故 2.3 参数是路径覆盖与「无悬挂运行 /
+    许可可回收」的回归保护，不能单独证明边界清理必要。
+    """
+    fake_sm = FakeSessionManager(
+        {"id": "s-send", "user_id": "user_x", "system_prompt": "sys"}
+    )
+    context_manager = ContextManager(
+        session_manager=fake_sm,
+        llm=TiktokenTokenCounter("gpt-4"),
+    )
+    task_service = TaskService(max_concurrent=1)
+    original_run_agent = task_service.run_agent
+
+    async def long_stream(**kwargs):
+        """持续产出的子流：断连必须落在流中途，而不是流已自然结束之后。"""
+        for index in range(200):
+            await asyncio.sleep(0.005)
+            yield f'data: {{"type": "message", "content": "{index}"}}\n\n'
+
+    monkeypatch.setattr(task_service, "run_agent", long_stream)
+    response = await send_message(
+        request=SendMessageRequest(
+            session_id="s-send",
+            message="hello",
+            max_iterations=5,
+        ),
+        user_id="user_x",
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=FakeLLM([{"type": "stop", "content": "answer"}]),
+            tools=ToolService(),
+            task_service=task_service,
+            agent_params=agent_params,
+        ),
+        http_request=cast(Request, _FakeRawRequest()),
+    )
+
+    # 首个 body chunk 已发送后才触发断连，确保覆盖流中途而非响应头阶段
+    first_chunk = asyncio.Event()
+
+    async def receive():
+        if spec_version == "2.3":
+            await first_chunk.wait()
+            return {"type": "http.disconnect"}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk.set()
+            if spec_version == "2.4":
+                raise OSError("client disconnected")
+
+    scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": spec_version}}
+    if spec_version == "2.4":
+        with pytest.raises(ClientDisconnect):
+            await response(scope, receive, send)
+    else:
+        # 取消作用域吸收自身取消，2.3 分支正常返回
+        await response(scope, receive, send)
+
+    assert task_service.cancel_session("s-send") is False
+
+    # 恢复真实 Agent 路径：后续请求必须能重新取得被断连运行占用的并发许可
+    monkeypatch.setattr(task_service, "run_agent", original_run_agent)
+    follow_up = await send_message(
+        request=SendMessageRequest(
+            session_id="s-send",
+            message="next",
+            max_iterations=5,
+        ),
+        user_id="user_x",
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=FakeLLM([{"type": "stop", "content": "next answer"}]),
+            tools=ToolService(),
+            task_service=task_service,
+            agent_params=agent_params,
+        ),
+        http_request=cast(Request, _FakeRawRequest()),
+    )
+    chunks = [chunk async for chunk in follow_up.body_iterator]
+    assert _parse_sse(chunks)[-1]["type"] == "DONE_FRAME"
 
 
 async def _run_with_iteration_budget(
@@ -403,13 +678,14 @@ async def _run_with_iteration_budget(
     response = await send_message(
         request=request,
         user_id="user_x",
-        session_manager=fake_sm,
-        context_manager=context_manager,
-        llm_service=fake_llm,
-        tool_service=registry,
-        task_service=TaskService(),
-        agent_params={**agent_params, "max_iterations": agent_max_iterations},
-        cost_limiter=None,
+        chat_service=_chat_service(
+            session_manager=fake_sm,
+            context_manager=context_manager,
+            llm=fake_llm,
+            tools=registry,
+            task_service=TaskService(),
+            agent_params={**agent_params, "max_iterations": agent_max_iterations},
+        ),
         http_request=cast(Request, _FakeRawRequest()),
     )
 

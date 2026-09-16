@@ -1,6 +1,6 @@
 # 代码模块 ↔ 文档 ↔ 测试 对齐表
 
-> 更新日期：2026-09-14
+> 更新日期：2026-09-16
 > 原则：本表是模块状态、文档与测试路径的唯一维护登记。实现需由代码和实际测试核验，代码偏差不能自动改写已确认契约；新增/移动/删除模块或覆盖变化时同步本表和所属说明。
 > 状态徽标：✅ 代码、文档、测试文件齐全 ｜ 🔶 已实现但文档或测试不全 ｜ ⬜ 空壳待实现。文件映射已在仓库核验；徽标不代表本轮运行了业务测试或逐项验证了运行契约。
 > 本表维持既有路径与五列表头，所有路径相对仓库根。2026-09-13 在工作区运行全量 pytest 与 `scripts.verify_alignment`；后者检查模块登记、路径存在性、非空文件与状态要求，业务行为由测试覆盖。
@@ -10,11 +10,11 @@
 | app/main.py | ✅ | docs/project/deployment.md | tests/e2e/test_api.py | 入口；e2e 覆盖 HTTP 层 |
 | app/container.py | ✅ | docs/project/architecture.md | tests/unit/test_container.py | 装配根 |
 | app/config/settings.py | ✅ | docs/config_doc/config.md | tests/unit/test_settings.py | 配置项及默认值见配置参考，不另维护数量 |
-| app/api/deps.py | 🔶 | docs/api_doc/routes_doc/routes.md | (无) | DI 薄解析；经 chat_flow 间接覆盖 |
+| app/api/deps.py | 🔶 | docs/api_doc/routes_doc/routes.md | tests/e2e/test_api.py | DI 薄解析；聊天路由只获取已装配 ChatService |
 | app/api/middleware/auth.py | ⬜ | docs/api_doc/middleware_doc/middleware.md | (无) | 空文件，鉴权 mock 待实现 |
 | app/api/middleware/error_handler.py | ✅ | docs/api_doc/middleware_doc/middleware.md | tests/unit/test_error_handler.py | AppError → HTTP 状态 + 统一信封（Phase D error_handler） |
 | app/api/middleware/rate_limit.py | ⬜ | docs/api_doc/middleware_doc/middleware.md | (无) | 空文件待实现 |
-| app/api/routes/chat.py | ✅ | docs/api_doc/routes_doc/routes.md | tests/integration/test_chat_flow.py | SSE 聊天闭环；Application 创建唯一 run 身份并按 run 清理取消登记 |
+| app/api/routes/chat.py | ✅ | docs/api_doc/routes_doc/routes.md | tests/integration/test_chat_flow.py | HTTP/SSE 与断连适配；专用响应边界在 ASGI 发送失败时关闭运行 |
 | app/api/routes/session.py | 🔶 | docs/api_doc/routes_doc/routes.md | (无) | 会话 CRUD；待补路由测试 |
 | app/api/routes/admin.py | ⬜ | docs/api_doc/routes_doc/routes.md | (无) | 空文件待实现 |
 | app/api/routes/agent.py | ⬜ | docs/api_doc/routes_doc/routes.md | (无) | 空文件待实现 |
@@ -22,10 +22,11 @@
 | app/api/schemas/request.py | ✅ | docs/api_doc/routes_doc/routes.md | tests/unit/test_request_schemas.py | 请求 DTO；请求级迭代上限边界 |
 | app/api/schemas/response.py | 🔶 | docs/api_doc/routes_doc/routes.md | (无) | 响应 DTO；随路由测试覆盖 |
 | app/api/schemas/agent.py | ⬜ | docs/api_doc/routes_doc/routes.md | (无) | 空文件待实现（Agent DTO） |
-| app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断；ContextBudgetPort 提供历史裁剪与 Reflection 字段缩减所需 token 计量 |
+| app/application/chat/chat_service.py | ✅ | docs/application_doc/chat_doc/chat.md | tests/unit/test_chat_service.py | 聊天预检、消息快照、run/Agent Owner、停止与结果提交 |
+| app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断；以当前消息 ID 固定历史快照边界 |
 | app/application/context/cost_limiter.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_cost_limiter.py | 成本上限判定（CostLimiterPort 实现，经 LLMGateway.calculate_cost 取成本估算） |
-| app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 会话/缓存/SQL 边界按当前需求评估；缓存 None 降级见模块契约 |
-| app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | Agent 并发闸门；run 级取消事件与 session 活动运行索引 |
+| app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 会话/缓存/SQL；消息主键与 `before_message_id` 快照查询契约 |
+| app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | Agent 并发闸门；run 级取消索引；显式关闭 Agent 子流 |
 | app/domain/agent/base.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | Agent 运行身份、实例并发拒绝与结果生命周期；策略跨层继承另见 test_tool_lifecycle_wiring.py |
 | app/domain/agent/executor.py | ✅ | docs/domain_doc/agent_doc/executor.md | tests/unit/test_agent.py | ReActAgent 桥接（ReActStrategy 到 BaseAgent 生命周期） |
 | app/domain/agent/planner.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_planner_agent.py | PlannerAgent 桥接（PlannerStrategy 到 BaseAgent 生命周期，plan/steps_executed/replan_rounds/degraded 进 metadata） |

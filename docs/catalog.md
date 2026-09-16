@@ -15,6 +15,7 @@
 - [docs/api_doc/middleware_doc/middleware.md](api_doc/middleware_doc/middleware.md)
 - [docs/api_doc/README.md](api_doc/README.md)
 - [docs/api_doc/routes_doc/routes.md](api_doc/routes_doc/routes.md)
+- [docs/application_doc/chat_doc/chat.md](application_doc/chat_doc/chat.md)
 - [docs/application_doc/context_doc/context.md](application_doc/context_doc/context.md)
 - [docs/application_doc/README.md](application_doc/README.md)
 - [docs/application_doc/session_doc/session.md](application_doc/session_doc/session.md)
@@ -100,6 +101,8 @@
 
 - [adr/2026-09-02-request-build-validation.md](../adr/2026-09-02-request-build-validation.md)
 - [adr/2026-09-12-single-source-governance.md](../adr/2026-09-12-single-source-governance.md)
+- [adr/application/chat/2026-09-16-chat-run-owner.md](../adr/application/chat/2026-09-16-chat-run-owner.md)
+- [adr/application/chat/README.md](../adr/application/chat/README.md)
 - [adr/domain/agent/2026-08-27-react-strategy-extraction.md](../adr/domain/agent/2026-08-27-react-strategy-extraction.md)
 - [adr/domain/agent/2026-08-28-agent-error-handling.md](../adr/domain/agent/2026-08-28-agent-error-handling.md)
 - [adr/domain/reasoning/2026-08-27-reactor-max-execution-time.md](../adr/domain/reasoning/2026-08-27-reactor-max-execution-time.md)
@@ -148,6 +151,8 @@
 
 ## issues
 
+- [issues/application/chat/2026-09-16-current-message-duplicated.md](../issues/application/chat/2026-09-16-current-message-duplicated.md)
+- [issues/application/chat/README.md](../issues/application/chat/README.md)
 - [issues/documentation/README.md](../issues/documentation/README.md)
 - [issues/documentation/2026-09-12-reference-gaps.md](../issues/documentation/2026-09-12-reference-gaps.md)
 - [issues/domain/agent/README.md](../issues/domain/agent/README.md)

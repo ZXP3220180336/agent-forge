@@ -1,6 +1,6 @@
 # ContextManager 上下文管理说明文档
 
-> **更新日期**：2026-09-13
+> **更新日期**：2026-09-16
 > **模块**：`app/application/context/context_manager.py`
 > **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、经 `LLMGateway` 端口精确计数、超限截断；并结构实现 `ContextBudgetPort`，承担 Agent 运行中的上下文预算管理。
 
@@ -42,7 +42,7 @@ ReActAgent（领域层，经 ContextBudgetPort 复用 trim_messages）→ LLMSer
 
 - 构造依赖 `SessionManager`（会话数据）与 `LLMGateway` 端口（token 计数，`count_tokens` / `count_messages_tokens`），均注入传入，不直接接触 Redis / DB / tiktoken
 - 结构实现 `ContextBudgetPort` 端口（`app/domain/ports/context_budget.py`）：领域层 Agent 经端口依赖本模块的 `trim_messages`（依赖倒置，横切能力注入共享）
-- 上游调用方：`app/api/routes/chat.py`（`build_messages` 组装上下文，并以 `context_budget=context_manager` 注入 `ReActAgent`）
+- 上游调用方：`ChatService`（`build_messages` 组装上下文，并以 `context_budget=context_manager` 注入每请求 `ReActAgent`）
 
 ### 构造参数
 
@@ -81,9 +81,10 @@ token 计量归属 LLM 能力（模型特定编码）——经 `LLMGateway` 端�
 ### `build_messages` 组装策略
 
 ```text
-build_messages(session_id, user_message, max_rounds=20)
+build_messages(session_id, user_message, max_rounds=20, current_message_id=None)
   1. get_session(session_id) → 未找到抛 ValueError("Session ... not found")
-  2. get_messages(session_id, limit=max_rounds * 2)   # 每轮 user + assistant
+  2. get_messages(..., before_message_id=current_message_id)
+     # ChatService 已提交当前消息时，只读取该 ID 之前的历史快照
   3. messages = [system] + history + [user]
   4. total_tokens = count_messages_tokens(messages)
      available_tokens = max_context_tokens - max_output_tokens
@@ -97,9 +98,9 @@ build_messages(session_id, user_message, max_rounds=20)
   5. 返回 (messages, total_tokens, truncated_history)
 ```
 
-- **保留策略**：system prompt 始终保留在 `messages[0]`，用户最新输入始终追加在末尾
+- **保留策略**：system prompt 始终在首位，当前 user 始终只追加在末尾；同会话并发运行以当前消息 ID 为历史快照上界
 - **截断窗口**：`available_tokens = max_context_tokens - max_output_tokens`，为输出预留预算
-- **显式告警（非静默）**：裁剪不再无感知——返回的 `truncated_history` 供 chat 路由在流首 `yield` SSE `agent_info`「上下文超限已裁剪 N 条历史」，同时记 WARNING 日志（session_id / 条数 / 预算）；ContextManager 为共享单例，请求级截断信息一律走返回值，不落实例状态（决策见 [ADR-001](../../../adr/2026-09-02-request-build-validation.md)）
+- **显式告警（非静默）**：返回的 `truncated_history` 由 ChatRun 在流首输出 SSE `agent_info`，同时记 WARNING 日志；ContextManager 不保存请求级状态（决策见 [ADR-001](../../../adr/2026-09-02-request-build-validation.md)）
 
 ### `_truncate_messages` 截断逻辑
 
@@ -154,7 +155,7 @@ CostLimiter(ceiling=agent_max_cost, llm=llm_service, model=llm_model_id)
   check(累计 usage) -> (exceeded, cost_usd)   # 严格 > 超限；ceiling=None 恒不超限
 ```
 
-- **装配**：`container.py` 在 `agent_max_cost` 配置非 None 且 LLM 服务就绪时构造 `CostLimiter` 单例（llm 注入 `llm_service` Facade，model=`llm_model_id`），`chat.py` 经 `Depends(get_cost_limiter)` 注入 `ReActAgent(..., cost_limiter=...)`；未配置 → None，ReAct 循环成本检查零开销
+- **装配**：`container.py` 构造 `CostLimiter` 后注入 ChatService，由 ChatService 注入每请求 ReActAgent；未配置 → None，ReAct 循环成本检查零开销
 - **消费**：`ReActStrategy` 每轮 usage 累加后 `check(累计 usage)`，超限走 `COST_EXCEEDED` 错误分发（默认 STOP 停机降级），见 [react.md](../../domain_doc/reasoning_doc/react.md) 成本上限节
 
 ### 边缘情况
@@ -171,10 +172,11 @@ CostLimiter(ceiling=agent_max_cost, llm=llm_service, model=llm_model_id)
 ## 使用示例
 
 ```python
-# 构建上下文（Chat 路由核心用法，见 app/api/routes/chat.py）
+# 构建上下文（ChatService 内部协作）
 messages, total_tokens, truncated_history = await container.context_manager.build_messages(
     session_id=session_id,
     user_message="继续分析不良数据",
+    current_message_id=message_id,
     max_rounds=20,
 )
 # messages → [{"role": "system", "content": ...}, {"role": "user", "content": ...}, ...]
@@ -207,6 +209,6 @@ context_manager.trim_messages(messages, max_rounds=10, max_tokens=80000)
 - [SessionManager 会话管理](../session_doc/session.md)（数据来源：`get_session` / `get_messages`）
 - [领域层说明](../../domain_doc/README.md)（`ContextBudgetPort` 端口，Agent 消费方）
 - [集成层说明](../../integration_doc/README.md)（`LLMGateway` 端口实现 / tiktoken）
-- [路由模块](../../api_doc/routes_doc/routes.md)（`chat.py` 路由，本模块上游调用方）
+- [ChatService](../chat_doc/chat.md)（本模块的聊天用例调用方）
 - [架构设计](../../project/architecture.md)
 - [配置说明](../../config_doc/config.md)

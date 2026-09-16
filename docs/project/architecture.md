@@ -87,7 +87,7 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 │ ② 应用 / 编排层 Application · app/application/                                 │
 │  ┌────────────────┬───────────────────┬─────────────────┬──────────────────┐   │
 │  │ 用例服务        │ 任务调度枢纽        │ 多 Agent 编排     │ 业务用例          │   │
-│  │ ChatUseCase    │ TaskScheduler     │ Orchestrator    │ RcaUseCase       │   │
+│  │ ChatService    │ TaskService       │ Orchestrator    │ RcaUseCase       │   │
 │  │ SessionUseCase │ TaskQueue 优先级   │ 主拆→子并行→汇总  │ (Yield RCA)      │   │
 │  │ TaskUseCase    │ WorkerPool 状态机  │ AgentFactory    │ 证据链编排        │   │
 │  └────────────────┴───────────────────┴─────────────────┴──────────────────┘   │
@@ -245,16 +245,15 @@ FastAPI 异步受理用户目标 → 应用/编排层调度与拆分 → 领域�
 
 ```text
 POST /api/chat/send
-  → deps.py 注入容器组件
-  → ChatUseCase（用例编排）
-      → SessionRepository 校验会话 + 存用户消息（CachePort 热缓存）
-      → ContextManager 经 LLMGateway 计数并组装 messages/截断
-      → TaskScheduler 提交任务（优先级/并发闸门）
-          → AgentFactory 创建 Agent（注入 LLMGateway/ToolGateway）
-          → BaseAgent.run()（ReAct 循环）
+  → deps.py 注入 ChatService
+  → ChatService（用例编排）
+      → SessionManager 校验会话 + 存 user 消息
+      → ContextManager 经 LLMGateway 计数并按消息 ID 快照组装/截断
+      → 创建本次 ReActAgent 与唯一 run 身份
+      → TaskService 并发闸门 → BaseAgent.run()（ReAct 循环）
               → LLMGateway.async_generate（流式 + 重试/熔断/限流/整流）
               → ToolGateway.execute（工具级信号量）
-  → SSE 事件流 → 存 assistant 消息
+  → 路由适配 SSE/断连 → ChatRun 清理并存 assistant 消息
 ```
 
 #### 链路 2：多 Agent 主从并行（批量任务）
@@ -486,11 +485,11 @@ tiktoken 计数由集成层 `token_counter.py` 实现，并经 `LLMGateway.count
 
 目标：C9 部分 + 产品闭环 1-3。
 
-- `application/chat/chat_use_case.py`：路由编排上移
+- `application/chat/chat_service.py`：聊天预检、上下文、运行身份、Agent 创建与成果提交已从路由上移
 - `application/task/`：TaskQueue（优先级 + 背压）/ WorkerPool / TaskState / TaskScheduler（扩展原 TaskService）
 - `application/orchestration/orchestrator.py`：主拆 → 子并行 → 汇总
 - 复用并核验既有 PlannerAgent/PlannerStrategy 与 PromptManager，设计其与应用层多任务编排的衔接；不得将已登记实现当空文件重写
-- `application/factories/agent_factory.py`；`api/routes/task.py` + `agent.py`（提交/查询/进度 SSE）
+- 出现第二种真实且同构的 Agent 创建用例后再评估 `application/factories/agent_factory.py`；`api/routes/task.py` + `agent.py`（提交/查询/进度 SSE）仍待产品需求
 
 验收目标：异步任务受理闭环（`POST /tasks` → worker → `GET /tasks/{id}` → SSE 进度）；多 Agent 主从并行编排。是否已实现见 ALIGNMENT。
 

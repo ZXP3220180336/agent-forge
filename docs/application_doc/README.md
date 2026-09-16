@@ -1,8 +1,8 @@
 # 应用层说明文档
 
 > **对应代码**：`app/application/`
-> **更新日期**：2026-08-29
-> **文档定位**：应用层（`app/application/`）—— 会话、上下文、任务调度三个服务，是 API 层与核心层（Agent）之间的用例调度层。
+> **更新日期**：2026-09-16
+> **文档定位**：应用层（`app/application/`）—— 聊天用例、会话、上下文与任务调度，是 API 层与核心层（Agent）之间的用例调度层。
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。
 
 ---
@@ -18,6 +18,7 @@
     - [依赖关系](#依赖关系)
   - [实现状态总览](#实现状态总览)
   - [典型调用链路](#典型调用链路)
+  - [ChatService 聊天用例](#chatservice-聊天用例)
   - [SessionManager 会话管理](#sessionmanager-会话管理)
   - [ContextManager 上下文管理](#contextmanager-上下文管理)
   - [TaskService 任务调度](#taskservice-任务调度)
@@ -30,8 +31,9 @@
 
 ### 核心功能
 
-应用层是系统的**用例调度层**，位于 API 层与核心层（Agent）之间，为 chat 主链路串起「会话 → 上下文 → 任务」：
+应用层是系统的**用例调度层**，位于 API 层与核心层（Agent）之间，为 chat 主链路串起「会话 → 上下文 → 运行」：
 
+- **聊天用例**（`ChatService`）：流前预检、运行身份、每请求 Agent、停止与最终答复提交
 - **会话管理**（`SessionManager`）：会话 CRUD + Redis 热缓存 + DB 持久化 + 分页/搜索/统计
 - **上下文管理**（`ContextManager`）：组装 LLM messages + token 计数/超限截断 + Agent 运行中上下文预算管理（`ContextBudgetPort` 横切）
 - **任务调度**（`TaskService`）：任务级并发信号量 + `run_agent()` 流式包装
@@ -40,6 +42,7 @@
 
 ```text
 app/application/
+├── chat/chat_service.py        ← ChatService + ChatRun 聊天用例与运行 Owner
 ├── session/session_manager.py  ← SessionManager 会话管理
 ├── context/context_manager.py  ← ContextManager 上下文管理
 └── task/task_service.py        ← TaskService 任务调度
@@ -50,17 +53,19 @@ app/application/
 ### 设计原则
 
 1. **单例装配**：`container` 持有全部服务实例，启动时经 `Container.initialize()` 统一初始化，关闭时统一清理
-2. **用例编排**：三个服务对应 chat 主链路的三段职责——「拿到会话 → 组装请求 → 并发调度」
+2. **用例编排**：ChatService 通过 Session、Context 与 Task 串起流前预检、运行和成果提交
 3. **调度与执行解耦**：`TaskService` 决定「任务何时并发执行」，Agent 决定「单个任务如何执行」
 4. **降级容错**：单个基础设施（Redis / DB）初始化失败不影响整体启动，只记录警告并降级
 
 ### 依赖关系
 
 ```text
-API 层（chat / session 路由）
+API 层（chat 路由：HTTP/SSE 与断连适配）
         │
         ▼
-SessionManager ◄──► ContextManager
+ChatService / ChatRun
+        │
+        ├──► SessionManager ◄──► ContextManager
         │
         ▼
 TaskService.run_agent()
@@ -72,7 +77,7 @@ ReActAgent（app/domain/，经 ContextBudgetPort 复用 ContextManager.trim_mess
 LLMService / ToolService（app/integration/）
 ```
 
-应用层内部依赖：`ContextManager` 依赖 `SessionManager`（会话数据）；`TaskService` 相对独立。基础设施（Redis / DB）由 `container` 直接管理并注入。下游 LLM / Tools / Agent 分属集成层与领域层，见 [集成层说明](../integration_doc/README.md) / [领域层说明](../domain_doc/README.md)。
+应用层内部依赖：`ChatService` 编排 SessionManager、ContextManager、TaskService 与领域 Agent；`ContextManager` 依赖 `SessionManager`，`TaskService` 保持并发与取消登记职责。基础设施（Redis / DB）由 `container` 管理并注入。
 
 ---
 
@@ -80,6 +85,7 @@ LLMService / ToolService（app/integration/）
 
 | 子模块 | 文件 | 状态 | 核心内容 |
 | --- | --- | --- | --- |
+| Chat | `chat/chat_service.py` | [见对齐表](../ALIGNMENT.md) | 流前预检、单次运行 Owner、停止、生成器关闭与最终答复提交 |
 | Session | `session/session_manager.py` | [见对齐表](../ALIGNMENT.md) | 会话生命周期 + Redis 热缓存 + DB 持久化 + 分页/搜索/统计 |
 | Context | `context/context_manager.py` | [见对齐表](../ALIGNMENT.md) | messages 组装 + token 计数/截断 + 运行中上下文预算（ContextBudgetPort） |
 | Task | `task/task_service.py` | [见对齐表](../ALIGNMENT.md) | 任务级并发信号量 + `run_agent()` 流式包装（队列/编排规划中） |
@@ -90,18 +96,23 @@ LLMService / ToolService（app/integration/）
 
 ```text
 POST /api/chat/send
-  → SessionManager（会话验证 + 存用户消息）
-  → ContextManager.build_messages（构建 messages，token 计数/截断）
-  → TaskService.run_agent()（任务级并发信号量）
-      → ReActAgent._strategy_cycle()（ReAct 循环）
-          → LLMService.async_generate()（集成层）
-          → ToolService.execute()（集成层）
-  → SSE 事件流 → SessionManager.add_message（存 assistant 消息）
+  → ChatService.prepare_message（授权 + user + 上下文 + run/Agent）
+      → TaskService.run_agent()（任务级并发信号量）
+          → ReActAgent._strategy_cycle()（ReAct 循环）
+              → LLMService.async_generate() / ToolService.execute()
+  → chat 路由适配断连与 SSE → ChatRun.aclose（清 run + 存 assistant）
 ```
 
-应用层在链路中承担三类职责：**入口编排**（Session + Context 负责「拿到会话 → 组装请求」）、**并发控制**（Task 任务级信号量）、**上下文护栏**（Context 经 ContextBudgetPort 在 Agent 循环中裁剪）。
+应用层承担用例与单次运行 Owner、Task 并发控制及 ContextBudgetPort 上下文护栏；HTTP/SSE 仍属于 API 层。
 
 ---
+
+## ChatService 聊天用例
+
+**代码**：`app/application/chat/chat_service.py` · **文档**：[聊天用例与运行 Owner](chat_doc/chat.md)
+
+负责响应头前预检、每请求运行隔离、会话级停止及流结束成果提交。`ChatRun` 提供一次性事件流和
+幂等关闭；Application 不依赖 FastAPI Request/Response。
 
 ## SessionManager 会话管理
 
@@ -153,6 +164,7 @@ POST /api/chat/send
 ## 相关文档
 
 - [架构设计](../project/architecture.md)（分层与核心链路）
+- [ChatService 组件](chat_doc/chat.md)（聊天用例与运行生命周期）
 - [Session 模块](session_doc/session.md)（会话管理详解）
 - [Context 模块](context_doc/context.md)（上下文管理详解）
 - [Task 模块](task_doc/task.md)（任务调度说明与规划）

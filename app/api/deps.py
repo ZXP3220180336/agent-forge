@@ -5,6 +5,7 @@
 
 from fastapi import Header
 
+from app.application.chat import ChatService
 from app.application.context.context_manager import ContextManager
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
@@ -24,6 +25,15 @@ async def get_current_user(
     # 模拟解析 token，返回 user_id
     # 实际项目中替换为 JWT 验证
     return "user_" + authorization[:8]
+
+
+async def get_chat_service() -> ChatService:
+    """获取聊天应用用例。"""
+    if container.chat_service is None:
+        raise RuntimeError(
+            "ChatService 尚未初始化。请确保在应用启动时调用了 container.initialize()。"
+        )
+    return container.chat_service
 
 
 async def get_session_manager() -> SessionManager:

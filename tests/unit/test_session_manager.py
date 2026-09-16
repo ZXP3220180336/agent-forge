@@ -257,6 +257,20 @@ async def test_get_messages_maps_role_content():
     ]
 
 
+@pytest.mark.asyncio
+async def test_get_messages_uses_current_message_as_exclusive_snapshot_boundary():
+    """同会话并发写入时，历史只允许读取当前消息 ID 之前的行。"""
+    fake_db = _FakeDB()
+    sm = SessionManager(redis_client=_FakeRedis(), db_session_factory=fake_db)
+
+    await sm.get_messages("s1", before_message_id=42)
+
+    statement = next(
+        item for item in fake_db.all_statements if isinstance(item, Select)
+    )
+    assert "messages.id <" in str(statement)
+
+
 # ===== add_message =====
 
 
@@ -271,6 +285,28 @@ async def test_add_message_returns_inserted_id():
     assert first == 1
     assert second == 2
     assert fake_db.commits == 2
+
+
+@pytest.mark.asyncio
+async def test_add_message_rejects_missing_inserted_id():
+    """写入后无法取得正主键时停止，不构造错误的上下文快照。"""
+
+    class _MissingPrimaryKeyDB(_FakeDB):
+        def dispatch(self, stmt):
+            if isinstance(stmt, Insert) and stmt.table.name == "messages":
+                return _FakeResult()
+            return super().dispatch(stmt)
+
+    fake_db = _MissingPrimaryKeyDB()
+    sm = SessionManager(
+        redis_client=_FakeRedis(),
+        db_session_factory=fake_db,
+    )
+
+    with pytest.raises(RuntimeError, match="未返回主键"):
+        await sm.add_message("s1", "user", "hello")
+
+    assert fake_db.commits == 1
 
 
 # ===== delete_session / hard_delete_session =====

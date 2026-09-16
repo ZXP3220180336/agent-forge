@@ -40,7 +40,7 @@
 <nav class="steps" aria-label="案例步骤">
 <button data-step="0" aria-pressed="true">1. 接任务</button><button data-step="1" aria-pressed="false">2. 问模型</button><button data-step="2" aria-pressed="false">3. 查数据</button><button data-step="3" aria-pressed="false">4. 带证据再问</button><button data-step="4" aria-pressed="false">5. 交付与收尾</button>
 </nav>
-<div class="stage" aria-live="polite"><div class="number" id="number">01</div><h3 id="title">准备一个独立的工作回合</h3><p id="body">验证会话，保存问题，取出历史；给这次运行分配身份、预算和取消信号。</p><p class="code" id="code">chat.py → ContextManager → TaskService → BaseAgent.run</p></div>
+<div class="stage" aria-live="polite"><div class="number" id="number">01</div><h3 id="title">准备一个独立的工作回合</h3><p id="body">验证会话，保存问题，按消息 ID 快照取出历史；给这次运行分配身份、预算和取消信号。</p><p class="code" id="code">chat.py → ChatService → ContextManager → TaskService → BaseAgent.run</p></div>
 </div>
 </section>
 
@@ -103,7 +103,7 @@
 <p>项目已经具有 Harness 的主要构件，<strong>它横跨多个模块，而不是某一个叫 <code>Agent</code> 的类。</strong></p>
 <p>以当时的聊天入口为例：</p>
 <details><summary>原讨论架构图源码（可视图见页面顶部）</summary><pre>flowchart TB
-    API[&quot;chat.py&lt;br/&gt;验证会话、接收问题&quot;]
+    API[&quot;ChatService&lt;br/&gt;验证会话、准备运行&quot;]
     CTX[&quot;ContextManager&lt;br/&gt;组装历史与上下文&quot;]
     TASK[&quot;TaskService&lt;br/&gt;任务并发与取消登记&quot;]
     BASE[&quot;BaseAgent / ReActAgent&lt;br/&gt;运行生命周期与结果&quot;]
@@ -131,8 +131,8 @@
 <p class="hint">LOT-A123 的良率为什么降到 82%？</p>
 <p>下面是根据仓库 <a href="../../app/integration/tools/builtin/rca/data.py">RCA 固定模拟数据</a>构造的教学路线，不是本次实际执行记录。模型实际选择的工具和调用顺序可能不同。</p>
 <h4>第一步：准备工作</h4>
-<p><code>chat.py</code> 验证会话、保存问题；<code>ContextManager</code> 整理历史；为本次运行创建身份、预算和取消信号。</p>
-<p>对应链路：<code>chat.py → ContextManager → TaskService → BaseAgent.run</code>。</p>
+<p><code>ChatService</code> 验证会话、保存问题；<code>ContextManager</code> 按消息 ID 快照整理历史；ChatService 为本次运行创建身份、预算和取消信号，路由只负责 HTTP/SSE 与断连适配。</p>
+<p>对应链路：<code>chat.py → ChatService → ContextManager → TaskService → BaseAgent.run</code>。</p>
 <h4>第二步：模型提出调查动作</h4>
 <p>ReAct 通过 LLMService 问模型。模型可能返回：“调用 <code>query_batch_yield</code>，查询 LOT-A123。”</p>
 <p>这时，模型还没有查到任何数据。</p>
@@ -158,17 +158,17 @@
 <ol><li>模块完成后，先核对源码、真实接线和测试证据，再修订对应图、模块映射和实现边界。</li><li>如聊天用例迁移、多 Agent 编排、记忆、checkpoint 或工具生命周期落地，应重走一次案例链路，区分目标设计和实际入口。</li><li>保持教学示例与真实执行记录的区别；如补充实际运行，应写明运行条件、日期和观察结果。</li><li>同步 HTML 的两种架构视图、五步案例和完整讲解；保留 HTML 无外部脚本依赖、可离线打开的特点。</li><li>更新下面的修订记录。模块状态仍只在 ALIGNMENT 正式维护，本篇链接它并说明本轮讲解的核查时点。</li></ol>
 <div class="table-scroll"><table><tr><th>日期</th><th>修订内容</th><th>证据边界</th></tr><tr><td>2026-09-15</td><td>保存 2026-09-14 的理论解释、两张架构图、项目映射和模拟案例；配套交互 HTML</td><td>来源为当次只读核查和官方资料；未运行业务验证</td></tr></table></div>
 <h3>参考与阅读入口</h3>
-<ul><li><a href="https://www.anthropic.com/engineering/managed-agents">Anthropic：模型、Harness、Session 与执行环境的分离</a></li><li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic：长任务 Harness 的进度交接与验证</a></li><li><a href="architecture.md">项目架构与分层</a>、<a href="product.md">产品定位</a>、<a href="../ALIGNMENT.md">实现状态</a></li><li><a href="../../app/api/routes/chat.py">聊天入口</a>、<a href="../../app/application/task/task_service.py">任务服务</a>、<a href="../../app/domain/agent/executor.py">ReAct Agent 桥接</a></li><li><a href="agent-harness.html">交互 HTML 图解</a></li></ul></section>
+<ul><li><a href="https://www.anthropic.com/engineering/managed-agents">Anthropic：模型、Harness、Session 与执行环境的分离</a></li><li><a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">Anthropic：长任务 Harness 的进度交接与验证</a></li><li><a href="architecture.md">项目架构与分层</a>、<a href="product.md">产品定位</a>、<a href="../ALIGNMENT.md">实现状态</a></li><li><a href="../../app/api/routes/chat.py">聊天入口</a>、<a href="../../app/application/chat/chat_service.py">聊天用例</a>、<a href="../../app/application/task/task_service.py">任务服务</a>、<a href="../../app/domain/agent/executor.py">ReAct Agent 桥接</a></li><li><a href="agent-harness.html">交互 HTML 图解</a></li></ul></section>
 <footer>
 <p>概念参考：<a href="https://www.anthropic.com/engineering/managed-agents">Anthropic：模型、Harness、Session 与执行环境的分离</a> · <a href="https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents">长任务的进度交接与验证</a></p>
-<p>项目依据：app/api/routes/chat.py · app/domain/reasoning/react.py · app/integration/llm/llm_service.py · app/integration/tools/ · docs/ALIGNMENT.md · docs/todo.md。</p>
+<p>项目依据：app/api/routes/chat.py · app/application/chat/chat_service.py · app/domain/reasoning/react.py · app/integration/llm/llm_service.py · app/integration/tools/ · docs/ALIGNMENT.md · docs/todo.md。</p>
 </footer>
 </main>
 <script>
 const theory={entry:'用户目标 → 启动一次任务',a:'准备上下文',ad:'目标、历史、工具说明',b:'调用模型',bd:'让模型选择下一步',c:'检查并分发',cd:'工具请求 / 最终答案',d:'接收结果',dd:'记录事实、更新状态',g1:'权限 / 参数 / 审批',g2:'时间 / 费用 / 次数',g3:'记录 / 错误 / 恢复策略',env:'外部能力：LLM ↔ 模型网关 · 工具 ↔ 数据与执行环境',detail:'模型输出“调用工具”，只是一个请求。程序仍要检查、执行、记录，再把结果交回模型。'};
-const project={entry:'chat.py → TaskService → BaseAgent.run',a:'ContextManager',ad:'组装历史，按预算裁剪',b:'LLMService',bd:'通过 LLMGateway 调模型',c:'ReActStrategy',cd:'解释回复，通过 ToolGateway 分发',d:'工具结果回喂',dd:'ToolService 执行；ReAct 接管与回喂',g1:'ParameterValidator / ApprovalGate',g2:'Guard / CostLimiter / retry',g3:'SessionManager / usage / 日志',env:'模型 API · RCA 查询工具与模拟数据 · 会话存储',detail:'Harness 横跨 domain、application、integration 的相关职责。container.py 负责把这些实现装配起来；它不负责每一轮推理。'};
+const project={entry:'chat.py → ChatService → TaskService → BaseAgent.run',a:'ContextManager',ad:'按消息 ID 快照组装历史，按预算裁剪',b:'LLMService',bd:'通过 LLMGateway 调模型',c:'ReActStrategy',cd:'解释回复，通过 ToolGateway 分发',d:'工具结果回喂',dd:'ToolService 执行；ReAct 接管与回喂',g1:'ParameterValidator / ApprovalGate',g2:'Guard / CostLimiter / retry',g3:'SessionManager / usage / 日志',env:'模型 API · RCA 查询工具与模拟数据 · 会话存储',detail:'Harness 横跨 domain、application、integration 的相关职责。container.py 负责把这些实现装配起来；它不负责每一轮推理。'};
 for(const mode of ['theory','project'])document.getElementById(mode).onclick=()=>{const data=mode==='theory'?theory:project;for(const [key,value]of Object.entries(data))document.getElementById(key).textContent=value;for(const id of ['theory','project'])document.getElementById(id).setAttribute('aria-pressed',String(id===mode));};
-const steps=[['准备一个独立的工作回合','验证会话，保存问题，取出历史；给这次运行分配身份、预算和取消信号。','chat.py → ContextManager → TaskService → BaseAgent.run'],['让模型选择第一项调查','模型可能请求 query_batch_yield。此时只是提出查询请求，还没有真的查到数据。','ReActStrategy → LLMGateway → LLMService → 模型 API'],['把请求变成一次真实查询','ToolService 检查并执行。模拟数据返回：ETCH 工序良率 82%，设备为 ETCH-01。','ToolGateway → ToolService → ToolExecutor → query_batch_yield'],['使用真实返回值继续调查','把查询结果放入下一轮上下文。模型可继续查设备告警、腔体压力、缺陷图与历史案例。','工具结果 → ReAct 历史 → LLM；每轮继续检查预算与取消'],['形成答案，结束本次运行','模型汇总模拟证据，提出腔体压力异常与清洁维护的调查方向；程序结束循环，发送事件并保存答复。','ReActOutcome → AgentResult → SSE / SessionManager']];
+const steps=[['准备一个独立的工作回合','验证会话，保存问题，按消息 ID 快照取出历史；给这次运行分配身份、预算和取消信号。','chat.py → ChatService → ContextManager → TaskService → BaseAgent.run'],['让模型选择第一项调查','模型可能请求 query_batch_yield。此时只是提出查询请求，还没有真的查到数据。','ReActStrategy → LLMGateway → LLMService → 模型 API'],['把请求变成一次真实查询','ToolService 检查并执行。模拟数据返回：ETCH 工序良率 82%，设备为 ETCH-01。','ToolGateway → ToolService → ToolExecutor → query_batch_yield'],['使用真实返回值继续调查','把查询结果放入下一轮上下文。模型可继续查设备告警、腔体压力、缺陷图与历史案例。','工具结果 → ReAct 历史 → LLM；每轮继续检查预算与取消'],['形成答案，结束本次运行','模型汇总模拟证据，提出腔体压力异常与清洁维护的调查方向；程序结束循环，发送事件并保存答复。','ReActOutcome → AgentResult → SSE / SessionManager']];
 for(const button of document.querySelectorAll('[data-step]'))button.onclick=()=>{const i=Number(button.dataset.step);document.getElementById('number').textContent=String(i+1).padStart(2,'0');['title','body','code'].forEach((key,j)=>document.getElementById(key).textContent=steps[i][j]);for(const item of document.querySelectorAll('[data-step]'))item.setAttribute('aria-pressed',String(item===button));};
 </script>
 </html>

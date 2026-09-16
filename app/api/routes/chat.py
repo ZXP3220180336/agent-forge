@@ -2,35 +2,48 @@
 # routes/chat.py - 聊天相关 API 路由
 # ============================================
 
-import asyncio
-import uuid
+from contextlib import aclosing
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from app.api.deps import (
-    get_agent_params,
-    get_context_manager,
-    get_cost_limiter,
+    get_chat_service,
     get_current_user,
-    get_llm_service,
-    get_session_manager,
-    get_task_service,
-    get_tool_service,
 )
 from app.api.schemas.request import SendMessageRequest
-from app.application.context.context_manager import ContextManager
-from app.application.session.session_manager import SessionManager
-from app.application.task.task_service import TaskService
-from app.domain.agent import AgentContext, ReActAgent
-from app.domain.ports.cost_limiter import CostLimiterPort
-from app.domain.ports.llm_gateway import LLMGateway
-from app.domain.ports.tool_gateway import ToolGateway
-from app.shared.events import build_error_event, build_info_event
-from app.shared.exceptions import ForbiddenError, NotFoundError
-from app.shared.types import SessionId, UserId
+from app.application.chat import ChatRun, ChatService
+from app.shared.events import build_error_event
 
 router = APIRouter(prefix="/api", tags=["聊天"])
+
+
+class _ChatStreamingResponse(StreamingResponse):
+    """在 ASGI 响应调用边界关闭 body iterator 和聊天运行。"""
+
+    def __init__(self, content: Any, *, run: ChatRun, **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._run = run
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            if not self._run.closed:
+                # 请求当前运行取消
+                self._run.request_cancel()
+
+            # `self.body_iterator`：就是父类 `StreamingResponse` 持有的异步迭代器（也就是我们传入的流式生成器）
+            close = getattr(self.body_iterator, "aclose", None)
+            try:
+                if close is not None:
+                    # 关闭 body iterator
+                    await close()
+            finally:
+                # 关闭聊天运行
+                await self._run.aclose()
 
 
 @router.post("/chat/send")
@@ -38,134 +51,56 @@ async def send_message(
     request: SendMessageRequest,
     http_request: Request,  # FastAPI 注入原始 Request（被动断连检测）
     user_id: str = Depends(get_current_user),
-    session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
-    context_manager: ContextManager = Depends(get_context_manager),  # noqa: B008
-    llm_service: LLMGateway = Depends(get_llm_service),  # noqa: B008
-    tool_service: ToolGateway = Depends(get_tool_service),  # noqa: B008
-    task_service: TaskService = Depends(get_task_service),  # noqa: B008
-    agent_params: dict = Depends(get_agent_params),  # noqa: B008
-    cost_limiter: CostLimiterPort | None = Depends(get_cost_limiter),  # noqa: B008
+    chat_service: ChatService = Depends(get_chat_service),  # noqa: B008
 ):
     """
-    发送消息，流式返回 AI 回复
+    准备聊天运行并以 SSE 返回 Agent 事件。
 
     流程：
-    1. 会话验证与授权
-    2. 保存用户消息到数据库
-    3. 从上下文管理器构建 messages
-    4. ReActAgent 闭环：LLM 思考 → 工具调用 → LLM 总结
-    5. 逐事件推送 SSE
-    6. 流结束后保存 assistant 回复
+    1. ChatService 在响应头前完成授权、用户消息、历史快照和运行登记。
+    2. 路由消费 ChatRun 事件，并把 HTTP 断连转换为会话级取消。
+    3. 普通运行异常转换为 SSE error；正常结束追加一次 [DONE]。
+    4. 生成器或 ASGI 发送退出时关闭运行，由 ChatRun 清理登记并提交答复。
     """
-    # 1. 会话验证与授权
-    sid: SessionId = SessionId(request.session_id)
-    uid: UserId = UserId(user_id)
-    session = await session_manager.get_session(sid)
-    if not session:
-        raise NotFoundError("会话不存在")
-    if session["user_id"] != user_id:
-        raise ForbiddenError("无权访问该会话")
-
-    # 2. 保存用户消息
-    await session_manager.add_message(
-        session_id=sid,
-        role="user",
-        content=request.message,
-        token_count=context_manager.count_tokens(request.message),
+    run = await chat_service.prepare_message(
+        session_id=request.session_id,
+        user_id=user_id,
+        message=request.message,
+        max_iterations=request.max_iterations,
     )
-
-    # 3. 构建上下文
-    messages, _total, truncated_history = await context_manager.build_messages(
-        session_id=sid,
-        user_message=request.message,
-    )
-
-    # 4. 定义流式生成器
-    # 取消事件：请求开始时注册（/chat/stop 可能在任何时刻置位），流结束清理
-    run_id = uuid.uuid4().hex
-    cancel_event = task_service.create_cancel_event(request.session_id, run_id)
-    run_stop = asyncio.Event()
 
     async def generate():
-        # Agent 持有本次运行结果：每个请求创建独立实例，并显式传入 Application 生成的身份。
-        ctx = AgentContext(
-            session_id=sid,
-            user_id=uid,
-            run_id=run_id,
-            run_stop=run_stop,
-            temperature=agent_params["temperature"],
-            max_tokens=agent_params["max_tokens"],
-            max_iterations=(
-                request.max_iterations
-                if request.max_iterations is not None
-                else agent_params["max_iterations"]
-            ),
-            max_execution_time=agent_params["max_execution_time"],
-            max_context_rounds=agent_params["max_context_rounds"],
-            max_context_tokens=agent_params["max_context_tokens"],
-            max_empty_retries=agent_params["max_empty_retries"],
-            max_llm_fail_retries=agent_params["max_llm_fail_retries"],
-            max_tool_protocol_retries=agent_params["max_tool_protocol_retries"],
-            max_same_action_turns=agent_params["max_same_action_turns"],
-        )
-        agent = ReActAgent(
-            llm=llm_service,
-            tools=tool_service,
-            context_budget=context_manager,
-            cost_limiter=cost_limiter,
-            cancel_event=cancel_event,
-        )
-
-        # 上下文超限裁剪告警（流首显式提示，避免历史被静默丢弃无感知）
-        if truncated_history:
-            yield build_info_event(
-                f"上下文超限，已裁剪最早 {truncated_history} 条历史消息以适配模型上下文窗口"
-            )
-
         disconnected = False
+        stream_ended = False
         try:
-            # 4. ReAct 闭环：LLM 思考 → 工具调用 → LLM 总结
-            # 经 TaskService 在任务级并发信号量（agent_max_concurrent_tasks）保护下运行
-            async for event in task_service.run_agent(
-                user_input=request.message,
-                messages=messages,
-                context=ctx,
-                agent=agent,
-            ):
-                # 客户端被动断连（关页/刷新/断网）：与 /chat/stop 同走优雅取消——置位
-                # 会话取消事件让 Agent 在轮次边界收尾（不再发起新 LLM 调用/工具），并停止
-                # 向已断客户端推送。仅在首次检测到断连时置位一次（后续排水轮次只消费不推送）。
-                if await http_request.is_disconnected():
-                    if not disconnected:
-                        disconnected = True
-                        task_service.cancel_session(request.session_id)
-                    continue  # 不再推送，仅继续消费让 Agent 优雅走完（资源闭环）
+            try:
+                async with aclosing(run.events()) as events:
+                    async for event in events:
+                        # HTTP 断连只在传输层识别；转换为 Application 的会话级取消，
+                        # 继续排水(让内部 Agent、工具、usage 和运行登记按照既有生命周期完成收尾)
+                        # 但不再向已断客户端推送。
+                        if await http_request.is_disconnected():
+                            if not disconnected:
+                                disconnected = True
+                                # 取消当前会话的所有运行，避免产生悬挂运行。
+                                chat_service.cancel_session(request.session_id)
+                            continue
+                        yield event
+            except Exception as error:  # noqa: BLE001
+                if not disconnected:
+                    yield build_error_event(f"Agent 运行异常: {error!s}")
 
-                yield event
-
-        except Exception as e:  # noqa: BLE001
-            if not disconnected:
-                yield build_error_event(f"Agent 运行异常: {e!s}")
-        finally:
+            stream_ended = True
             if not disconnected:
                 yield "data: [DONE]\n\n"
+        finally:
+            if not stream_ended:
+                run.request_cancel()
+            await run.aclose()
 
-            # 清理取消事件（会话运行结束）
-            task_service.clear_cancel_event(run_id)
-
-            # 5. 保存 AI 回复（流结束后从 agent.result 取最终答复）
-            result = agent.result
-            if result and result.content.strip():
-                await session_manager.add_message(
-                    session_id=sid,
-                    role="assistant",
-                    content=result.content.strip(),
-                    reasoning_content=result.reasoning or None,
-                    token_count=context_manager.count_tokens(result.content),
-                )
-
-    return StreamingResponse(
+    return _ChatStreamingResponse(
         generate(),
+        run=run,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -179,18 +114,8 @@ async def send_message(
 async def stop_chat(
     session_id: str,
     user_id: str = Depends(get_current_user),
-    session_manager: SessionManager = Depends(get_session_manager),  # noqa: B008
-    task_service: TaskService = Depends(get_task_service),  # noqa: B008
+    chat_service: ChatService = Depends(get_chat_service),  # noqa: B008
 ):
-    """停止正在进行的聊天生成"""
-    sid: SessionId = SessionId(session_id)
-    session = await session_manager.get_session(sid)
-    if not session:
-        raise NotFoundError("会话不存在")
-    if session["user_id"] != user_id:
-        raise ForbiddenError("无权访问")
-
-    # 置位会话取消事件 → 运行中的 Agent 在轮次边界优雅停止（after_turn 语义，
-    # 不硬中断：LLM 调用在整流层 chunk 边界响应、工具执行完成后取消生效）
-    cancelled = task_service.cancel_session(session_id)
+    """校验会话归属并取消该会话当前登记的全部聊天运行。"""
+    cancelled = await chat_service.stop(session_id=session_id, user_id=user_id)
     return {"message": "已发送停止信号", "cancelled": cancelled}

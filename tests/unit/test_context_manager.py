@@ -23,8 +23,14 @@ class _FakeSessionManager:
     async def get_session(self, session_id):
         return self.session
 
-    async def get_messages(self, session_id, limit=None, offset=0):
-        self.calls.append((session_id, limit))
+    async def get_messages(
+        self,
+        session_id,
+        limit=None,
+        offset=0,
+        before_message_id=None,
+    ):
+        self.calls.append((session_id, limit, before_message_id))
         return self.messages
 
 
@@ -75,7 +81,7 @@ async def test_build_messages_assembles_system_history_user():
     ]
     assert total == cm.count_messages_tokens(messages)
     assert truncated == 0  # 未超限 → 不裁剪
-    assert fake.calls == [("s1", 40)]
+    assert fake.calls == [("s1", 40, None)]
 
 
 @pytest.mark.asyncio
@@ -83,7 +89,18 @@ async def test_build_messages_passes_custom_max_rounds():
     fake = _FakeSessionManager(session={"system_prompt": "sys"})
     cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"))
     await cm.build_messages("s1", "hello", max_rounds=3)
-    assert fake.calls == [("s1", 6)]
+    assert fake.calls == [("s1", 6, None)]
+
+
+@pytest.mark.asyncio
+async def test_build_messages_excludes_current_persisted_message_id():
+    """当前消息已持久化时，以其 ID 作为历史快照上界。"""
+    fake = _FakeSessionManager(session={"system_prompt": "sys"})
+    cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"))
+
+    await cm.build_messages("s1", "hello", current_message_id=42)
+
+    assert fake.calls == [("s1", 40, 42)]
 
 
 @pytest.mark.asyncio

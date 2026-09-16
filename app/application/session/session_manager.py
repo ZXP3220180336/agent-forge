@@ -173,19 +173,25 @@ class SessionManager:
         session_id: SessionId,
         limit: int = 50,
         offset: int = 0,
+        before_message_id: int | None = None,
     ) -> list[dict]:
         """
-        获取会话历史消息
-        支持分页，避免一次性加载过多
+        按创建时间升序获取 user/assistant 历史消息。
+
+        `before_message_id` 传入时只读取 ID 更小的消息，用作已持久化当前消息的
+        快照上界；`limit` 和 `offset` 继续控制既有分页。
         """
         async with self.db_session() as db:
             # 只返回 user 和 assistant 的消息（不包含 system 和 reasoning）
+            conditions = [
+                MessageModel.session_id == session_id,
+                MessageModel.role.in_(["user", "assistant"]),
+            ]
+            if before_message_id is not None:
+                conditions.append(MessageModel.id < before_message_id)
             stmt = (
                 select(MessageModel)
-                .where(
-                    MessageModel.session_id == session_id,
-                    MessageModel.role.in_(["user", "assistant"]),
-                )
+                .where(*conditions)
                 .order_by(MessageModel.created_at.asc())
                 .offset(offset)
                 .limit(limit)
@@ -222,7 +228,7 @@ class SessionManager:
         reasoning_content: str | None = None,
         token_count: int = 0,
     ) -> int:
-        """添加消息记录，返回消息ID"""
+        """添加消息并返回正整数主键；数据库未返回有效主键时抛 RuntimeError。"""
         async with self.db_session() as db:
             stmt = insert(MessageModel).values(
                 session_id=session_id,
@@ -233,7 +239,12 @@ class SessionManager:
             )
             result = await db.execute(stmt)
             await db.commit()
-            return result.inserted_primary_key[0] if result.inserted_primary_key else 0
+            if not result.inserted_primary_key:
+                raise RuntimeError("消息写入成功但数据库未返回主键")
+            message_id = result.inserted_primary_key[0]
+            if not isinstance(message_id, int) or message_id <= 0:
+                raise RuntimeError("数据库返回了无效消息主键")
+            return message_id
 
     """
     async def delete_session(self, session_id: str):
