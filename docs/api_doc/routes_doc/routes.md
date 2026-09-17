@@ -147,7 +147,7 @@ Authorization: Bearer <token>
 
 响应：`{ "session_id": "...", "messages": [{"role": "user|assistant", "content": "..."}, ...] }`（仅返回 user / assistant 角色，`created_at` 升序）。
 
-处理流程：会话验证与授权（404 / 403）→ `session_manager.get_messages(session_id, limit, offset)`。
+处理流程：会话验证与授权（404 / 403）→ `session_manager.get_messages(session_id, limit, offset)`。历史分页从最新消息窗口向更早消息推进；每页内部仍按消息创建时间正序返回。
 
 #### `GET /api/sessions` — 获取用户会话列表
 

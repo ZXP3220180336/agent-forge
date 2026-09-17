@@ -1,6 +1,6 @@
 # SessionManager 会话管理说明文档
 
-> **更新日期**：2026-08-29
+> **更新日期**：2026-09-17
 > **模块**：`app/application/session/session_manager.py`
 > **文档定位**：SessionManager 独立说明 —— 会话生命周期管理、消息持久化、Redis 热缓存 + DB 持久化、分页 / 搜索 / 统计。
 
@@ -59,7 +59,7 @@ SessionManager ──► Redis（热缓存：session:{id} / user_sessions:... / 
 | --- | --- | --- |
 | `create_session` | `(user_id, system_prompt=None, title=None) -> dict` | 创建会话：UUID + DB 持久化 + 预热 Redis，默认 system_prompt「你是一个友好的AI助手」/ title「新对话」 |
 | `get_session` | `(session_id) -> dict \| None` | Redis → DB 缓存穿透保护，DB 命中回写 Redis |
-| `get_messages` | `(session_id, limit=50, offset=0, before_message_id=None) -> list[dict]` | 历史消息；可用消息 ID 建立排他的运行快照上界 |
+| `get_messages` | `(session_id, limit=50, offset=0, before_message_id=None) -> list[dict]` | 取最新窗口并按时间正序返回历史消息；可用消息 ID 建立排他的运行快照上界 |
 | `add_message` | `(session_id, role, content, reasoning_content=None, token_count=0) -> int` | 写入并返回正消息 ID；数据库未返回有效主键时失败 |
 | `delete_session` | `(session_id) -> None` | 软删除：删 Redis 键 + DB 更新 `status="deleted"` |
 | `hard_delete_session` | `(session_id) -> None` | 物理删除：先删消息（外键约束）再删会话，仅管理员 / 定时任务 |
@@ -102,6 +102,19 @@ get_session(session_id)
 
 - DB 未命中**不缓存空值**，存在缓存穿透攻击面（文件内注释「布隆过滤器 + 空值缓存」增强方案作为演进参考）
 - 回写时 `message_count` / `total_tokens` 固定为 0，实际统计走 `_get_session_stats` 懒加载
+
+### `get_messages`：最近历史窗口
+
+`get_messages` 的 `limit` 表示“从最新消息向前取多少条”，而不是从会话首条消息开始
+截取。数据库查询按 `created_at DESC, id DESC` 排序后应用 `offset/limit`，因此同一时间戳
+下仍有稳定顺序；查询结果返回前反转为创建时间正序，供历史接口和 `ContextManager` 按
+对话发生顺序消费。
+
+- `before_message_id` 是排他的快照上界，先过滤 `id < before_message_id`，再从该快照中取
+  最近窗口。
+- `offset` 从该最新窗口起点计算，向更早的历史分页；它不改变返回结果的时间正序。
+- 这条路径只返回 `user` / `assistant` 消息；`system`、`reasoning` 和 token 计数仍不随历史
+ 结果返回。
 
 ### `list_sessions`：第一页缓存策略
 

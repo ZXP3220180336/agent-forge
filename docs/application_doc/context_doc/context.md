@@ -1,6 +1,6 @@
 # ContextManager 上下文管理说明文档
 
-> **更新日期**：2026-09-16
+> **更新日期**：2026-09-17
 > **模块**：`app/application/context/context_manager.py`
 > **文档定位**：ContextManager 独立说明 —— 从会话历史组装 messages、经 `LLMGateway` 端口精确计数、超限截断；并结构实现 `ContextBudgetPort`，承担 Agent 运行中的上下文预算管理。
 
@@ -84,7 +84,7 @@ token 计量归属 LLM 能力（模型特定编码）——经 `LLMGateway` 端�
 build_messages(session_id, user_message, max_rounds=20, current_message_id=None)
   1. get_session(session_id) → 未找到抛 ValueError("Session ... not found")
   2. get_messages(..., before_message_id=current_message_id)
-     # ChatService 已提交当前消息时，只读取该 ID 之前的历史快照
+     # 先取最近 max_rounds * 2 条，再按对话时间正序恢复；已提交当前消息时只读取该 ID 之前的历史快照
   3. messages = [system] + history + [user]
   4. total_tokens = count_messages_tokens(messages)
      available_tokens = max_context_tokens - max_output_tokens

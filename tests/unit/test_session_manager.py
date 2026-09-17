@@ -243,9 +243,10 @@ async def test_get_session_returns_none_when_missing():
 async def test_get_messages_maps_role_content():
     fake_redis = _FakeRedis()
     fake_db = _FakeDB()
+    # 查询按最新优先返回；SessionManager 对外恢复为对话时间顺序。
     fake_db.messages = [
-        _message_row(1, role="user", content="hi"),
         _message_row(2, role="assistant", content="yo"),
+        _message_row(1, role="user", content="hi"),
     ]
     sm = SessionManager(redis_client=fake_redis, db_session_factory=fake_db)
 
@@ -255,6 +256,37 @@ async def test_get_messages_maps_role_content():
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "yo"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_messages_selects_latest_window_but_returns_chronological_order():
+    """limit 先作用于最新消息，返回给上下文时仍保持对话发生顺序。"""
+    class _LatestWindowDB(_FakeDB):
+        def dispatch(self, stmt):
+            if (
+                isinstance(stmt, Select)
+                and stmt.column_descriptions[0]["expr"] is MessageModel
+            ):
+                # 模拟数据库按 created_at/id 倒序执行 limit，再交给被测方法恢复顺序。
+                return _FakeResult(list(reversed(self.messages))[:1])
+            return super().dispatch(stmt)
+
+    fake_db = _LatestWindowDB()
+    fake_db.messages = [
+        _message_row(1, role="user", content="old"),
+        _message_row(2, role="assistant", content="new"),
+    ]
+    sm = SessionManager(redis_client=_FakeRedis(), db_session_factory=fake_db)
+
+    result = await sm.get_messages("s1", limit=1)
+
+    statement = next(
+        item for item in fake_db.all_statements if isinstance(item, Select)
+    )
+    sql = str(statement)
+    assert "messages.created_at DESC" in sql
+    assert "messages.id DESC" in sql
+    assert result == [{"role": "assistant", "content": "new"}]
 
 
 @pytest.mark.asyncio

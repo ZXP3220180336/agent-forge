@@ -76,7 +76,7 @@ class ContextManager:
         if not session:
             raise ValueError(f"Session {session_id} not found")
 
-        # 2. 获取当前消息提交时的历史快照；排除当前行和稍后提交的兄弟消息
+        # 2. 获取最近历史窗口；SessionManager 返回前恢复时间正序，排除当前行和稍后提交的兄弟消息
         history = await self.session_manager.get_messages(
             session_id,
             limit=max_rounds * 2,  # 每轮 user + assistant

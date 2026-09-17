@@ -1,6 +1,6 @@
 # 项目待办
 
-更新：2026-09-16。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
+更新：2026-09-17。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
 <a id="refactoring-plan"></a>
 
@@ -483,4 +483,4 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 | C-09 | 配置扩展、默认值调优、热更新与多环境配置。 | 2026-08-29 config 文档重构留下研究性 backlog；没有真实消费方、负载或运维证据的默认值建议不保留为目标值。出现明确需求后重新设计，而不是照抄旧数值。 |
 | C-10 | 工具选择器向量召回与工具加载/安全边界的后续增强。 | 旧工具重构与[TOOLS-049](../issues/integration/tools/2026-08-20-code-review-fixes.md)有明确延后项；以工具规模、性能、安全边界或真实故障为触发，已完成的审计脱敏不重开。 |
 | C-11 | 其他非关键观测入口的异常与阻塞边界。 | LLM 调用日志已由 [LLM-049](../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md) 实施有界隔离；其他日志、指标和审计入口若进入终态路径，仍须逐入口核验 G0-6，不能把局部实现宣称为全仓完成。 |
-| C-13 | `ContextManager.build_messages` 的历史查询取「最早 N 条」而非最近的 N 轮。 | R6 复核 [CHAT-001](../issues/application/chat/2026-09-16-current-message-duplicated.md) 时确认：`SessionManager.get_messages` 用 `order_by(created_at.asc())` + `limit`，会话超过 `max_rounds * 2` 条（默认 40）后送给模型的是**最早**的历史，而 `build_messages` docstring 写的是「保留最近的 N 轮对话」。两者只有一个是对的：先确认产品意图（锚定最早对话，还是保留最近上下文），再决定改查询还是改文档。不属于 CHAT-001 的当前消息边界问题，R6 未改动该分页行为。 |
+| C-13 | `ContextManager.build_messages` 的历史查询窗口与文档不一致。**已完成（2026-09-17）** | `SessionManager.get_messages` 已改为按 `created_at DESC, id DESC` 取最近窗口，再恢复为时间正序返回；`before_message_id` 和从最新窗口起算的 `offset` 语义已写入 SessionManager 文档，并有单元回归覆盖。未新增 Issue。 |

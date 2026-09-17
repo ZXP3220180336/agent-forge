@@ -118,9 +118,7 @@ class SessionManager:
 
         # 2. 查数据库
         async with self.db_session() as db:
-            result = await db.execute(
-                select(SessionModel).where(SessionModel.id == session_id)
-            )
+            result = await db.execute(select(SessionModel).where(SessionModel.id == session_id))
             session = result.scalar_one_or_none()
             if not session:
                 return None
@@ -176,10 +174,12 @@ class SessionManager:
         before_message_id: int | None = None,
     ) -> list[dict]:
         """
-        按创建时间升序获取 user/assistant 历史消息。
+        获取最近一段 user/assistant 历史消息，并按创建时间升序返回。
 
         `before_message_id` 传入时只读取 ID 更小的消息，用作已持久化当前消息的
-        快照上界；`limit` 和 `offset` 继续控制既有分页。
+        快照上界；`limit` 从最新消息向更早消息截取，`offset` 也以最新消息为起点
+        继续控制分页。查询阶段使用倒序保证窗口确实是最新窗口，返回前恢复时间正序，
+        使 ContextManager 和模型继续按对话发生顺序消费历史。
         """
         async with self.db_session() as db:
             # 只返回 user 和 assistant 的消息（不包含 system 和 reasoning）
@@ -192,12 +192,16 @@ class SessionManager:
             stmt = (
                 select(MessageModel)
                 .where(*conditions)
-                .order_by(MessageModel.created_at.asc())
+                .order_by(
+                    MessageModel.created_at.desc(),
+                    MessageModel.id.desc(),
+                )
                 .offset(offset)
                 .limit(limit)
             )
             result = await db.execute(stmt)
-            messages = result.scalars().all()
+            # 先取最新窗口，再恢复成对话时间顺序；id 作为同一时间戳下的稳定次序。
+            messages = list(reversed(result.scalars().all()))
 
             return [{"role": msg.role, "content": msg.content} for msg in messages]
 
@@ -273,9 +277,7 @@ class SessionManager:
         await self._cache_delete(f"session:{session_id}")
         async with self.db_session() as db:
             # 先删除消息（外键约束）
-            await db.execute(
-                delete(MessageModel).where(MessageModel.session_id == session_id)
-            )
+            await db.execute(delete(MessageModel).where(MessageModel.session_id == session_id))
             # 再删除会话
             await db.execute(delete(SessionModel).where(SessionModel.id == session_id))
             await db.commit()
@@ -339,12 +341,8 @@ class SessionManager:
                     "id": session.id,
                     "title": session.title,
                     "system_prompt": session.system_prompt,
-                    "created_at": session.created_at.isoformat()
-                    if session.created_at
-                    else None,
-                    "updated_at": session.updated_at.isoformat()
-                    if session.updated_at
-                    else None,
+                    "created_at": session.created_at.isoformat() if session.created_at else None,
+                    "updated_at": session.updated_at.isoformat() if session.updated_at else None,
                     "status": session.status,
                 }
 
@@ -394,9 +392,7 @@ class SessionManager:
         stats = {
             "message_count": row.message_count,
             "total_tokens": row.total_tokens,
-            "last_message_at": row.last_message_at.isoformat()
-            if row.last_message_at
-            else None,
+            "last_message_at": row.last_message_at.isoformat() if row.last_message_at else None,
         }
 
         # 3. 缓存统计信息（60秒过期）
@@ -460,13 +456,7 @@ class SessionManager:
             total_count = total_result.scalar() or 0
 
             # 查询分页数据
-            stmt = (
-                select(SessionModel)
-                .where(*conditions)
-                .order_by(order_by)
-                .offset(offset)
-                .limit(limit)
-            )
+            stmt = select(SessionModel).where(*conditions).order_by(order_by).offset(offset).limit(limit)
             result = await db.execute(stmt)
             sessions = result.scalars().all()
 
@@ -477,12 +467,8 @@ class SessionManager:
                     "id": session.id,
                     "title": session.title,
                     "system_prompt": session.system_prompt,
-                    "created_at": session.created_at.isoformat()
-                    if session.created_at
-                    else None,
-                    "updated_at": session.updated_at.isoformat()
-                    if session.updated_at
-                    else None,
+                    "created_at": session.created_at.isoformat() if session.created_at else None,
+                    "updated_at": session.updated_at.isoformat() if session.updated_at else None,
                     "status": session.status,
                 }
 
