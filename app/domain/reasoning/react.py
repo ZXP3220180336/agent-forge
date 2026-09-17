@@ -114,15 +114,18 @@ _TRUNCATED_MARKER = "\n[结果已截断]"
 _MAX_EXECUTION_CLEANUP_GRACE = 1.0
 _EXECUTION_CLEANUP_GRACE_RATIO = 0.1
 
+# execute_tool_calls 的默认工具执行选项：timeout / max_attempts 均为 None，交由执行器按
+# 工具自声明或全局配置解析（语义同 execute() 的 None）。用模块级常量而非在参数默认值里
+# 调用构造器，避免 B008（函数调用出现在默认值中）触发新增 lint 债务。
+_DEFAULT_TOOL_EXECUTION = ToolExecutionOptions()
+
 
 def _terminal_result(
     current_result: StreamResult | None,
     last_visible_result: StreamResult | None,
 ) -> StreamResult | None:
     """终止时选择最新可用成果：当前轮有可见进度则优先，否则保留上一完成轮。"""
-    if current_result is not None and (
-        current_result.content.strip() or current_result.reasoning_content.strip()
-    ):
+    if current_result is not None and (current_result.content.strip() or current_result.reasoning_content.strip()):
         return current_result
     return last_visible_result
 
@@ -150,9 +153,7 @@ class ReActOutcome:
 
     content: str = ""
     reasoning: str = ""
-    structured: dict | None = (
-        None  # final_answer 结构化最终答案（output_schema 启用时）
-    )
+    structured: dict | None = None  # final_answer 结构化最终答案（output_schema 启用时）
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     iterations: int = 0
     total_tokens: int = 0
@@ -181,7 +182,7 @@ class ReActStrategy:
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
         self._context_budget = context_budget
         self._cost_limiter = cost_limiter
-        self._tool_call_records: list[dict[str, Any]] = []
+
         # 连续空输出重试计数（execute 每次开头重置；本轮有产出清零、空输出 +1）
         self._empty_retries = 0
         # 连续 LLM 失败重试计数（execute 每次开头重置；成功轮清零、失败轮 +1）
@@ -193,6 +194,7 @@ class ReActStrategy:
         self._stall_count = 0
         # 结果载体，execute() 结束后读取
         self.outcome: ReActOutcome | None = None
+        self._tool_call_records: list[dict[str, Any]] = []
         self._tool_facts: list[ToolFact] = []
 
     @property
@@ -273,17 +275,6 @@ class ReActStrategy:
             流式下 reasoning/message 逐 token，非流式下为整条一次性（协议同构）
         """
 
-        self.outcome = None
-        tool_defs = self._tools.get_openai_tools() if self._tools else None
-        # 结构化最终答案：注入 final_answer 工具（模型最后调用提交结构化结果并终止）
-        if output_schema is not None:
-            create_schema_validator(output_schema)
-            tool_defs = [*(tool_defs or []), build_final_answer_tool(output_schema)]
-        has_tools = bool(tool_defs)
-
-        self._tool_call_records = []
-        self._tool_facts = []
-
         # 防 handler CONTINUE 无限重试烧钱：连续空输出 / LLM 失败 / 循环停滞计数，超过上限硬终止
         # 连续空输出重试计数：execute 每次独立（有产出清零 / 空输出 +1，见主循环）
         self._empty_retries = 0
@@ -294,6 +285,16 @@ class ReActStrategy:
         # 循环停滞检测：execute 每次独立（相同动作指纹 + 连续计数，见主循环）
         self._last_action_fp = None
         self._stall_count = 0
+        self.outcome = None
+        self._tool_call_records = []
+        self._tool_facts = []
+
+        tool_defs = self._tools.get_openai_tools() if self._tools else None
+        # 结构化最终答案：注入 final_answer 工具（模型最后调用提交结构化结果并终止）
+        if output_schema is not None:
+            create_schema_validator(output_schema)
+            tool_defs = [*(tool_defs or []), build_final_answer_tool(output_schema)]
+        has_tools = bool(tool_defs)
 
         # 最近一轮已归账且具有用户可见成果的完整响应。仅 content/reasoning
         # 可更新它；未执行 tool_calls、usage 和 finish_reason 不构成可见成果。
@@ -393,16 +394,11 @@ class ReActStrategy:
                     # 累计 token 用量
                     if stream_result.usage:
                         for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                            total_usage[k] = total_usage.get(
-                                k, 0
-                            ) + stream_result.usage.get(k, 0)
+                            total_usage[k] = total_usage.get(k, 0) + stream_result.usage.get(k, 0)
 
                     # 只保存最近一轮可见成果的完整快照。当前轮仅有尚未执行的
                     # tool_calls 或完全为空时，不能覆盖更早的 content/reasoning。
-                    if (
-                        stream_result.content.strip()
-                        or stream_result.reasoning_content.strip()
-                    ):
+                    if stream_result.content.strip() or stream_result.reasoning_content.strip():
                         last_visible_result = stream_result
                     # 本轮正常返回并归账后立即清空 current_result，防止 usage 双计。
                     current_result = None
@@ -453,13 +449,8 @@ class ReActStrategy:
                     # 显式拒答信号（LLM-004 原则：拒答基于显式信号，不靠 content 空推断）；
                     # 拒答终止不误判为成功答案、不空转重试。DeepSeek stop+空 content 属
                     # 空回答（非显式拒答），保持现有正常结束语义。
-                    if (
-                        stream_result.refusal
-                        or stream_result.finish_reason == "content_filter"
-                    ):
-                        for e in await self._finalize_refused(
-                            stream_result, iteration, total_usage
-                        ):
+                    if stream_result.refusal or stream_result.finish_reason == "content_filter":
+                        for e in await self._finalize_refused(stream_result, iteration, total_usage):
                             yield e
                         return
 
@@ -476,14 +467,10 @@ class ReActStrategy:
                     # 同样必须先拦截、共用协议修正预算，不得写进历史。
                     identity_error = tool_call_identity_error(stream_result.tool_calls)
                     if finish_reason == "tool_calls" and (
-                        not stream_result.tool_calls
-                        or not has_tools
-                        or identity_error is not None
+                        not stream_result.tool_calls or not has_tools or identity_error is not None
                     ):
                         if not stream_result.tool_calls:
-                            detail = (
-                                "finish_reason=tool_calls 但未返回工具调用（协议异常）"
-                            )
+                            detail = "finish_reason=tool_calls 但未返回工具调用（协议异常）"
                         elif not has_tools:
                             detail = "模型返回 tool_calls 但当前无可用工具（协议异常）"
                         else:
@@ -507,12 +494,7 @@ class ReActStrategy:
                     # （模型下轮看不到空消息也无影响；对齐工业级不把空输出轮写进历史）。
                     # has_reasoning 保留在条件内：thinking 模型返回空 reasoning 也追加
                     # （防 400 回喂字段需要，见 reasoning_content 回喂节）。
-                    if (
-                        full_content
-                        or full_reasoning
-                        or stream_result.has_reasoning
-                        or stream_result.tool_calls
-                    ):
+                    if full_content or full_reasoning or stream_result.has_reasoning or stream_result.tool_calls:
                         assistant_msg: dict = {
                             "role": "assistant",
                             "content": full_content,
@@ -531,15 +513,12 @@ class ReActStrategy:
                     if finish_reason == "tool_calls":
                         # ----- （1）协议正常的工具调用 → 执行或 final_answer 修正
                         self._empty_retries = 0
-                        yield build_info_event(
-                            f"检测到 {len(stream_result.tool_calls)} 个工具调用"
-                        )
+                        yield build_info_event(f"检测到 {len(stream_result.tool_calls)} 个工具调用")
 
                         # ----- Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续 -----
                         # （注入工具非注册工具，识别在主循环，不进 execute_tool_calls）
                         if output_schema is not None and any(
-                            tc["function"]["name"] == _FINAL_ANSWER_TOOL
-                            for tc in stream_result.tool_calls
+                            tc["function"]["name"] == _FINAL_ANSWER_TOOL for tc in stream_result.tool_calls
                         ):
                             for e in await self._handle_final_answer(
                                 stream_result.tool_calls,
@@ -579,14 +558,9 @@ class ReActStrategy:
                             iteration,
                             total_usage,
                             full_reasoning,
-                            tool_execution.timeout,
-                            tool_execution.max_attempts,
+                            tool_execution,
                             recovery.max_tool_protocol_retries,
-                            run_id=run.run_id,
-                            run_stop=run.run_stop,
-                            workflow_id=run.workflow_id,
-                            cancel_event=run.cancel_event,
-                            parent_cancel_events=run.parent_cancel_events,
+                            run=run,
                             deadline=deadline,
                             cleanup_deadline=hard_timeout_at,
                         ):
@@ -621,9 +595,7 @@ class ReActStrategy:
                         # CONTINUE（默认）：重试（_handle_empty_output 已产出重试信息）
 
                 # ----- 10. 达到最大迭代次数 → 错误分发（默认 STOP 兜底；handler 可上抛） -----
-                for e in await self._finalize_max_turns(
-                    last_visible_result, limits.max_iterations, total_usage
-                ):
+                for e in await self._finalize_max_turns(last_visible_result, limits.max_iterations, total_usage):
                     yield e
         # ----- 11. 异常处理 -----
         except AgentRunError:
@@ -653,20 +625,14 @@ class ReActStrategy:
             # 时钟与 deadline 会把「期限已过但 timeout 回调尚未取消 task」误判为硬超时。
             if hard_timeout_scope is None or not hard_timeout_scope.expired():
                 terminal_result = _terminal_result(current_result, last_visible_result)
-                total_usage.update(
-                    merge_usage(total_usage, _unaccounted_usage(current_result))
-                )
-                for event in await self._finalize_unknown(
-                    terminal_result, iteration, total_usage, exc
-                ):
+                total_usage.update(merge_usage(total_usage, _unaccounted_usage(current_result)))
+                for event in await self._finalize_unknown(terminal_result, iteration, total_usage, exc):
                     yield event
                 return
 
             # 外层 timeout 真实到期 → 保留当前轮已生成部分成果；若当前轮尚无可见进度则沿用上一轮。
             terminal_result = _terminal_result(current_result, last_visible_result)
-            total_usage.update(
-                merge_usage(total_usage, _unaccounted_usage(current_result))
-            )
+            total_usage.update(merge_usage(total_usage, _unaccounted_usage(current_result)))
             guard = evaluate_guard(
                 cancel_event=run.cancel_event,
                 deadline=deadline,
@@ -706,9 +672,7 @@ class ReActStrategy:
                 running_usage=merge_usage(baseline_usage, total_usage),
                 cancelled=isinstance(exc, LLMCancelledError),
                 deadline_exceeded=isinstance(exc, LLMDeadlineExceededError),
-                context_error=(
-                    exc if isinstance(exc, ContextWindowExceededError) else None
-                ),
+                context_error=(exc if isinstance(exc, ContextWindowExceededError) else None),
             )
             assert guard is not None
             for event in await self._finalize_guard_result(
@@ -734,12 +698,8 @@ class ReActStrategy:
 
             # 真异常 → UNKNOWN 分发（默认 STOP，优先保留当前轮部分进度 + 证据链）。
             terminal_result = _terminal_result(current_result, last_visible_result)
-            total_usage.update(
-                merge_usage(total_usage, _unaccounted_usage(current_result))
-            )
-            for ev in await self._finalize_unknown(
-                terminal_result, iteration, total_usage, e
-            ):
+            total_usage.update(merge_usage(total_usage, _unaccounted_usage(current_result)))
+            for ev in await self._finalize_unknown(terminal_result, iteration, total_usage, e):
                 yield ev
 
             return
@@ -818,14 +778,9 @@ class ReActStrategy:
         tool_calls: list[dict],
         messages: list[dict],
         iteration: int,
-        tool_timeout: int | None = None,
-        tool_max_retries: int | None = None,
         *,
-        run_id: str,
-        run_stop: asyncio.Event,
-        workflow_id: str | None = None,
-        cancel_event: asyncio.Event | None = None,
-        parent_cancel_events: tuple[asyncio.Event, ...] = (),
+        run: ReasoningRunScope,
+        tool_execution: ToolExecutionOptions = _DEFAULT_TOOL_EXECUTION,
         deadline: float | None = None,
         cleanup_deadline: float | None = None,
     ) -> AsyncGenerator[str]:
@@ -841,8 +796,8 @@ class ReActStrategy:
         独立使用场景：需要直接执行已给定工具调用的策略或测试。PlannerStrategy 和
         ReflectionStrategy 当前复用完整 execute()，不通过本原语承担子流程生命周期。
 
-        tool_timeout / tool_max_retries：透传给 ToolGateway.execute（None=走执行器
-        全局/工具自声明，见 execute() docstring）——供原语复用方按需指定。
+        tool_execution：透传给 ToolGateway.execute（字段为 None = 走执行器全局或工具
+        自声明，见 execute() docstring）——供原语复用方按需覆盖，默认不覆盖任何一项。
 
         SSE 事件只在主 generator 内按顺序 yield（不在并发 task 内 yield，
         避免事件交错）。
@@ -851,9 +806,6 @@ class ReActStrategy:
             tool_call / tool_result SSE 事件
         """
 
-        if not run_id.strip():
-            raise ValueError("run_id 必须是非空字符串")
-
         identity_error = tool_call_identity_error(tool_calls)
         if identity_error is not None:
             raise ValueError(identity_error)
@@ -861,22 +813,22 @@ class ReActStrategy:
         batch_id = uuid.uuid4().hex
         collector = ToolBatchCollector()
         cancel_events = (
-            *parent_cancel_events,
-            *((cancel_event,) if cancel_event is not None else ()),
+            *run.parent_cancel_events,
+            *((run.cancel_event,) if run.cancel_event is not None else ()),
         )
         contexts: dict[int, ToolCallContext] = {}
         for index, tc in enumerate(tool_calls):
             tool_call_id = tc["id"]
             call = ToolCallContext(
-                workflow_id=workflow_id,
-                run_id=run_id,
+                workflow_id=run.workflow_id,
+                run_id=run.run_id,
                 batch_id=batch_id,
                 tool_call_id=tool_call_id,
                 operation_id=uuid.uuid4().hex,
                 deadline=deadline,
                 cleanup_deadline=cleanup_deadline,
                 cancel_events=cancel_events,
-                run_stop=run_stop,
+                run_stop=run.run_stop,
             )
             contexts[index] = call
             collector.record(
@@ -918,8 +870,8 @@ class ReActStrategy:
             exec_result = await self._tools.execute(
                 tool_name,
                 tool_args,
-                timeout=tool_timeout,
-                max_retries=tool_max_retries,
+                timeout=tool_execution.timeout,
+                max_retries=tool_execution.max_attempts,
                 call=call,
                 facts=collector,
             )
@@ -928,9 +880,7 @@ class ReActStrategy:
 
         # gather 保证结果顺序 = tool_calls 输入顺序
         try:
-            results = await asyncio.gather(
-                *[_execute_one(index, tc) for index, tc in enumerate(tool_calls)]
-            )
+            results = await asyncio.gather(*[_execute_one(index, tc) for index, tc in enumerate(tool_calls)])
         finally:
             # 先复制到策略拥有的运行事实，再断开 collector；随后抛出的类型化终止
             # 仍可由上层结合这些事实决策，不把事实塞进异常对象。
@@ -953,9 +903,7 @@ class ReActStrategy:
                     "result": exec_result.content,
                     "success": exec_result.success,
                     "error": exec_result.error,
-                    "error_code": (
-                        exec_result.error_code.value if exec_result.error_code else None
-                    ),
+                    "error_code": (exec_result.error_code.value if exec_result.error_code else None),
                     "duration": round(elapsed, 3),
                 }
             )
@@ -982,9 +930,7 @@ class ReActStrategy:
     # 终止信号：设置 self.outcome = 终止；不设置 = 继续循环（主循环据此 return/continue）
     # ==================================================================
 
-    async def _dispatch(
-        self, kind: AgentErrorKind, message: str, iteration: int
-    ) -> AgentErrorAction:
+    async def _dispatch(self, kind: AgentErrorKind, message: str, iteration: int) -> AgentErrorAction:
         """错误分发（react 内唯一入口）：RAISE 决策抛 AgentRunError，否则返回 action——
         委托共享 _common.dispatch_error。"""
         return await dispatch_error(self._error_handlers, kind, message, iteration)
@@ -1090,9 +1036,7 @@ class ReActStrategy:
                 info_message=error,
             )
 
-        action = await self._dispatch(
-            AgentErrorKind.LLM_FAILED, stream_result.error or "", iteration
-        )
+        action = await self._dispatch(AgentErrorKind.LLM_FAILED, stream_result.error or "", iteration)
         if action == AgentErrorAction.STOP:
             return self._finalize_outcome(
                 success=False,
@@ -1103,9 +1047,7 @@ class ReActStrategy:
                 error=stream_result.error,
             )
 
-        return [
-            build_info_event(f"LLM 失败，按错误处理策略重试: {stream_result.error}")
-        ]
+        return [build_info_event(f"LLM 失败，按错误处理策略重试: {stream_result.error}")]
 
     async def _finalize_refused(
         self,
@@ -1146,9 +1088,7 @@ class ReActStrategy:
         """
         self._tool_protocol_retries += 1
         if self._tool_protocol_retries > max_tool_protocol_retries:
-            hard_error = (
-                f"连续工具调用协议异常（{self._tool_protocol_retries} 轮），已终止"
-            )
+            hard_error = f"连续工具调用协议异常（{self._tool_protocol_retries} 轮），已终止"
             await self._dispatch(kind, hard_error, iteration)
             return AgentErrorAction.STOP, hard_error
         return await self._dispatch(kind, message, iteration), None
@@ -1200,9 +1140,7 @@ class ReActStrategy:
         返回收尾事件列表；主循环仅在检测到 final_answer 调用时调用本方法，
         终止与否据 self.outcome 判定（成功置位；校验失败 CONTINUE 不置位继续）。
         """
-        final_tcs = [
-            tc for tc in tool_calls if tc["function"]["name"] == _FINAL_ANSWER_TOOL
-        ]
+        final_tcs = [tc for tc in tool_calls if tc["function"]["name"] == _FINAL_ANSWER_TOOL]
         structured, err = extract_final_answer(final_tcs[0], output_schema)
         if structured is not None:
             self._tool_protocol_retries = 0
@@ -1292,15 +1230,10 @@ class ReActStrategy:
         iteration: int,
         total_usage: dict,
         full_reasoning: str,
-        tool_timeout: int | None,
-        tool_max_retries: int | None,
+        tool_execution: ToolExecutionOptions,
         max_tool_protocol_retries: int,
         *,
-        run_id: str,
-        run_stop: asyncio.Event,
-        workflow_id: str | None,
-        cancel_event: asyncio.Event | None,
-        parent_cancel_events: tuple[asyncio.Event, ...],
+        run: ReasoningRunScope,
         deadline: float | None,
         cleanup_deadline: float | None,
     ) -> AsyncGenerator[str]:
@@ -1314,13 +1247,8 @@ class ReActStrategy:
             tool_calls,
             messages,
             iteration,
-            tool_timeout=tool_timeout,
-            tool_max_retries=tool_max_retries,
-            run_id=run_id,
-            run_stop=run_stop,
-            workflow_id=workflow_id,
-            cancel_event=cancel_event,
-            parent_cancel_events=parent_cancel_events,
+            tool_execution=tool_execution,
+            run=run,
             deadline=deadline,
             cleanup_deadline=cleanup_deadline,
         ):
@@ -1329,12 +1257,8 @@ class ReActStrategy:
         # 可恢复错误分发：本轮失败工具按 kind 分组聚合后逐 kind 分发。
         # _dispatch 遇到 RAISE 会立即抛出；其余决策再按 STOP > CONTINUE 仲裁。
         # 终止/上报时其他失败不回喂模型（循环结束，回喂无意义），但全部失败已进证据链。
-        new_failures = [
-            r for r in self._tool_call_records[before:] if not r.get("success")
-        ]
-        parse_failures = [
-            r for r in new_failures if r.get("error_code") == ErrorCode.JSON_PARSE.value
-        ]
+        new_failures = [r for r in self._tool_call_records[before:] if not r.get("success")]
+        parse_failures = [r for r in new_failures if r.get("error_code") == ErrorCode.JSON_PARSE.value]
         # 工具参数可被正确解析即说明工具调用协议已恢复；业务失败属于另一语义。
         if not parse_failures:
             self._tool_protocol_retries = 0
@@ -1357,9 +1281,7 @@ class ReActStrategy:
                 fails = grouped.get(kind)
                 if not fails:
                     continue
-                fail_msg = "；".join(
-                    f"{f.get('tool', '?')}: {f.get('error', '')}" for f in fails
-                )
+                fail_msg = "；".join(f"{f.get('tool', '?')}: {f.get('error', '')}" for f in fails)
                 hard_protocol_error: str | None = None
                 if kind == AgentErrorKind.PARSE_FAILED:
                     (
@@ -1432,9 +1354,7 @@ class ReActStrategy:
                 info_message=error,
             )
 
-        action = await self._dispatch(
-            AgentErrorKind.EMPTY_OUTPUT, "LLM 未生成有效输出", iteration
-        )
+        action = await self._dispatch(AgentErrorKind.EMPTY_OUTPUT, "LLM 未生成有效输出", iteration)
         if action == AgentErrorAction.STOP:
             return self._finalize_outcome(
                 success=False,
@@ -1462,19 +1382,9 @@ class ReActStrategy:
             AgentErrorKind.MAX_TURNS,
             error,
             max_iterations,
-            success=(
-                bool(last_visible_result.content.strip())
-                if last_visible_result
-                else False
-            ),
-            content=(
-                last_visible_result.content.strip() if last_visible_result else ""
-            ),
-            reasoning=(
-                last_visible_result.reasoning_content.strip()
-                if last_visible_result
-                else ""
-            ),
+            success=(bool(last_visible_result.content.strip()) if last_visible_result else False),
+            content=(last_visible_result.content.strip() if last_visible_result else ""),
+            reasoning=(last_visible_result.reasoning_content.strip() if last_visible_result else ""),
             total_usage=total_usage,
             error=error,
             info_message=error,
@@ -1538,19 +1448,9 @@ class ReActStrategy:
             AgentErrorKind.UNKNOWN,
             error,
             iteration,
-            success=(
-                bool(last_visible_result.content.strip())
-                if last_visible_result
-                else False
-            ),
-            content=(
-                last_visible_result.content.strip() if last_visible_result else ""
-            ),
-            reasoning=(
-                last_visible_result.reasoning_content.strip()
-                if last_visible_result
-                else ""
-            ),
+            success=(bool(last_visible_result.content.strip()) if last_visible_result else False),
+            content=(last_visible_result.content.strip() if last_visible_result else ""),
+            reasoning=(last_visible_result.reasoning_content.strip() if last_visible_result else ""),
             total_usage=total_usage,
             error=error,
             info_message=error,

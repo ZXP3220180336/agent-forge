@@ -207,13 +207,13 @@ Draft 2020-12 校验结果，`action_fingerprint` 为停滞检测规范化参数
 
 ```python
 async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict], iteration: int,
-                             tool_timeout: int | None = None, tool_max_retries: int | None = None,
-                             *, run_id: str, run_stop: asyncio.Event, workflow_id: str | None = None,
-                             cancel_event: asyncio.Event | None = None,
-                             parent_cancel_events: tuple[asyncio.Event, ...] = (),
+                             *, run: ReasoningRunScope,
+                             tool_execution: ToolExecutionOptions = ToolExecutionOptions(),
                              deadline: float | None = None,
                              cleanup_deadline: float | None = None) -> AsyncGenerator[str]:
 ```
+
+`run` 提供本次运行的运行身份、完成信号与取消传播链；`tool_execution` 的 `timeout` / `max_attempts` 透传给 `ToolGateway.execute`（`None` = 走执行器全局或工具自声明），默认不覆盖任何一项。
 
 当前 Piece②仍由 `asyncio.gather` 并行执行所有工具，gather 保证结果顺序 = tool_calls 输入顺序。调用前为合法 call ID 创建同批次唯一 batch/operation 上下文并预登记 NOT_STARTED；Gateway 同步发布的事实由 `ToolBatchCollector` 按 revision 接管，批次退出时复制到策略。类型化控制异常先完成该快照接管再传播。并行兄弟清理、协议历史与终态提交将在 Piece⑤由 `ToolBatchRunner` 完成；当前实现不宣称这部分已闭环。
 

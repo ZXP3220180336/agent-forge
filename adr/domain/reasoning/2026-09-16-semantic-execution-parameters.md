@@ -37,6 +37,9 @@
 - 三个 Agent 桥接负责把 `AgentContext` 显式映射为六类对象，保持 `agent → reasoning` 单向依赖。
   Planner 将现有 `ctx.max_refine_rounds` 映射到 replan 字段，Reflection 映射到 refine 字段。
 - Planner 的子 ReAct 复用父运行作用域和其余语义对象，仅用 `dataclasses.replace` 写入当前剩余墙钟。
+- `execute_tool_calls()` 原语接收 `run: ReasoningRunScope` 与 `tool_execution: ToolExecutionOptions`，
+  与 `execute()` 同一组对象。该原语虽不是完整策略入口，但它是生产工具批次的唯一入口，保留标量会让
+  `_handle_tool_calls` 每次调用前拆开对象再逐项传回；原「不改动该原语」的判断在实施复核中被修正。
 - 不保留旧标量签名或 `**kwargs` 兼容入口。测试侧构造器只负责测试场景装配，不进入生产路径。
 
 ## 后果与边界
@@ -45,14 +48,22 @@
   Agent 生命周期上下文不会渗入 reasoning。
 - 代价：调用方需要构造六个对象，简单直接调用比标量写法多几行；对象冻结的是字段引用，
   `asyncio.Event` 本身仍可由原 Owner 设置，这是取消传播所需的浅不可变语义。
-- 本决定不改变任何 Guard 优先级、预算计数时点、usage 口径、工具执行语义或终态，也不把
-  `execute_tool_calls()` 原语改为接收这些策略级对象。
+- 本决定不改变任何 Guard 优先级、预算计数时点、usage 口径、工具执行语义或终态。
 - 若某一参数组未来取得独立行为或生命周期，再评估提取服务或 Policy；仅字段数量增长不触发升级。
 
 ## 实施与验证
 
-生产调用点和直接策略测试均已迁移；新增冻结、Event 引用、运行作用域校验、负预算、`None/0`
-区分以及策略缺失专属预算测试。
+生产调用点、Agent 桥接和直接策略测试均已迁移；新增冻结、Event 引用、运行作用域校验、负预算、
+`None/0` 区分以及策略缺失专属预算测试；直接调用原语的测试改用测试装配位的
+`reasoning_run_scope()` 构造运行作用域。
+
+原语迁移时曾遗留一个测试侧的兼容 shim：测试文件中的策略子类覆写 `execute_tool_calls`，用
+`kwargs.setdefault` 注入旧标量 `run_id` / `run_stop`。由于测试持有的策略子类在生产调用链上，本次
+迁移后 `_handle_tool_calls` 的正常调用也被塞入 `run_id`，使全部走 `execute()` 工具循环的用例一起
+失败（48 项），并以各不相同的断言差异表现出来。可复用结论：覆盖生产方法的测试替身就在生产调用链
+上，跨签名迁移的兼容 shim 会反向污染；测试构造器应放在测试侧装配位置，而不是在生产类上保留
+`**kwargs` 入口。
+
 定向与全量验证结果记录在 [R-03 计划](../../../docs/todo.md#r-03-reasoning-execution-parameters)。
 
 ## 关联记录

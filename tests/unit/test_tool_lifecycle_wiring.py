@@ -2,8 +2,6 @@ import asyncio
 
 import pytest
 
-from tests.reasoning_execution import reasoning_execution_args
-
 from app.domain.agent import AgentContext, PlannerAgent, ReActAgent, ReflectionAgent
 from app.domain.ports.llm_gateway import StreamResult
 from app.domain.ports.tool_execution import (
@@ -19,6 +17,7 @@ from app.shared.exceptions import (
     ToolDeadlineExceededError,
     ToolRunStoppedError,
 )
+from tests.reasoning_execution import reasoning_execution_args, reasoning_run_scope
 
 
 class _BlockingLLM:
@@ -48,11 +47,9 @@ async def test_strategy_and_agent_reject_concurrent_instance_reuse():
             strategy.execute(
                 "x",
                 [],
-                **reasoning_execution_args("react", max_iterations=1,
-                temperature=0.2,
-                max_tokens=32,
-                run_id="run-1",
-                run_stop=asyncio.Event()),
+                **reasoning_execution_args(
+                    "react", max_iterations=1, temperature=0.2, max_tokens=32, run_id="run-1", run_stop=asyncio.Event()
+                ),
             )
         )
     )
@@ -62,11 +59,9 @@ async def test_strategy_and_agent_reject_concurrent_instance_reuse():
             strategy.execute(
                 "y",
                 [],
-                **reasoning_execution_args("react", max_iterations=1,
-                temperature=0.2,
-                max_tokens=32,
-                run_id="run-2",
-                run_stop=asyncio.Event()),
+                **reasoning_execution_args(
+                    "react", max_iterations=1, temperature=0.2, max_tokens=32, run_id="run-2", run_stop=asyncio.Event()
+                ),
             )
         )
     llm.release.set()
@@ -148,9 +143,7 @@ class _FactGateway:
 
     async def execute(self, name, parameters, *args, call, facts, **kwargs):
         self.calls.append(call)
-        result = ToolResult(
-            success=True, content=name, effect_state=ToolEffectState.NONE
-        )
+        result = ToolResult(success=True, content=name, effect_state=ToolEffectState.NONE)
         facts.record(
             ToolFact(
                 operation_id=call.operation_id,
@@ -166,9 +159,7 @@ class _FactGateway:
             )
         )
         if self.control_error is not None:
-            raise self.control_error(
-                "cancelled", run_id=call.run_id, operation_id=call.operation_id
-            )
+            raise self.control_error("cancelled", run_id=call.run_id, operation_id=call.operation_id)
         return result
 
 
@@ -193,8 +184,7 @@ async def test_react_assigns_batch_call_operation_and_collects_independent_facts
             _calls(),
             messages,
             1,
-            run_id="run-1",
-            run_stop=asyncio.Event(),
+            run=reasoning_run_scope("run-1"),
             deadline=12.0,
             cleanup_deadline=13.0,
         )
@@ -207,10 +197,7 @@ async def test_react_assigns_batch_call_operation_and_collects_independent_facts
     assert {fact.tool_call_id for fact in strategy.tool_facts} == {"call-1", "call-2"}
     returned = next(fact for fact in strategy.tool_facts if fact.result is not None)
     returned.result.content = "mutated"
-    assert all(
-        fact.result is None or fact.result.content != "mutated"
-        for fact in strategy.tool_facts
-    )
+    assert all(fact.result is None or fact.result.content != "mutated" for fact in strategy.tool_facts)
 
 
 @pytest.mark.parametrize(
@@ -227,14 +214,10 @@ async def test_react_collects_fact_before_control_exception_propagates(error_typ
                 [_calls()[0]],
                 [],
                 1,
-                run_id="run-1",
-                run_stop=asyncio.Event(),
+                run=reasoning_run_scope("run-1"),
             )
         )
-    assert any(
-        fact.execution_state == ToolExecutionState.SUCCEEDED
-        for fact in strategy.tool_facts
-    )
+    assert any(fact.execution_state == ToolExecutionState.SUCCEEDED for fact in strategy.tool_facts)
 
 
 class _DuplicateCallLLM:
@@ -265,12 +248,15 @@ async def test_invalid_batch_call_identity_never_reaches_gateway_or_history():
         strategy.execute(
             "x",
             messages,
-            **reasoning_execution_args("react", max_iterations=1,
-            temperature=0.2,
-            max_tokens=32,
-            max_tool_protocol_retries=0,
-            run_id="run-1",
-            run_stop=asyncio.Event()),
+            **reasoning_execution_args(
+                "react",
+                max_iterations=1,
+                temperature=0.2,
+                max_tokens=32,
+                max_tool_protocol_retries=0,
+                run_id="run-1",
+                run_stop=asyncio.Event(),
+            ),
         )
     )
     assert gateway.calls == []

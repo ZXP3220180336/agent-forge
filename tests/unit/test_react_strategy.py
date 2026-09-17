@@ -18,33 +18,22 @@ import time
 import pytest
 from jsonschema import SchemaError
 
-from tests.reasoning_execution import reasoning_execution_args
-
 from app.config import settings
 from app.domain.ports.llm_gateway import StreamResult
-from app.domain.reasoning import ReActStrategy as _ProductionReActStrategy
+from app.domain.reasoning import ReActStrategy, ToolExecutionOptions
 from app.domain.reasoning.react import _terminal_result
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.tool_service import ToolService
 from app.shared.error_handling import (
-    AgentRunError,
     AgentErrorAction,
     AgentErrorContext,
     AgentErrorKind,
+    AgentRunError,
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_error_event, build_message_event
 from app.shared.exceptions import ContextWindowExceededError, LLMDeadlineExceededError
-
-
-class ReActStrategy(_ProductionReActStrategy):
-    """测试直连入口：显式提供每次独立运行的生命周期身份。"""
-
-    async def execute_tool_calls(self, *args, **kwargs):
-        kwargs.setdefault("run_id", "run-react-test")
-        kwargs.setdefault("run_stop", asyncio.Event())
-        async for event in super().execute_tool_calls(*args, **kwargs):
-            yield event
+from tests.reasoning_execution import reasoning_execution_args, reasoning_run_scope
 
 
 class _EchoTool(BaseTool):
@@ -156,7 +145,6 @@ class _ScriptedLLM:
             for key, value in spec.items():
                 setattr(result, key, value)
         yield build_message_event(spec.get("content", ""))
-        return
 
 
 class _UsageCostLimiter:
@@ -174,7 +162,6 @@ class _ErrorLLM:
         if result is not None:
             result.error = "401 认证失败"
         yield build_error_event("LLM 调用失败: 401 认证失败")
-        return
 
 
 class _EmptyLLM:
@@ -185,7 +172,6 @@ class _EmptyLLM:
             result.finish_reason = ""
             result.content = ""
         yield ""
-        return
 
 
 class _RaisingLLM:
@@ -211,7 +197,6 @@ class _RaisingLLM:
             for key, value in spec.items():
                 setattr(result, key, value)
         yield build_message_event(spec.get("content", ""))
-        return
 
 
 class _SleepyLLM:
@@ -232,7 +217,6 @@ class _SleepyLLM:
             for key, value in spec.items():
                 setattr(result, key, value)
         yield build_message_event(spec.get("content", ""))
-        return
 
 
 def _make_registry(max_concurrent: int = 10, tools: list | None = None) -> ToolService:
@@ -292,7 +276,8 @@ async def test_react_execute_short_circuits_on_llm_error():
     strategy = ReActStrategy(llm=_ErrorLLM(), tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -315,7 +300,8 @@ async def test_react_execute_empty_output_retries_then_stops():
     strategy = ReActStrategy(llm=llm, tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -332,7 +318,8 @@ async def test_react_execute_max_iterations_fallback():
     strategy = ReActStrategy(llm=_EmptyLLM(), tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=2, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -354,7 +341,8 @@ async def test_react_empty_output_retry_limit_stops():
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
@@ -379,7 +367,8 @@ async def test_react_empty_output_retry_limit_recovers():
     strategy = ReActStrategy(llm=llm, tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -396,9 +385,9 @@ async def test_react_empty_output_retry_limit_configurable():
     strategy = ReActStrategy(llm=_EmptyLLM(), tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024,
-        max_empty_retries=1),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024, max_empty_retries=1),
     ):
         pass
 
@@ -435,7 +424,8 @@ async def test_react_empty_output_count_resets_after_output():
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -464,7 +454,8 @@ async def test_react_empty_output_retry_limit_handler_raise():
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -503,15 +494,14 @@ async def _hang_until_cancelled() -> None:
 @pytest.mark.asyncio
 async def test_react_stall_same_action_stops():
     """同工具同参数连续 4 轮（默认 max=3）→ 第 4 轮 STALLED 终止，该轮工具不执行。"""
-    llm = _ScriptedLLM(
-        [{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 4
-    )
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 4)
     tools = _make_registry(tools=[_EchoTool()])
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
@@ -537,7 +527,8 @@ async def test_react_stall_allows_below_limit():
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -563,7 +554,8 @@ async def test_react_stall_different_args_resets():
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -594,7 +586,8 @@ async def test_react_stall_change_tool_resets():
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -608,16 +601,16 @@ async def test_react_stall_change_tool_resets():
 @pytest.mark.asyncio
 async def test_react_stall_limit_configurable():
     """max_same_action_turns=1 → 第 2 轮相同工具调用终止（iterations=2）。"""
-    llm = _ScriptedLLM(
-        [{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 2
-    )
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 2)
     tools = _make_registry(tools=[_EchoTool()])
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024,
-        max_same_action_turns=1),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=6, temperature=0.2, max_tokens=1024, max_same_action_turns=1
+        ),
     ):
         pass
 
@@ -645,9 +638,11 @@ async def test_react_stall_final_answer_not_counted():
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=6, temperature=0.2, max_tokens=1024, output_schema=_FA_REPORT_SCHEMA
+        ),
     ):
         events.append(ev)
 
@@ -662,21 +657,21 @@ async def test_react_stall_final_answer_not_counted():
 @pytest.mark.asyncio
 async def test_react_stall_handler_raise():
     """达上限 + STALLED handler → RAISE：抛 AgentRunError(kind=STALLED)。"""
+
     async def on_stalled(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.STALLED, on_stalled)
 
-    llm = _ScriptedLLM(
-        [{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 4
-    )
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 4)
     tools = _make_registry(tools=[_EchoTool()])
     strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -710,7 +705,8 @@ async def test_react_stall_args_normalized():
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -743,7 +739,8 @@ async def test_react_refused_stops():
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
@@ -764,7 +761,8 @@ async def test_react_refused_content_filter_stops():
     strategy = ReActStrategy(llm=llm, tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -779,20 +777,20 @@ async def test_react_refused_content_filter_stops():
 @pytest.mark.asyncio
 async def test_react_refused_handler_raise():
     """REFUSED handler → RAISE：抛 AgentRunError(kind=REFUSED)。"""
+
     async def on_refused(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.REFUSED, on_refused)
 
-    llm = _ScriptedLLM(
-        [{"finish_reason": "stop", "content": "", "refusal": "拒绝"}]
-    )
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "", "refusal": "拒绝"}])
     strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -804,19 +802,19 @@ async def test_react_refused_handler_raise():
 @pytest.mark.asyncio
 async def test_react_refused_continue_ignored():
     """REFUSED handler → CONTINUE 被忽略：终结护栏仍 STOP 组装（不重试拒答）。"""
+
     async def on_refused(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.REFUSED, on_refused)
 
-    llm = _ScriptedLLM(
-        [{"finish_reason": "stop", "content": "", "refusal": "拒绝"}]
-    )
+    llm = _ScriptedLLM([{"finish_reason": "stop", "content": "", "refusal": "拒绝"}])
     strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -847,7 +845,8 @@ async def test_react_unknown_exception_keeps_partial_progress():
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
@@ -863,6 +862,7 @@ async def test_react_unknown_exception_keeps_partial_progress():
 @pytest.mark.asyncio
 async def test_react_unknown_exception_handler_raise():
     """UNKNOWN handler → RAISE：中途异常抛 AgentRunError(kind=UNKNOWN)。"""
+
     async def on_unknown(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
@@ -874,7 +874,8 @@ async def test_react_unknown_exception_handler_raise():
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -930,9 +931,7 @@ async def test_post_call_cost_with_tool_calls_only_keeps_previous_visible_result
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024),
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -978,11 +977,14 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024,
-        # 余量放大：第一轮（脚本 LLM + echo）必须在预算内跑完，否则慢机器上假失败
-        max_execution_time=1.0),
+        **reasoning_execution_args(
+            "react",
+            max_iterations=3,
+            temperature=0.2,
+            max_tokens=1024,
+            # 余量放大：第一轮（脚本 LLM + echo）必须在预算内跑完，否则慢机器上假失败
+            max_execution_time=1.0,
+        ),
     ):
         pass
 
@@ -999,15 +1001,14 @@ async def test_react_context_window_exceeded_is_terminal():
     llm = _RaisingLLM(
         [{"finish_reason": "stop", "content": "不会到达"}],
         raise_on_call=1,
-        exc=ContextWindowExceededError(
-            model_key="main", input_tokens=1000, input_budget=100, max_tokens=1024
-        ),
+        exc=ContextWindowExceededError(model_key="main", input_tokens=1000, input_budget=100, max_tokens=1024),
     )
     strategy = ReActStrategy(llm=llm, tools=None)
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
@@ -1033,19 +1034,16 @@ async def test_react_cancel_wins_when_context_error_arrives() -> None:
 
     llm = _CancelThenContextLLM(
         [{"finish_reason": "stop", "content": "不会到达"}],
-        exc=ContextWindowExceededError(
-            model_key="main", input_tokens=1000, input_budget=100, max_tokens=1024
-        ),
+        exc=ContextWindowExceededError(model_key="main", input_tokens=1000, input_budget=100, max_tokens=1024),
     )
     strategy = ReActStrategy(llm=llm, tools=None)
 
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024,
-        cancel_event=cancel_event),
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, cancel_event=cancel_event
+        ),
     ):
         pass
 
@@ -1057,6 +1055,7 @@ async def test_react_cancel_wins_when_context_error_arrives() -> None:
 @pytest.mark.asyncio
 async def test_react_unknown_exception_continue_ignored():
     """UNKNOWN handler → CONTINUE 忽略：终结护栏仍 STOP 组装（部分进度保留）。"""
+
     async def on_unknown(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
@@ -1074,7 +1073,8 @@ async def test_react_unknown_exception_continue_ignored():
     strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -1106,9 +1106,11 @@ async def test_react_cancel_event_stops():
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        cancel_event=cancel_event),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, cancel_event=cancel_event
+        ),
     ):
         events.append(ev)
 
@@ -1127,9 +1129,11 @@ async def test_react_cancel_event_not_treated_as_llm_failed():
     cancel_event.set()  # LLM 调用失败且取消信号置位 → 判取消而非失败
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        cancel_event=cancel_event),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, cancel_event=cancel_event
+        ),
     ):
         pass
 
@@ -1147,9 +1151,11 @@ async def test_react_cancel_event_untouched_normal():
     cancel_event = asyncio.Event()  # 未置位
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        cancel_event=cancel_event),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, cancel_event=cancel_event
+        ),
     ):
         pass
 
@@ -1171,21 +1177,16 @@ async def test_react_post_call_cancel_wins_over_cost_and_keeps_usage():
                 yield event
             cancel_event.set()
 
-    llm = _CancelAfterResponseLLM(
-        [{"finish_reason": "stop", "content": "当前轮答案", "usage": usage}]
-    )
-    strategy = ReActStrategy(
-        llm=llm, tools=None, cost_limiter=_UsageCostLimiter()
-    )
+    llm = _CancelAfterResponseLLM([{"finish_reason": "stop", "content": "当前轮答案", "usage": usage}])
+    strategy = ReActStrategy(llm=llm, tools=None, cost_limiter=_UsageCostLimiter())
 
     events = []
     async for event in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024,
-        cancel_event=cancel_event),
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, cancel_event=cancel_event
+        ),
     ):
         events.append(event)
 
@@ -1203,9 +1204,11 @@ async def test_react_execute_timeout_first_iteration():
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=0.05),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=0.05
+        ),
     ):
         events.append(ev)
 
@@ -1245,9 +1248,9 @@ async def test_react_execute_timeout_keeps_partial_progress():
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=0.5),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=0.5),
     ):
         pass
 
@@ -1278,10 +1281,7 @@ async def test_internal_deadline_keeps_current_round_partial_result_and_usage():
     async for event in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024,
-        max_execution_time=5.0),
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=5.0),
     ):
         events.append(event)
 
@@ -1322,16 +1322,11 @@ async def test_internal_deadline_empty_current_round_keeps_previous_result():
             raise LLMDeadlineExceededError("执行期限耗尽")
             yield  # pragma: no cover - 保持 async generator 形态
 
-    strategy = ReActStrategy(
-        llm=_SecondRoundDeadlineLLM(), tools=_make_registry(tools=[_EchoTool()])
-    )
+    strategy = ReActStrategy(llm=_SecondRoundDeadlineLLM(), tools=_make_registry(tools=[_EchoTool()]))
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024,
-        max_execution_time=5.0),
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=5.0),
     ):
         pass
 
@@ -1362,10 +1357,9 @@ async def test_inner_timeout_error_is_unknown_and_keeps_current_round(
     async for event in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=1,
-        temperature=0.2,
-        max_tokens=1024,
-        max_execution_time=max_execution_time),
+        **reasoning_execution_args(
+            "react", max_iterations=1, temperature=0.2, max_tokens=1024, max_execution_time=max_execution_time
+        ),
     ):
         events.append(event)
 
@@ -1393,9 +1387,7 @@ async def test_unknown_exception_keeps_current_round():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=1,
-        temperature=0.2,
-        max_tokens=1024),
+        **reasoning_execution_args("react", max_iterations=1, temperature=0.2, max_tokens=1024),
     ):
         pass
 
@@ -1423,10 +1415,9 @@ async def test_external_task_cancel_still_propagates_cancelled_error():
         async for event in strategy.execute(
             "hi",
             [{"role": "user", "content": "hi"}],
-            **reasoning_execution_args("react", max_iterations=1,
-            temperature=0.2,
-            max_tokens=1024,
-            max_execution_time=5.0),
+            **reasoning_execution_args(
+                "react", max_iterations=1, temperature=0.2, max_tokens=1024, max_execution_time=5.0
+            ),
         ):
             events.append(event)
 
@@ -1447,10 +1438,7 @@ async def test_execute_aclose_from_another_task_has_no_terminal_event():
     stream = strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=1,
-        temperature=0.2,
-        max_tokens=1024,
-        max_execution_time=5.0),
+        **reasoning_execution_args("react", max_iterations=1, temperature=0.2, max_tokens=1024, max_execution_time=5.0),
     )
     first_event = await anext(stream)
     assert '"type": "agent_info"' in first_event
@@ -1483,10 +1471,7 @@ async def test_internal_deadline_cleanup_finishes_before_hard_timeout(monkeypatc
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=1,
-        temperature=0.2,
-        max_tokens=1024,
-        max_execution_time=0.2),
+        **reasoning_execution_args("react", max_iterations=1, temperature=0.2, max_tokens=1024, max_execution_time=0.2),
     ):
         pass
 
@@ -1514,10 +1499,9 @@ async def test_hard_timeout_keeps_current_round_partial_result(monkeypatch):
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=1,
-        temperature=0.2,
-        max_tokens=1024,
-        max_execution_time=0.05),
+        **reasoning_execution_args(
+            "react", max_iterations=1, temperature=0.2, max_tokens=1024, max_execution_time=0.05
+        ),
     ):
         pass
 
@@ -1543,10 +1527,9 @@ async def test_deadline_unaware_llm_is_cancelled_at_timeout_trigger(monkeypatch)
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=1,
-        temperature=0.2,
-        max_tokens=1024,
-        max_execution_time=0.05),
+        **reasoning_execution_args(
+            "react", max_iterations=1, temperature=0.2, max_tokens=1024, max_execution_time=0.05
+        ),
     ):
         pass
     elapsed = time.monotonic() - started
@@ -1563,9 +1546,9 @@ async def test_react_execute_loose_timeout_does_not_trigger():
     strategy = ReActStrategy(llm=llm, tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=5.0),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=5.0),
     ):
         pass
 
@@ -1582,9 +1565,11 @@ async def test_react_execute_none_timeout_no_limit():
     strategy = ReActStrategy(llm=llm, tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        max_execution_time=None),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, max_execution_time=None
+        ),
     ):
         pass
 
@@ -1617,17 +1602,18 @@ def _cost_limiter(ceiling: float | None = 0.05, model: str = "gpt-4"):
 async def test_react_baseline_cost_exceeded_stops_before_llm_call():
     """调用方累计基线已超成本时，首轮付费调用不得发出。"""
     llm = _ScriptedLLM([{"finish_reason": "stop", "content": "不会调用"}])
-    strategy = ReActStrategy(
-        llm=llm, tools=None, cost_limiter=_cost_limiter(ceiling=0.01)
-    )
+    strategy = ReActStrategy(llm=llm, tools=None, cost_limiter=_cost_limiter(ceiling=0.01))
 
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024,
-        baseline_usage={"prompt_tokens": 1000, "completion_tokens": 0}),
+        **reasoning_execution_args(
+            "react",
+            max_iterations=3,
+            temperature=0.2,
+            max_tokens=1024,
+            baseline_usage={"prompt_tokens": 1000, "completion_tokens": 0},
+        ),
     ):
         pass
 
@@ -1654,7 +1640,8 @@ async def test_react_execute_cost_exceeded_stops():
 
     events = []
     async for ev in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(ev)
@@ -1699,7 +1686,8 @@ async def test_react_execute_cost_exceeded_keeps_partial_progress():
     strategy = ReActStrategy(llm=llm, tools=tools, cost_limiter=_cost_limiter())
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -1717,14 +1705,14 @@ async def test_react_execute_loose_cost_does_not_trigger():
     """宽松成本上限不影响正常完成。"""
     llm = _ScriptedLLM(
         [
-            {"finish_reason": "stop", "content": "完成",
-             "usage": {"prompt_tokens": 1000, "completion_tokens": 500}},
+            {"finish_reason": "stop", "content": "完成", "usage": {"prompt_tokens": 1000, "completion_tokens": 500}},
         ]
     )
     strategy = ReActStrategy(llm=llm, tools=None, cost_limiter=_cost_limiter(ceiling=10.0))
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -1742,7 +1730,8 @@ async def test_react_execute_none_cost_no_limit():
     strategy = ReActStrategy(llm=llm, tools=None)  # 不传 cost_limiter
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -1771,13 +1760,12 @@ async def test_react_cost_exceeded_handler_raise():
             }
         ]
     )
-    strategy = ReActStrategy(
-        llm=llm, tools=None, error_handlers=registry, cost_limiter=_cost_limiter()
-    )
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry, cost_limiter=_cost_limiter())
 
     with pytest.raises(AgentRunError) as exc:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -1804,12 +1792,11 @@ async def test_react_cost_exceeded_handler_continue_ignored():
             }
         ]
     )
-    strategy = ReActStrategy(
-        llm=llm, tools=None, error_handlers=registry, cost_limiter=_cost_limiter()
-    )
+    strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry, cost_limiter=_cost_limiter())
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -1859,11 +1846,10 @@ async def test_react_cost_baseline_usage_participates_in_check():
     tools = _make_registry(tools=[_EchoTool()])
 
     # 对照：无 baseline → 3 轮累计 0.027 < 0.05，正常完成
-    ctrl = ReActStrategy(
-        llm=_ScriptedLLM(list(scripts)), tools=tools, cost_limiter=_cost_limiter()
-    )
+    ctrl = ReActStrategy(llm=_ScriptedLLM(list(scripts)), tools=tools, cost_limiter=_cost_limiter())
     async for _ in ctrl.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -1871,13 +1857,17 @@ async def test_react_cost_baseline_usage_participates_in_check():
     assert ctrl.outcome.error is None
 
     # 带 baseline 0.03 → 第 3 轮累计 0.057 越界 → 停在越界轮（iterations=3）
-    base = ReActStrategy(
-        llm=_ScriptedLLM(list(scripts)), tools=tools, cost_limiter=_cost_limiter()
-    )
+    base = ReActStrategy(llm=_ScriptedLLM(list(scripts)), tools=tools, cost_limiter=_cost_limiter())
     async for _ in base.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        baseline_usage={"prompt_tokens": 600, "completion_tokens": 200}),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react",
+            max_iterations=3,
+            temperature=0.2,
+            max_tokens=1024,
+            baseline_usage={"prompt_tokens": 600, "completion_tokens": 200},
+        ),
     ):
         pass
     assert base.outcome is not None
@@ -1889,7 +1879,9 @@ async def test_react_cost_baseline_usage_participates_in_check():
 async def test_react_cost_baseline_usage_not_in_reported_usage():
     """报告口径保持局部：baseline 只参与成本判定，不进 outcome.total_tokens（防双计）。"""
     usage_each = {
-        "prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200,
+        "prompt_tokens": 100,
+        "completion_tokens": 100,
+        "total_tokens": 200,
     }
     scripts = [
         {
@@ -1921,16 +1913,22 @@ async def test_react_cost_baseline_usage_not_in_reported_usage():
         },
     ]
     tools = _make_registry(tools=[_EchoTool()])
-    strategy = ReActStrategy(
-        llm=_ScriptedLLM(scripts), tools=tools, cost_limiter=_cost_limiter()
-    )
+    strategy = ReActStrategy(llm=_ScriptedLLM(scripts), tools=tools, cost_limiter=_cost_limiter())
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        # baseline token 800 不计入报告；成本 0.03 + 局部 0.027 = 0.057 → 第 3 轮停
-        baseline_usage={
-            "prompt_tokens": 600, "completion_tokens": 200, "total_tokens": 800,
-        }),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react",
+            max_iterations=3,
+            temperature=0.2,
+            max_tokens=1024,
+            # baseline token 800 不计入报告；成本 0.03 + 局部 0.027 = 0.057 → 第 3 轮停
+            baseline_usage={
+                "prompt_tokens": 600,
+                "completion_tokens": 200,
+                "total_tokens": 800,
+            },
+        ),
     ):
         pass
 
@@ -1993,7 +1991,8 @@ async def test_react_tool_failure_records_error_in_evidence():
     strategy = ReActStrategy(llm=llm, tools=tools)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2019,7 +2018,7 @@ async def test_react_unknown_tool_feedback():
     ]
     messages = []
 
-    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1):
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1, run=reasoning_run_scope()):
         pass
 
     tool_msgs = [m for m in messages if m.get("role") == "tool"]
@@ -2044,7 +2043,7 @@ async def test_react_parse_failure_no_execute_and_feedback():
     ]
     messages = []
 
-    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1):
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1, run=reasoning_run_scope()):
         pass
 
     # 工具未被真正执行（解析失败短路，避免空参执行的错误掩盖 / 副作用）
@@ -2163,9 +2162,7 @@ async def test_react_reasoning_feedback_when_has_reasoning():
         pass
 
     # 第 1 轮 assistant 消息（含 tool_calls）应带 reasoning_content 键（空串）
-    first_assistant = next(
-        m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")
-    )
+    first_assistant = next(m for m in messages if m.get("role") == "assistant" and m.get("tool_calls"))
     assert "reasoning_content" in first_assistant
     assert first_assistant["reasoning_content"] == ""
 
@@ -2215,8 +2212,9 @@ async def test_react_context_budget_trims_rounds():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, **reasoning_execution_args("react", max_iterations=4, temperature=0.2, max_tokens=1024,
-        max_context_rounds=2),
+        "hi",
+        messages,
+        **reasoning_execution_args("react", max_iterations=4, temperature=0.2, max_tokens=1024, max_context_rounds=2),
     ):
         pass
 
@@ -2244,8 +2242,11 @@ async def test_react_context_budget_trims_on_no_tool_retry():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024,
-        max_context_rounds=2, max_empty_retries=5),  # 大上限保持 6 轮空输出重试，验证预算裁剪
+        "hi",
+        messages,
+        **reasoning_execution_args(
+            "react", max_iterations=6, temperature=0.2, max_tokens=1024, max_context_rounds=2, max_empty_retries=5
+        ),  # 大上限保持 6 轮空输出重试，验证预算裁剪
     ):
         pass
 
@@ -2267,18 +2268,25 @@ _FA_REPORT_SCHEMA = {
 }
 
 
-@pytest.mark.parametrize("schema", [
-    {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
-    {"properties": {"x": {"$schema": "urn:unknown"}}},
-    {"type": "object", "properties": 5},
-])
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
+        {"properties": {"x": {"$schema": "urn:unknown"}}},
+        {"type": "object", "properties": 5},
+    ],
+)
 async def test_final_answer_schema_preflight_stops_before_llm(schema: dict) -> None:
     """错误定义在注入 terminal tool 前拒绝，不能回喂给模型修改。"""
     llm = _ScriptedLLM([{"finish_reason": "stop", "content": "unused"}])
     strategy = ReActStrategy(llm=llm, tools=None)
     with pytest.raises(SchemaError):
         async for _ in strategy.execute(
-            "hi", [], **reasoning_execution_args("react", output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024),
+            "hi",
+            [],
+            **reasoning_execution_args(
+                "react", output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024
+            ),
         ):
             pass
     assert llm.calls == 0
@@ -2288,21 +2296,35 @@ async def test_final_answer_schema_preflight_stops_before_llm(schema: dict) -> N
 async def test_final_answer_202012_dependency_feedback_then_success() -> None:
     """2020-12 字段依赖失败回喂，修正后终止；保持协议调用计数。"""
     schema = {
-        "type": "object", "properties": {"equipment": {}, "time": {}},
+        "type": "object",
+        "properties": {"equipment": {}, "time": {}},
         "dependentRequired": {"equipment": ["time"]},
     }
     good = {"equipment": "EQ-01", "time": "today"}
-    llm = _ScriptedLLM([
-        {"finish_reason": "tool_calls", "tool_calls": [{
-            "id": f"fa-{index}", "type": "function",
-            "function": {"name": "final_answer", "arguments": json.dumps(args)},
-        }]}
-        for index, args in enumerate([{"equipment": "EQ-01"}, good])
-    ])
+    llm = _ScriptedLLM(
+        [
+            {
+                "finish_reason": "tool_calls",
+                "tool_calls": [
+                    {
+                        "id": f"fa-{index}",
+                        "type": "function",
+                        "function": {"name": "final_answer", "arguments": json.dumps(args)},
+                    }
+                ],
+            }
+            for index, args in enumerate([{"equipment": "EQ-01"}, good])
+        ]
+    )
     strategy = ReActStrategy(llm=llm, tools=None)
     events = [
-        event async for event in strategy.execute(
-            "hi", [], **reasoning_execution_args("react", output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024),
+        event
+        async for event in strategy.execute(
+            "hi",
+            [],
+            **reasoning_execution_args(
+                "react", output_schema=schema, max_iterations=3, temperature=0.2, max_tokens=1024
+            ),
         )
     ]
     assert llm.calls == 2
@@ -2324,9 +2346,7 @@ async def test_react_final_answer_success():
                         "type": "function",
                         "function": {
                             "name": "final_answer",
-                            "arguments": json.dumps(
-                                {"conclusion": "根因A", "confidence": 0.9}
-                            ),
+                            "arguments": json.dumps({"conclusion": "根因A", "confidence": 0.9}),
                         },
                     }
                 ],
@@ -2339,8 +2359,11 @@ async def test_react_final_answer_success():
     messages = [{"role": "user", "content": "hi"}]
     events = []
     async for ev in strategy.execute(
-        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA),
+        "hi",
+        messages,
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, output_schema=_FA_REPORT_SCHEMA
+        ),
     ):
         events.append(ev)
 
@@ -2376,8 +2399,11 @@ async def test_react_final_answer_validation_failure_feedback():
 
     messages = [{"role": "user", "content": "hi"}]
     async for _ in strategy.execute(
-        "hi", messages, **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA),
+        "hi",
+        messages,
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, output_schema=_FA_REPORT_SCHEMA
+        ),
     ):
         pass
 
@@ -2401,7 +2427,8 @@ async def test_react_no_output_schema_structured_none():
     strategy = ReActStrategy(llm=llm, tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2414,6 +2441,7 @@ async def test_react_no_output_schema_structured_none():
 @pytest.mark.asyncio
 async def test_react_llm_failed_handler_continue_retries():
     """自定义 LLM_FAILED handler → CONTINUE：失败后重试，下轮成功。"""
+
     async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
@@ -2429,7 +2457,8 @@ async def test_react_llm_failed_handler_continue_retries():
     strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2443,19 +2472,19 @@ async def test_react_llm_failed_handler_continue_retries():
 @pytest.mark.asyncio
 async def test_react_llm_failed_handler_raise():
     """自定义 LLM_FAILED handler → RAISE：抛 AgentError（携带 kind）。"""
+
     async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
 
-    strategy = ReActStrategy(
-        llm=_ErrorLLM(), tools=None, error_handlers=registry
-    )
+    strategy = ReActStrategy(llm=_ErrorLLM(), tools=None, error_handlers=registry)
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -2466,18 +2495,18 @@ async def test_react_llm_failed_handler_raise():
 @pytest.mark.asyncio
 async def test_react_empty_output_handler_stop():
     """自定义 EMPTY_OUTPUT handler → STOP：空输出直接终止（默认是重试）。"""
+
     async def on_empty(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.STOP
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.EMPTY_OUTPUT, on_empty)
 
-    strategy = ReActStrategy(
-        llm=_EmptyLLM(), tools=None, error_handlers=registry
-    )
+    strategy = ReActStrategy(llm=_EmptyLLM(), tools=None, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2491,6 +2520,7 @@ async def test_react_empty_output_handler_stop():
 @pytest.mark.asyncio
 async def test_react_tool_failed_handler_stop():
     """自定义 TOOL_FAILED handler → STOP：工具失败即终止（部分进度保留）。"""
+
     async def on_tool_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.STOP
 
@@ -2516,7 +2546,8 @@ async def test_react_tool_failed_handler_stop():
     strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2532,6 +2563,7 @@ async def test_react_tool_failed_handler_stop():
 @pytest.mark.asyncio
 async def test_react_structured_invalid_handler_stop():
     """自定义 STRUCTURED_INVALID handler → STOP：final_answer 校验失败即终止。"""
+
     async def on_struct(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.STOP
 
@@ -2556,9 +2588,11 @@ async def test_react_structured_invalid_handler_stop():
     strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, output_schema=_FA_REPORT_SCHEMA
+        ),
     ):
         pass
 
@@ -2600,7 +2634,8 @@ async def test_react_tool_failures_grouped_by_kind():
     strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2618,6 +2653,7 @@ async def test_react_tool_failures_grouped_by_kind():
 @pytest.mark.asyncio
 async def test_react_tool_failures_stop_arbitration():
     """跨 kind：TOOL_FAILED→CONTINUE + PARSE_FAILED→STOP → 终止（STOP 优先于 CONTINUE）。"""
+
     async def on_tool_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
@@ -2648,7 +2684,8 @@ async def test_react_tool_failures_stop_arbitration():
     strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2661,6 +2698,7 @@ async def test_react_tool_failures_stop_arbitration():
 @pytest.mark.asyncio
 async def test_react_tool_failures_raise_arbitration():
     """跨 kind：PARSE_FAILED→RAISE + TOOL_FAILED→CONTINUE → 上报（RAISE 优先）。"""
+
     async def on_tool_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
@@ -2692,7 +2730,8 @@ async def test_react_tool_failures_raise_arbitration():
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -2721,7 +2760,7 @@ async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
     ]
     messages = []
 
-    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1):
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1, run=reasoning_run_scope()):
         pass
 
     # tool_messages 顺序 = 输入顺序（gather 保序）
@@ -2748,7 +2787,7 @@ async def test_react_execute_tool_calls_actually_concurrent(monkeypatch):
     messages = []
 
     start = time.monotonic()
-    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1):
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1, run=reasoning_run_scope()):
         pass
     elapsed = time.monotonic() - start
 
@@ -2761,7 +2800,6 @@ class _NoopLLM:
 
     async def async_generate(self, *args, **kwargs):
         yield ""
-        return
 
 
 # ======================================================================
@@ -2783,7 +2821,8 @@ async def test_react_protocol_error_retry_then_success():
 
     events = []
     async for event in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(event)
@@ -2811,7 +2850,8 @@ async def test_react_protocol_error_not_counted_as_empty_output():
     strategy = ReActStrategy(llm=llm, tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2825,6 +2865,7 @@ async def test_react_protocol_error_not_counted_as_empty_output():
 @pytest.mark.asyncio
 async def test_react_protocol_error_handler_stop():
     """PARSE_FAILED handler → STOP：协议异常直接终止（error 记录）。"""
+
     async def on_parse(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.STOP
 
@@ -2838,7 +2879,8 @@ async def test_react_protocol_error_handler_stop():
     )
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -2852,6 +2894,7 @@ async def test_react_protocol_error_handler_stop():
 @pytest.mark.asyncio
 async def test_react_protocol_error_handler_raise():
     """PARSE_FAILED handler → RAISE：抛 AgentRunError（携带 kind）。"""
+
     async def on_parse(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
@@ -2866,7 +2909,8 @@ async def test_react_protocol_error_handler_raise():
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -2887,7 +2931,8 @@ async def test_react_protocol_error_no_tools():
 
     events = []
     async for event in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(event)
@@ -2924,7 +2969,8 @@ async def test_react_protocol_error_no_tools_with_tool_calls():
     messages = [{"role": "user", "content": "hi"}]
     events = []
     async for event in strategy.execute(
-        "hi", messages,
+        "hi",
+        messages,
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         events.append(event)
@@ -2954,10 +3000,9 @@ async def test_react_tool_protocol_retry_limit_hard_stops():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=10,
-        temperature=0.2,
-        max_tokens=1024,
-        max_tool_protocol_retries=2),
+        **reasoning_execution_args(
+            "react", max_iterations=10, temperature=0.2, max_tokens=1024, max_tool_protocol_retries=2
+        ),
     ):
         pass
 
@@ -2976,10 +3021,9 @@ async def test_react_tool_protocol_retry_limit_zero_stops_first_failure():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=10,
-        temperature=0.2,
-        max_tokens=1024,
-        max_tool_protocol_retries=0),
+        **reasoning_execution_args(
+            "react", max_iterations=10, temperature=0.2, max_tokens=1024, max_tool_protocol_retries=0
+        ),
     ):
         pass
 
@@ -3004,10 +3048,9 @@ async def test_react_tool_protocol_retry_count_resets_after_valid_tool_round():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=6,
-        temperature=0.2,
-        max_tokens=1024,
-        max_tool_protocol_retries=1),
+        **reasoning_execution_args(
+            "react", max_iterations=6, temperature=0.2, max_tokens=1024, max_tool_protocol_retries=1
+        ),
     ):
         pass
 
@@ -3039,10 +3082,9 @@ async def test_react_llm_failure_does_not_reset_tool_protocol_retry_count():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=6,
-        temperature=0.2,
-        max_tokens=1024,
-        max_tool_protocol_retries=1),
+        **reasoning_execution_args(
+            "react", max_iterations=6, temperature=0.2, max_tokens=1024, max_tool_protocol_retries=1
+        ),
     ):
         pass
 
@@ -3059,19 +3101,20 @@ async def test_react_invalid_final_answer_obeys_tool_protocol_retry_limit():
         "type": "function",
         "function": {"name": "final_answer", "arguments": "{}"},
     }
-    llm = _ScriptedLLM(
-        [{"finish_reason": "tool_calls", "tool_calls": [bad_final]}]
-    )
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [bad_final]}])
     strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
 
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=10,
-        temperature=0.2,
-        max_tokens=1024,
-        output_schema=_FA_REPORT_SCHEMA,
-        max_tool_protocol_retries=1),
+        **reasoning_execution_args(
+            "react",
+            max_iterations=10,
+            temperature=0.2,
+            max_tokens=1024,
+            output_schema=_FA_REPORT_SCHEMA,
+            max_tool_protocol_retries=1,
+        ),
     ):
         pass
 
@@ -3106,10 +3149,9 @@ async def test_react_invalid_tool_arguments_obey_tool_protocol_retry_limit():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=10,
-        temperature=0.2,
-        max_tokens=1024,
-        max_tool_protocol_retries=1),
+        **reasoning_execution_args(
+            "react", max_iterations=10, temperature=0.2, max_tokens=1024, max_tool_protocol_retries=1
+        ),
     ):
         pass
 
@@ -3126,18 +3168,15 @@ async def test_react_unknown_final_answer_name_does_not_bypass_stall_limit():
         "type": "function",
         "function": {"name": "final_answer", "arguments": "{}"},
     }
-    llm = _ScriptedLLM(
-        [{"finish_reason": "tool_calls", "tool_calls": [call]}] * 3
-    )
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [call]}] * 3)
     strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
 
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=5,
-        temperature=0.2,
-        max_tokens=1024,
-        max_same_action_turns=1),
+        **reasoning_execution_args(
+            "react", max_iterations=5, temperature=0.2, max_tokens=1024, max_same_action_turns=1
+        ),
     ):
         pass
 
@@ -3171,10 +3210,9 @@ async def test_react_unknown_final_answer_arguments_enter_stall_fingerprint():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024,
-        max_same_action_turns=1),
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, max_same_action_turns=1
+        ),
     ):
         pass
 
@@ -3191,6 +3229,7 @@ async def test_react_unknown_final_answer_arguments_enter_stall_fingerprint():
 @pytest.mark.asyncio
 async def test_react_llm_fail_retries_hard_stop():
     """LLM 持续失败 + handler CONTINUE → 连续失败超 max_llm_fail_retries 硬终止。"""
+
     async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
@@ -3207,7 +3246,8 @@ async def test_react_llm_fail_retries_hard_stop():
     strategy = ReActStrategy(llm=llm, tools=None, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -3222,6 +3262,7 @@ async def test_react_llm_fail_retries_hard_stop():
 @pytest.mark.asyncio
 async def test_react_llm_fail_retries_resets_on_success():
     """成功轮清零失败计数：失败→工具成功→再失败不累计硬终止（对齐空输出「有产出清零」）。"""
+
     async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
@@ -3241,9 +3282,9 @@ async def test_react_llm_fail_retries_resets_on_success():
     strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024,
-        max_llm_fail_retries=1),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args("react", max_iterations=6, temperature=0.2, max_tokens=1024, max_llm_fail_retries=1),
     ):
         pass
 
@@ -3258,12 +3299,9 @@ async def test_react_llm_fail_retries_resets_on_success():
 @pytest.mark.asyncio
 async def test_react_llm_fail_retries_handler_raise():
     """连续失败达上限硬终止 → handler RAISE：抛 AgentRunError(LLM_FAILED)。"""
+
     async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
-        return (
-            AgentErrorAction.RAISE
-            if "连续 LLM 调用失败" in ctx.message
-            else AgentErrorAction.CONTINUE
-        )
+        return AgentErrorAction.RAISE if "连续 LLM 调用失败" in ctx.message else AgentErrorAction.CONTINUE
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
@@ -3279,7 +3317,8 @@ async def test_react_llm_fail_retries_handler_raise():
 
     with pytest.raises(AgentRunError) as exc_info:
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -3291,6 +3330,7 @@ async def test_react_llm_fail_retries_handler_raise():
 @pytest.mark.asyncio
 async def test_react_llm_fail_retries_zero():
     """max_llm_fail_retries=0 → 首次失败即终止（handler CONTINUE 忽略）。"""
+
     async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
@@ -3300,9 +3340,9 @@ async def test_react_llm_fail_retries_zero():
     strategy = ReActStrategy(llm=_ErrorLLM(), tools=None, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024,
-        max_llm_fail_retries=0),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024, max_llm_fail_retries=0),
     ):
         pass
 
@@ -3318,7 +3358,8 @@ async def test_react_llm_fail_retries_default_stop_unchanged():
     strategy = ReActStrategy(llm=_ErrorLLM(), tools=None)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=5, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -3425,9 +3466,11 @@ async def test_react_tool_timeout_retries_passed_to_gateway():
     strategy = ReActStrategy(llm=llm, tools=gateway)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024,
-        tool_timeout=60, tool_max_retries=5),
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, tool_timeout=60, tool_max_retries=5
+        ),
     ):
         pass
 
@@ -3451,7 +3494,8 @@ async def test_react_tool_timeout_retries_default_none():
     strategy = ReActStrategy(llm=llm, tools=gateway)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -3462,6 +3506,33 @@ async def test_react_tool_timeout_retries_default_none():
     assert gateway.calls[0]["max_retries"] is None
 
 
+@pytest.mark.asyncio
+async def test_execute_tool_calls_tool_execution_default_and_override():
+    """原语直接复用时：默认不覆盖工具执行选项，显式传入则整组透传给网关。"""
+    gateway = _RecordingGateway()
+    strategy = ReActStrategy(llm=_NoopLLM(), tools=gateway)
+    tool_calls = [_echo_call()]
+    messages = []
+
+    async for _ in strategy.execute_tool_calls(tool_calls, messages, iteration=1, run=reasoning_run_scope()):
+        pass
+
+    assert gateway.calls[0]["timeout"] is None
+    assert gateway.calls[0]["max_retries"] is None
+
+    async for _ in strategy.execute_tool_calls(
+        tool_calls,
+        messages,
+        iteration=1,
+        run=reasoning_run_scope(),
+        tool_execution=ToolExecutionOptions(timeout=60, max_attempts=5),
+    ):
+        pass
+
+    assert gateway.calls[1]["timeout"] == 60
+    assert gateway.calls[1]["max_retries"] == 5
+
+
 # ======================================================================
 # 问题 4：错误处理 handler 自身异常 → 防御降级（不破坏主循环）
 # ======================================================================
@@ -3470,18 +3541,18 @@ async def test_react_tool_timeout_retries_default_none():
 @pytest.mark.asyncio
 async def test_react_handler_exception_llm_failed_default_stop():
     """LLM_FAILED handler 抛异常 → 降级为默认 STOP 短路（不崩，error 为 LLM 失败原因）。"""
+
     async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
         raise RuntimeError("handler bug")
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.LLM_FAILED, broken_handler)
 
-    strategy = ReActStrategy(
-        llm=_ErrorLLM(), tools=None, error_handlers=registry
-    )
+    strategy = ReActStrategy(llm=_ErrorLLM(), tools=None, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -3496,6 +3567,7 @@ async def test_react_handler_exception_llm_failed_default_stop():
 @pytest.mark.asyncio
 async def test_react_handler_exception_tool_failed_default_continue():
     """TOOL_FAILED handler 抛异常 → 降级为默认 CONTINUE（回喂继续，下一轮正常结束）。"""
+
     async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
         raise RuntimeError("handler bug")
 
@@ -3521,7 +3593,8 @@ async def test_react_handler_exception_tool_failed_default_continue():
     strategy = ReActStrategy(llm=llm, tools=tools, error_handlers=registry)
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -3536,6 +3609,7 @@ async def test_react_handler_exception_tool_failed_default_continue():
 @pytest.mark.asyncio
 async def test_react_unknown_handler_exception_not_breaking():
     """UNKNOWN handler 抛异常 → 主循环 UNKNOWN 兜底不崩（默认 STOP 保留部分进度）。"""
+
     async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
         raise RuntimeError("handler bug")
 
@@ -3550,7 +3624,8 @@ async def test_react_unknown_handler_exception_not_breaking():
     )
 
     async for _ in strategy.execute(
-        "hi", [{"role": "user", "content": "hi"}],
+        "hi",
+        [{"role": "user", "content": "hi"}],
         **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
     ):
         pass
@@ -3579,7 +3654,8 @@ async def test_react_unknown_error_redacts_exception_message(caplog):
 
     with caplog.at_level("ERROR", logger="app.domain.reasoning.react"):
         async for _ in strategy.execute(
-            "hi", [{"role": "user", "content": "hi"}],
+            "hi",
+            [{"role": "user", "content": "hi"}],
             **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
         ):
             pass
@@ -3616,10 +3692,9 @@ async def test_react_empty_output_round_does_not_reset_protocol_budget():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=10,
-        temperature=0.2,
-        max_tokens=1024,
-        max_tool_protocol_retries=1),
+        **reasoning_execution_args(
+            "react", max_iterations=10, temperature=0.2, max_tokens=1024, max_tool_protocol_retries=1
+        ),
     ):
         pass
 
@@ -3651,9 +3726,7 @@ async def test_react_protocol_hard_limit_preempts_same_round_business_failure():
         "type": "function",
         "function": {"name": "fail", "arguments": "{}"},
     }
-    llm = _ScriptedLLM(
-        [{"finish_reason": "tool_calls", "tool_calls": [bad_json, business_fail]}]
-    )
+    llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [bad_json, business_fail]}])
     strategy = ReActStrategy(
         llm=llm,
         tools=_make_registry(tools=[_EchoTool(), _FailingTool()]),
@@ -3663,10 +3736,9 @@ async def test_react_protocol_hard_limit_preempts_same_round_business_failure():
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=3,
-        temperature=0.2,
-        max_tokens=1024,
-        max_tool_protocol_retries=0),
+        **reasoning_execution_args(
+            "react", max_iterations=3, temperature=0.2, max_tokens=1024, max_tool_protocol_retries=0
+        ),
     ):
         pass
 

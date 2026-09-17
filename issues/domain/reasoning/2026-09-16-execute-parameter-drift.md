@@ -24,7 +24,10 @@ Planner/Reflection 内部 ReAct 调用中重复列出；增加一种控制或预
   启动外部副作用。
 - Agent 桥接显式完成 `AgentContext → reasoning` 映射；嵌套 ReAct 复用父作用域和对应预算。
 - replan/refine 进入同一个 `RecoveryBudget`，以可空字段表达策略适用性；缺失专属预算提前失败。
-- 全部生产调用和直接测试迁移到新契约，不保留双签名兼容层。
+- `execute_tool_calls()` 原语一并接收 `ReasoningRunScope` 与 `ToolExecutionOptions`：它是生产工具批次的
+  唯一入口，保留标量会让 `_handle_tool_calls` 每次调用前拆开对象再逐项传回。
+- 全部生产调用和直接测试迁移到新契约，不保留双签名兼容层；直接调用原语的测试改用测试装配位的
+  `reasoning_run_scope()`。
 
 ## 验证与教训
 
@@ -33,5 +36,11 @@ Planner/Reflection 缺失预算；三种 Agent、
 三策略、嵌套 ReAct、双通道、取消、deadline、usage 与工具事实继续回归。最终验证数量见
 [R-03 计划](../../../docs/todo.md#r-03-reasoning-execution-parameters)。
 
+原语迁移时曾遗留测试侧的兼容 shim（策略子类用 `kwargs.setdefault` 注入旧标量 `run_id` / `run_stop`）。
+测试子类在生产调用链上，迁移后连 `_handle_tool_calls` 的正常调用也被塞入 `run_id`，使全部走
+`execute()` 工具循环的用例一起失败，并以各不相同的断言差异呈现，掩盖了单一根因。见
+[参数分组 ADR](../../../adr/domain/reasoning/2026-09-16-semantic-execution-parameters.md#实施与验证)。
+
 当一组参数在多个调用点稳定成形时，应按变化原因引入小型参数对象；不要等到签名继续扩张，也不要
-用一个万能 Context 把不同所有权重新混在一起。
+用一个万能 Context 把不同所有权重新混在一起。测试替身覆写生产方法时即位于生产调用链上，迁移签名
+必须同时清理它的兼容注入。

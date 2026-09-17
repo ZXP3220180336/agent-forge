@@ -15,6 +15,23 @@ from app.domain.reasoning.execution import (
 )
 
 
+def reasoning_run_scope(
+    run_id: str = "run-react-test",
+    *,
+    run_stop: asyncio.Event | None = None,
+) -> ReasoningRunScope:
+    """构造直接调用策略原语（如 `execute_tool_calls`）时使用的运行作用域。
+
+    `execute_tool_calls` 只接收运行作用域与工具执行选项，不接收模型、上下文窗口和
+    恢复预算，因此不走 `reasoning_execution_args`；工具执行选项有默认值，只在需要
+    覆盖 timeout / max_attempts 时才显式传入。调用方仍可显式传入自己的完成信号。
+    """
+    return ReasoningRunScope(
+        run_id=run_id,
+        run_stop=run_stop if run_stop is not None else asyncio.Event(),
+    )
+
+
 def reasoning_execution_args(
     strategy: Literal["react", "planner", "reflection"],
     **values: Any,
@@ -50,14 +67,8 @@ def reasoning_execution_args(
         max_empty_retries=values.pop("max_empty_retries", 2),
         max_llm_fail_retries=values.pop("max_llm_fail_retries", 2),
         max_tool_protocol_retries=values.pop("max_tool_protocol_retries", 2),
-        max_replan_rounds=(
-            values.pop("max_replan_rounds", 2) if strategy == "planner" else None
-        ),
-        max_refine_rounds=(
-            values.pop("max_refine_rounds", 2)
-            if strategy == "reflection"
-            else None
-        ),
+        max_replan_rounds=(values.pop("max_replan_rounds", 2) if strategy == "planner" else None),
+        max_refine_rounds=(values.pop("max_refine_rounds", 2) if strategy == "reflection" else None),
     )
     tool_execution = ToolExecutionOptions(
         timeout=values.pop("tool_timeout", None),

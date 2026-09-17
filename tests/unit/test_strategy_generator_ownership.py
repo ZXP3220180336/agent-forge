@@ -6,6 +6,7 @@ import pytest
 
 from app.domain.reasoning._common import reject_concurrent_runs
 from app.domain.reasoning.react import ReActStrategy
+from tests.reasoning_execution import reasoning_run_scope
 
 
 async def test_running_guard_owns_inner_generator_until_cleanup_finishes():
@@ -50,14 +51,9 @@ async def test_direct_tool_batch_rejects_all_calls_before_any_execution(ids):
 
     strategy = ReActStrategy(llm=None, tools=Gateway())
     messages = []
-    calls = [
-        {"id": call_id, "function": {"name": "write", "arguments": "{}"}}
-        for call_id in ids
-    ]
+    calls = [{"id": call_id, "function": {"name": "write", "arguments": "{}"}} for call_id in ids]
     with pytest.raises(ValueError, match="协议异常"):
-        async for _ in strategy.execute_tool_calls(
-            calls, messages, 1, run_id="run", run_stop=asyncio.Event()
-        ):
+        async for _ in strategy.execute_tool_calls(calls, messages, 1, run=reasoning_run_scope("run")):
             pass
     assert messages == []
     assert strategy.tool_facts == ()
