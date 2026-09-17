@@ -3,10 +3,10 @@ import uuid
 
 from app.domain.ports.tool_execution import ToolCallContext
 from app.domain.reasoning.tool_batch import ToolBatchCollector
-from app.integration.tools.tool_service import ToolService
 from app.integration.tools.base import BaseTool
 from app.integration.tools.builtin import SearchTool
 from app.integration.tools.builtin import __all__ as builtin_tools
+from app.integration.tools.tool_service import ToolService
 
 
 async def demo():

@@ -19,9 +19,9 @@ from app.config import settings
 from app.domain.agent import AgentContext
 from app.domain.agent.executor import ReActAgent
 from app.domain.prompts.manager import PromptManager
-from app.integration.tools.tool_service import ToolService
 from app.integration.llm.llm_service import LLMService
 from app.integration.tools.builtin import ReadFileTool, SearchTool, WriteFileTool
+from app.integration.tools.tool_service import ToolService
 
 
 async def main():
@@ -48,9 +48,7 @@ async def main():
 
     # 3. 构建消息
     pm = PromptManager()
-    tools_desc = "\n".join(
-        f"- {t.name}: {t.description[:50]}..." for t in tools._tools.values()
-    )
+    tools_desc = "\n".join(f"- {t.name}: {t.description[:50]}..." for t in tools._tools.values())
     system_prompt = pm.build_system_prompt(tools_desc)
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -87,7 +85,7 @@ async def main():
                     print(f"\n  [OK] 完成（{data.get('iterations', 0)} 轮）", flush=True)
                 elif t == "error":
                     print(f"\n  [FAIL] 错误: {c}", flush=True)
-            except (json.JSONDecodeError, KeyError, IndexError):
+            except json.JSONDecodeError, KeyError, IndexError:
                 pass
 
     # 6. 显示最终结果
