@@ -44,9 +44,7 @@ class FakeSessionManager:
         return []
 
     async def add_message(self, session_id, role, content, reasoning_content=None, token_count=0):
-        self.saved_messages.append(
-            {"session_id": session_id, "role": role, "content": content}
-        )
+        self.saved_messages.append({"session_id": session_id, "role": role, "content": content})
         return len(self.saved_messages)
 
     async def create_session(self, user_id, system_prompt=None, title=None):
@@ -85,9 +83,7 @@ class FakeLLM:
         outcome = self._script.pop(0) if self._script else {"type": "stop", "content": ""}
         result.content = outcome["content"]
         result.finish_reason = "stop"
-        yield (
-            f"data: {json.dumps({'type': 'message', 'content': outcome['content']}, ensure_ascii=False)}\n\n"
-        )
+        yield (f"data: {json.dumps({'type': 'message', 'content': outcome['content']}, ensure_ascii=False)}\n\n")
 
 
 def _wire(monkeypatch, agent_params, session, llm_script=None):

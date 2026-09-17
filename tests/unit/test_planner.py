@@ -86,9 +86,7 @@ class _PlannerLLM:
 
     async def async_generate(self, *args, result=None, **kwargs):
         self.react_calls += 1
-        spec = self.react_scripts[
-            min(self.react_calls - 1, len(self.react_scripts) - 1)
-        ]
+        spec = self.react_scripts[min(self.react_calls - 1, len(self.react_scripts) - 1)]
         if result is not None:
             for key, value in spec.items():
                 setattr(result, key, value)
@@ -106,9 +104,7 @@ class _PlannerLLM:
         deadline=None,
     ):
         self.structured_calls += 1
-        spec = self.structured_scripts[
-            min(self.structured_calls - 1, len(self.structured_scripts) - 1)
-        ]
+        spec = self.structured_scripts[min(self.structured_calls - 1, len(self.structured_scripts) - 1)]
         if isinstance(spec, Exception):
             raise spec
         if usage is not None and self.usage_spec:
@@ -294,6 +290,7 @@ async def test_plan_apperror_degrades_to_react():
 
 async def test_plan_failed_raise_propagates():
     """PLAN_FAILED handler RAISE → 抛 AgentRunError（kind==PLAN_FAILED）。"""
+
     async def on_plan_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
@@ -313,6 +310,7 @@ async def test_plan_failed_raise_propagates():
 
 async def test_plan_failed_stop_marks_failure():
     """PLAN_FAILED handler STOP → success=False（硬失败标记，不做有效兜底）。"""
+
     async def on_plan_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.STOP
 
@@ -335,12 +333,8 @@ async def test_plan_failed_stop_marks_failure():
 
 async def test_plan_context_overflow_stops_without_react_fallback():
     """最终 payload 上下文超限时，未缩减同一请求不得转普通 PLAN_FAILED fallback。"""
-    overflow = ContextWindowExceededError(
-        model_key="fast", input_tokens=120, input_budget=100, max_tokens=20
-    )
-    llm = _PlannerLLM(
-        react_scripts=[_stop_script("不应执行")], structured_scripts=[overflow]
-    )
+    overflow = ContextWindowExceededError(model_key="fast", input_tokens=120, input_budget=100, max_tokens=20)
+    llm = _PlannerLLM(react_scripts=[_stop_script("不应执行")], structured_scripts=[overflow])
     strategy = PlannerStrategy(llm=llm, tools=None)
 
     await _run(strategy, [{"role": "user", "content": "hi"}])
@@ -354,12 +348,8 @@ async def test_plan_context_overflow_stops_without_react_fallback():
 
 async def test_plan_minimal_prompt_overflow_stops_before_structured_call():
     """Domain 最小规划骨架超限时不把已知非法请求交给 Integration。"""
-    llm = _PlannerLLM(
-        react_scripts=[_stop_script("不应执行")], structured_scripts=[PLAN]
-    )
-    strategy = PlannerStrategy(
-        llm=llm, tools=None, context_budget=_SelectiveContextBudget()
-    )
+    llm = _PlannerLLM(react_scripts=[_stop_script("不应执行")], structured_scripts=[PLAN])
+    strategy = PlannerStrategy(llm=llm, tools=None, context_budget=_SelectiveContextBudget())
 
     await _run(
         strategy,
@@ -719,11 +709,13 @@ async def test_step_react_stops_on_accumulated_cost():
     """
     llm = _PlannerLLM(
         react_scripts=[
-            {"finish_reason": "stop", "content": "步骤 1 结果",
-             "usage": {"prompt_tokens": 100, "completion_tokens": 100}},
+            {
+                "finish_reason": "stop",
+                "content": "步骤 1 结果",
+                "usage": {"prompt_tokens": 100, "completion_tokens": 100},
+            },
             # step2 子跑首轮即越界（成本检查先于空输出/stop 分支）→ 空 content 故步骤判失败
-            {"finish_reason": "stop", "content": "",
-             "usage": {"prompt_tokens": 200, "completion_tokens": 150}},
+            {"finish_reason": "stop", "content": "", "usage": {"prompt_tokens": 200, "completion_tokens": 150}},
         ],
         structured_scripts=[PLAN, SUMMARY],
         usage={"prompt_tokens": 400, "completion_tokens": 100},
@@ -764,8 +756,13 @@ async def test_planner_passes_cancel_deadline_to_structured():
             captured["cancel_event"] = cancel_event
             captured["deadline"] = deadline
         return await orig(
-            messages, schema, model_key=model_key, max_tokens=max_tokens,
-            usage=usage, cancel_event=cancel_event, deadline=deadline,
+            messages,
+            schema,
+            model_key=model_key,
+            max_tokens=max_tokens,
+            usage=usage,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
 
     llm.generate_structured = rec

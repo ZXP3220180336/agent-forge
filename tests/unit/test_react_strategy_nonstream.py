@@ -145,9 +145,7 @@ async def _run(strategy, messages, **kw):
 async def test_nonstream_deadline_exception_preserves_usage():
     """generate 成功结算后到期时，异常携带的 usage 必须进入 ReAct 总账。"""
     usage = {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}
-    llm = _NonStreamingScriptedLLM(
-        [LLMDeadlineExceededError("执行期限耗尽", usage=usage)]
-    )
+    llm = _NonStreamingScriptedLLM([LLMDeadlineExceededError("执行期限耗尽", usage=usage)])
     strategy = ReActStrategy(llm=llm, tools=None)
 
     await _run(strategy, [{"role": "user", "content": "hi"}], stream_mode=False)
@@ -163,9 +161,7 @@ async def test_nonstream_deadline_exception_preserves_usage():
 
 async def test_nonstream_single_stop_synthesizes_events():
     """单轮 stop（reasoning + content）→ 整条 reasoning 先、message 后；model_key=main。"""
-    llm = _NonStreamingScriptedLLM(
-        [{"finish_reason": "stop", "content": "答案", "reasoning_content": "推理"}]
-    )
+    llm = _NonStreamingScriptedLLM([{"finish_reason": "stop", "content": "答案", "reasoning_content": "推理"}])
     strategy = ReActStrategy(llm=llm, tools=None)
     messages = [{"role": "user", "content": "hi"}]
 
@@ -263,22 +259,17 @@ async def test_nonstream_cancel_after_return_cancels():
 
     cancel_event = asyncio.Event()
     usage = {"prompt_tokens": 6, "completion_tokens": 2, "total_tokens": 8}
-    llm = _CancelOnFirstGenerate(
-        [{"finish_reason": "stop", "content": "答案", "usage": usage}], cancel_event
-    )
+    llm = _CancelOnFirstGenerate([{"finish_reason": "stop", "content": "答案", "usage": usage}], cancel_event)
+
     class _UsageCostLimiter:
         def check(self, current_usage):
             exceeded = bool(current_usage.get("total_tokens", 0))
             return exceeded, 1.0 if exceeded else 0.0
 
-    strategy = ReActStrategy(
-        llm=llm, tools=None, cost_limiter=_UsageCostLimiter()
-    )
+    strategy = ReActStrategy(llm=llm, tools=None, cost_limiter=_UsageCostLimiter())
     messages = [{"role": "user", "content": "hi"}]
 
-    events = await _run(
-        strategy, messages, stream_mode=False, cancel_event=cancel_event
-    )
+    events = await _run(strategy, messages, stream_mode=False, cancel_event=cancel_event)
 
     assert strategy.outcome is not None
     assert strategy.outcome.error == "Agent 已被取消"  # 轮末补查 → CANCELLED
@@ -308,17 +299,11 @@ async def test_nonstream_apperror_maps_to_llm_failed():
 async def test_nonstream_context_window_exceeded_is_terminal():
     """请求预算闸拒绝 → CONTEXT_EXCEEDED 收尾，不重试且不归类为 LLM_FAILED。"""
     llm = _NonStreamingScriptedLLM(
-        [
-            ContextWindowExceededError(
-                model_key="main", input_tokens=1000, input_budget=100, max_tokens=256
-            )
-        ]
+        [ContextWindowExceededError(model_key="main", input_tokens=1000, input_budget=100, max_tokens=256)]
     )
     strategy = ReActStrategy(llm=llm, tools=None)
 
-    events = await _run(
-        strategy, [{"role": "user", "content": "hi"}], stream_mode=False
-    )
+    events = await _run(strategy, [{"role": "user", "content": "hi"}], stream_mode=False)
 
     assert strategy.outcome is not None
     assert strategy.outcome.success is False
@@ -329,9 +314,7 @@ async def test_nonstream_context_window_exceeded_is_terminal():
 
 async def test_nonstream_tool_protocol_error_obeys_shared_budget():
     """非流式通道共用同一协议修正预算：允许 N 次修正，第 N+1 次硬终止。"""
-    llm = _NonStreamingScriptedLLM(
-        [{"finish_reason": "tool_calls", "tool_calls": []}] * 3
-    )
+    llm = _NonStreamingScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": []}] * 3)
     strategy = ReActStrategy(llm=llm, tools=_make_registry(tools=[_EchoTool()]))
 
     events = await _run(
@@ -428,9 +411,7 @@ async def test_nonstream_empty_output_retries_then_stops():
 
 async def test_nonstream_reasoning_only_final_round():
     """reasoning-only 终轮（content 空 + stop）→ 1 reasoning 事件、0 message 事件。"""
-    llm = _NonStreamingScriptedLLM(
-        [{"finish_reason": "stop", "content": "", "reasoning_content": "仅思考"}]
-    )
+    llm = _NonStreamingScriptedLLM([{"finish_reason": "stop", "content": "", "reasoning_content": "仅思考"}])
     strategy = ReActStrategy(llm=llm, tools=None)
     messages = [{"role": "user", "content": "hi"}]
 

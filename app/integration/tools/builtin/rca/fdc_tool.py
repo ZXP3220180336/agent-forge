@@ -72,9 +72,7 @@ class QueryFdcParamsTool(BaseTool):
                     content="",
                     error=f"{scope} 在指定时间窗口内无 FDC 参数记录",
                 )
-            return ToolResult(
-                success=False, content="", error=f"未找到 {scope} 的 FDC 参数记录"
-            )
+            return ToolResult(success=False, content="", error=f"未找到 {scope} 的 FDC 参数记录")
 
         lines = [f"{equipment_id} FDC 工艺参数（共 {len(records)} 项）："]
         for r in records:

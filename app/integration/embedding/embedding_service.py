@@ -101,9 +101,7 @@ class EmbeddingService:
         # 分批调用 API
         for batch_start in range(0, len(uncached_texts), self._max_batch_size):
             batch = uncached_texts[batch_start : batch_start + self._max_batch_size]
-            batch_indices = uncached_indices[
-                batch_start : batch_start + self._max_batch_size
-            ]
+            batch_indices = uncached_indices[batch_start : batch_start + self._max_batch_size]
 
             response = await self._client.embeddings.create(
                 model=model_name,

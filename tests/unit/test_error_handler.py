@@ -53,9 +53,7 @@ def client():
 
     @app.get("/context_exceeded")
     async def context_exceeded():
-        raise ContextWindowExceededError(
-            model_key="main", input_tokens=1000, input_budget=100, max_tokens=100
-        )
+        raise ContextWindowExceededError(model_key="main", input_tokens=1000, input_budget=100, max_tokens=100)
 
     return TestClient(app)
 

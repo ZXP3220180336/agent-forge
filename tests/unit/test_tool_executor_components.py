@@ -309,9 +309,7 @@ async def test_prune_tool_lock_skips_held():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "bad_json", ["[1,2,3]", "null", "42", '"str"', "true"]
-)
+@pytest.mark.parametrize("bad_json", ["[1,2,3]", "null", "42", '"str"', "true"])
 async def test_execute_non_dict_json_rejected(bad_json):
     """LLM 返回数组/标量/null 参数时归 JSON_PARSE，不逃逸 TypeError。"""
     service = ToolService()
@@ -386,9 +384,7 @@ class _CountingSuccessTool(_ParamTool):
 
 
 class _ExplodingResultProcessor(ResultProcessor):
-    def truncate_result(
-        self, result: ToolResult, *, max_length: int | None = None
-    ) -> None:
+    def truncate_result(self, result: ToolResult, *, max_length: int | None = None) -> None:
         raise RuntimeError("truncate failed")
 
 

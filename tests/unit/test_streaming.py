@@ -24,9 +24,7 @@ def _content_chunk(text: str):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=text, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=text, tool_calls=None),
                 finish_reason=None,
             )
         ],
@@ -39,9 +37,7 @@ def _reasoning_chunk(text: str):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=text, content=None, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=text, content=None, tool_calls=None),
                 finish_reason=None,
             )
         ],
@@ -54,9 +50,7 @@ def _finish_chunk(reason: str):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=None, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=None, tool_calls=None),
                 finish_reason=reason,
             )
         ],
@@ -87,9 +81,7 @@ def _tool_call_chunk(index: int, id_: str = "", name: str = "", arguments: str =
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=None, tool_calls=[tc]
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=None, tool_calls=[tc]),
                 finish_reason=None,
             )
         ],
@@ -102,9 +94,7 @@ def _empty_chunk():
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=None, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=None, tool_calls=None),
                 finish_reason=None,
             )
         ],
@@ -141,9 +131,7 @@ def test_parse_reasoning_present_flags():
     empty_reasoning = SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content="", content=None, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content="", content=None, tool_calls=None),
                 finish_reason=None,
             )
         ],
@@ -174,9 +162,7 @@ def test_parse_usage_chunk():
 
 def test_parse_tool_call_chunk():
     """tool_call chunk → ToolCallDelta。"""
-    p = StreamParser.parse_chunk(
-        _tool_call_chunk(0, id_="call_1", name="search", arguments='{"query":"x"}')
-    )
+    p = StreamParser.parse_chunk(_tool_call_chunk(0, id_="call_1", name="search", arguments='{"query":"x"}'))
     assert p.tool_call_deltas is not None
     d = p.tool_call_deltas[0]
     assert isinstance(d, ToolCallDelta)
@@ -358,9 +344,7 @@ def test_parse_non_stream_reasoning_absent_vs_empty():
 
     对齐流式 has_reasoning 语义——返回空 reasoning 仍是 thinking 信号，编排层需回喂空串。
     """
-    empty = StreamParser.parse_non_stream(
-        _non_stream_response(content="x", reasoning_content="")
-    )
+    empty = StreamParser.parse_non_stream(_non_stream_response(content="x", reasoning_content=""))
     assert empty["reasoning_content"] == ""
     assert empty["has_reasoning"] is True
 
@@ -408,15 +392,11 @@ def test_parse_usage_with_empty_delta():
 
 def test_parse_mixed_content_and_tool_calls():
     """混合 chunk：同一 chunk 同时含 content 与 tool_calls，各自独立提取。"""
-    tc = SimpleNamespace(
-        index=0, id="call_1", function=SimpleNamespace(name="search", arguments='{"q":"x"}')
-    )
+    tc = SimpleNamespace(index=0, id="call_1", function=SimpleNamespace(name="search", arguments='{"q":"x"}'))
     chunk = SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content="回复", tool_calls=[tc]
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content="回复", tool_calls=[tc]),
                 finish_reason=None,
             )
         ],

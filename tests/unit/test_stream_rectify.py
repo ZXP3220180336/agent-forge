@@ -38,9 +38,7 @@ def _content_chunk(text: str):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=text, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=text, tool_calls=None),
                 finish_reason=None,
             )
         ],
@@ -53,9 +51,7 @@ def _reasoning_chunk(text: str):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=text, content=None, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=text, content=None, tool_calls=None),
                 finish_reason=None,
             )
         ],
@@ -68,9 +64,7 @@ def _finish_chunk(reason: str):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=None, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=None, tool_calls=None),
                 finish_reason=reason,
             )
         ],
@@ -102,9 +96,7 @@ def _tool_call_chunk():
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=None, tool_calls=[tc]
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=None, tool_calls=[tc]),
                 finish_reason=None,
             )
         ],
@@ -174,12 +166,8 @@ def _setup(monkeypatch, script, stream_max_retries=1):
     # 避免前一个测试的熔断窗口污染后续测试（测试隔离）。
     RetryHandlerManager.reset()
     fake_client = FakeClient(script)  # 共享实例，calls 计数一致
-    monkeypatch.setattr(
-        ClientManager, "get_client", staticmethod(lambda key: fake_client)
-    )
-    monkeypatch.setattr(
-        ClientManager, "get_model", staticmethod(lambda key: "test-model")
-    )
+    monkeypatch.setattr(ClientManager, "get_client", staticmethod(lambda key: fake_client))
+    monkeypatch.setattr(ClientManager, "get_model", staticmethod(lambda key: "test-model"))
     # 退避/重试配置：极短延迟 + 关闭抖动 + create 不内部重试（调用次数可确定）。
     # configure 注入（子模块不读 settings），内部会 reset 保证测试隔离。
     RetryHandlerManager.register_config(
@@ -308,12 +296,8 @@ async def test_cancel_event_no_rectify(monkeypatch):
         FakeStream([_content_chunk("你好")]),  # 正常流，但迭代前 cancel 已置位
     ]
     fake_client = FakeClient(script)
-    monkeypatch.setattr(
-        ClientManager, "get_client", staticmethod(lambda key: fake_client)
-    )
-    monkeypatch.setattr(
-        ClientManager, "get_model", staticmethod(lambda key: "test-model")
-    )
+    monkeypatch.setattr(ClientManager, "get_client", staticmethod(lambda key: fake_client))
+    monkeypatch.setattr(ClientManager, "get_model", staticmethod(lambda key: "test-model"))
     RetryHandlerManager.register_config(
         config=RetryConfig(
             max_retries=0,
@@ -356,19 +340,13 @@ async def test_cancel_during_rectify_stops_new_attempt(monkeypatch):
         FakeStream([], fail_at=0),  # 第一轮死流 → 整流
     ]
     fake_client = FakeClient(script)
-    monkeypatch.setattr(
-        ClientManager, "get_client", staticmethod(lambda key: fake_client)
-    )
-    monkeypatch.setattr(
-        ClientManager, "get_model", staticmethod(lambda key: "test-model")
-    )
+    monkeypatch.setattr(ClientManager, "get_client", staticmethod(lambda key: fake_client))
+    monkeypatch.setattr(ClientManager, "get_model", staticmethod(lambda key: "test-model"))
     # 整流退避固定 0.5s（关闭 jitter），留出外部 set cancel 的窗口
     monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.5)
     monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
     RetryHandlerManager.register_config(
-        config=RetryConfig(
-            max_retries=0, base_delay=0.001, max_delay=0.01, use_jitter=False
-        ),
+        config=RetryConfig(max_retries=0, base_delay=0.001, max_delay=0.01, use_jitter=False),
     )
     monkeypatch.setattr(LLMService, "_stream_max_retries", 3)
 
@@ -414,9 +392,7 @@ async def test_create_failure_no_rectify(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_context_window_exceeded_raises_through(monkeypatch):
     """预算闸拒绝（create 阶段 validate 抛）→ 异常穿透整流流，不折 error 事件。"""
-    monkeypatch.setattr(
-        RequestBudgetManager, "_configs", {"main": RequestBudgetConfig(80, 4)}
-    )
+    monkeypatch.setattr(RequestBudgetManager, "_configs", {"main": RequestBudgetConfig(80, 4)})
     monkeypatch.setattr(RequestBudgetManager, "_instances", {})
     _, completions, run, calls = _setup(monkeypatch, script=[], stream_max_retries=3)
 
@@ -504,9 +480,7 @@ async def test_success_path_regression(monkeypatch):
 async def test_non_retryable_iter_exception_no_rectify(monkeypatch):
     """迭代异常为 NON_RETRYABLE（响应校验错误）→ 不整流。"""
     resp = httpx.Response(200, request=httpx.Request("POST", "http://x"))
-    exc = APIResponseValidationError(
-        response=resp, body=None, message="schema mismatch"
-    )
+    exc = APIResponseValidationError(response=resp, body=None, message="schema mismatch")
     script = [
         FakeStream([], fail_at=0, exc=exc),
     ]
@@ -586,9 +560,7 @@ async def test_rate_limiter_acquire_on_retry_inside_execute(monkeypatch):
     sr, events = await run()
 
     assert completions.calls == 2, "create 应重试 1 次"
-    assert calls["reserve"] == 2, (
-        f"重试也应 reserve（每次 call_fn 调用前一次），实际 {calls['reserve']} 次"
-    )
+    assert calls["reserve"] == 2, f"重试也应 reserve（每次 call_fn 调用前一次），实际 {calls['reserve']} 次"
     # 两次 create 均已调度：首次异常 settle(None) 保守关闭，第二次按 usage 结算。
     assert calls["cancel"] == 0, "create 启动后不得全额退款"
     assert calls["settle"] == 2, f"每次已启动 create 均应 settle，实际 {calls['settle']} 次"
@@ -600,9 +572,7 @@ async def test_rate_limiter_acquire_on_retry_inside_execute(monkeypatch):
 async def test_rate_limiter_settle_refunds_overestimate(monkeypatch):
     """结算退差：成功路径按 usage.total_tokens 退差（预估 > 实际）。"""
     script = [
-        FakeStream(
-            [_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]
-        ),
+        FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
     ]
     _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=0)
 
@@ -701,9 +671,7 @@ async def test_rectify_exhausted_then_abandon_feeds_once(monkeypatch):
 async def test_non_retryable_iter_exception_not_feeds_breaker(monkeypatch):
     """NON_RETRYABLE 迭代异常（客户端问题）→ 不喂 record_failure。"""
     resp = httpx.Response(200, request=httpx.Request("POST", "http://x"))
-    exc = APIResponseValidationError(
-        response=resp, body=None, message="schema mismatch"
-    )
+    exc = APIResponseValidationError(response=resp, body=None, message="schema mismatch")
     script = [
         FakeStream([], fail_at=0, exc=exc),
     ]

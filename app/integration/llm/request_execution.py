@@ -206,9 +206,7 @@ def build_request_plan(
     )
     client = ClientManager.get_client(model_key)
     retry = RetryHandlerManager.get(model_key)
-    prompt_count = TiktokenTokenCounter(
-        ClientManager.get_model(model_key)
-    ).count_messages_tokens(messages)
+    prompt_count = TiktokenTokenCounter(ClientManager.get_model(model_key)).count_messages_tokens(messages)
     prompt_tokens = prompt_count if adaptive_reserve else 0
     estimated = 0 if adaptive_reserve else prompt_count + max_tokens
     active: dict[str, Reservation] = {}

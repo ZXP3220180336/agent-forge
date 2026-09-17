@@ -38,9 +38,7 @@ class HttpApiTool(BaseTool):
     _client_timeout: ClassVar[float] = _DEFAULT_TIMEOUT
 
     @classmethod
-    def register_config(
-        cls, *, tool_http_timeout: float | None = None, **kwargs: Any
-    ) -> None:
+    def register_config(cls, *, tool_http_timeout: float | None = None, **kwargs: Any) -> None:
         """注入请求超时配置（由 ExternalToolLoader 加载时调用，对齐内置工具 register_config 风格）。"""
         if tool_http_timeout is not None:
             cls._client_timeout = tool_http_timeout

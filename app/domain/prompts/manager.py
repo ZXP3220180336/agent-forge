@@ -121,20 +121,16 @@ class PromptManager:
         """构建 Planner 重规划指令：已完成步骤 + 失败步骤 + 原因。"""
         available_tokens = None
         if max_tokens is not None and count_tokens is not None:
-            empty = REPLAN_PROMPT.format(
-                goal="", tool_descriptions="", executed="", failed_step="", error=""
-            )
+            empty = REPLAN_PROMPT.format(goal="", tool_descriptions="", executed="", failed_step="", error="")
             available_tokens = max(0, max_tokens - count_tokens(empty))
-        goal_text, tools, executed_text, failed_text, error_text = (
-            serialize_replan_sections(
-                goal,
-                tool_descriptions,
-                executed,
-                failed_step,
-                error,
-                available_tokens=available_tokens,
-                count_tokens=count_tokens,
-            )
+        goal_text, tools, executed_text, failed_text, error_text = serialize_replan_sections(
+            goal,
+            tool_descriptions,
+            executed,
+            failed_step,
+            error,
+            available_tokens=available_tokens,
+            count_tokens=count_tokens,
         )
         return REPLAN_PROMPT.format(
             goal=goal_text,

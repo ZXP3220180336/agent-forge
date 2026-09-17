@@ -193,17 +193,11 @@ class PlannerOutcome:
     content: str = ""  # 自由文本（ReAct 兜底 / 纯文本汇总路径 / summary 摘要）
     reasoning: str = ""  # 兜底 ReAct 末轮 reasoning
     structured: dict | None = None  # 最终 RESULT_SCHEMA 结构化（证据链报告）
-    plan: dict | None = (
-        None  # 生效计划 {goal, steps:[{id, description}]}；兜底路径 None
-    )
-    steps_executed: list[dict] = field(
-        default_factory=list
-    )  # 步骤审计记录（含失败步，见 execute）
+    plan: dict | None = None  # 生效计划 {goal, steps:[{id, description}]}；兜底路径 None
+    steps_executed: list[dict] = field(default_factory=list)  # 步骤审计记录（含失败步，见 execute）
     replan_rounds: int = 0  # 实际重规划次数
     degraded: bool = False  # True=经降级路径（规划失败→ReAct / 步骤失败→部分汇总 / 汇总 None→纯文本）
-    tool_calls: list[dict[str, Any]] = field(
-        default_factory=list
-    )  # 聚合证据链（各步 tool_calls 平铺）
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)  # 聚合证据链（各步 tool_calls 平铺）
     iterations: int = 0  # 各步 react.iterations 之和
     total_tokens: int = 0  # react 各步 + 全阶段 structured 累计
     usage: dict | None = None
@@ -235,9 +229,7 @@ class PlannerStrategy:
         summarize_model_key: str = "fast",
     ) -> None:
         # 每步执行复用 ReActStrategy（护栏透传内部 _react）
-        self._react = ReActStrategy(
-            llm, tools, context_budget, error_handlers, cost_limiter
-        )
+        self._react = ReActStrategy(llm, tools, context_budget, error_handlers, cost_limiter)
         self._llm = llm
         self._tools = tools
         # 只复用统一 token 计量；Planner 的字段优先级由 prompts 包内策略决定。
@@ -309,11 +301,7 @@ class PlannerStrategy:
         start_time = time.monotonic()
         # E：结构化调用（规划/汇总）的绝对截止——与各阶段 guard 同一时间预算（monotonic
         # 绝对时刻，不逐级重计），随 generate_structured 下沉到降级链每笔子调用前。
-        deadline = (
-            start_time + limits.max_execution_time
-            if limits.max_execution_time is not None
-            else None
-        )
+        deadline = start_time + limits.max_execution_time if limits.max_execution_time is not None else None
         executed: list[dict] = []  # 步骤审计记录（含失败步）
         completed: set[int] = set()  # 成功步骤 id（depends_on 守卫）
         tool_catalog = self._tool_catalog()
@@ -326,18 +314,14 @@ class PlannerStrategy:
                 cancel_event=run.cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
-                running_usage=merge_usage(
-                    self._react_total_usage, self._structured_usage
-                ),
+                running_usage=merge_usage(self._react_total_usage, self._structured_usage),
                 context_error=context_error,
             )
 
         # 每步/兜底的 ReAct 子跑：护栏参数透传本 execute，仅输入（任务文本 + 消息）不同。
         # 收敛为局部闭包，避免两处 19 行参数重复（改护栏只需改一处）；事件透传并抑制
         # 中间 done（REASON-011：收尾 _finalize 统一产 done）。
-        async def _run_react(
-            text: str, sub_messages: list[dict]
-        ) -> AsyncGenerator[str]:
+        async def _run_react(text: str, sub_messages: list[dict]) -> AsyncGenerator[str]:
             """跑一次 ReAct 子跑并透传其事件（抑制中间 done）；剩余预算每次调用现算
             （全局墙钟差额，下界 0.05s）。
 
@@ -365,9 +349,7 @@ class PlannerStrategy:
                 recovery=recovery,
                 tool_execution=tool_execution,
                 stream_mode=stream_mode,
-                baseline_usage=merge_usage(
-                    self._react_total_usage, self._structured_usage
-                ),
+                baseline_usage=merge_usage(self._react_total_usage, self._structured_usage),
             )
             try:
                 async with aclosing(child):
@@ -411,11 +393,7 @@ class PlannerStrategy:
         if guard is not None:
             # plan 非 None（规划已产出但未开工）：给出契约形状快照，与 plan_result 同源——
             # PlannerOutcome.plan 恒为 {goal, steps:[{id, description}]}，消费方口径唯一。
-            suffix = (
-                "规划失败后中止，未降级兜底"
-                if plan is None
-                else "规划后中止，未开始执行"
-            )
+            suffix = "规划失败后中止，未降级兜底" if plan is None else "规划后中止，未开始执行"
             msg = f"{guard.message}，{suffix}"
             for e in self._finalize(
                 plan=(
@@ -462,17 +440,12 @@ class PlannerStrategy:
             for e in self._finalize(
                 plan=None,
                 steps_executed=[],
-                success=(
-                    plan_action != AgentErrorAction.STOP
-                    and rb is not None
-                    and rb.success
-                ),
+                success=(plan_action != AgentErrorAction.STOP and rb is not None and rb.success),
                 degraded=True,
                 error=(
                     rb.error
                     if rb and rb.error
-                    else self._last_structured_error
-                    or f"规划失败{suffix}，已降级为直接 ReAct"
+                    else self._last_structured_error or f"规划失败{suffix}，已降级为直接 ReAct"
                 ),
                 content=rb.content if rb else "",
                 reasoning=rb.reasoning if rb else "",
@@ -604,15 +577,11 @@ class PlannerStrategy:
                     )
 
                     if sub_usage:
-                        self._structured_usage = merge_usage(
-                            self._structured_usage, sub_usage
-                        )
+                        self._structured_usage = merge_usage(self._structured_usage, sub_usage)
 
                     guard = _current_guard(sub_context_error)
                     if guard is not None:
-                        for e in self._finalize_guarded_summary(
-                            guard, sub_result, plan_result, executed
-                        ):
+                        for e in self._finalize_guarded_summary(guard, sub_result, plan_result, executed):
                             yield e
                         return
 
@@ -667,9 +636,7 @@ class PlannerStrategy:
 
         guard = _current_guard(result_context_error)
         if guard is not None:
-            for e in self._finalize_guarded_summary(
-                guard, result, plan_result, executed
-            ):
+            for e in self._finalize_guarded_summary(guard, result, plan_result, executed):
                 yield e
             return
 
@@ -731,9 +698,7 @@ class PlannerStrategy:
                 cancel_event=cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
-                running_usage=merge_usage(
-                    self._react_total_usage, self._structured_usage
-                ),
+                running_usage=merge_usage(self._react_total_usage, self._structured_usage),
             )
             if guard is not None:
                 return None, guard, None
@@ -756,9 +721,7 @@ class PlannerStrategy:
                 cancel_event=cancel_event,
                 deadline=deadline,
                 cost_limiter=self._cost_limiter,
-                running_usage=merge_usage(
-                    self._react_total_usage, self._structured_usage
-                ),
+                running_usage=merge_usage(self._react_total_usage, self._structured_usage),
                 context_error=context_error,
             )
             if guard is not None:
@@ -773,9 +736,7 @@ class PlannerStrategy:
             # 新尾 id 续接已执行步最大 id 之后（单调计数，防依赖错位）
             completed_ids = {r["id"] for r in executed if r["success"]}
             start_no = max([r["id"] for r in executed], default=0) + 1
-            pending = normalize_steps(
-                new_tail, completed=completed_ids, start_no=start_no
-            )
+            pending = normalize_steps(new_tail, completed=completed_ids, start_no=start_no)
             if pending:
                 return pending, None, None
             # replan 出的步骤全部无法执行（依赖不可满足）→ 继续尝试下次 replan
@@ -805,11 +766,7 @@ class PlannerStrategy:
         Guard 终止；其余失败走 PLAN_FAILED 分发（默认 CONTINUE=降级 ReAct 兜底；
         STOP=硬失败；RAISE 抛 AgentRunError）。非 AppError 编程错误冒泡 fail fast。
         """
-        count_tokens = (
-            self._context_budget.count_tokens
-            if self._context_budget is not None
-            else None
-        )
+        count_tokens = self._context_budget.count_tokens if self._context_budget is not None else None
         prompt = PromptManager.build_planning_prompt(
             user_input,
             tool_catalog,
@@ -879,11 +836,7 @@ class PlannerStrategy:
         返回 ``(新尾步骤列表, 分发动作, 用量, 上下文错误)``。上下文超限由调用方
         按 Guard 终止；普通失败返回 ``(None, action, usage, None)``。
         """
-        count_tokens = (
-            self._context_budget.count_tokens
-            if self._context_budget is not None
-            else None
-        )
+        count_tokens = self._context_budget.count_tokens if self._context_budget is not None else None
         prompt = PromptManager.build_planning_replan_prompt(
             goal,
             tool_catalog,
@@ -954,11 +907,7 @@ class PlannerStrategy:
         返回 ``(报告, 分发动作, 用量, 上下文错误)``。上下文超限由调用方按
         Guard 终止；普通失败返回 ``(None, action, usage, None)``。
         """
-        count_tokens = (
-            self._context_budget.count_tokens
-            if self._context_budget is not None
-            else None
-        )
+        count_tokens = self._context_budget.count_tokens if self._context_budget is not None else None
         prompt = PromptManager.build_planning_summarize_prompt(
             goal,
             executed,
@@ -1031,9 +980,7 @@ class PlannerStrategy:
         """一次 react 子跑归并进累计态（usage / iterations）。"""
         if outcome is None:
             return
-        self._react_total_usage = merge_usage(
-            getattr(self, "_react_total_usage", None), outcome.usage
-        )
+        self._react_total_usage = merge_usage(getattr(self, "_react_total_usage", None), outcome.usage)
         self._step_llm_iterations += outcome.iterations or 0
 
     def _tool_catalog(self) -> str:
@@ -1134,9 +1081,7 @@ class PlannerStrategy:
         parts: list[str] = []
         for rec in executed:
             status = "成功" if rec["success"] else f"失败({rec['error']})"
-            parts.append(
-                f"步骤 {rec['id']}（{status}）：{rec['summary'] or rec['content'] or ''}"
-            )
+            parts.append(f"步骤 {rec['id']}（{status}）：{rec['summary'] or rec['content'] or ''}")
         return "\n".join(parts)
 
     # ==================================================================
@@ -1177,10 +1122,7 @@ class PlannerStrategy:
             iterations=self._step_llm_iterations,
             total_tokens=sum(r.get("total_tokens", 0) for r in executed)
             + self._structured_usage.get("total_tokens", 0),
-            usage=merge_usage(
-                getattr(self, "_react_total_usage", None), self._structured_usage
-            )
-            or None,
+            usage=merge_usage(getattr(self, "_react_total_usage", None), self._structured_usage) or None,
         )
         events: list[str] = []
         if info:

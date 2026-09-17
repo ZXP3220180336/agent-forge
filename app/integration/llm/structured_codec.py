@@ -99,9 +99,7 @@ def enforce_no_extra_fields(schema: dict[str, Any]) -> dict[str, Any]:
             continue
         # 匹配 object：type 单值 "object" 或数组含 "object"（联合类型写法 ["object","null"]）
         node_type = node.get("type")
-        is_object = node_type == "object" or (
-            isinstance(node_type, list) and "object" in node_type
-        )
+        is_object = node_type == "object" or (isinstance(node_type, list) and "object" in node_type)
         if is_object and "additionalProperties" not in node:
             node["additionalProperties"] = False
         # 递归属性定义与子结构
@@ -159,9 +157,7 @@ def collect_schema_errors(parsed: dict[str, Any], schema: dict[str, Any]) -> lis
     return errors
 
 
-def collect_schema_error_summaries(
-    parsed: dict[str, Any], schema: dict[str, Any]
-) -> list[str]:
+def collect_schema_error_summaries(parsed: dict[str, Any], schema: dict[str, Any]) -> list[str]:
     """收集 Schema 校验错误的**脱敏摘要**（字段路径 + validator + 约束值）。
 
     与 `collect_schema_errors`（回喂模型，含 `e.message` 嵌入完整实例值）的区别：
@@ -191,9 +187,7 @@ def build_reask_messages(
     new_messages = [dict(m) for m in messages]
     if raw_content:
         new_messages.append({"role": "assistant", "content": raw_content})
-    new_messages.append(
-        {"role": "user", "content": _REASK_TEMPLATE.format(errors=error_text)}
-    )
+    new_messages.append({"role": "user", "content": _REASK_TEMPLATE.format(errors=error_text)})
     return new_messages
 
 

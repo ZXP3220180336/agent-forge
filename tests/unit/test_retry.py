@@ -160,9 +160,7 @@ def test_all_failed_low_volume_opens_breaker():
 def test_window_expiry_prunes_old_failures():
     """滑动窗口：过期失败记录被清理，不再计入统计。"""
     cb = CircuitBreaker(
-        config=CircuitBreakerConfig(
-            window_seconds=0.01, error_threshold=0.5, request_volume_threshold=3
-        )
+        config=CircuitBreakerConfig(window_seconds=0.01, error_threshold=0.5, request_volume_threshold=3)
     )
     # 注入一条早已过期的失败记录
     cb._window.append((time.monotonic() - 100, False))
@@ -179,15 +177,13 @@ async def test_request_granularity_one_record_per_execute():
     """
     handler = RetryHandler(
         config=RetryConfig(max_retries=3),  # 4 次 call_fn
-        circuit_breaker=CircuitBreaker(),   # 默认窗口，1 次失败不熔断
+        circuit_breaker=CircuitBreaker(),  # 默认窗口，1 次失败不熔断
     )
 
     with pytest.raises(TimeoutError):
         await handler.execute(_fail_always(TimeoutError("boom")))
 
-    assert handler.circuit_breaker.failure_count == 1, (
-        "一次 execute 的多重失败应合并为 1 次窗口失败"
-    )
+    assert handler.circuit_breaker.failure_count == 1, "一次 execute 的多重失败应合并为 1 次窗口失败"
     assert handler.circuit_breaker.state.value == "closed"  # 1 次失败不熔断
 
 
@@ -410,9 +406,7 @@ async def test_consecutive_non_retryable_probes_stay_half_open():
     for _ in range(5):
         with pytest.raises(_BadRequest):
             await handler.execute(bad_fn)
-        assert cb.state.value == "half_open", (
-            f"4xx 探针应保持 HALF_OPEN（当前 {cb.state.value}）"
-        )
+        assert cb.state.value == "half_open", f"4xx 探针应保持 HALF_OPEN（当前 {cb.state.value}）"
         assert cb._half_open_requests == 0, "4xx 探针应归还槽位（0→1→0 循环）"
 
     assert cb._consecutive_successes == 0
@@ -492,9 +486,7 @@ async def test_non_retryable_probe_does_not_use_fallback():
     with pytest.raises(_BadRequest):
         await handler.execute(bad_fn, fallback_fn=fallback_fn)
 
-    assert fallback_called[0] is False, (
-        "4xx 探针不应走 fallback（客户端问题，备用模型同样失败）"
-    )
+    assert fallback_called[0] is False, "4xx 探针不应走 fallback（客户端问题，备用模型同样失败）"
     assert cb.state.value == "half_open", "4xx 探针不改变熔断状态"
     assert cb._half_open_requests == 0, "4xx 探针应归还槽位"
 
@@ -510,9 +502,7 @@ def test_open_record_success_does_not_close_breaker():
 
     # 假设发生重试泄漏 / fallback 成功，调用了 record_success
     cb.record_success()
-    assert cb.state.value == "open", (
-        f"OPEN 下 record_success 不应关闭熔断器（当前 {cb.state.value}）"
-    )
+    assert cb.state.value == "open", f"OPEN 下 record_success 不应关闭熔断器（当前 {cb.state.value}）"
     assert cb.failure_count == 1
 
 
@@ -558,7 +548,7 @@ async def test_fallback_success_does_not_reset_breaker():
     """
     handler = RetryHandler(
         config=RetryConfig(max_retries=0),  # 不重试，1 次失败直接 fallback
-        circuit_breaker=CircuitBreaker(),   # 默认窗口，1 次失败不熔断
+        circuit_breaker=CircuitBreaker(),  # 默认窗口，1 次失败不熔断
     )
 
     async def call_fn():
@@ -596,12 +586,8 @@ async def test_fallback_failure_does_not_count_toward_breaker():
     with pytest.raises(TimeoutError) as excinfo:
         await handler.execute(call_fn, fallback_fn=fallback_fn)
 
-    assert handler.circuit_breaker.failure_count == 1, (
-        "熔断窗口应只计主链路 1 次失败，fallback 失败不得额外累计"
-    )
-    assert isinstance(excinfo.value.__cause__, ConnectionError), (
-        "fallback 失败应保留为 __cause__（诊断完整）"
-    )
+    assert handler.circuit_breaker.failure_count == 1, "熔断窗口应只计主链路 1 次失败，fallback 失败不得额外累计"
+    assert isinstance(excinfo.value.__cause__, ConnectionError), "fallback 失败应保留为 __cause__（诊断完整）"
 
 
 @pytest.mark.asyncio
@@ -651,9 +637,7 @@ async def test_half_open_probe_fallback_failure_raises_primary():
     with pytest.raises(TimeoutError) as excinfo:
         await handler.execute(call_fn, fallback_fn=fallback_fn)
 
-    assert isinstance(excinfo.value.__cause__, ConnectionError), (
-        "fallback 失败应保留为 __cause__"
-    )
+    assert isinstance(excinfo.value.__cause__, ConnectionError), "fallback 失败应保留为 __cause__"
     assert cb.state.value == "open", "探针失败应回 OPEN（新一轮冷却）"
 
 
@@ -676,9 +660,7 @@ async def test_half_open_probe_rate_limited_fallback_failure_raises_primary():
     with pytest.raises(_RateLimited) as excinfo:
         await handler.execute(rl_fn, fallback_fn=fallback_fn)
 
-    assert isinstance(excinfo.value.__cause__, ConnectionError), (
-        "fallback 失败应保留为 __cause__"
-    )
+    assert isinstance(excinfo.value.__cause__, ConnectionError), "fallback 失败应保留为 __cause__"
     assert cb.state.value == "open", "429 探针应回 OPEN（下游过载信号）"
 
 
@@ -704,13 +686,8 @@ def test_open_failures_do_not_extend_recovery_window():
     cb.record_failure()
     cb.record_failure()
 
-    assert cb._last_failure_time == opened_at, (
-        "OPEN 下失败不得改写 _last_failure_time（否则恢复探测被无限推迟）"
-    )
-    assert cb.failure_count == 1, (
-        "OPEN 下失败不得累计窗口失败数（熔断期间统计应冻结，"
-        f"实际 {cb.failure_count}）"
-    )
+    assert cb._last_failure_time == opened_at, "OPEN 下失败不得改写 _last_failure_time（否则恢复探测被无限推迟）"
+    assert cb.failure_count == 1, f"OPEN 下失败不得累计窗口失败数（熔断期间统计应冻结，实际 {cb.failure_count}）"
     assert cb.state.value == "open"
 
 
@@ -745,9 +722,7 @@ async def test_rate_limited_not_counted_toward_breaker():
     """429 不计入熔断：单次限流失败（正常配置下会熔断）不触发熔断。"""
     handler = RetryHandler(
         config=RetryConfig(max_retries=0),  # 不重试，1 次失败
-        circuit_breaker=CircuitBreaker(
-            config=CircuitBreakerConfig(request_volume_threshold=1)
-        ),  # 正常 1 次失败即熔断
+        circuit_breaker=CircuitBreaker(config=CircuitBreakerConfig(request_volume_threshold=1)),  # 正常 1 次失败即熔断
     )
 
     async def call_fn():
@@ -849,16 +824,12 @@ async def test_mixed_failures_429_then_timeout_counts_once():
 
     当前实现按最后一次异常判断，碰巧正确；此处作为正向回归。
     """
-    handler, call_fn = _make_sequence_handler(
-        [_RateLimited(), _RateLimited(), TimeoutError("boom")]
-    )
+    handler, call_fn = _make_sequence_handler([_RateLimited(), _RateLimited(), TimeoutError("boom")])
 
     with pytest.raises(TimeoutError):
         await handler.execute(call_fn)
 
-    assert handler.circuit_breaker.failure_count == 1, (
-        "请求中出现过超时（下游故障），应计入 1 次失败"
-    )
+    assert handler.circuit_breaker.failure_count == 1, "请求中出现过超时（下游故障），应计入 1 次失败"
 
 
 @pytest.mark.asyncio
@@ -868,16 +839,12 @@ async def test_mixed_failures_timeout_then_429_counts_once():
     修复前的 bug：只看最后一次异常（429）→ 漏记。但中间出现过超时，
     说明本次请求确实触及了下游故障，必须计入熔断窗口。
     """
-    handler, call_fn = _make_sequence_handler(
-        [TimeoutError("boom"), _RateLimited(), _RateLimited()]
-    )
+    handler, call_fn = _make_sequence_handler([TimeoutError("boom"), _RateLimited(), _RateLimited()])
 
     with pytest.raises(_RateLimited):
         await handler.execute(call_fn)
 
-    assert handler.circuit_breaker.failure_count == 1, (
-        "请求中出现过超时（下游故障），即使最后一次是 429 也应计入失败"
-    )
+    assert handler.circuit_breaker.failure_count == 1, "请求中出现过超时（下游故障），即使最后一次是 429 也应计入失败"
 
 
 @pytest.mark.asyncio
@@ -886,9 +853,7 @@ async def test_mixed_failures_all_rate_limited_not_counted():
 
     限流是客户端自身限额，不代表下游故障；即使连续 3 次限流也不得熔断。
     """
-    handler, call_fn = _make_sequence_handler(
-        [_RateLimited(), _RateLimited(), _RateLimited()]
-    )
+    handler, call_fn = _make_sequence_handler([_RateLimited(), _RateLimited(), _RateLimited()])
 
     with pytest.raises(_RateLimited):
         await handler.execute(call_fn)
@@ -906,16 +871,12 @@ async def test_mixed_failures_timeout_then_bad_request_counts_once():
     记录，前面出现过的超时（下游故障信号）被丢失。修复后：4xx 本身仍不计入
     （调用方问题），但先前触及过的下游故障应先入熔断窗口。
     """
-    handler, call_fn = _make_sequence_handler(
-        [TimeoutError("boom"), _BadRequest()]
-    )
+    handler, call_fn = _make_sequence_handler([TimeoutError("boom"), _BadRequest()])
 
     with pytest.raises(_BadRequest):
         await handler.execute(call_fn)
 
-    assert handler.circuit_breaker.failure_count == 1, (
-        "请求中出现过超时（下游故障），即使最后一次是 4xx 也应计入失败"
-    )
+    assert handler.circuit_breaker.failure_count == 1, "请求中出现过超时（下游故障），即使最后一次是 4xx 也应计入失败"
 
 
 # =====================================================================
@@ -1015,9 +976,7 @@ async def test_retryable_failure_recorded_when_cancelled_during_backoff():
 
     assert calls[0] == 1, "第一次尝试已抛 RETRYABLE（后续退避被取消）"
     # 本次请求曾触及下游故障（5xx）→ 即使取消也应计入熔断窗口
-    assert cb.failure_count == 1, (
-        f"退避取消时已发生的 RETRYABLE 故障应计入熔断，实际 {cb.failure_count}"
-    )
+    assert cb.failure_count == 1, f"退避取消时已发生的 RETRYABLE 故障应计入熔断，实际 {cb.failure_count}"
     assert cb.state.value == "open", "取消探针应回 OPEN"
 
 
@@ -1112,9 +1071,7 @@ async def test_concurrent_records_window_no_loss():
 
     「无锁安全」不变量 3：并发记账时窗口 total == 调用次数（无丢失/重复）。
     """
-    cb = CircuitBreaker(
-        config=CircuitBreakerConfig(request_volume_threshold=200, all_failed_min=200)
-    )
+    cb = CircuitBreaker(config=CircuitBreakerConfig(request_volume_threshold=200, all_failed_min=200))
 
     async def do_success():
         cb.record_success()

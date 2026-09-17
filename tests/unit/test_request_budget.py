@@ -26,13 +26,21 @@ def _isolate_manager_state():
 
 def test_request_budget_includes_tools_response_format_and_output_reserve():
     """最终请求的 tools/schema 与输出预留均应占用模型窗口。"""
-    guard = RequestBudgetGuard(
-        "main",
-        RequestBudgetConfig(context_window_tokens=80, safety_margin_tokens=4)
-    )
+    guard = RequestBudgetGuard("main", RequestBudgetConfig(context_window_tokens=80, safety_margin_tokens=4))
     request = {
         "messages": [{"role": "user", "content": "短问题"}],
-        "tools": [{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": {"payload": {"type": "string", "description": "x" * 300}}}}}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "f",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"payload": {"type": "string", "description": "x" * 300}},
+                    },
+                },
+            }
+        ],
         "response_format": {"type": "json_object"},
         "max_tokens": 16,
     }
@@ -46,10 +54,7 @@ def test_request_budget_includes_tools_response_format_and_output_reserve():
 
 def test_request_budget_allows_request_within_effective_input_budget():
     """预算内请求应返回可观测的估算结果。"""
-    guard = RequestBudgetGuard(
-        "fast",
-        RequestBudgetConfig(context_window_tokens=1_000, safety_margin_tokens=20)
-    )
+    guard = RequestBudgetGuard("fast", RequestBudgetConfig(context_window_tokens=1_000, safety_margin_tokens=20))
 
     result = guard.validate(
         "deepseek-v4-pro",
@@ -64,9 +69,7 @@ def test_request_budget_manager_caches_guard_by_model_key():
     """窗口配置按 model_key 解析并缓存，LLMService 不传递领域侧预算参数。"""
     previous = dict(RequestBudgetManager._configs)
     try:
-        RequestBudgetManager.register_config(
-            {"fast": RequestBudgetConfig(512, 16)}
-        )
+        RequestBudgetManager.register_config({"fast": RequestBudgetConfig(512, 16)})
         fast = RequestBudgetManager.get("fast")
         assert fast is RequestBudgetManager.get("fast")
         assert fast is not RequestBudgetManager.get("main")
@@ -115,10 +118,13 @@ def test_sampling_parameters_do_not_consume_context():
 
 def test_special_token_spelling_is_plain_user_text():
     guard = RequestBudgetGuard("main", RequestBudgetConfig(1000, 4))
-    assert guard.validate(
-        "gpt-4",
-        {"messages": [{"role": "user", "content": "<|endoftext|>"}], "max_tokens": 10},
-    ).input_tokens > 0
+    assert (
+        guard.validate(
+            "gpt-4",
+            {"messages": [{"role": "user", "content": "<|endoftext|>"}], "max_tokens": 10},
+        ).input_tokens
+        > 0
+    )
 
 
 @pytest.mark.parametrize("output", [None, -1, 0, True, "20", 1.5])

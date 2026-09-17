@@ -75,23 +75,19 @@ class AgentContext:
     temperature: float = 0.2
     max_tokens: int = 4096
     max_iterations: int = 10
-    max_execution_time: float | None = (
-        None  # 整个 ReAct 循环总时长上限（秒）；None=不设限
-    )
+    max_execution_time: float | None = None  # 整个 ReAct 循环总时长上限（秒）；None=不设限
     # 说明：字段默认 None（策略层向后兼容）与配置默认 agent_timeout=300 不一致是刻意的——
     # 生产值由装配根注入，仅测试 / 脚本直连时不设限。
-    max_context_rounds: int | None = (
-        None  # 上下文预算：保留最近 N 轮 assistant/tool 配对；None=不裁剪
-    )
+    max_context_rounds: int | None = None  # 上下文预算：保留最近 N 轮 assistant/tool 配对；None=不裁剪
     max_context_tokens: int | None = None  # 上下文预算：消息总 token 上限；None=不裁剪
     max_empty_retries: int = 2  # 连续空输出重试上限（0=首次空输出即终止）
-    max_llm_fail_retries: int = 2  # LLM 失败重试上限：连续失败超过上限硬终止（0=首次失败即终止；防 handler CONTINUE 无限重试）
+    max_llm_fail_retries: int = (
+        2  # LLM 失败重试上限：连续失败超过上限硬终止（0=首次失败即终止；防 handler CONTINUE 无限重试）
+    )
     max_tool_protocol_retries: int = 2  # 工具调用协议修正上限（0=首次协议异常即终止）
     max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）上限
     max_refine_rounds: int = 2  # 修复尝试上限：Reflection 修正（初稿 1 + 修正上限 max_refine_rounds-1）与 Planner replan（步骤失败重规划预算）共用
-    stream_mode: bool = (
-        True  # LLM 通道：True=流式 async_generate（默认，chat SSE 订阅者）；
-    )
+    stream_mode: bool = True  # LLM 通道：True=流式 async_generate（默认，chat SSE 订阅者）；
     # False=非流式 generate()（后台子 Agent 无人逐 token 订阅，Phase C 编排按需置 False）。
     # 注：勿与 settings.agent_streaming 混淆——该字段仅是 agent_config 元数据出口，
     # 无行为接线；本字段是 ReAct 策略实际 LLM 通道开关。
@@ -116,15 +112,11 @@ class AgentResult:
     success: bool
     content: str  # 最终回答内容
     reasoning: str = ""  # 完整推理过程（累计）
-    structured: dict | None = (
-        None  # 结构化最终答案（final_answer 工具产出，output_schema 启用时）
-    )
+    structured: dict | None = None  # 结构化最终答案（final_answer 工具产出，output_schema 启用时）
     tool_calls: list[dict[str, Any]] = field(default_factory=list)  # 工具调用记录
     iterations: int = 0  # 实际执行轮数
     total_tokens: int = 0  # Token 总数（累计）
-    usage: dict | None = (
-        None  # Token 明细（累计，含 prompt_tokens / completion_tokens / total_tokens）
-    )
+    usage: dict | None = None  # Token 明细（累计，含 prompt_tokens / completion_tokens / total_tokens）
     error: str | None = None  # 错误信息
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -193,12 +185,9 @@ class BaseAgent(ABC):
         if not isinstance(context.run_stop, asyncio.Event):
             raise TypeError("AgentContext.run_stop 必须是 asyncio.Event")
         if not isinstance(context.parent_cancel_events, tuple) or any(
-            not isinstance(event, asyncio.Event)
-            for event in context.parent_cancel_events
+            not isinstance(event, asyncio.Event) for event in context.parent_cancel_events
         ):
-            raise TypeError(
-                "AgentContext.parent_cancel_events 必须是 asyncio.Event 元组"
-            )
+            raise TypeError("AgentContext.parent_cancel_events 必须是 asyncio.Event 元组")
         if context.workflow_id is not None and (
             not isinstance(context.workflow_id, str) or not context.workflow_id.strip()
         ):
@@ -210,17 +199,11 @@ class BaseAgent(ABC):
 
         try:
             yield build_info_event("Agent 开始处理")
-            async with aclosing(
-                self._strategy_cycle(user_input, list(messages))
-            ) as cycle:
+            async with aclosing(self._strategy_cycle(user_input, list(messages))) as cycle:
                 async for event in cycle:
                     yield event
 
-            self._state = (
-                AgentState.COMPLETED
-                if self._result and self._result.success
-                else AgentState.FAILED
-            )
+            self._state = AgentState.COMPLETED if self._result and self._result.success else AgentState.FAILED
 
         except asyncio.CancelledError:
             # 外部取消 → 错误处理分发（默认 STOP = 现有取消态；handler 可 RAISE 上抛）

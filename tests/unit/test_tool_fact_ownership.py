@@ -45,11 +45,7 @@ class _ResultTool(BaseTool):
 )
 async def test_returned_business_code_does_not_rewrite_execution_stage(code):
     service = ToolService()
-    tool = _ResultTool(
-        ToolResult(
-            False, "executed", error_code=code, effect_state=ToolEffectState.PARTIAL
-        )
-    )
+    tool = _ResultTool(ToolResult(False, "executed", error_code=code, effect_state=ToolEffectState.PARTIAL))
     service.register(tool)
     context = execution_kwargs()
     await service.execute(tool.name, {}, **context)
@@ -101,10 +97,7 @@ async def test_unresolved_timeout_stays_owned_even_after_delivery():
     service.register(tool)
     await service.execute(tool.name, {}, **execution_kwargs())
     assert len(service._executor._latest_facts) == 2
-    assert all(
-        f.cleanup_state == ToolCleanupState.PENDING
-        for f in service._executor._latest_facts.values()
-    )
+    assert all(f.cleanup_state == ToolCleanupState.PENDING for f in service._executor._latest_facts.values())
 
 
 async def test_delivery_failure_retains_completed_fact_and_stops_run():
@@ -123,10 +116,7 @@ async def test_delivery_failure_retains_completed_fact_and_stops_run():
         await service.execute(tool.name, {}, **context)
     assert context["call"].run_stop.is_set()
     assert tool.calls == 1
-    assert any(
-        f.result and f.result.content == "valuable"
-        for f in service._executor._latest_facts.values()
-    )
+    assert any(f.result and f.result.content == "valuable" for f in service._executor._latest_facts.values())
 
 
 async def test_collector_acknowledges_duplicate_and_older_deliveries():
@@ -153,9 +143,7 @@ async def test_successful_retry_does_not_release_unresolved_previous_attempt():
     service = ToolService()
     tool = _RetryTool()
     service.register(tool)
-    result = await service.execute(
-        tool.name, {}, max_retries=2, retry_delay=0, **execution_kwargs()
-    )
+    result = await service.execute(tool.name, {}, max_retries=2, retry_delay=0, **execution_kwargs())
     assert result.success
     assert tool.calls == 2
     (retained,) = service._executor._latest_facts.values()

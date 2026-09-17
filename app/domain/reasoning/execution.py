@@ -27,22 +27,14 @@ class ReasoningRunScope:
             raise ValueError("ReasoningRunScope.run_id 必须是非空字符串")
         if not isinstance(self.run_stop, asyncio.Event):
             raise TypeError("ReasoningRunScope.run_stop 必须是 asyncio.Event")
-        if self.workflow_id is not None and (
-            not isinstance(self.workflow_id, str) or not self.workflow_id.strip()
-        ):
+        if self.workflow_id is not None and (not isinstance(self.workflow_id, str) or not self.workflow_id.strip()):
             raise ValueError("ReasoningRunScope.workflow_id 必须是非空字符串或 None")
         if not isinstance(self.parent_cancel_events, tuple) or any(
             not isinstance(event, asyncio.Event) for event in self.parent_cancel_events
         ):
-            raise TypeError(
-                "ReasoningRunScope.parent_cancel_events 必须是 asyncio.Event 元组"
-            )
-        if self.cancel_event is not None and not isinstance(
-            self.cancel_event, asyncio.Event
-        ):
-            raise TypeError(
-                "ReasoningRunScope.cancel_event 必须是 asyncio.Event 或 None"
-            )
+            raise TypeError("ReasoningRunScope.parent_cancel_events 必须是 asyncio.Event 元组")
+        if self.cancel_event is not None and not isinstance(self.cancel_event, asyncio.Event):
+            raise TypeError("ReasoningRunScope.cancel_event 必须是 asyncio.Event 或 None")
 
 
 @dataclass(frozen=True, slots=True)

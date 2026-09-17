@@ -178,9 +178,7 @@ class ReflectionOutcome:
     critique: dict | None = None  # 自查结果 {ok, issues[]}；None=自查失败
     refine_rounds: int = 0  # 实际修正轮数
     degraded: bool = False  # True=经降级路径（自查/修正失败/react 无 structured）
-    tool_calls: list[dict[str, Any]] = field(
-        default_factory=list
-    )  # 证据链（来自 react outcome）
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)  # 证据链（来自 react outcome）
     iterations: int = 0  # react 循环轮数（证据链收集轮）
     total_tokens: int = 0  # 累计 token用量（包含react阶段 + critique）
     usage: dict | None = None
@@ -211,9 +209,7 @@ class ReflectionStrategy:
         critique_model_key: str = "fast",
     ) -> None:
         # 收集阶段复用 ReActStrategy（护栏透传内部 _react）
-        self._react = ReActStrategy(
-            llm, tools, context_budget, error_handlers, cost_limiter
-        )
+        self._react = ReActStrategy(llm, tools, context_budget, error_handlers, cost_limiter)
         self._llm = llm
         self._context_budget = context_budget
         self._error_handlers = error_handlers or ErrorHandlerRegistry()
@@ -270,11 +266,7 @@ class ReflectionStrategy:
         start_time = time.monotonic()
         # E：结构化调用（自查/修正）的绝对截止——与循环顶部护栏同一时间预算（monotonic
         # 绝对时刻，不逐级重计），随 generate_structured 下沉到降级链每笔子调用前。
-        deadline = (
-            start_time + limits.max_execution_time
-            if limits.max_execution_time is not None
-            else None
-        )
+        deadline = start_time + limits.max_execution_time if limits.max_execution_time is not None else None
 
         # ── 阶段一：收集 + 初稿（复用 ReAct，工具证据链 + final_answer 结构化）──
         child = self._react.execute(
@@ -311,9 +303,7 @@ class ReflectionStrategy:
 
         # react 失败 → 降级（error 透传，证据链保留）
         if react_outcome.error:
-            for e in self._finalize(
-                react_outcome, error=react_outcome.error, success=False, degraded=True
-            ):
+            for e in self._finalize(react_outcome, error=react_outcome.error, success=False, degraded=True):
                 yield e
             return
 
@@ -348,9 +338,7 @@ class ReflectionStrategy:
                 running_usage=merge_usage(react_outcome.usage, self._structured_usage),
             )
             if guard is not None:
-                for e in self._finalize_guard(
-                    guard, react_outcome, draft, current, refine_round
-                ):
+                for e in self._finalize_guard(guard, react_outcome, draft, current, refine_round):
                     yield e
                 return
 
@@ -379,15 +367,11 @@ class ReflectionStrategy:
                     cancel_event=run.cancel_event,
                     deadline=deadline,
                     cost_limiter=None,
-                    running_usage=merge_usage(
-                        react_outcome.usage, self._structured_usage
-                    ),
+                    running_usage=merge_usage(react_outcome.usage, self._structured_usage),
                     context_error=crit_context_error,
                 )
                 if guard is not None:
-                    for e in self._finalize_guard(
-                        guard, react_outcome, draft, current, refine_round
-                    ):
+                    for e in self._finalize_guard(guard, react_outcome, draft, current, refine_round):
                         yield e
                     return
                 # 自查失败 → 降级采用当前稿（best-effort，不抛错）
@@ -445,9 +429,7 @@ class ReflectionStrategy:
             # 有 issues 且未达上限 → 修正（issues 回喂 + 完整上下文重写，ground-truth 兜底）
             issues = critique.get("issues") or []
             refine_round += 1
-            yield build_info_event(
-                f"自查发现 {len(issues)} 个问题，修正第 {refine_round} 轮"
-            )
+            yield build_info_event(f"自查发现 {len(issues)} 个问题，修正第 {refine_round} 轮")
             refined, ref_action, ref_usage, ref_context_error = await self._refine(
                 evidence,
                 current,
@@ -623,11 +605,7 @@ class ReflectionStrategy:
         """
         usage: dict = {}
         try:
-            count_tokens = (
-                self._context_budget.count_tokens
-                if self._context_budget is not None
-                else None
-            )
+            count_tokens = self._context_budget.count_tokens if self._context_budget is not None else None
             prompt = PromptManager.build_reflection_critique_prompt(
                 evidence,
                 draft,
@@ -702,11 +680,7 @@ class ReflectionStrategy:
         """
         usage: dict = {}
         try:
-            count_tokens = (
-                self._context_budget.count_tokens
-                if self._context_budget is not None
-                else None
-            )
+            count_tokens = self._context_budget.count_tokens if self._context_budget is not None else None
             prompt = PromptManager.build_reflection_refine_prompt(
                 evidence,
                 draft,
@@ -785,8 +759,7 @@ class ReflectionStrategy:
             reasoning=react_outcome.reasoning,
             tool_calls=react_outcome.tool_calls,
             iterations=react_outcome.iterations,
-            total_tokens=react_outcome.total_tokens
-            + self._structured_usage.get("total_tokens", 0),
+            total_tokens=react_outcome.total_tokens + self._structured_usage.get("total_tokens", 0),
             usage=merge_usage(react_outcome.usage, self._structured_usage) or None,
             structured=structured,
             draft=draft,
@@ -805,8 +778,7 @@ class ReflectionStrategy:
         events.append(
             build_done_event(
                 iterations=react_outcome.iterations,
-                total_tokens=react_outcome.total_tokens
-                + self._structured_usage.get("total_tokens", 0),
+                total_tokens=react_outcome.total_tokens + self._structured_usage.get("total_tokens", 0),
             )
         )
         return events

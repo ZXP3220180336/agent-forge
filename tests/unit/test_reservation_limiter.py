@@ -78,9 +78,7 @@ async def test_bucket_wait_does_not_block_others():
     b = TokenBucket(capacity=10, refill_rate=10)
     await b.acquire(10)  # 耗尽
     # 并发三个 acquire(1)：锁外 sleep 下各自等待补充后完成（sleep 持锁则只能串行排队）
-    waits = await asyncio.wait_for(
-        asyncio.gather(*(b.acquire(1) for _ in range(3))), timeout=3.0
-    )
+    waits = await asyncio.wait_for(asyncio.gather(*(b.acquire(1) for _ in range(3))), timeout=3.0)
     assert len(waits) == 3, "并发 acquire 均应完成（等待不互锁）"
 
 
@@ -141,7 +139,7 @@ async def test_reservation_settle_refunds_difference():
     await rpm.acquire(1.0)
     await tpm.acquire(10.0)
     res = Reservation()
-    res.add(rpm, 1.0)   # 首个条目 = 按次桶（RPM，settle 不退）
+    res.add(rpm, 1.0)  # 首个条目 = 按次桶（RPM，settle 不退）
     res.add(tpm, 10.0)  # 按量桶（TPM）
 
     await res.settle(4)
@@ -180,7 +178,7 @@ async def test_reservation_idempotent():
     res = await _reserve_single(b, 6)
     await res.settle(2)  # 退 4
     await res.settle(2)  # no-op
-    await res.cancel()   # no-op
+    await res.cancel()  # no-op
     # 桶内：初始 10 - 6 + 4 = 8
     await b.acquire(8)
 
@@ -243,9 +241,7 @@ async def test_reservation_limiter_reserve_oversized_clamps():
     limiter = ReservationLimiter(rpm=1000, tpm=100)
     res = await asyncio.wait_for(limiter.reserve(estimated_tokens=200), timeout=1)
     # 预留条目应记录截断后的容量（100），而非 200——settle 退差基础一致
-    assert res._entries[-1][1] == 100, (
-        f"超容量预留应截断到桶容量 100，实际 {res._entries[-1][1]}"
-    )
+    assert res._entries[-1][1] == 100, f"超容量预留应截断到桶容量 100，实际 {res._entries[-1][1]}"
     await res.cancel()
 
 
@@ -271,9 +267,7 @@ async def test_reservation_limiter_reserve_oversized_settle():
 @pytest.mark.asyncio
 async def test_manager_builds_limiter_from_config():
     """manager 按 configure 注入的 RPM/TPM 建桶。"""
-    ReservationLimiterManager.register_config(
-        {"main": ReservationLimiterConfig(rpm=5, tpm=1_000_000)}
-    )
+    ReservationLimiterManager.register_config({"main": ReservationLimiterConfig(rpm=5, tpm=1_000_000)})
     limiter = ReservationLimiterManager.get("main")
     # RPM 桶只有 5 个 token，第 6 次 reserve 需等待
     for _ in range(5):
@@ -390,9 +384,7 @@ async def test_adaptive_reserve_cold_start_falls_back_to_static():
     """冷启动：无样本时预留 = prompt + max_tokens（静态上限）。"""
     limiter = ReservationLimiter(rpm=1000, tpm=100_000, min_samples=3)
     res = await limiter.reserve_adaptive(prompt_tokens=100, max_tokens=4096)
-    assert res._entries[-1][1] == 100 + 4096, (
-        f"冷启动应回退静态上限，实际 {res._entries[-1][1]}"
-    )
+    assert res._entries[-1][1] == 100 + 4096, f"冷启动应回退静态上限，实际 {res._entries[-1][1]}"
     await res.cancel()
 
 
@@ -624,7 +616,7 @@ async def test_concurrent_settle_cancel_mutex_no_double_refund():
     rpm = _CancelOnRefundBucket()
     tpm = _CancelOnRefundBucket()
     res = Reservation()
-    res.add(rpm, 1.0)   # 首个条目 = 按次桶（RPM，settle 不退）
+    res.add(rpm, 1.0)  # 首个条目 = 按次桶（RPM，settle 不退）
     res.add(tpm, 10.0)  # 按量桶（TPM）
 
     await asyncio.gather(res.settle(5), res.cancel())

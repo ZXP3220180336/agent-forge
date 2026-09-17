@@ -28,10 +28,7 @@ def _is_path_allowed(file_path: str, allowed_dirs: tuple[str, ...]) -> bool:
     if not allowed_dirs:
         return False
     candidate = os.path.normcase(os.path.abspath(file_path))
-    return any(
-        candidate == base or candidate.startswith(base + os.sep)
-        for base in allowed_dirs
-    )
+    return any(candidate == base or candidate.startswith(base + os.sep) for base in allowed_dirs)
 
 
 class ReadFileTool(BaseTool):
@@ -123,9 +120,7 @@ class ReadFileTool(BaseTool):
             # 正常路径返回完整内容；大文件分段读取保留首尾，截断标记由 ResultProcessor 统一生成
             return ToolResult(success=True, content=content)
         except FileNotFoundError:
-            return ToolResult(
-                success=False, content="", error=f"文件 '{file_path}' 未找到"
-            )
+            return ToolResult(success=False, content="", error=f"文件 '{file_path}' 未找到")
         except Exception as e:  # noqa: BLE001
             return ToolResult(success=False, content="", error=f"读取文件失败: {e!s}")
 
@@ -136,9 +131,7 @@ class WriteFileTool(BaseTool):
     _allowed_dirs: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
-    def register_config(
-        cls, *, allowed_dirs: tuple[str, ...] = (), **kwargs: Any
-    ) -> None:
+    def register_config(cls, *, allowed_dirs: tuple[str, ...] = (), **kwargs: Any) -> None:
         """注入允许目录配置（由装配根调用，避免直接依赖 settings）。"""
         cls._allowed_dirs = _normalize_allowed_dirs(allowed_dirs)
 

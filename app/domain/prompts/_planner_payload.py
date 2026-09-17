@@ -29,10 +29,7 @@ def _truncate(text: str, limit: int | None) -> str:
 
 
 def _omission_marker(section: str, *, characters: int) -> str:
-    return (
-        f'<omitted section="{section}" characters="{max(0, characters)}" '
-        f'reason="{_OMISSION_REASON}"/>'
-    )
+    return f'<omitted section="{section}" characters="{max(0, characters)}" reason="{_OMISSION_REASON}"/>'
 
 
 def _tool_parts(line: str) -> tuple[str, str]:
@@ -62,9 +59,7 @@ def _tool_catalog_view(tool_descriptions: str, description_limit: int | None) ->
     return rendered
 
 
-def _tool_reference(
-    call: dict[str, Any], argument_limit: int | None
-) -> tuple[str, int]:
+def _tool_reference(call: dict[str, Any], argument_limit: int | None) -> tuple[str, int]:
     """把 ReAct 工具调用投影成可追溯的工具名与查询参数。"""
     function = call.get("function") or {}
     name = str(function.get("name") or call.get("tool") or "")
@@ -221,11 +216,7 @@ def serialize_replan_sections(
             _failed_step_view(failed_step, error_limit),
             _truncate(error, error_limit),
         )
-        if (
-            available_tokens is None
-            or count_tokens is None
-            or _fits(values, available_tokens, count_tokens)
-        ):
+        if available_tokens is None or count_tokens is None or _fits(values, available_tokens, count_tokens):
             return values
     return values
 
@@ -255,10 +246,6 @@ def serialize_summarize_sections(
             error_limit=error_limit,
         )
         values = (goal, step_results)
-        if (
-            available_tokens is None
-            or count_tokens is None
-            or _fits(values, available_tokens, count_tokens)
-        ):
+        if available_tokens is None or count_tokens is None or _fits(values, available_tokens, count_tokens):
             return values
     return values

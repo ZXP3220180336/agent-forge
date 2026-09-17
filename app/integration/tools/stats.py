@@ -60,9 +60,7 @@ class ToolStatsCollector:
         else:
             stats.failed_count += 1
 
-    def get(
-        self, name: str | None = None
-    ) -> dict[str, ToolStats] | ToolStats | None:
+    def get(self, name: str | None = None) -> dict[str, ToolStats] | ToolStats | None:
         """单工具统计（name 给定）或全量字典（name 为 None）。"""
         if name is not None:
             return self._stats.get(name)
@@ -78,9 +76,7 @@ class ToolStatsCollector:
             "total_calls": total_calls,
             "total_success": total_success,
             "total_failed": total_failed,
-            "overall_success_rate": total_success / total_calls
-            if total_calls > 0
-            else 0.0,
+            "overall_success_rate": total_success / total_calls if total_calls > 0 else 0.0,
             "tools": {
                 name: {
                     "call_count": s.call_count,

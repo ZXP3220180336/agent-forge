@@ -21,15 +21,16 @@ def normalize_steps(
         dependencies = {
             dependency
             for dependency in step.get("depends_on", [])
-            if dependency in completed
-            or (dependency in seen and dependency >= start_no)
+            if dependency in completed or (dependency in seen and dependency >= start_no)
         }
         seen.add(step_id)
-        pending.append({
-            "id": step_id,
-            "description": str(step.get("description", "")).strip(),
-            "deps": dependencies,
-        })
+        pending.append(
+            {
+                "id": step_id,
+                "description": str(step.get("description", "")).strip(),
+                "deps": dependencies,
+            }
+        )
     return [step for step in pending if step["description"]]
 
 
@@ -37,10 +38,7 @@ def build_plan_payload(goal: str, steps: list[dict]) -> dict:
     """构造对外计划快照，只暴露步骤 id 与描述。"""
     return {
         "goal": goal,
-        "steps": [
-            {"id": step["id"], "description": step["description"]}
-            for step in steps
-        ],
+        "steps": [{"id": step["id"], "description": step["description"]} for step in steps],
     }
 
 

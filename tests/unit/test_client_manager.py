@@ -55,9 +55,7 @@ def test_register_no_loop_tracks_old_client_in_pending():
     ClientManager.register_config("main", api_key="k", base_url="http://x", model="m")
 
     assert "main" not in ClientManager._instances, "旧实例应从缓存移除"
-    assert old in ClientManager._pending_closes, (
-        "无 loop 时旧 client 应进入待关闭列表（不静默忽略）"
-    )
+    assert old in ClientManager._pending_closes, "无 loop 时旧 client 应进入待关闭列表（不静默忽略）"
     assert old.closed == 0, "尚未调用 close（等待 close_all 统一关闭）"
 
 
@@ -81,9 +79,7 @@ async def test_register_with_loop_closes_old_async():
     ClientManager.register_config("main", api_key="k", base_url="http://x", model="m")
 
     assert old not in ClientManager._instances, "旧实例应从缓存移除"
-    assert old not in ClientManager._pending_closes, (
-        "有 loop 时走 ensure_future，不进入 pending"
-    )
+    assert old not in ClientManager._pending_closes, "有 loop 时走 ensure_future，不进入 pending"
     # 让 ensure_future 的后台关闭任务跑完
     await asyncio.sleep(0.05)
     assert old.closed == 1, "有 loop 时旧 client 应被后台关闭"
@@ -164,9 +160,7 @@ class _ConcurrentCloseClient(_FakeClient):
 
     async def close(self) -> None:
         # 在 close_all 迭代 _instances 的 await 间隙修改字典 → 迭代器失效
-        ClientManager.register_config(
-            self._key, api_key="k2", base_url="http://x", model="m2"
-        )
+        ClientManager.register_config(self._key, api_key="k2", base_url="http://x", model="m2")
         await super().close()
 
 
@@ -277,8 +271,14 @@ def test_get_client_passes_only_whitelisted_kwargs(monkeypatch):
 
     monkeypatch.setattr("app.integration.llm.client.AsyncOpenAI", _RecordingClient)
     ClientManager.register_config(
-        "custom", api_key="k", base_url="http://x", model="m",
-        timeout=30, max_retries=1, organization="org-1", bogus_extra="ignored",
+        "custom",
+        api_key="k",
+        base_url="http://x",
+        model="m",
+        timeout=30,
+        max_retries=1,
+        organization="org-1",
+        bogus_extra="ignored",
     )
     ClientManager.get_client("custom")
     # 白名单字段透传
@@ -306,9 +306,7 @@ def test_register_config_timeout_dict_flows_to_client(monkeypatch):
 
     monkeypatch.setattr("app.integration.llm.client.AsyncOpenAI", _RecordingClient)
     timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
-    ClientManager.register_config(
-        "main", api_key="k", base_url="http://x", model="m", timeout=timeout
-    )
+    ClientManager.register_config("main", api_key="k", base_url="http://x", model="m", timeout=timeout)
     ClientManager.get_client("main")
     got = captured["timeout"]
     assert isinstance(got, httpx.Timeout)
@@ -334,9 +332,7 @@ def test_register_config_pool_limits_builds_http_client(monkeypatch):
         return _FakeHTTPClient()
 
     monkeypatch.setattr("app.integration.llm.client.AsyncOpenAI", _RecordingClient)
-    monkeypatch.setattr(
-        "app.integration.llm.client._build_http_client", _fake_build
-    )
+    monkeypatch.setattr("app.integration.llm.client._build_http_client", _fake_build)
     ClientManager.register_config(
         "main",
         api_key="k",

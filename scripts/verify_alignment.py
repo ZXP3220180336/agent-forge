@@ -139,7 +139,7 @@ def main() -> int:
     if _reconfigure is not None:
         try:
             _reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError, OSError):
+        except AttributeError, ValueError, OSError:
             pass
     errors = check_repo() + check_markdown_links()
     if errors:

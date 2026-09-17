@@ -37,9 +37,7 @@ class CodeExecTool(BaseTool):
     _max_output_length: ClassVar[int] = 100_000
 
     @classmethod
-    def register_config(
-        cls, *, max_output_length: int = 100_000, **kwargs: Any
-    ) -> None:
+    def register_config(cls, *, max_output_length: int = 100_000, **kwargs: Any) -> None:
         """注入输出截断配置（由装配根调用，避免直接依赖 settings）。"""
         cls._max_output_length = max_output_length
 

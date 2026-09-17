@@ -38,9 +38,7 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
     第二参按 `Exception` 标注（`Starlette.add_exception_handler` 签名要求宽类型）；
     注册时已限定 AppError，运行时恒为 AppError，此处断言收紧。
     """
-    assert isinstance(exc, AppError), (
-        f"handler 仅处理 AppError，收到 {type(exc).__name__}"
-    )
+    assert isinstance(exc, AppError), f"handler 仅处理 AppError，收到 {type(exc).__name__}"
     return JSONResponse(
         status_code=_status_for(exc.code),
         content={

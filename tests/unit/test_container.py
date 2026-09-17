@@ -37,10 +37,7 @@ _GLOBAL_STATE = {
 
 @pytest.fixture(autouse=True)
 def _restore_global_registries():
-    saved = {
-        cls: {attr: getattr(cls, attr) for attr in attrs}
-        for cls, attrs in _GLOBAL_STATE.items()
-    }
+    saved = {cls: {attr: getattr(cls, attr) for attr in attrs} for cls, attrs in _GLOBAL_STATE.items()}
     yield
     for cls, attrs in _GLOBAL_STATE.items():
         for attr in attrs:
@@ -155,9 +152,7 @@ async def test_initialize_happy_path(monkeypatch):
     # 请求预算配置：按 model_key 注入 settings 窗口能力
     main_budget = RequestBudgetManager._configs["main"]
     assert main_budget.context_window_tokens == settings.llm_main_context_window_tokens
-    assert (
-        main_budget.safety_margin_tokens == settings.llm_context_safety_margin_tokens
-    )
+    assert main_budget.safety_margin_tokens == settings.llm_context_safety_margin_tokens
     assert RequestBudgetManager.get("reasoning") is not None
     assert c._errors == []
 

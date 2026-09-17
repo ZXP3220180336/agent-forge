@@ -26,9 +26,7 @@ _AbortReason = Literal["cancel", "deadline"]
 # =====================================================================
 
 
-def _raise_if_aborted(
-    cancel_event: asyncio.Event | None, deadline: float | None
-) -> None:
+def _raise_if_aborted(cancel_event: asyncio.Event | None, deadline: float | None) -> None:
     """真实请求前快检：已取消 / 已到期 → 抛类型化终止信号（不发起后续请求）。"""
     if cancel_event is not None and cancel_event.is_set():
         raise _StreamCancel()
@@ -36,9 +34,7 @@ def _raise_if_aborted(
         raise _DeadlineExceeded()
 
 
-async def _abort_trigger(
-    cancel_event: asyncio.Event | None, deadline: float | None
-) -> _AbortReason:
+async def _abort_trigger(cancel_event: asyncio.Event | None, deadline: float | None) -> _AbortReason:
     """等待 cancel_event 置位或 deadline（monotonic 绝对）到期，返回 'cancel'/'deadline'。
 
     cancel 优先于 deadline（二者同刻以取消为准）；两者皆无信号则永不返回（挂起至被取消）。
@@ -48,15 +44,11 @@ async def _abort_trigger(
     if cancel_event is not None:
         tasks["cancel"] = asyncio.ensure_future(cancel_event.wait())
     if deadline is not None:
-        tasks["deadline"] = asyncio.ensure_future(
-            asyncio.sleep(max(0.0, deadline - time.monotonic()))
-        )
+        tasks["deadline"] = asyncio.ensure_future(asyncio.sleep(max(0.0, deadline - time.monotonic())))
     if not tasks:
         await asyncio.Event().wait()  # pragma: no cover —— 无信号调用方不应走此分支
     try:
-        done, _ = await asyncio.wait(
-            tasks.values(), return_when=asyncio.FIRST_COMPLETED
-        )
+        done, _ = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
         if "cancel" in tasks and tasks["cancel"] in done:
             return "cancel"
         return "deadline"
@@ -86,9 +78,7 @@ async def wait_with_execution_control(
     sleep_task = asyncio.ensure_future(asyncio.sleep(delay))
     abort_task = asyncio.ensure_future(_abort_trigger(cancel_event, deadline))
     try:
-        done, _ = await asyncio.wait(
-            {sleep_task, abort_task}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, _ = await asyncio.wait({sleep_task, abort_task}, return_when=asyncio.FIRST_COMPLETED)
         if abort_task in done:
             reason = abort_task.result()
             if reason == "cancel":
@@ -137,9 +127,7 @@ async def await_with_execution_control[T](
     task = asyncio.ensure_future(factory())
     abort_task = asyncio.ensure_future(_abort_trigger(cancel_event, deadline))
     try:
-        done, _ = await asyncio.wait(
-            {task, abort_task}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, _ = await asyncio.wait({task, abort_task}, return_when=asyncio.FIRST_COMPLETED)
         if task in done:  # 业务任务和终止信号同时完成，优先返回业务结果！
             return task.result()
         reason = abort_task.result()

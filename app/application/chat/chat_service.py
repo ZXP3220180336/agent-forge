@@ -48,8 +48,7 @@ class ChatRun:
         try:
             if self.truncated_history:
                 yield build_info_event(
-                    "上下文超限，已裁剪最早 "
-                    f"{self.truncated_history} 条历史消息以适配模型上下文窗口"
+                    f"上下文超限，已裁剪最早 {self.truncated_history} 条历史消息以适配模型上下文窗口"
                 )
 
             stream = self._service._task_service.run_agent(
@@ -160,19 +159,13 @@ class ChatService:
                 run_stop=asyncio.Event(),  # 随运行身份向更深的工具执行链传递，用于阻止该运行继续启动新的工具副作用。
                 temperature=self._agent_params["temperature"],
                 max_tokens=self._agent_params["max_tokens"],
-                max_iterations=(
-                    max_iterations
-                    if max_iterations is not None
-                    else self._agent_params["max_iterations"]
-                ),
+                max_iterations=(max_iterations if max_iterations is not None else self._agent_params["max_iterations"]),
                 max_execution_time=self._agent_params["max_execution_time"],
                 max_context_rounds=self._agent_params["max_context_rounds"],
                 max_context_tokens=self._agent_params["max_context_tokens"],
                 max_empty_retries=self._agent_params["max_empty_retries"],
                 max_llm_fail_retries=self._agent_params["max_llm_fail_retries"],
-                max_tool_protocol_retries=self._agent_params[
-                    "max_tool_protocol_retries"
-                ],
+                max_tool_protocol_retries=self._agent_params["max_tool_protocol_retries"],
                 max_same_action_turns=self._agent_params["max_same_action_turns"],
             )
 

@@ -52,9 +52,7 @@ async def test_await_swallow_cancel_returns_value_on_cancel_event():
             finished.set()
 
     before = set(asyncio.all_tasks())
-    task = asyncio.ensure_future(
-        await_with_execution_control(factory, cancel_event=cancel_event)
-    )
+    task = asyncio.ensure_future(await_with_execution_control(factory, cancel_event=cancel_event))
     await asyncio.wait_for(started.wait(), timeout=1)
     cancel_event.set()
     result = await asyncio.wait_for(task, timeout=1)
@@ -80,9 +78,7 @@ async def test_await_swallow_cancel_returns_value_on_deadline():
 
     before = set(asyncio.all_tasks())
     # deadline 落在 factory 启动之后（先握手再等到期，避免只测入口快检）
-    task = asyncio.ensure_future(
-        await_with_execution_control(factory, deadline=time.monotonic() + 0.2)
-    )
+    task = asyncio.ensure_future(await_with_execution_control(factory, deadline=time.monotonic() + 0.2))
     await asyncio.wait_for(started.wait(), timeout=1)
     result = await asyncio.wait_for(task, timeout=2)
     assert result is SENTINEL
@@ -105,9 +101,7 @@ async def test_await_cooperating_cancel_reraises_cancel_signal():
             cleaned.set()
             raise  # 配合：重抛取消
 
-    task = asyncio.ensure_future(
-        await_with_execution_control(factory, cancel_event=cancel_event)
-    )
+    task = asyncio.ensure_future(await_with_execution_control(factory, cancel_event=cancel_event))
     await asyncio.wait_for(started.wait(), timeout=1)
     cancel_event.set()
     with pytest.raises(_StreamCancel):
@@ -126,9 +120,7 @@ async def test_await_cooperating_cancel_reraises_deadline_signal():
         except asyncio.CancelledError:
             raise  # 配合：重抛取消
 
-    task = asyncio.ensure_future(
-        await_with_execution_control(factory, deadline=time.monotonic() + 0.2)
-    )
+    task = asyncio.ensure_future(await_with_execution_control(factory, deadline=time.monotonic() + 0.2))
     await asyncio.wait_for(started.wait(), timeout=1)
     with pytest.raises(_DeadlineExceeded):
         await asyncio.wait_for(task, timeout=2)
@@ -145,9 +137,7 @@ async def test_await_cleanup_exception_after_cancel_still_abort_wins():
         except asyncio.CancelledError:
             raise RuntimeError("cleanup boom")  # 清理期真实异常
 
-    task = asyncio.ensure_future(
-        await_with_execution_control(factory, deadline=time.monotonic() + 0.2)
-    )
+    task = asyncio.ensure_future(await_with_execution_control(factory, deadline=time.monotonic() + 0.2))
     await asyncio.wait_for(started.wait(), timeout=1)
     with pytest.raises(_DeadlineExceeded):
         await asyncio.wait_for(task, timeout=2)
@@ -172,9 +162,7 @@ async def test_await_simultaneous_task_and_abort_returns_task_value():
         cancel_event.set()  # 与返回同一 tick：镜像 reserve 竞态
         return SENTINEL
 
-    task = asyncio.ensure_future(
-        await_with_execution_control(factory, cancel_event=cancel_event)
-    )
+    task = asyncio.ensure_future(await_with_execution_control(factory, cancel_event=cancel_event))
     await asyncio.wait_for(started.wait(), timeout=1)
     result = await asyncio.wait_for(task, timeout=1)
     assert result is SENTINEL
@@ -225,9 +213,7 @@ async def test_wait_full_delay_returns_when_no_signal():
 async def test_wait_cancel_interrupts_with_cancel_signal():
     """cancel_event 置位中断退避 → 抛 _StreamCancel。"""
     cancel_event = asyncio.Event()
-    task = asyncio.ensure_future(
-        wait_with_execution_control(3600, cancel_event=cancel_event)
-    )
+    task = asyncio.ensure_future(wait_with_execution_control(3600, cancel_event=cancel_event))
     await asyncio.sleep(0)  # 让 wait 进入等待
     cancel_event.set()
     with pytest.raises(_StreamCancel):

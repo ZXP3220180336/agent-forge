@@ -155,7 +155,7 @@ async def test_conflict_with_registered_skipped(service, loader, tmp_path):
 async def test_duplicate_skip_unload_failure_is_not_repeated(service, loader, tmp_path):
     """重名跳过时就地释放；释放失败也只调用一次，不落到外层回滚重复释放。"""
     trace = tmp_path / "dup_unload.log"
-    source = f'''\
+    source = f"""\
 from app.integration.tools.base import BaseTool
 from app.domain.ports.tool_gateway import ToolResult
 
@@ -174,7 +174,7 @@ class DupTool(BaseTool):
             handle.write("unload\\n")
         raise RuntimeError("unload boom")
     async def execute(self, **kwargs): return ToolResult(success=True, content="ok")
-'''
+"""
     service.register(_FixedTool())
     _write_tool_file(tmp_path, "dup.py", source)
     await loader.scan_once()
@@ -204,7 +204,7 @@ async def test_directory_missing_noop(service, tmp_path):
 @pytest.mark.asyncio
 async def test_file_rollback_on_partial_failure(service, loader, tmp_path):
     """单文件多工具，第二个实例化抛异常 → 第一个也被回滚（文件级原子性）。"""
-    source = '''\
+    source = """\
 from app.integration.tools.base import BaseTool
 from app.domain.ports.tool_gateway import ToolResult
 
@@ -226,7 +226,7 @@ class BadTool(BaseTool):
     @property
     def parameters(self): return {"type": "object", "properties": {}, "required": []}
     async def execute(self, **kwargs): return ToolResult(success=True, content="ok")
-'''
+"""
     _write_tool_file(tmp_path, "multi.py", source)
     await loader.scan_once()
 
@@ -238,7 +238,7 @@ class BadTool(BaseTool):
 async def test_register_failure_releases_current_instance(service, loader, tmp_path):
     """注册期预检失败回滚时，当前实例的 on_load 资源也被释放（恰好一次）。"""
     trace = tmp_path / "lifecycle.log"
-    source = f'''\
+    source = f"""\
 from app.integration.tools.base import BaseTool
 from app.domain.ports.tool_gateway import ToolResult
 
@@ -273,7 +273,7 @@ class LegacyTool(BaseTool):
     async def on_load(self): _mark("load")
     async def on_unload(self): _mark("unload")
     async def execute(self, **kwargs): return ToolResult(success=True, content="ok")
-'''
+"""
     _write_tool_file(tmp_path, "legacy.py", source)
     await loader.scan_once()
 
@@ -288,11 +288,11 @@ async def test_on_load_called(service, loader, tmp_path):
     """加载时调用 on_load。"""
     source = _tool_source(
         "spy",
-        extra='''\
+        extra="""\
     loaded = False
     async def on_load(self):
         SpyTool.loaded = True
-''',
+""",
     )
     _write_tool_file(tmp_path, "spy.py", source)
     await loader.scan_once()
@@ -305,10 +305,10 @@ async def test_on_load_failure_skips_tool(service, loader, tmp_path):
     """on_load 抛异常 → 该工具跳过 + 回滚。"""
     source = _tool_source(
         "fload",
-        extra='''\
+        extra="""\
     async def on_load(self):
         raise RuntimeError("load fail")
-''',
+""",
     )
     _write_tool_file(tmp_path, "fload.py", source)
     await loader.scan_once()
@@ -321,11 +321,11 @@ async def test_on_unload_called(service, loader, tmp_path):
     """卸载时调用 on_unload 后再注销。"""
     source = _tool_source(
         "ud",
-        extra='''\
+        extra="""\
     unloaded = False
     async def on_unload(self):
         UdTool.unloaded = True
-''',
+""",
     )
     p = _write_tool_file(tmp_path, "ud.py", source)
     await loader.scan_once()
@@ -390,7 +390,7 @@ async def test_hyphen_filename_loaded(service, loader, tmp_path):
 
 
 # 声明 CONFIG_KEYS + register_config 的外部工具源码（配置注入契约演示）
-_CONFIG_TOOL_SOURCE = '''\
+_CONFIG_TOOL_SOURCE = """\
 from app.integration.tools.base import BaseTool
 from app.domain.ports.tool_gateway import ToolResult
 
@@ -409,7 +409,7 @@ class CfgTool(BaseTool):
     @property
     def parameters(self): return {"type": "object", "properties": {}, "required": []}
     async def execute(self, **kwargs): return ToolResult(success=True, content="ok")
-'''
+"""
 
 
 @pytest.mark.asyncio
@@ -440,9 +440,7 @@ async def test_load_injects_config_from_source(service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_maybe_refresh_ttl_skips_within_interval(
-    service, loader, tmp_path, monkeypatch
-):
+async def test_maybe_refresh_ttl_skips_within_interval(service, loader, tmp_path, monkeypatch):
     """TTL 内连续 maybe_refresh 短路，不重复磁盘 stat（热路径零 IO）。"""
     _write_tool_file(tmp_path, "a.py", _tool_source("alpha"))
     await loader.scan_once()
@@ -463,9 +461,7 @@ async def test_maybe_refresh_ttl_skips_within_interval(
 
 
 @pytest.mark.asyncio
-async def test_maybe_refresh_expired_ttl_rechecks(
-    service, loader, tmp_path, monkeypatch
-):
+async def test_maybe_refresh_expired_ttl_rechecks(service, loader, tmp_path, monkeypatch):
     """TTL 到期后 maybe_refresh 重新检查（变更最多延迟 1s 生效）。"""
     _write_tool_file(tmp_path, "a.py", _tool_source("alpha"))
     await loader.scan_once()
@@ -514,9 +510,7 @@ async def test_unload_cleans_sibling_modules(service, loader, tmp_path):
     # 模拟：工具文件加载时导入了兄弟模块（真实场景 _load_file 快照记录）
     path = str(tmp_path / "a.py")
     loader._file_modules[path].add("app.integration.tools.external._helper")
-    sys.modules["app.integration.tools.external._helper"] = ModuleType(
-        "app.integration.tools.external._helper"
-    )
+    sys.modules["app.integration.tools.external._helper"] = ModuleType("app.integration.tools.external._helper")
 
     (tmp_path / "a.py").unlink()
     await loader.scan_once()  # 删除 → 卸载

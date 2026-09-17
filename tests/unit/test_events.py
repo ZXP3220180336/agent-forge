@@ -37,9 +37,7 @@ def test_build_sse_event_string_type():
 
 def test_build_sse_event_enum_type():
     """枚举类型取其 value"""
-    assert build_sse_event(AgentEventType.MESSAGE, "hi") == (
-        'data: {"type": "message", "content": "hi"}\n\n'
-    )
+    assert build_sse_event(AgentEventType.MESSAGE, "hi") == ('data: {"type": "message", "content": "hi"}\n\n')
 
 
 def test_build_sse_event_extra_fields():
@@ -87,9 +85,7 @@ def test_build_info_event():
 
 def test_build_done_event_default_tokens():
     """content 为空、total_tokens 默认 0"""
-    assert build_done_event(3) == (
-        'data: {"type": "done", "content": "", "iterations": 3, "total_tokens": 0}\n\n'
-    )
+    assert build_done_event(3) == ('data: {"type": "done", "content": "", "iterations": 3, "total_tokens": 0}\n\n')
 
 
 def test_build_done_event_with_tokens():

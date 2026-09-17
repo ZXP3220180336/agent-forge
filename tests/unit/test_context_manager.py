@@ -112,10 +112,7 @@ async def test_build_messages_truncates_when_over_budget(caplog):
     """
     fake = _FakeSessionManager(
         session={"system_prompt": "sys"},
-        messages=[
-            {"role": "user", "content": f"history {i} " + "x" * 100}
-            for i in range(6)
-        ],
+        messages=[{"role": "user", "content": f"history {i} " + "x" * 100} for i in range(6)],
     )
     cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"), max_context_tokens=40, max_output_tokens=4)
     with caplog.at_level(logging.WARNING, logger="app.application.context"):
@@ -181,7 +178,11 @@ def test_trim_messages_recent_rounds():
     cm.trim_messages(messages, max_rounds=2, max_tokens=None)
 
     assert [m["role"] for m in messages] == [
-        "system", "user", "assistant", "tool", "assistant",
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
     ]
     # 保留的是最近 2 轮：a2/t2 + a3（配对不切断）
     assert messages[2]["content"] == "a2"

@@ -52,9 +52,7 @@ class ResultProcessor:
         marker = self._marker_template.format(original_len=len(content))
         return content[:head_len] + marker + content[-tail_len:]
 
-    def truncate_result(
-        self, result: ToolResult, *, max_length: int | None = None
-    ) -> None:
+    def truncate_result(self, result: ToolResult, *, max_length: int | None = None) -> None:
         """就地截断 result.content；截断发生时 metadata['truncated'] = True。"""
         original = result.content
         truncated = self.truncate(original, max_length=max_length)

@@ -222,10 +222,7 @@ class WebBrowseTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return (
-            "获取指定 URL 的网页内容并返回纯文本版本。"
-            "当你需要阅读网页文章、查看文档、或获取在线信息时使用此工具。"
-        )
+        return "获取指定 URL 的网页内容并返回纯文本版本。当你需要阅读网页文章、查看文档、或获取在线信息时使用此工具。"
 
     @property
     def parameters(self) -> dict[str, Any]:

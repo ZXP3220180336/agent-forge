@@ -201,9 +201,7 @@ async def test_prepare_rejects_non_positive_message_id(agent_params):
             await super().add_message(*args, **kwargs)
             return 0
 
-    sessions = _ZeroIdSessionManager(
-        {"id": "s1", "user_id": "user_x", "system_prompt": "sys"}
-    )
+    sessions = _ZeroIdSessionManager({"id": "s1", "user_id": "user_x", "system_prompt": "sys"})
     context = _ContextManager()
     tasks = TaskService()
     service = ChatService(
@@ -237,9 +235,7 @@ async def test_assistant_persistence_failure_still_clears_run(agent_params):
                 raise RuntimeError("save failed")
             return await super().add_message(*args, **kwargs)
 
-    sessions = _FailingAssistantSessionManager(
-        {"id": "s1", "user_id": "user_x", "system_prompt": "sys"}
-    )
+    sessions = _FailingAssistantSessionManager({"id": "s1", "user_id": "user_x", "system_prompt": "sys"})
     context = _ContextManager()
     tasks = TaskService()
     service = ChatService(

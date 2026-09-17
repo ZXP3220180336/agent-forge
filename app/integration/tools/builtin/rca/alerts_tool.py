@@ -18,10 +18,7 @@ class QueryEquipmentAlertsTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return (
-            "查询指定设备的告警 / 预防性维护（PM）记录。"
-            "良率异常排查中用于确认『涉及机台是否有异常告警或临近维护』。"
-        )
+        return "查询指定设备的告警 / 预防性维护（PM）记录。良率异常排查中用于确认『涉及机台是否有异常告警或临近维护』。"
 
     @property
     def parameters(self) -> dict[str, Any]:

@@ -90,10 +90,7 @@ async def test_default_actions():
         AgentErrorKind.STRUCTURED_INVALID,
         AgentErrorKind.CRITIQUE_FAILED,
     ):
-        assert (
-            await reg.dispatch(kind, AgentErrorContext(kind, "x"))
-            == AgentErrorAction.CONTINUE
-        )
+        assert await reg.dispatch(kind, AgentErrorContext(kind, "x")) == AgentErrorAction.CONTINUE
 
 
 @pytest.mark.asyncio
@@ -138,6 +135,7 @@ def test_agent_error_fields():
 @pytest.mark.asyncio
 async def test_dispatch_handler_exception_falls_back_to_default():
     """handler 自身抛异常 → 不传播，降级为该 kind 默认 action（扩展点缺陷不破坏主循环）。"""
+
     async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
         raise RuntimeError("handler bug")
 
@@ -165,6 +163,7 @@ async def test_dispatch_handler_exception_falls_back_to_default():
 @pytest.mark.asyncio
 async def test_dispatch_cancelled_error_not_swallowed():
     """handler 抛 asyncio.CancelledError（BaseException）→ 不降级，向上传播（保持取消语义）。"""
+
     async def cancel_handler(ctx: AgentErrorContext) -> AgentErrorAction:
         raise asyncio.CancelledError()
 

@@ -62,16 +62,13 @@ class QueryBatchYieldTool(BaseTool):
                     content="",
                     error=f"批次 '{batch_id}' 在指定时间窗口内无良率记录",
                 )
-            return ToolResult(
-                success=False, content="", error=f"未找到批次 '{batch_id}' 的良率记录"
-            )
+            return ToolResult(success=False, content="", error=f"未找到批次 '{batch_id}' 的良率记录")
 
         lines = [f"批次 {batch_id} 良率记录（按 step）："]
         for r in records:
             mark = " ⚠ 骤降" if r["drop"] else ""
             lines.append(
-                f"- step={r['step']}: {r['yield_rate']}%"
-                f"（equipment={r['equipment']}，{r['timestamp']}）{mark}"
+                f"- step={r['step']}: {r['yield_rate']}%（equipment={r['equipment']}，{r['timestamp']}）{mark}"
             )
 
         return ToolResult(

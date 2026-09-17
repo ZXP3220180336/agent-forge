@@ -145,9 +145,7 @@ def test_length_finish_reason_non_retryable():
     from openai import LengthFinishReasonError
     from openai.types.chat import ChatCompletion
 
-    completion = ChatCompletion(
-        id="x", choices=[], created=0, model="gpt-4", object="chat.completion"
-    )
+    completion = ChatCompletion(id="x", choices=[], created=0, model="gpt-4", object="chat.completion")
     assert classify_error(LengthFinishReasonError(completion=completion)) == ErrorCategory.NON_RETRYABLE
 
 

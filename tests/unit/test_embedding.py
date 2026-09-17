@@ -17,10 +17,7 @@ class _FakeEmbeddings:
 
     async def create(self, model, input, dimensions):
         self.calls.append({"model": model, "input": input, "dimensions": dimensions})
-        data = [
-            SimpleNamespace(embedding=[float(i + j) for j in range(3)])
-            for i, _ in enumerate(input)
-        ]
+        data = [SimpleNamespace(embedding=[float(i + j) for j in range(3)]) for i, _ in enumerate(input)]
         return SimpleNamespace(data=data)
 
 

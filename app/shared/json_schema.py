@@ -97,12 +97,8 @@ def _check_schema_declarations(schema: dict[str, Any] | bool, checked: set[int])
             JSON_SCHEMA_DIALECT,
             JSON_SCHEMA_DIALECT + "#",
         ):
-            raise SchemaError(
-                f"不支持的 JSON Schema 版本 {node['$schema']!r}；仅支持 {JSON_SCHEMA_DIALECT}"
-            )
+            raise SchemaError(f"不支持的 JSON Schema 版本 {node['$schema']!r}；仅支持 {JSON_SCHEMA_DIALECT}")
         for keyword in ("$ref", "$dynamicRef"):
             if keyword in node and not node[keyword].startswith("#"):
-                raise SchemaError(
-                    f"{keyword} 仅支持文档内 fragment 引用：{node[keyword]!r}"
-                )
+                raise SchemaError(f"{keyword} 仅支持文档内 fragment 引用：{node[keyword]!r}")
         pending.extend(DRAFT202012.subresources_of(node))

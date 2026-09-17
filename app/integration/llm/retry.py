@@ -93,8 +93,7 @@ class CircuitBreaker:
 
         if self._state == CircuitState.OPEN:
             if (
-                time.monotonic() - self._last_failure_time
-                >= self.config.recovery_timeout
+                time.monotonic() - self._last_failure_time >= self.config.recovery_timeout
             ):  # 冷却期结束，进入半开探针阶段
                 self._state = CircuitState.HALF_OPEN
                 self._half_open_requests = 1  # 本次作为第一个探针
@@ -349,9 +348,7 @@ class RetryHandler:
             if fallback_fn is not None:
                 return await fallback_fn()
             raise CircuitBreakerOpenError(
-                f"熔断器已开启，拒绝请求。"
-                f"状态: {cb.state.value}, "
-                f"窗口内失败: {cb.failure_count}"
+                f"熔断器已开启，拒绝请求。状态: {cb.state.value}, 窗口内失败: {cb.failure_count}"
             )
 
         # --- 半开探针：单次调用主链路，不做重试 ---
@@ -394,20 +391,14 @@ class RetryHandler:
 
                     # 限流：尊重服务端退避时间（Retry-After），不计入熔断。
                     # 可重试（超时/5xx）：按指数退避等待后重试。
-                    retry_after = (
-                        self._extract_retry_after(e)
-                        if category == ErrorCategory.RATE_LIMITED
-                        else None
-                    )
+                    retry_after = self._extract_retry_after(e) if category == ErrorCategory.RATE_LIMITED else None
                     delay = self._calculate_delay(attempt, retry_after=retry_after)
                     # LLM-044：退避等待可被 cancel/deadline 中断——终止后不发起下一次
                     # 真实 create（也不进 fallback）。若本次已实际触及主网络故障（超时/
                     # 5xx），传播前仍记账一次熔断失败（证据不随取消丢失）；纯 429/取消
                     # 本身不计下游故障。
                     try:
-                        await wait_with_execution_control(
-                            delay, cancel_event=cancel_event, deadline=deadline
-                        )
+                        await wait_with_execution_control(delay, cancel_event=cancel_event, deadline=deadline)
                     except _ExecutionAbort:
                         if saw_retryable_failure:
                             cb.record_failure()

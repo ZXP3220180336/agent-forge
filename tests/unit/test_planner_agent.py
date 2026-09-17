@@ -64,9 +64,7 @@ class _AgentPlannerLLM:
         self.structured_calls += 1
         if self.structured_calls == 1:
             self.plan_messages = messages
-        spec = self.structured_scripts[
-            min(self.structured_calls - 1, len(self.structured_scripts) - 1)
-        ]
+        spec = self.structured_scripts[min(self.structured_calls - 1, len(self.structured_scripts) - 1)]
         return spec
 
 

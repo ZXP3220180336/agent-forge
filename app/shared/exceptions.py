@@ -28,16 +28,10 @@ class AppErrorCode(StrEnum):
     FORBIDDEN = "FORBIDDEN"  # 权限不足（ForbiddenError，403）
     NOT_FOUND = "NOT_FOUND"  # 资源不存在（NotFoundError，404）
     CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED"  # 请求超出模型上下文窗口
-    LLM_CANCELLED = (
-        "LLM_CANCELLED"  # LLM 调用被业务取消（LLMCancelledError，领域可识别执行终止）
-    )
-    LLM_DEADLINE = (
-        "LLM_DEADLINE"  # LLM 调用整体执行期限耗尽（LLMDeadlineExceededError）
-    )
+    LLM_CANCELLED = "LLM_CANCELLED"  # LLM 调用被业务取消（LLMCancelledError，领域可识别执行终止）
+    LLM_DEADLINE = "LLM_DEADLINE"  # LLM 调用整体执行期限耗尽（LLMDeadlineExceededError）
     CIRCUIT_OPEN = "CIRCUIT_OPEN"  # 熔断开启（CircuitBreakerOpenError）
-    LLM_API_ERROR = (
-        "LLM_API_ERROR"  # LLM 下游不可恢复错误（LLMAPIError，openai 4xx/认证归一）
-    )
+    LLM_API_ERROR = "LLM_API_ERROR"  # LLM 下游不可恢复错误（LLMAPIError，openai 4xx/认证归一）
     LLM_TRUNCATED = "LLM_TRUNCATED"  # 结构化输出截断（StructuredTruncationError）
     LLM_REFUSAL = "LLM_REFUSAL"  # 模型拒答（StructuredRefusalError）
     LLM_TOOL_CALL = "LLM_TOOL_CALL"  # 模型选择调用工具（StructuredToolCallError）

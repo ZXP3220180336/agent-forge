@@ -261,12 +261,10 @@ async def test_get_messages_maps_role_content():
 @pytest.mark.asyncio
 async def test_get_messages_selects_latest_window_but_returns_chronological_order():
     """limit 先作用于最新消息，返回给上下文时仍保持对话发生顺序。"""
+
     class _LatestWindowDB(_FakeDB):
         def dispatch(self, stmt):
-            if (
-                isinstance(stmt, Select)
-                and stmt.column_descriptions[0]["expr"] is MessageModel
-            ):
+            if isinstance(stmt, Select) and stmt.column_descriptions[0]["expr"] is MessageModel:
                 # 模拟数据库按 created_at/id 倒序执行 limit，再交给被测方法恢复顺序。
                 return _FakeResult(list(reversed(self.messages))[:1])
             return super().dispatch(stmt)
@@ -280,9 +278,7 @@ async def test_get_messages_selects_latest_window_but_returns_chronological_orde
 
     result = await sm.get_messages("s1", limit=1)
 
-    statement = next(
-        item for item in fake_db.all_statements if isinstance(item, Select)
-    )
+    statement = next(item for item in fake_db.all_statements if isinstance(item, Select))
     sql = str(statement)
     assert "messages.created_at DESC" in sql
     assert "messages.id DESC" in sql
@@ -297,9 +293,7 @@ async def test_get_messages_uses_current_message_as_exclusive_snapshot_boundary(
 
     await sm.get_messages("s1", before_message_id=42)
 
-    statement = next(
-        item for item in fake_db.all_statements if isinstance(item, Select)
-    )
+    statement = next(item for item in fake_db.all_statements if isinstance(item, Select))
     assert "messages.id <" in str(statement)
 
 
@@ -447,9 +441,7 @@ async def test_list_sessions_without_stats_no_message_count():
 async def test_get_session_stats_redis_cache_first():
     fake_redis = _FakeRedis()
     fake_db = _FakeDB()
-    fake_redis.data["session_stats:s1"] = json.dumps(
-        {"message_count": 9, "total_tokens": 99, "last_message_at": None}
-    )
+    fake_redis.data["session_stats:s1"] = json.dumps({"message_count": 9, "total_tokens": 99, "last_message_at": None})
     sm = SessionManager(redis_client=fake_redis, db_session_factory=fake_db)
 
     result = await sm._get_session_stats("s1", _FakeSession(fake_db))

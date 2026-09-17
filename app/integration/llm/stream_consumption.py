@@ -26,9 +26,7 @@ class _SeamStripper:
     """剥离续接流首部与既有 content 尾部的有限重叠。"""
 
     def __init__(self, previous_content: str):
-        self._tail = (
-            previous_content[-_SEAM_OVERLAP_LIMIT:] if previous_content else ""
-        )
+        self._tail = previous_content[-_SEAM_OVERLAP_LIMIT:] if previous_content else ""
         self._pending = ""
         self._done = not bool(self._tail)
 
@@ -178,11 +176,7 @@ async def drain_stream(
                         raise _StreamCancel()
                     raise _DeadlineExceeded()
                 else:
-                    raise TimeoutError(
-                        "流式读取空闲超时"
-                        if not first_chunk
-                        else "流式读取首包超时"
-                    )
+                    raise TimeoutError("流式读取空闲超时" if not first_chunk else "流式读取首包超时")
             finally:
                 for task in (anext_task, abort_task):
                     if not task.done():

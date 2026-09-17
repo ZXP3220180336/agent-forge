@@ -83,9 +83,7 @@ async def test_query_defect_center_cluster_particle():
 @pytest.mark.asyncio
 async def test_search_history_hits_relevant_case():
     """关键词检索命中与 LOT-A123 根因匹配的历史案例（RCA-001），带相关度。"""
-    result = await SearchHistoricalRcaTool().execute(
-        query="etch 偏离 良率 骤降"
-    )
+    result = await SearchHistoricalRcaTool().execute(query="etch 偏离 良率 骤降")
 
     assert result.success is True
     assert "RCA-001" in result.content
@@ -98,9 +96,7 @@ async def test_search_history_hits_relevant_case():
 @pytest.mark.asyncio
 async def test_history_confidence_ranking():
     """相关度分数：高匹配排前 + confidence 暴露（置信度分级信号）。"""
-    result = await SearchHistoricalRcaTool().execute(
-        query="etch 偏离 良率 骤降", top_k=3
-    )
+    result = await SearchHistoricalRcaTool().execute(query="etch 偏离 良率 骤降", top_k=3)
 
     assert result.success is True
     assert "80%" in result.content  # RCA-001 confidence = 4/5 = 0.8
@@ -133,9 +129,7 @@ async def test_business_not_found_per_tool():
     """各工具业务未找到路径（机台 / 批次 / 案例）。"""
     assert (await QueryFdcParamsTool().execute(equipment_id="GHOST")).success is False
     assert (await QueryDefectMapTool().execute(batch_id="GHOST")).success is False
-    assert (
-        (await SearchHistoricalRcaTool().execute(query="zzz 无匹配 关键词")).success
-    ) is False
+    assert ((await SearchHistoricalRcaTool().execute(query="zzz 无匹配 关键词")).success) is False
 
 
 @pytest.mark.asyncio
@@ -171,15 +165,11 @@ async def test_fdc_time_range_reveals_deviation_development():
     """FDC 时间窗口：可看出 chamber_pressure 偏离随时间发展（早窗正常 → 晚窗偏离）。"""
     tool = QueryFdcParamsTool()
     # 早窗口（偏离尚未开始）：仅 normal 样本
-    early = await tool.execute(
-        equipment_id="ETCH-01", time_range="2026-08-12 08:00~2026-08-12 11:00"
-    )
+    early = await tool.execute(equipment_id="ETCH-01", time_range="2026-08-12 08:00~2026-08-12 11:00")
     assert "12.0%" not in early.content
     assert "⚠ 偏离" not in early.content
     # 晚窗口（偏离已发展）：含 +12% 偏离样本
-    late = await tool.execute(
-        equipment_id="ETCH-01", time_range="2026-08-12 12:00~2026-08-12 14:30"
-    )
+    late = await tool.execute(equipment_id="ETCH-01", time_range="2026-08-12 12:00~2026-08-12 14:30")
     assert "12.0%" in late.content
     assert "⚠ 偏离" in late.content
 
@@ -188,9 +178,7 @@ async def test_fdc_time_range_reveals_deviation_development():
 async def test_batch_yield_time_range_filters():
     """批次良率时间窗口：只看骤降后的 ETCH 记录，排除窗口外 step。"""
     tool = QueryBatchYieldTool()
-    result = await tool.execute(
-        batch_id="LOT-A123", time_range="2026-08-12 14:00~2026-08-13 00:00"
-    )
+    result = await tool.execute(batch_id="LOT-A123", time_range="2026-08-12 14:00~2026-08-13 00:00")
 
     assert result.success is True
     assert "82.0" in result.content  # ETCH 骤降（14:30）在窗口内
@@ -201,9 +189,7 @@ async def test_batch_yield_time_range_filters():
 async def test_time_range_single_side_open():
     """时间窗口单侧缺省（~end）仍生效。"""
     tool = QueryFdcParamsTool()
-    result = await tool.execute(
-        equipment_id="ETCH-01", time_range="~2026-08-12 11:00"
-    )
+    result = await tool.execute(equipment_id="ETCH-01", time_range="~2026-08-12 11:00")
 
     assert result.success is True
     assert "12.0%" not in result.content  # 14:00 的偏离样本被排除
@@ -213,9 +199,7 @@ async def test_time_range_single_side_open():
 async def test_time_range_end_short_form():
     """end 仅时间（缺日期）自动补 start 日期——LLM 直觉写法鲁棒。"""
     tool = QueryFdcParamsTool()
-    late = await tool.execute(
-        equipment_id="ETCH-01", time_range="2026-08-12 12:00~14:30"
-    )
+    late = await tool.execute(equipment_id="ETCH-01", time_range="2026-08-12 12:00~14:30")
 
     assert late.success is True
     assert "12.0%" in late.content
@@ -243,9 +227,7 @@ def test_in_range_mixed_full_and_time():
 async def test_alerts_evidence_anchor_ignores_data_order():
     """证据链时间锚点 = 结果集最大时间（非末位）：窗口过滤后末位不是最大时锚点仍正确。"""
     # 窗口排除 ALM-1005（08-13 07:00），剩余 ALM-1001~1004（末位 09:30 非最大）
-    result = await QueryEquipmentAlertsTool().execute(
-        time_range="2026-08-12 00:00~2026-08-12 23:59"
-    )
+    result = await QueryEquipmentAlertsTool().execute(time_range="2026-08-12 00:00~2026-08-12 23:59")
 
     assert result.success is True
     assert result.metadata["timestamp"] == "2026-08-12 13:25"  # ALM-1002，非末位 ALM-1004
@@ -254,9 +236,7 @@ async def test_alerts_evidence_anchor_ignores_data_order():
 @pytest.mark.asyncio
 async def test_yield_time_range_empty_distinguishes_from_not_found():
     """批次存在但窗口内无记录 → 归因「窗口内无记录」，非「批次不存在」（不误导 LLM 证据链）。"""
-    result = await QueryBatchYieldTool().execute(
-        batch_id="LOT-A123", time_range="2026-08-20 00:00~2026-08-21 00:00"
-    )
+    result = await QueryBatchYieldTool().execute(batch_id="LOT-A123", time_range="2026-08-20 00:00~2026-08-21 00:00")
 
     assert result.success is False
     assert "窗口" in result.error

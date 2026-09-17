@@ -35,9 +35,7 @@ def _content_chunk(text: str):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=text, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=text, tool_calls=None),
                 finish_reason=None,
             )
         ],
@@ -108,9 +106,7 @@ class _FakeRetry:
         self.calls = 0
         self.circuit_breaker = _FakeCircuitBreaker()
 
-    async def execute(
-        self, call_fn, fallback_fn=None, *, cancel_event=None, deadline=None
-    ):
+    async def execute(self, call_fn, fallback_fn=None, *, cancel_event=None, deadline=None):
         self.calls += 1
         if not self._streams:
             return _FakeStream([])
@@ -174,9 +170,7 @@ async def test_create_retry_backoff_obeys_execution_deadline():
 
     result = StreamResult()
     context = RectifierContext(result, {}, {})
-    retry = RetryHandler(
-        RetryConfig(max_retries=1, base_delay=0.05, max_delay=0.05, use_jitter=False)
-    )
+    retry = RetryHandler(RetryConfig(max_retries=1, base_delay=0.05, max_delay=0.05, use_jitter=False))
 
     with pytest.raises(_DeadlineExceeded):
         async for _ in StreamingRectifier.rectified_stream(
@@ -299,9 +293,7 @@ async def test_continuation_backoff_cancel_raises_typed_abort(monkeypatch):
     monkeypatch.setattr(StreamingRectifier, "_max_delay", 0.05)
     monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
 
-    initial = _FakeStream(
-        [_content_chunk("部分")], fail_at=1, exc=TimeoutError("stream reset")
-    )
+    initial = _FakeStream([_content_chunk("部分")], fail_at=1, exc=TimeoutError("stream reset"))
     result = StreamResult()
     context = RectifierContext(result, {"res": _FakeReservation()}, {})
     retry = _FakeRetry([initial])
@@ -425,9 +417,7 @@ def test_no_rectify_when_interrupt_after_usage_chunk():
     streams = [
         # 尝试 1：产出 content 后，usage-only chunk 后再中断
         # （usage 不算首 token，但 content 已置 emitted_any=True）
-        _FakeStream(
-            [_content_chunk("你好"), _usage_chunk(10, 2)], fail_at=2, exc=TimeoutError("reset")
-        ),
+        _FakeStream([_content_chunk("你好"), _usage_chunk(10, 2)], fail_at=2, exc=TimeoutError("reset")),
         # 若误整流，尝试 2 会执行；断言 calls==1 即证明未整流
         _FakeStream([_content_chunk("重复")]),
     ]
@@ -569,9 +559,7 @@ def test_rectify_clears_refusal_from_dead_stream():
 
     assert retry.calls == 2, "refusal 死流首 token 前中断应整流"
     assert result.content == "你好", "第 2 次尝试应产出完整内容"
-    assert result.refusal is None, (
-        f"整流后不应残留死流 refusal，实际 {result.refusal!r}"
-    )
+    assert result.refusal is None, f"整流后不应残留死流 refusal，实际 {result.refusal!r}"
     assert reservation.settle_calls == 1, "成功路径应 settle"
 
 
@@ -588,9 +576,7 @@ def test_rectify_clears_usage_finish_from_dead_stream():
     finish_chunk = SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=None, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=None, tool_calls=None),
                 finish_reason="stop",
             )
         ],
@@ -604,9 +590,7 @@ def test_rectify_clears_usage_finish_from_dead_stream():
 
     assert retry.calls == 2, "收尾元数据-only 死流首 token 前中断应整流"
     assert result.content == "你好"
-    assert result.finish_reason is None, (
-        f"整流后不应残留死流 finish_reason，实际 {result.finish_reason!r}"
-    )
+    assert result.finish_reason is None, f"整流后不应残留死流 finish_reason，实际 {result.finish_reason!r}"
     assert result.usage == {
         "prompt_tokens": 1,
         "completion_tokens": 2,
@@ -637,6 +621,7 @@ def test_cancel_on_hard_interrupt():
     已提交副作用，settle(None) 保留配额（RPM 真实消耗不退）+ 标记终态；而非
     cancel() 全额退（会导致客户端 RPM 虚增 → 服务端 429 风暴）。
     """
+
     # CancelledError 不被 except Exception 捕获 → 走 finally 的结算兜底
     class _CancelStream(_FakeStream):
         async def __anext__(self):
@@ -795,6 +780,7 @@ def test_rectify_respects_retry_after_normal(monkeypatch):
     修复前：整流退避不提取 Retry-After，只用指数退避——服务端建议被忽略
     （429 中断不等待服务端退避时间）。
     """
+
     class _Rl(_RateLimited429):
         headers = {"retry-after": "0.03"}  # 合理值（≤ max_delay=0.05）
 
@@ -812,6 +798,7 @@ def test_rectify_retry_after_capped_by_max_delay(monkeypatch):
 
     修复后：提取 Retry-After 但封顶——异常大值（3600s）忽略，回退指数退避。
     """
+
     class _Rl(_RateLimited429):
         headers = {"retry-after": "3600"}  # 异常大值（应被封顶忽略）
 
@@ -821,9 +808,7 @@ def test_rectify_retry_after_capped_by_max_delay(monkeypatch):
     ]
     sleeps = _drive_rectify(streams, monkeypatch)
     assert sleeps, "整流应退避"
-    assert sleeps[0] <= _TEST_MAX_DELAY, (
-        f"Retry-After 超 max_delay 应封顶，实际 {sleeps[0]:.3f}s"
-    )
+    assert sleeps[0] <= _TEST_MAX_DELAY, f"Retry-After 超 max_delay 应封顶，实际 {sleeps[0]:.3f}s"
 
 
 # =====================================================================
@@ -897,11 +882,7 @@ def test_chunk_idle_timeout_abandons_after_first_token():
     """空闲窄阈值：已产出后下一 chunk 迟到超阈值 → 放弃（防死流挂起），error 非空。"""
     saved = _tiny_watchdog()
     try:
-        streams = [
-            _DelayedChunkStream(
-                [_content_chunk("你好"), _usage_chunk(10, 2)], delay_at=1, delay=0.2
-            )
-        ]
+        streams = [_DelayedChunkStream([_content_chunk("你好"), _usage_chunk(10, 2)], delay_at=1, delay=0.2)]
         events, result, retry, reservation = _run(streams)
         assert retry.calls == 1, "已产出后空闲超时不应整流（防重复输出）"
         assert result.content == "你好", "部分产出保留在 result 中"
@@ -921,9 +902,7 @@ def _reasoning_chunk(text: str):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=text, content=None, tool_calls=None
-                ),
+                delta=SimpleNamespace(reasoning_content=text, content=None, tool_calls=None),
                 finish_reason=None,
             )
         ],
@@ -941,9 +920,7 @@ def _tool_call_chunk():
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
-                delta=SimpleNamespace(
-                    reasoning_content=None, content=None, tool_calls=[tc]
-                ),
+                delta=SimpleNamespace(reasoning_content=None, content=None, tool_calls=[tc]),
                 finish_reason=None,
             )
         ],
@@ -1058,14 +1035,8 @@ def test_continuation_resumes_after_content_interrupt():
     saved = _tiny_watchdog()
     try:
         events, result, retry, reservation, prefixes = _run_continue(
-            streams=[
-                _FakeStream(
-                    [_content_chunk("部分内容")], fail_at=1, exc=TimeoutError("reset")
-                )
-            ],
-            continue_streams=[
-                _FakeStream([_content_chunk("续写"), _usage_chunk(10, 3)])
-            ],
+            streams=[_FakeStream([_content_chunk("部分内容")], fail_at=1, exc=TimeoutError("reset"))],
+            continue_streams=[_FakeStream([_content_chunk("续写"), _usage_chunk(10, 3)])],
         )
         assert retry.calls == 1, "已产出 content 后不应整流（从头重启）"
         assert prefixes == ["部分内容"], "续接应携带已产出 content 作前缀"
@@ -1085,11 +1056,7 @@ def test_continuation_strips_seam_overlap():
     saved = _tiny_watchdog()
     try:
         events, result, _, _, prefixes = _run_continue(
-            streams=[
-                _FakeStream(
-                    [_content_chunk("ABC")], fail_at=1, exc=TimeoutError("reset")
-                )
-            ],
+            streams=[_FakeStream([_content_chunk("ABC")], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[
                 _FakeStream(
                     [
@@ -1124,20 +1091,14 @@ def test_continuation_create_failure_degrades_to_abandon():
     saved = _tiny_watchdog()
     try:
         events, result, retry, _, prefixes = _run_continue(
-            streams=[
-                _FakeStream(
-                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
-                )
-            ],
+            streams=[_FakeStream([_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[RuntimeError("prefix not supported")],
         )
         assert prefixes == ["部分"], "应尝试续接一次（尽力而为）"
         assert result.content == "部分", "退化放弃应保留已产出 content"
         assert result.error == "reset", "失败信号用原中断原因（对用户更贴切）"
         assert any("流式响应中断" in e for e in events), "应产出放弃 error 事件"
-        assert retry.circuit_breaker.failures == 1, (
-            "原中断为 RETRYABLE → 与未续接的放弃一致，喂熔断"
-        )
+        assert retry.circuit_breaker.failures == 1, "原中断为 RETRYABLE → 与未续接的放弃一致，喂熔断"
     finally:
         _restore_watchdog(saved)
 
@@ -1146,19 +1107,11 @@ def test_continuation_context_window_exceeded_raises_through():
     """续接请求命中预算闸 → 异常穿透 rectified_stream（不退化放弃、不吞）。"""
     saved = _tiny_watchdog()
     try:
-        exc = ContextWindowExceededError(
-            model_key="main", input_tokens=1000, input_budget=100, max_tokens=20
-        )
+        exc = ContextWindowExceededError(model_key="main", input_tokens=1000, input_budget=100, max_tokens=20)
         result = StreamResult()
         active = {"res": _FakeReservation()}
         context = RectifierContext(result, active, {})
-        retry = _FakeRetry(
-            [
-                _FakeStream(
-                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
-                )
-            ]
-        )
+        retry = _FakeRetry([_FakeStream([_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset"))])
 
         async def cont_fn(prefix):
             raise exc
@@ -1195,11 +1148,7 @@ def test_continuation_cancel_during_resume_raises_typed_abort():
     saved = _tiny_watchdog()
     try:
         events, result, retry, _, prefixes = _run_continue(
-            streams=[
-                _FakeStream(
-                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
-                )
-            ],
+            streams=[_FakeStream([_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[_StreamCancel()],
             expected_exception=_StreamCancel,
         )
@@ -1217,11 +1166,7 @@ def test_continuation_off_when_max_zero():
     saved = _tiny_watchdog()
     try:
         events, result, retry, _, prefixes = _run_continue(
-            streams=[
-                _FakeStream(
-                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
-                )
-            ],
+            streams=[_FakeStream([_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[],
             continuation_max_retries=0,
         )
@@ -1238,11 +1183,7 @@ def test_no_continuation_when_reasoning_only():
     saved = _tiny_watchdog()
     try:
         events, result, retry, _, prefixes = _run_continue(
-            streams=[
-                _FakeStream(
-                    [_reasoning_chunk("思考中")], fail_at=1, exc=TimeoutError("reset")
-                )
-            ],
+            streams=[_FakeStream([_reasoning_chunk("思考中")], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[_FakeStream([_content_chunk("不应被消费")])],
         )
         assert prefixes == [], "reasoning 流不应续接"
@@ -1259,11 +1200,7 @@ def test_no_continuation_when_tool_call_partial():
     saved = _tiny_watchdog()
     try:
         events, result, retry, _, prefixes = _run_continue(
-            streams=[
-                _FakeStream(
-                    [_tool_call_chunk()], fail_at=1, exc=TimeoutError("reset")
-                )
-            ],
+            streams=[_FakeStream([_tool_call_chunk()], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[_FakeStream([_content_chunk("不应被消费")])],
         )
         assert prefixes == [], "tool 半成品不应续接"
@@ -1279,9 +1216,7 @@ def test_continuation_reinterrupt_budget_then_succeeds():
     saved = _tiny_watchdog()
     try:
         events, result, _, _, prefixes = _run_continue(
-            streams=[
-                _FakeStream([_content_chunk("A")], fail_at=1, exc=TimeoutError("reset"))
-            ],
+            streams=[_FakeStream([_content_chunk("A")], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[
                 # 续接 1：再产 B 后断（预算余 1）
                 _FakeStream([_content_chunk("B")], fail_at=1, exc=TimeoutError("reset")),
@@ -1308,12 +1243,8 @@ def test_continuation_reinterrupt_budget_exhausted_abandons():
     saved = _tiny_watchdog()
     try:
         events, result, retry, _, prefixes = _run_continue(
-            streams=[
-                _FakeStream([_content_chunk("A")], fail_at=1, exc=TimeoutError("reset"))
-            ],
-            continue_streams=[
-                _FakeStream([_content_chunk("B")], fail_at=1, exc=TimeoutError("reset"))
-            ],
+            streams=[_FakeStream([_content_chunk("A")], fail_at=1, exc=TimeoutError("reset"))],
+            continue_streams=[_FakeStream([_content_chunk("B")], fail_at=1, exc=TimeoutError("reset"))],
             continuation_max_retries=1,
         )
         assert prefixes == ["A"], "预算 1 → 仅一次续接"
@@ -1348,13 +1279,7 @@ def test_continuation_finish_success_error_not_retried(monkeypatch):
         result = StreamResult()
         reservation = _FakeReservation()
         context = RectifierContext(result, {"res": reservation}, {})
-        retry = _FakeRetry(
-            [
-                _FakeStream(
-                    [_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset")
-                )
-            ]
-        )
+        retry = _FakeRetry([_FakeStream([_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset"))])
         prefixes: list[str] = []
         continuation_calls = 0
 
@@ -1379,9 +1304,7 @@ def test_continuation_finish_success_error_not_retried(monkeypatch):
         with pytest.raises(_FinishLogError):
             asyncio.run(collect())
 
-        assert continuation_calls == 1, (
-            "续接成功后的收尾异常不得再触发续接（重复内容 + 双倍计费）"
-        )
+        assert continuation_calls == 1, "续接成功后的收尾异常不得再触发续接（重复内容 + 双倍计费）"
         assert prefixes == ["部分"]
         assert result.content == "部分续写", "续接已产出的内容保留（非放弃丢弃）"
         assert result.error is None, "收尾异常按主流路径原样上抛，不折失败信号"

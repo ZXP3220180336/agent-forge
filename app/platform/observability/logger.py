@@ -141,9 +141,7 @@ def log_event(event_name: str, level: int = logging.INFO, **fields: Any) -> None
     _EVENT_LOGGER.log(level, event_name, extra=fields)
 
 
-async def log_event_async(
-    event_name: str, level: int = logging.INFO, **fields: Any
-) -> None:
+async def log_event_async(event_name: str, level: int = logging.INFO, **fields: Any) -> None:
     """异步记录业务事件：to_thread 内执行同步写入，避免文件 IO 阻塞事件循环。
 
     需在运行中的事件循环内调用；无循环场景用同步 log_event。
@@ -215,7 +213,4 @@ class ConsoleFormatter(logging.Formatter):
         glyph = _LEVEL_GLYPH.get(record.levelname, record.levelname)
         extra = _extra_fields(record)
         suffix = " " + " ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
-        return (
-            f"{self.formatTime(record, '%H:%M:%S')} [{glyph}] "
-            f"{record.name}: {record.getMessage()}{suffix}"
-        )
+        return f"{self.formatTime(record, '%H:%M:%S')} [{glyph}] {record.name}: {record.getMessage()}{suffix}"

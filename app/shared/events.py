@@ -55,9 +55,7 @@ def build_sse_event(event_type: str | AgentEventType, content: Any, **extra) -> 
         "data: {json}\n\n"
     """
     data = {
-        "type": event_type.value
-        if isinstance(event_type, AgentEventType)
-        else event_type,
+        "type": event_type.value if isinstance(event_type, AgentEventType) else event_type,
         "content": content,
     }
     data.update(extra)

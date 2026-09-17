@@ -24,17 +24,13 @@ from app.integration.llm.cost_tracker import MODEL_PRICING, CostTracker
 def test_exact_match_takes_precedence_over_prefix():
     """精确匹配优先于前缀匹配：deepseek-chat 不因是 deepseek-chat-xxx 的前缀而命中错误价。"""
     price = CostTracker._find_price("deepseek-chat")
-    assert price == MODEL_PRICING["deepseek-chat"], (
-        f"精确匹配应命中 deepseek-chat 定价，实际 {price}"
-    )
+    assert price == MODEL_PRICING["deepseek-chat"], f"精确匹配应命中 deepseek-chat 定价，实际 {price}"
 
 
 def test_exact_match_all_pricing_keys():
     """MODEL_PRICING 所有 key 都能被精确命中（无遗漏/无歧义）。"""
     for model in MODEL_PRICING:
-        assert CostTracker._find_price(model) == MODEL_PRICING[model], (
-            f"定价表 key {model} 应精确命中"
-        )
+        assert CostTracker._find_price(model) == MODEL_PRICING[model], f"定价表 key {model} 应精确命中"
 
 
 # =====================================================================
@@ -45,9 +41,7 @@ def test_exact_match_all_pricing_keys():
 def test_longest_prefix_wins():
     """最长前缀优先：deepseek-chat-v2 → deepseek-chat 定价（不被更短/等长前缀劫持）。"""
     price = CostTracker._find_price("deepseek-chat-v2")
-    assert price == MODEL_PRICING["deepseek-chat"], (
-        f"deepseek-chat-v2 应按最长前缀命中 deepseek-chat，实际 {price}"
-    )
+    assert price == MODEL_PRICING["deepseek-chat"], f"deepseek-chat-v2 应按最长前缀命中 deepseek-chat，实际 {price}"
 
 
 def test_prefix_match_independent_of_dict_insertion_order(monkeypatch):

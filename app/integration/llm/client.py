@@ -134,13 +134,9 @@ class ClientManager:
         """
         if key not in cls._instances:
             if key not in cls._configs:
-                raise ValueError(
-                    f"Client key {key!r} 未注册。请先调用 register_config()。"
-                )
+                raise ValueError(f"Client key {key!r} 未注册。请先调用 register_config()。")
             cfg = cls._configs[key]
-            client_kwargs: dict[str, Any] = {
-                k: cfg[k] for k in _OPENAI_CLIENT_KWARGS if k in cfg
-            }
+            client_kwargs: dict[str, Any] = {k: cfg[k] for k in _OPENAI_CLIENT_KWARGS if k in cfg}
             # 默认值兜底
             client_kwargs.setdefault("api_key", "")
             client_kwargs.setdefault("base_url", "https://api.openai.com/v1")
@@ -154,9 +150,7 @@ class ClientManager:
             if proxy_url or max_conn is not None or max_keepalive is not None:
                 limits = httpx.Limits(
                     max_connections=max_conn if max_conn is not None else 100,
-                    max_keepalive_connections=(
-                        max_keepalive if max_keepalive is not None else 20
-                    ),
+                    max_keepalive_connections=(max_keepalive if max_keepalive is not None else 20),
                 )
                 client_kwargs["http_client"] = _build_http_client(
                     proxy_url=proxy_url,

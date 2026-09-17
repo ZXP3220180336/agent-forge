@@ -37,9 +37,7 @@ from .token_counter import get_encoder
 # response format + 固定协议开销）。sampling（temperature/seed 等）、metadata 等控制与
 # 追踪参数不占模型输入窗口，不参与计数；反之未知内容字段宁可漏计也不臆造窗口消耗。
 # 模块级常量用普通类型注解（ClassVar 仅用于类体标注类变量）。
-_INPUT_CONTENT_KEYS: frozenset[str] = frozenset(
-    {"messages", "tools", "response_format"}
-)
+_INPUT_CONTENT_KEYS: frozenset[str] = frozenset({"messages", "tools", "response_format"})
 # 请求外壳保守预留：Chat Completions 的字段/角色编码随 provider 变化，
 # 不把 tiktoken 估算伪装成 provider 的精确计量。
 _PROTOCOL_OVERHEAD_TOKENS: int = 16
@@ -81,8 +79,7 @@ class RequestBudgetConfig:
             and margin < window
         ):
             raise ParameterValidationError(
-                f"无效请求预算配置: window={window}, margin={margin}"
-                "（需 window>0、margin∈[0, window)）"
+                f"无效请求预算配置: window={window}, margin={margin}（需 window>0、margin∈[0, window)）"
             )
 
 
@@ -122,19 +119,9 @@ class RequestBudgetGuard:
                 调用方不得把它当作可重试网络故障或空输出处理。
         """
         max_tokens = request.get("max_tokens")
-        if (
-            not isinstance(max_tokens, int)
-            or isinstance(max_tokens, bool)
-            or max_tokens <= 0
-        ):
-            raise ParameterValidationError(
-                f"max_tokens 必须为正整数，收到 {max_tokens!r}"
-            )
-        input_budget = (
-            self._config.context_window_tokens
-            - self._config.safety_margin_tokens
-            - max_tokens
-        )
+        if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+            raise ParameterValidationError(f"max_tokens 必须为正整数，收到 {max_tokens!r}")
+        input_budget = self._config.context_window_tokens - self._config.safety_margin_tokens - max_tokens
         input_tokens = _estimate_payload_tokens(model, request)
         result = RequestBudgetResult(input_tokens, input_budget, max_tokens)
         if input_budget < 0 or input_tokens > input_budget:

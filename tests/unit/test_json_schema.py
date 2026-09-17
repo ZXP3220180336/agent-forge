@@ -18,9 +18,17 @@ from app.shared.json_schema import JSON_SCHEMA_DIALECT, create_schema_validator
 _OLD_DIALECT = "http://json-schema.org/draft-07/schema#"
 
 
-@pytest.mark.parametrize("schema", [
-    PLAN_STEP_SCHEMA, PLAN_SCHEMA, REPLAN_SCHEMA, RESULT_SCHEMA, REFLECTION_SCHEMA, CRITIQUE_SCHEMA,
-])
+@pytest.mark.parametrize(
+    "schema",
+    [
+        PLAN_STEP_SCHEMA,
+        PLAN_SCHEMA,
+        REPLAN_SCHEMA,
+        RESULT_SCHEMA,
+        REFLECTION_SCHEMA,
+        CRITIQUE_SCHEMA,
+    ],
+)
 def test_builtin_schemas_conform_without_mutation(schema: dict[str, Any]) -> None:
     """所有内置结构化定义可直接接入固定版本，无需改写发送载荷。"""
     original = copy.deepcopy(schema)
@@ -31,9 +39,15 @@ def test_builtin_schemas_conform_without_mutation(schema: dict[str, Any]) -> Non
 def test_pointer_preserves_intermediate_resource_scope() -> None:
     """跨越嵌入资源的指针继续从该资源解析后续 fragment 引用。"""
     schema = {
-        "$defs": {"r": {"$id": "urn:r", "$defs": {
-            "x": {"type": "integer"}, "s": {"$ref": "#/$defs/x"},
-        }}},
+        "$defs": {
+            "r": {
+                "$id": "urn:r",
+                "$defs": {
+                    "x": {"type": "integer"},
+                    "s": {"$ref": "#/$defs/x"},
+                },
+            }
+        },
         "$ref": "#/$defs/r/$defs/s",
     }
     validator = create_schema_validator(schema)
@@ -70,8 +84,7 @@ def test_reused_schema_is_checked_in_each_resource() -> None:
     schema = {
         "$defs": {
             "bad": {"$id": "urn:bad", "properties": {"value": shared}},
-            "good": {"$id": "urn:good", "$defs": {"x": {"type": "integer"}},
-                     "properties": {"value": shared}},
+            "good": {"$id": "urn:good", "$defs": {"x": {"type": "integer"}}, "properties": {"value": shared}},
         },
         "$ref": "#/$defs/bad",
     }
@@ -198,8 +211,16 @@ def test_rejects_old_dialect_in_schema_arrays(keyword: str) -> None:
 @pytest.mark.parametrize(
     "keyword",
     [
-        "items", "contains", "additionalProperties", "unevaluatedProperties",
-        "unevaluatedItems", "propertyNames", "not", "if", "then", "else",
+        "items",
+        "contains",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
     ],
 )
 def test_rejects_old_dialect_in_single_subschema(keyword: str) -> None:
@@ -307,10 +328,17 @@ def test_extension_target_and_children_share_supplemental_meta_validation(child_
 
 
 @pytest.mark.parametrize("location", ["extension", "const", "default"])
-@pytest.mark.parametrize("target", [
-    {"type": "invalid"}, {"$ref": 12}, {"$schema": _OLD_DIALECT},
-    {"$ref": "other.json"}, {"properties": {"child": {"required": 1}}}, 42,
-])
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"type": "invalid"},
+        {"$ref": 12},
+        {"$schema": _OLD_DIALECT},
+        {"$ref": "other.json"},
+        {"properties": {"child": {"required": 1}}},
+        42,
+    ],
+)
 def test_nonstandard_targets_require_full_preflight(location: str, target: Any) -> None:
     """普通数据未引用时忽略，被引用为 Schema 后必须执行完整定义检查。"""
     schema = {location: target}

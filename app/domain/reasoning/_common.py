@@ -108,9 +108,7 @@ async def dispatch_error(
     收敛 registry.dispatch + context 构造 + RAISE 抛的机械段（react/reflection/
     planner 三策略共用）；error_handlers 由调用方传入（各策略持有其生命周期）。
     """
-    action = await error_handlers.dispatch(
-        kind, AgentErrorContext(kind=kind, message=message, iteration=iteration)
-    )
+    action = await error_handlers.dispatch(kind, AgentErrorContext(kind=kind, message=message, iteration=iteration))
     if action == AgentErrorAction.RAISE:
         raise AgentRunError(kind, message, iteration)
     return action

@@ -72,17 +72,11 @@ class ExternalToolLoader:
     ) -> None:
         self._service = service
         self._config_source = config_source  # 配置提供者：键 → 值（装配根绑定 settings）
-        self._directory = (
-            Path(default_directory)
-            if default_directory
-            else Path(_DEFAULT_EXTERNAL_DIR)
-        )
+        self._directory = Path(default_directory) if default_directory else Path(_DEFAULT_EXTERNAL_DIR)
         self._signature: tuple[Any, ...] | None = None  # 上次扫描的目录签名
         self._file_tools: dict[str, list[str]] = {}  # 绝对路径 -> 该文件拥有的工具名
         self._file_modules: dict[str, set[str]] = {}  # 绝对路径 -> 该文件导入的模块名（工具模块 + 兄弟模块）
-        self._file_sigs: dict[
-            str, tuple[int, int]
-        ] = {}  # 绝对路径 -> 上次扫描的 (mtime, size)
+        self._file_sigs: dict[str, tuple[int, int]] = {}  # 绝对路径 -> 上次扫描的 (mtime, size)
         self._last_dir_check = 0.0  # 上次目录签名 stat 时间（monotonic，TTL 用）
         self._scan_lock = asyncio.Lock()
 
@@ -188,11 +182,7 @@ class ExternalToolLoader:
         keys: tuple[str, ...] = getattr(module, "CONFIG_KEYS", ())
         if not keys or not register_config or self._config_source is None:
             return
-        config = {
-            key: value
-            for key in keys
-            if (value := self._config_source(key)) is not None
-        }
+        config = {key: value for key in keys if (value := self._config_source(key)) is not None}
         if config:
             register_config(**config)
 
@@ -251,9 +241,7 @@ class ExternalToolLoader:
                 await tool.on_load()
                 loaded.append(tool)
                 if self._service.get(tool.name) is not None:
-                    logger.warning(
-                        "外部工具与已注册工具重名，跳过 %s: %s", tool.name, path
-                    )
+                    logger.warning("外部工具与已注册工具重名，跳过 %s: %s", tool.name, path)
                     loaded.pop()  # 已就地释放，移出待回滚名单
                     # 就地释放失败只记 warning：不能让异常落到外层回滚，否则同一实例被释放两次
                     try:
@@ -274,9 +262,7 @@ class ExternalToolLoader:
                 try:
                     await tool.on_unload()
                 except Exception as unload_err:  # noqa: BLE001
-                    logger.warning(
-                        "外部工具回滚时 on_unload 失败: %s: %s", tool.name, unload_err
-                    )
+                    logger.warning("外部工具回滚时 on_unload 失败: %s: %s", tool.name, unload_err)
                 self._service.unregister(tool.name)
             self._drop_modules(before)
             logger.warning("外部工具加载失败，已回滚本文件: %s: %s", path, e)
@@ -302,9 +288,7 @@ class ExternalToolLoader:
                 try:
                     await tool.on_unload()
                 except Exception as e:  # noqa: BLE001 — 卸载清理失败不影响注销
-                    logger.warning(
-                        "外部工具 on_unload 失败（继续卸载）: %s: %s", name, e
-                    )
+                    logger.warning("外部工具 on_unload 失败（继续卸载）: %s: %s", name, e)
                 self._service.unregister(name)
             logger.info("外部工具卸载: %s", name)
         # 清理本次导入的全部模块（工具模块 + 兄弟模块），防重载用到旧兄弟代码

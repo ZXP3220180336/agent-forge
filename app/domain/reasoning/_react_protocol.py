@@ -18,8 +18,7 @@ def build_final_answer_tool(schema: dict) -> dict:
         "function": {
             "name": _FINAL_ANSWER_TOOL,
             "description": (
-                "完成任务后调用一次，以符合给定 JSON Schema 的结构化格式提交最终答案。"
-                "不得与其他工具混用。"
+                "完成任务后调用一次，以符合给定 JSON Schema 的结构化格式提交最终答案。不得与其他工具混用。"
             ),
             "parameters": schema,
         },
@@ -66,7 +65,7 @@ def action_fingerprint(tool_calls: list[dict]) -> str:
         name = tool_call["function"]["name"]
         try:
             arguments = json.loads(tool_call["function"]["arguments"])
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             arguments = tool_call.get("function", {}).get("arguments", "")
         signature.append((name, arguments))
     return json.dumps(

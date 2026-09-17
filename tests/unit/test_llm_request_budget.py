@@ -32,10 +32,12 @@ from app.shared.exceptions import (
 def boundary(monkeypatch):
     monkeypatch.setattr(RequestBudgetManager, "_configs", {})
     monkeypatch.setattr(RequestBudgetManager, "_instances", {})
-    RequestBudgetManager.register_config({
-        "fast": RequestBudgetConfig(1000, 16),
-        "fallback": RequestBudgetConfig(300, 16),
-    })
+    RequestBudgetManager.register_config(
+        {
+            "fast": RequestBudgetConfig(1000, 16),
+            "fallback": RequestBudgetConfig(300, 16),
+        }
+    )
     retry = RetryHandler(RetryConfig(max_retries=0))
     create = AsyncMock()
     limiter = SimpleNamespace(reserve=AsyncMock(), reserve_adaptive=AsyncMock())
@@ -211,9 +213,7 @@ def _install_fallback_waiting_limiter(monkeypatch, *, on_tpm_acquire=None):
     return limiter, tpm_waiting, captured, requested_keys
 
 
-async def test_facade_aclose_propagates_to_response_before_settlement(
-    boundary, monkeypatch
-):
+async def test_facade_aclose_propagates_to_response_before_settlement(boundary, monkeypatch):
     """关闭 LLM Facade 流时，同步关闭 provider response 后再结算。"""
     monkeypatch.setattr(LLMService, "_stream_max_retries", 0)
     monkeypatch.setattr(LLMService, "_continuation_max_retries", 0)
@@ -246,7 +246,9 @@ async def test_rejection_preserves_channel_contract_and_has_no_side_effects(boun
         # 预算闸在网络调用前拒绝 → 异常穿透整流器上抛（非 error 事件折 LLM_FAILED）。
         with pytest.raises(ContextWindowExceededError):
             async for _ in boundary.service.async_generate(
-                messages, model_key="fast", max_tokens=20,
+                messages,
+                model_key="fast",
+                max_tokens=20,
             ):
                 pass
     else:
@@ -270,9 +272,7 @@ async def test_open_circuit_fallback_uses_fallback_window_guard(boundary, monkey
     monkeypatch.setattr(LLMService, "_fallback_model_id", "backup-model")
     _open_circuit(boundary)
     with pytest.raises(ContextWindowExceededError) as error:
-        await boundary.service.generate(
-            [{"role": "user", "content": "batch evidence " * 2000}], max_tokens=20
-        )
+        await boundary.service.generate([{"role": "user", "content": "batch evidence " * 2000}], max_tokens=20)
     assert error.value.model_key == "fallback"  # 携带 fallback 键，而非主 key
     boundary.create.assert_not_awaited()
     boundary.limiter.reserve.assert_not_awaited()
@@ -285,15 +285,15 @@ async def test_fallback_rejects_under_its_own_smaller_window(boundary, monkeypat
     按 fallback 独立小窗（300）拒绝，SDK 调用与限流预留均为 0。
     """
     monkeypatch.setattr(LLMService, "_fallback_model_id", "backup-model")
-    RequestBudgetManager.register_config({
-        "fast": RequestBudgetConfig(50_000, 16),  # 主窗很大，能容纳
-        "fallback": RequestBudgetConfig(300, 16),  # fallback 窗小
-    })
+    RequestBudgetManager.register_config(
+        {
+            "fast": RequestBudgetConfig(50_000, 16),  # 主窗很大，能容纳
+            "fallback": RequestBudgetConfig(300, 16),  # fallback 窗小
+        }
+    )
     _open_circuit(boundary)
     with pytest.raises(ContextWindowExceededError) as error:
-        await boundary.service.generate(
-            [{"role": "user", "content": "evidence text " * 200}], max_tokens=20
-        )
+        await boundary.service.generate([{"role": "user", "content": "evidence text " * 200}], max_tokens=20)
     assert error.value.model_key == "fallback"
     boundary.create.assert_not_awaited()
     boundary.limiter.reserve.assert_not_awaited()
@@ -307,15 +307,15 @@ async def test_closed_fallback_budget_exceeded_raises_not_packaged(boundary, mon
     归 RETRYABLE → generate 返回 None 降级；修复后：终结性超限直抛。
     """
     monkeypatch.setattr(LLMService, "_fallback_model_id", "backup-model")
-    RequestBudgetManager.register_config({
-        "fast": RequestBudgetConfig(1_000, 16),  # 主窗：放行
-        "fallback": RequestBudgetConfig(300, 16),  # fallback 窗：拒绝
-    })
+    RequestBudgetManager.register_config(
+        {
+            "fast": RequestBudgetConfig(1_000, 16),  # 主窗：放行
+            "fallback": RequestBudgetConfig(300, 16),  # fallback 窗：拒绝
+        }
+    )
     boundary.create.side_effect = TimeoutError("main transport timeout")
     with pytest.raises(ContextWindowExceededError):
-        await boundary.service.generate(
-            [{"role": "user", "content": "evidence text " * 200}], max_tokens=20
-        )
+        await boundary.service.generate([{"role": "user", "content": "evidence text " * 200}], max_tokens=20)
     # 主链路 1 次真实请求（重试 0）+ 该次 reserve；fallback 拒绝于网络/限流前
     assert boundary.create.await_count == 1
     assert boundary.limiter.reserve.await_count == 1
@@ -324,17 +324,17 @@ async def test_closed_fallback_budget_exceeded_raises_not_packaged(boundary, mon
 async def test_half_open_fallback_budget_exceeded_raises_not_packaged(boundary, monkeypatch):
     """HALF_OPEN 探针失败→fallback 超限：同 CLOSED，直抛不包主错误。"""
     monkeypatch.setattr(LLMService, "_fallback_model_id", "backup-model")
-    RequestBudgetManager.register_config({
-        "fast": RequestBudgetConfig(1_000, 16),
-        "fallback": RequestBudgetConfig(300, 16),
-    })
+    RequestBudgetManager.register_config(
+        {
+            "fast": RequestBudgetConfig(1_000, 16),
+            "fallback": RequestBudgetConfig(300, 16),
+        }
+    )
     boundary.create.side_effect = TimeoutError("main transport timeout")
     boundary.retry.circuit_breaker._state = CircuitState.HALF_OPEN
     boundary.retry.circuit_breaker._half_open_requests = 0
     with pytest.raises(ContextWindowExceededError):
-        await boundary.service.generate(
-            [{"role": "user", "content": "evidence text " * 200}], max_tokens=20
-        )
+        await boundary.service.generate([{"role": "user", "content": "evidence text " * 200}], max_tokens=20)
 
 
 @pytest.mark.parametrize(
@@ -350,9 +350,7 @@ async def test_fallback_real_reserve_partial_acquire_aborts_and_refunds(
     """OPEN fallback 在 RPM 已扣、TPM 排队时响应终止并完成 R5 退款。"""
     monkeypatch.setattr(LLMService, "_fallback_model_id", "backup-model")
     _open_circuit(boundary)
-    limiter, tpm_waiting, captured, requested_keys = _install_fallback_waiting_limiter(
-        monkeypatch
-    )
+    limiter, tpm_waiting, captured, requested_keys = _install_fallback_waiting_limiter(monkeypatch)
     cancel_event = asyncio.Event()
     deadline = time.monotonic() + 0.5 if abort_kind == "deadline" else None
 
@@ -376,12 +374,8 @@ async def test_fallback_real_reserve_partial_acquire_aborts_and_refunds(
     assert reserve_task is not None and reserve_task.done()
     assert requested_keys == ["fallback"]
     boundary.create.assert_not_awaited()
-    assert limiter._req_bucket._tokens == pytest.approx(
-        limiter._req_bucket.capacity
-    )
-    assert limiter._token_bucket._tokens == pytest.approx(
-        limiter._token_bucket.capacity
-    )
+    assert limiter._req_bucket._tokens == pytest.approx(limiter._req_bucket.capacity)
+    assert limiter._token_bucket._tokens == pytest.approx(limiter._token_bucket.capacity)
     assert boundary.retry.circuit_breaker.state == CircuitState.OPEN
 
 
@@ -389,9 +383,7 @@ async def test_fallback_r5_refund_survives_second_cancel(boundary, monkeypatch):
     """fallback reserve 的 RPM 退款再次被取消时，R5 循环仍补齐退款。"""
     monkeypatch.setattr(LLMService, "_fallback_model_id", "backup-model")
     _open_circuit(boundary)
-    limiter, tpm_waiting, captured, _ = _install_fallback_waiting_limiter(
-        monkeypatch
-    )
+    limiter, tpm_waiting, captured, _ = _install_fallback_waiting_limiter(monkeypatch)
     original_refund = limiter._req_bucket.refund
     refund_started = asyncio.Event()
     refund_attempts = 0
@@ -426,9 +418,7 @@ async def test_fallback_r5_refund_survives_second_cancel(boundary, monkeypatch):
 
     assert refund_attempts == 2
     assert reserve_task.done()
-    assert limiter._req_bucket._tokens == pytest.approx(
-        limiter._req_bucket.capacity
-    )
+    assert limiter._req_bucket._tokens == pytest.approx(limiter._req_bucket.capacity)
     boundary.create.assert_not_awaited()
     assert boundary.retry.circuit_breaker.state == CircuitState.OPEN
 
@@ -443,10 +433,12 @@ async def test_stream_cancel_during_reserve_refunds_and_no_create(boundary, monk
     import asyncio as _asyncio
 
     monkeypatch.setattr(LLMService, "_fallback_model_id", "")
-    RequestBudgetManager.register_config({
-        "fast": RequestBudgetConfig(1000, 16),
-        "fallback": RequestBudgetConfig(300, 16),
-    })
+    RequestBudgetManager.register_config(
+        {
+            "fast": RequestBudgetConfig(1000, 16),
+            "fallback": RequestBudgetConfig(300, 16),
+        }
+    )
     cancel_event = _asyncio.Event()
     res = _CancelTrackingReservation()
 
@@ -507,6 +499,7 @@ async def test_llm044_generate_cancel_during_retry_backoff_no_reissue(boundary):
 async def test_llm044_create_inflight_deadline_settles_none(boundary):
     """LLM-044 create_started：create 已在途时 deadline 命中 → settle(None) 保守结算，
     不 cancel() 全额退（请求可能已达 provider，防配额虚增→429）。"""
+
     async def hang_create(**kwargs):
         await asyncio.Event().wait()  # 模拟 create 挂起（请求在途）
 
@@ -520,8 +513,7 @@ async def test_llm044_create_inflight_deadline_settles_none(boundary):
             deadline=deadline,
         )
     res = boundary.limiter.reserve.return_value
-    assert res.settle_calls == 1 and res.cancel_calls == 0, \
-        "在途 create 终止应 settle(None) 而非 cancel 全额退"
+    assert res.settle_calls == 1 and res.cancel_calls == 0, "在途 create 终止应 settle(None) 而非 cancel 全额退"
 
 
 async def test_llm044_cancel_interrupts_reserve_queue_without_sdk_call(boundary):
@@ -583,9 +575,7 @@ async def test_llm044_outer_cancel_after_create_started_settles_once(boundary):
 # =====================================================================
 
 
-async def test_llm045_reserve_swallows_cancel_still_refunds_reservation(
-    boundary, monkeypatch
-):
+async def test_llm045_reserve_swallows_cancel_still_refunds_reservation(boundary, monkeypatch):
     """reserve 跨层：reserve 吞取消迟回已取得的 Reservation → helper 返回 → 第④步复查
     cancel 全额退，SDK create 不被调用（不泄漏配额）。
 
@@ -607,9 +597,7 @@ async def test_llm045_reserve_swallows_cancel_still_refunds_reservation(
         async def reserve_adaptive(self, prompt_tokens=0, max_tokens=0, retry_after=None):
             return reservation
 
-    monkeypatch.setattr(
-        ReservationLimiterManager, "get", lambda key: _SwallowCancelReserve()
-    )
+    monkeypatch.setattr(ReservationLimiterManager, "get", lambda key: _SwallowCancelReserve())
 
     task = asyncio.create_task(
         boundary.service.generate(
@@ -627,9 +615,7 @@ async def test_llm045_reserve_swallows_cancel_still_refunds_reservation(
     boundary.create.assert_not_awaited()
 
 
-async def test_llm045_stream_create_swallows_cancel_late_stream_closed_and_settled(
-    boundary, monkeypatch
-):
+async def test_llm045_stream_create_swallows_cancel_late_stream_closed_and_settled(boundary, monkeypatch):
     """流式跨层验收：create 吞取消迟回已打开的 AsyncStream → helper 返回迟回值 →
     整流器接管并立即在已置位 cancel 下关流 + 结算一次；不发起后续 SDK create。
 
@@ -693,16 +679,12 @@ async def test_llm045_stream_create_swallows_cancel_late_stream_closed_and_settl
 
     assert create_calls == 1, "取消后不得发起后续 SDK create（整流/续接/fallback 均未发生）"
     assert not any("用户取消" in e for e in events), "Integration 不提交业务取消事件"
-    assert returned_streams and returned_streams[-1].close_calls == 1, (
-        "迟回流应被整流器关闭，不能丢弃泄漏 HTTP 连接"
-    )
+    assert returned_streams and returned_streams[-1].close_calls == 1, "迟回流应被整流器关闭，不能丢弃泄漏 HTTP 连接"
     assert reservation.settle_calls == 1, "res 应由整流器接管结算一次"
     assert reservation.cancel_calls == 0, "请求已发出：不 cancel 全额退"
 
 
-async def test_stream_chunk_cancel_preserves_facts_and_raises_typed_error(
-    boundary, monkeypatch
-):
+async def test_stream_chunk_cancel_preserves_facts_and_raises_typed_error(boundary, monkeypatch):
     """流读取期业务取消：先接管已产内容/usage，再关流结算并由 Facade 类型化抛出。"""
     monkeypatch.setattr(LLMService, "_stream_max_retries", 0)
     monkeypatch.setattr(LLMService, "_continuation_max_retries", 0)
@@ -839,9 +821,7 @@ async def test_llm045_nonstream_create_swallows_abort_settles_actual_then_aborts
     assert reservation.cancel_calls == 0
 
 
-async def test_llm047_stream_rectify_deadline_usage_survives_facade_translation(
-    boundary, monkeypatch
-):
+async def test_llm047_stream_rectify_deadline_usage_survives_facade_translation(boundary, monkeypatch):
     """流式整流 deadline 跨层（LLM-047 #4）：首流 usage chunk 后中断（可整流）→ 整流
     退避中/睡满复查 deadline 命中 → rectifier 重建携 usage 的私有信号 → async_generate
     Facade translate_abort 后 LLMDeadlineExceededError.usage 不丢；且不再发起第二次 create。
@@ -912,9 +892,7 @@ async def test_llm047_stream_rectify_deadline_usage_survives_facade_translation(
     assert reservation.last_actual == 8, "整流中断收尾按已读 usage settle"
 
 
-async def test_llm_call_log_failure_does_not_override_completed_stream(
-    boundary, monkeypatch
-):
+async def test_llm_call_log_failure_does_not_override_completed_stream(boundary, monkeypatch):
     """续接 EOF 后日志失败不得覆盖已完成流，也不得触发额外续接。"""
 
     async def _raise_finish_timeout(*args, **kwargs):
@@ -924,9 +902,7 @@ async def test_llm_call_log_failure_does_not_override_completed_stream(
     monkeypatch.setattr(LLMService, "_continuation_max_retries", 2)
     monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.0)
     monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
-    monkeypatch.setattr(
-        "app.platform.observability.logger.log_event_async", _raise_finish_timeout
-    )
+    monkeypatch.setattr("app.platform.observability.logger.log_event_async", _raise_finish_timeout)
 
     first_reservation = _CancelTrackingReservation()
     continuation_reservation = _CancelTrackingReservation()
@@ -936,21 +912,22 @@ async def test_llm_call_log_failure_does_not_override_completed_stream(
             [_boundary_content_chunk("部分")],
             error=httpx.ReadTimeout("stream reset"),
         ),
-        _ScriptedBoundaryStream(
-            [_boundary_content_chunk("续写"), _boundary_usage_chunk(8, 3)]
-        ),
+        _ScriptedBoundaryStream([_boundary_content_chunk("续写"), _boundary_usage_chunk(8, 3)]),
     ]
 
     strategy = ReActStrategy(llm=boundary.service, tools=None)
     async for _ in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=1,
-        temperature=0.2,
-        max_tokens=20,
-        max_execution_time=5.0,
-        run_id="run-log-failure",
-        run_stop=asyncio.Event()),
+        **reasoning_execution_args(
+            "react",
+            max_iterations=1,
+            temperature=0.2,
+            max_tokens=20,
+            max_execution_time=5.0,
+            run_id="run-log-failure",
+            run_stop=asyncio.Event(),
+        ),
     ):
         pass
 
@@ -965,20 +942,20 @@ async def test_llm_call_log_failure_does_not_override_completed_stream(
     }
 
 
-async def test_continuation_context_overflow_keeps_current_result_and_usage(
-    boundary, monkeypatch
-):
+async def test_continuation_context_overflow_keeps_current_result_and_usage(boundary, monkeypatch):
     """续接前缀撑爆窗口时保留首段结果与已获 usage，并停止所有后续请求。"""
 
     monkeypatch.setattr(LLMService, "_stream_max_retries", 0)
     monkeypatch.setattr(LLMService, "_continuation_max_retries", 2)
     monkeypatch.setattr(StreamingRectifier, "_base_delay", 0.0)
     monkeypatch.setattr(StreamingRectifier, "_use_jitter", False)
-    RequestBudgetManager.register_config({
-        "main": RequestBudgetConfig(160, 16),
-        "fast": RequestBudgetConfig(1000, 16),
-        "fallback": RequestBudgetConfig(300, 16),
-    })
+    RequestBudgetManager.register_config(
+        {
+            "main": RequestBudgetConfig(160, 16),
+            "fast": RequestBudgetConfig(1000, 16),
+            "fallback": RequestBudgetConfig(300, 16),
+        }
+    )
 
     reservation = _CancelTrackingReservation()
     boundary.limiter.reserve.return_value = reservation
@@ -993,12 +970,15 @@ async def test_continuation_context_overflow_keeps_current_result_and_usage(
     async for event in strategy.execute(
         "hi",
         [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args("react", max_iterations=1,
-        temperature=0.2,
-        max_tokens=20,
-        max_execution_time=5.0,
-        run_id="run-continuation-overflow",
-        run_stop=asyncio.Event()),
+        **reasoning_execution_args(
+            "react",
+            max_iterations=1,
+            temperature=0.2,
+            max_tokens=20,
+            max_execution_time=5.0,
+            run_id="run-continuation-overflow",
+            run_stop=asyncio.Event(),
+        ),
     ):
         events.append(event)
 
@@ -1016,9 +996,7 @@ async def test_continuation_context_overflow_keeps_current_result_and_usage(
     assert sum('"type": "done"' in event for event in events) == 1
 
 
-async def test_react_deadline_completes_real_stream_cleanup_before_hard_timeout(
-    boundary, monkeypatch
-):
+async def test_react_deadline_completes_real_stream_cleanup_before_hard_timeout(boundary, monkeypatch):
     """内部 deadline 后真实 _drain→close→settle→log 在硬取消前完成。"""
     import app.domain.reasoning.react as react_module
 
@@ -1045,12 +1023,15 @@ async def test_react_deadline_completes_real_stream_cleanup_before_hard_timeout(
         async for _ in strategy.execute(
             "hi",
             [{"role": "user", "content": "hi"}],
-            **reasoning_execution_args("react", max_iterations=1,
-            temperature=0.2,
-            max_tokens=20,
-            max_execution_time=0.5,
-            run_id="run-cleanup-before-wall",
-            run_stop=asyncio.Event()),
+            **reasoning_execution_args(
+                "react",
+                max_iterations=1,
+                temperature=0.2,
+                max_tokens=20,
+                max_execution_time=0.5,
+                run_id="run-cleanup-before-wall",
+                run_stop=asyncio.Event(),
+            ),
         ):
             pass
 
@@ -1067,9 +1048,7 @@ async def test_react_deadline_completes_real_stream_cleanup_before_hard_timeout(
     assert "超时" in (strategy.outcome.error or "")
 
 
-async def test_react_hard_timeout_cancels_slow_close_and_finally_settles(
-    boundary, monkeypatch
-):
+async def test_react_hard_timeout_cancels_slow_close_and_finally_settles(boundary, monkeypatch):
     """close 超过 grace 时硬墙发出取消，rectifier finally 仍保守结算 Reservation。"""
     import app.domain.reasoning.react as react_module
 
@@ -1091,12 +1070,15 @@ async def test_react_hard_timeout_cancels_slow_close_and_finally_settles(
         async for _ in strategy.execute(
             "hi",
             [{"role": "user", "content": "hi"}],
-            **reasoning_execution_args("react", max_iterations=1,
-            temperature=0.2,
-            max_tokens=20,
-            max_execution_time=0.5,
-            run_id="run-hard-timeout-cleanup",
-            run_stop=asyncio.Event()),
+            **reasoning_execution_args(
+                "react",
+                max_iterations=1,
+                temperature=0.2,
+                max_tokens=20,
+                max_execution_time=0.5,
+                run_id="run-hard-timeout-cleanup",
+                run_stop=asyncio.Event(),
+            ),
         ):
             pass
 

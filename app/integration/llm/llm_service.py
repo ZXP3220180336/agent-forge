@@ -80,10 +80,7 @@ class LLMService:
         # 如果传入了手动参数，注册为 "main" 配置
         if api_key:
             if not base_url or not model:
-                raise ValueError(
-                    "手动构造 LLMService 需同时提供 base_url 和 model"
-                    "（或使用装配根 container 装配）"
-                )
+                raise ValueError("手动构造 LLMService 需同时提供 base_url 和 model（或使用装配根 container 装配）")
             ClientManager.register_config(
                 "main",
                 api_key=api_key,
@@ -275,15 +272,11 @@ class LLMService:
             res = active.pop("res", None)
             if res is not None and not res.settled:
                 try:
-                    await res.settle(
-                        (sr.usage or {}).get("total_tokens")
-                    )  # 按实际 usage 退 TPM 差（RPM 不退）
+                    await res.settle((sr.usage or {}).get("total_tokens"))  # 按实际 usage 退 TPM 差（RPM 不退）
                 except BaseException:
                     # settle(actual) 被取消 → 未终态 res 收尾（LLM-003）：请求已发出，
                     if not res.settled:
-                        await res.settle(
-                            None
-                        )  # 保留全部预留并标记终态（不 cancel，防配额虚增）
+                        await res.settle(None)  # 保留全部预留并标记终态（不 cancel，防配额虚增）
                     raise
 
         # 非关键观测先在自己的有界 best-effort 边界内完成；最终 Guard 之后到 return

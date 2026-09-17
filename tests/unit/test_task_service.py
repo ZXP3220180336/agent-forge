@@ -16,9 +16,7 @@ from app.application.task.task_service import TaskService
 
 
 def _context(run_id: str = "run-test") -> AgentContext:
-    return AgentContext(
-        session_id="s", user_id="u", run_id=run_id, run_stop=asyncio.Event()
-    )
+    return AgentContext(session_id="s", user_id="u", run_id=run_id, run_stop=asyncio.Event())
 
 
 class _FakeAgent:

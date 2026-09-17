@@ -30,9 +30,7 @@ async def get_current_user(
 async def get_chat_service() -> ChatService:
     """获取聊天应用用例。"""
     if container.chat_service is None:
-        raise RuntimeError(
-            "ChatService 尚未初始化。请确保在应用启动时调用了 container.initialize()。"
-        )
+        raise RuntimeError("ChatService 尚未初始化。请确保在应用启动时调用了 container.initialize()。")
     return container.chat_service
 
 
@@ -45,10 +43,7 @@ async def get_session_manager() -> SessionManager:
     这些资源应该在整个应用生命周期内复用。
     """
     if container.session_manager is None:
-        raise RuntimeError(
-            "SessionManager 尚未初始化。"
-            "请确保在应用启动时调用了 container.initialize()。"
-        )
+        raise RuntimeError("SessionManager 尚未初始化。请确保在应用启动时调用了 container.initialize()。")
     return container.session_manager
 
 
@@ -60,10 +55,7 @@ async def get_context_manager() -> ContextManager:
     并经 LLMGateway 端口（count_*）计算 Token 数。
     """
     if container.context_manager is None:
-        raise RuntimeError(
-            "ContextManager 尚未初始化。"
-            "请确保在应用启动时调用了 container.initialize()。"
-        )
+        raise RuntimeError("ContextManager 尚未初始化。请确保在应用启动时调用了 container.initialize()。")
     return container.context_manager
 
 
@@ -84,9 +76,7 @@ async def get_llm_service() -> LLMGateway:
     管理 API Key、Base URL 等配置。
     """
     if container.llm_service is None:
-        raise RuntimeError(
-            "LLMService 尚未初始化。请确保在应用启动时调用了 container.initialize()。"
-        )
+        raise RuntimeError("LLMService 尚未初始化。请确保在应用启动时调用了 container.initialize()。")
     return container.llm_service
 
 
@@ -98,9 +88,7 @@ async def get_tool_service() -> ToolGateway:
     ReActAgent 通过它获取工具定义并执行工具调用。
     """
     if container.tool_service is None:
-        raise RuntimeError(
-            "ToolService 尚未初始化。请确保在应用启动时调用了 container.initialize()。"
-        )
+        raise RuntimeError("ToolService 尚未初始化。请确保在应用启动时调用了 container.initialize()。")
     return container.tool_service
 
 
@@ -112,16 +100,12 @@ async def get_task_service() -> TaskService:
     chat 路由通过它在任务级并发约束下运行 Agent。
     """
     if container.task_service is None:
-        raise RuntimeError(
-            "TaskService 尚未初始化。请确保在应用启动时调用了 container.initialize()。"
-        )
+        raise RuntimeError("TaskService 尚未初始化。请确保在应用启动时调用了 container.initialize()。")
     return container.task_service
 
 
 async def get_agent_params() -> dict:
     """获取 Agent 运行参数（max_iterations / temperature / max_tokens / max_execution_time，来自装配根）。"""
     if not container.agent_params:
-        raise RuntimeError(
-            "Agent 参数尚未初始化。请确保在应用启动时调用了 container.initialize()。"
-        )
+        raise RuntimeError("Agent 参数尚未初始化。请确保在应用启动时调用了 container.initialize()。")
     return container.agent_params

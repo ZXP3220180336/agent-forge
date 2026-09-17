@@ -55,9 +55,7 @@ class QueryDefectMapTool(BaseTool):
 
         if not records:
             scope = batch_id + (f" / {wafer_id}" if wafer_id else "")
-            return ToolResult(
-                success=False, content="", error=f"未找到 {scope} 的缺陷数据"
-            )
+            return ToolResult(success=False, content="", error=f"未找到 {scope} 的缺陷数据")
 
         lines = [f"批次 {batch_id} wafer 缺陷分布（共 {len(records)} 片）："]
         for r in records:

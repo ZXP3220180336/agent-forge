@@ -45,9 +45,7 @@ class ParameterValidator:
     def __init__(self, *, reject_unknown: bool = True) -> None:
         self._reject_unknown = reject_unknown
 
-    def validate(
-        self, schema: dict[str, Any], parameters: dict[str, Any]
-    ) -> list[ValidationIssue]:
+    def validate(self, schema: dict[str, Any], parameters: dict[str, Any]) -> list[ValidationIssue]:
         """全量校验参数；返回全部问题（空列表 = 通过）。不做类型转换。"""
         try:
             # 原定义必须先预检：注入 additionalProperties 也可能意外修好悬空引用。
@@ -58,18 +56,13 @@ class ParameterValidator:
                 validator = create_schema_validator(effective)
         except SchemaError as error:
             return [ValidationIssue(message=f"Schema 定义无效: {error.message}")]
-        return [
-            ValidationIssue(message=self._map_error(error))
-            for error in validator.iter_errors(parameters)
-        ]
+        return [ValidationIssue(message=self._map_error(error)) for error in validator.iter_errors(parameters)]
 
     def format_issues(self, issues: list[ValidationIssue]) -> str:
         """拼接全部问题为分号分隔的一句话（供 executor 写入错误信息）。"""
         return "; ".join(i.message for i in issues)
 
-    def validate_or_raise(
-        self, schema: dict[str, Any], parameters: dict[str, Any]
-    ) -> None:
+    def validate_or_raise(self, schema: dict[str, Any], parameters: dict[str, Any]) -> None:
         """有错则抛 ParameterValidationError（供需要异常语义的调用方）。"""
         issues = self.validate(schema, parameters)
         if issues:
@@ -93,9 +86,7 @@ class ParameterValidator:
 
         if validator == "type":
             field = self._field_name(error)
-            actual = _PY_TO_JSONSCHEMA_TYPE.get(
-                type(error.instance).__name__, type(error.instance).__name__
-            )
+            actual = _PY_TO_JSONSCHEMA_TYPE.get(type(error.instance).__name__, type(error.instance).__name__)
             return f"参数 '{field}' 类型应为 {error.validator_value}，实际为 {actual}"
 
         if validator == "enum":

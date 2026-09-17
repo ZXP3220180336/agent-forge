@@ -33,9 +33,7 @@ class SearchTool(BaseTool):
         return self._client
 
     @classmethod
-    def register_config(
-        cls, *, api_key: str = "", search_depth: str = "basic", **kwargs: Any
-    ) -> None:
+    def register_config(cls, *, api_key: str = "", search_depth: str = "basic", **kwargs: Any) -> None:
         """注入 Tavily 配置（由装配根调用，避免直接依赖 settings）。"""
         cls._api_key = api_key
         cls._search_depth = search_depth
@@ -109,11 +107,7 @@ class SearchTool(BaseTool):
 
             # 优先返回直接答案（来源 URL 前 3 条进 metadata，供证据链回溯）
             if response.get("answer"):
-                urls = [
-                    r.get("url")
-                    for r in response.get("results", [])[:3]
-                    if r.get("url")
-                ]
+                urls = [r.get("url") for r in response.get("results", [])[:3] if r.get("url")]
                 return ToolResult(
                     success=True,
                     content=response["answer"],

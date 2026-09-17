@@ -156,9 +156,7 @@ async def test_fill_llm_event_fields_isolates_logging_failure(monkeypatch):
     async def fail_log(*args, **kwargs):
         raise OSError("disk unavailable")
 
-    monkeypatch.setattr(
-        "app.platform.observability.logger.log_event_async", fail_log
-    )
+    monkeypatch.setattr("app.platform.observability.logger.log_event_async", fail_log)
     fields = {"model": "fake"}
 
     await fill_llm_event_fields(fields, success=True, duration=0.1)
@@ -173,9 +171,7 @@ async def test_fill_llm_event_fields_bounds_logging_wait(monkeypatch):
     async def hang_log(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(
-        "app.platform.observability.logger.log_event_async", hang_log
-    )
+    monkeypatch.setattr("app.platform.observability.logger.log_event_async", hang_log)
     monkeypatch.setattr(
         "app.platform.observability.logger._LLM_EVENT_LOG_TIMEOUT_SECONDS",
         0.01,

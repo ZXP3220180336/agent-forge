@@ -71,10 +71,7 @@ def _evidence_is_referenced(record: dict, refs: list[str]) -> bool:
     tool = str(record.get("tool", "")).lower()
     values = [str(value).lower() for value in (record.get("params") or {}).values()]
     return any(
-        tool
-        and tool in ref.lower()
-        and (not values or any(value in ref.lower() for value in values))
-        for ref in refs
+        tool and tool in ref.lower() and (not values or any(value in ref.lower() for value in values)) for ref in refs
     )
 
 
@@ -125,13 +122,9 @@ def _serialize_evidence(
 ) -> str:
     """生成只读证据视图：被当前稿引用的记录优先，其次保留最近记录。"""
     records = [
-        (index, record)
-        for index, record in enumerate(evidence, start=1)
-        if record.get("tool") != "final_answer"
+        (index, record) for index, record in enumerate(evidence, start=1) if record.get("tool") != "final_answer"
     ]
-    lines = {
-        index: _evidence_line(index, record, count_tokens) for index, record in records
-    }
+    lines = {index: _evidence_line(index, record, count_tokens) for index, record in records}
     full = "\n".join(lines[index] for index, _ in records)
     if count_tokens(full) <= max_tokens:
         return full
@@ -223,11 +216,7 @@ def _compact_value(
 
 def _draft_projection(draft: dict) -> dict:
     """预算不足时保留结论、证据引用及显式放弃所在的报告骨架。"""
-    return {
-        key: draft[key]
-        for key in ("summary", "conclusions", "explicit_abstention")
-        if key in draft
-    }
+    return {key: draft[key] for key in ("summary", "conclusions", "explicit_abstention") if key in draft}
 
 
 def _serialize_json_section(
@@ -274,8 +263,7 @@ def _serialize_json_section(
             return rendered
 
     marker = (
-        f'<omitted section="{section}" items="{original_items}" '
-        f'characters="{original_chars}" reason="context_budget"/>'
+        f'<omitted section="{section}" items="{original_items}" characters="{original_chars}" reason="context_budget"/>'
     )
     return f"{{}}\n{marker}"
 

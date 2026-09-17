@@ -296,8 +296,7 @@ class ReservationLimiter:
         tpm_capacity = self._token_bucket.capacity
         if est > tpm_capacity:
             logger.warning(
-                "TPM 预留 %s 超过桶容量 %s，已截断到容量——请检查 llm_*_tpm 配置"
-                "是否过小，或单次请求 token 预估是否异常",
+                "TPM 预留 %s 超过桶容量 %s，已截断到容量——请检查 llm_*_tpm 配置是否过小，或单次请求 token 预估是否异常",
                 est,
                 tpm_capacity,
             )
@@ -362,9 +361,7 @@ class ReservationLimiter:
         return await self._acquire(
             est,
             retry_after,
-            settle_callback=lambda actual_total: self._record_actual(
-                prompt_tokens, max_tokens, actual_total
-            ),
+            settle_callback=lambda actual_total: self._record_actual(prompt_tokens, max_tokens, actual_total),
         )
 
     def _estimate_completion(self, max_tokens: int) -> int:
@@ -377,9 +374,7 @@ class ReservationLimiter:
             return max_tokens  # 冷启动回退静态上限
         return min(est, max_tokens)  # clamp：只减不加（Fenic 关键原则）
 
-    def _record_actual(
-        self, prompt_tokens: int, max_tokens: int, actual_total: int
-    ) -> None:
+    def _record_actual(self, prompt_tokens: int, max_tokens: int, actual_total: int) -> None:
         """settle 回调：把实际输出 token 喂给估算器池。
 
         actual_total 是 usage.total_tokens（prompt + completion），

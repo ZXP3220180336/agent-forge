@@ -295,12 +295,21 @@ async def test_invalid_schema_prevents_real_tool_execution(schema: dict[str, Any
     assert tool.executions == 0
 
 
-@pytest.mark.parametrize("reject_unknown,additional,expected", [
-    (False, None, 1), (False, True, 1), (True, None, 2),
-    (True, False, 1), (True, True, 2), (True, {"type": "integer"}, 2),
-])
+@pytest.mark.parametrize(
+    "reject_unknown,additional,expected",
+    [
+        (False, None, 1),
+        (False, True, 1),
+        (True, None, 2),
+        (True, False, 1),
+        (True, True, 2),
+        (True, {"type": "integer"}, 2),
+    ],
+)
 def test_only_preflights_original_when_overriding_constraint(
-    reject_unknown: bool, additional: Any, expected: int,
+    reject_unknown: bool,
+    additional: Any,
+    expected: int,
 ) -> None:
     """未修改未知字段策略时复用原校验器，修改后为有效根重新创建。"""
     schema = {"type": "object", "properties": {"name": {"type": "string"}}}
@@ -311,10 +320,14 @@ def test_only_preflights_original_when_overriding_constraint(
     assert create.call_count == expected
 
 
-@pytest.mark.parametrize("additional", [
-    {"type": "invalid"}, {"$schema": "http://json-schema.org/draft-07/schema#"},
-    {"$ref": "#missing"},
-])
+@pytest.mark.parametrize(
+    "additional",
+    [
+        {"type": "invalid"},
+        {"$schema": "http://json-schema.org/draft-07/schema#"},
+        {"$ref": "#missing"},
+    ],
+)
 def test_overridden_additional_schema_still_requires_preflight(additional: dict[str, Any]) -> None:
     """被收紧策略移除的子定义，其非法约束、方言和引用不能被覆盖掩盖。"""
     issues = ParameterValidator().validate({"additionalProperties": additional}, {})

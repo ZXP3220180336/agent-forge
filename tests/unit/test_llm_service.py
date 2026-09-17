@@ -222,9 +222,7 @@ async def test_generate_passes_fallback_fn(monkeypatch):
         )
         # fallback 调用实际走了备用模型（模型名被替换）
         assert completions.calls, "fallback_fn 应被调用"
-        assert completions.calls[0]["model"] == "fallback-model", (
-            "fallback 请求应使用备用模型"
-        )
+        assert completions.calls[0]["model"] == "fallback-model", "fallback 请求应使用备用模型"
     finally:
         # 恢复类配置默认值，避免污染其他测试
         LLMService._fallback_model_id = ""
@@ -323,9 +321,7 @@ async def test_generate_fallback_reserves_with_own_pool_and_settles_once(monkeyp
         }
     )
     try:
-        result = await LLMService().generate(
-            messages=[{"role": "user", "content": "hi"}]
-        )
+        result = await LLMService().generate(messages=[{"role": "user", "content": "hi"}])
     finally:
         RequestBudgetManager.register_config(previous)
 
@@ -428,9 +424,7 @@ async def test_generate_rechecks_guard_after_observation_await(monkeypatch):
     async def cancel_during_log(*args, **kwargs):
         cancel_event.set()
 
-    monkeypatch.setattr(
-        "app.integration.llm.llm_service.fill_llm_event_fields", cancel_during_log
-    )
+    monkeypatch.setattr("app.integration.llm.llm_service.fill_llm_event_fields", cancel_during_log)
 
     with pytest.raises(LLMCancelledError) as exc_info:
         await LLMService().generate(

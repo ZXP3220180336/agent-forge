@@ -194,9 +194,7 @@ class Container:
         RequestBudgetManager.register_config(
             {
                 key: RequestBudgetConfig(
-                    context_window_tokens=getattr(
-                        settings, f"llm_{key}_context_window_tokens"
-                    ),
+                    context_window_tokens=getattr(settings, f"llm_{key}_context_window_tokens"),
                     safety_margin_tokens=settings.llm_context_safety_margin_tokens,
                 )
                 for key in ("main", "reasoning", "fast", "fallback")
@@ -212,9 +210,7 @@ class Container:
                     tpm=getattr(settings, f"llm_{key}_tpm", 2_000_000),
                     quantile=getattr(
                         settings,
-                        "llm_reserve_reasoning_quantile"
-                        if key == "reasoning"
-                        else "llm_reserve_quantile",
+                        "llm_reserve_reasoning_quantile" if key == "reasoning" else "llm_reserve_quantile",
                         0.95,
                     ),
                     safety_margin=getattr(settings, "llm_reserve_safety_margin", 1.15),
@@ -259,9 +255,7 @@ class Container:
             api_key=settings.tavily_api_key,
             search_depth=settings.tavily_search_depth,
         )
-        WebBrowseTool.register_config(
-            max_content_length=settings.tool_max_content_length
-        )
+        WebBrowseTool.register_config(max_content_length=settings.tool_max_content_length)
         CodeExecTool.register_config(max_output_length=settings.tool_max_output_length)
         ReadFileTool.register_config(
             max_output_length=settings.tool_max_output_length,
@@ -290,9 +284,7 @@ class Container:
             logger.warning("外部工具冷启动扫描失败（不影响启动）: %s", e)
 
         # 5. 任务调度服务（并发 Agent 任务信号量）
-        self.task_service = TaskService(
-            max_concurrent=settings.agent_max_concurrent_tasks
-        )
+        self.task_service = TaskService(max_concurrent=settings.agent_max_concurrent_tasks)
 
         # 6. EmbeddingService
         self.embedding_service = EmbeddingService(

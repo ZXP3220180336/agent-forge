@@ -61,9 +61,7 @@ def test_build_planning_prompt_renders_goal_and_catalog():
 def test_build_planning_replan_prompt_renders_state():
     """重规划 prompt：已完成步骤摘要 + 失败步骤 + 失败原因。"""
     failed = EXECUTED[1]
-    prompt = PromptManager.build_planning_replan_prompt(
-        PLAN["goal"], TOOLS, EXECUTED, failed, "工具超时"
-    )
+    prompt = PromptManager.build_planning_replan_prompt(PLAN["goal"], TOOLS, EXECUTED, failed, "工具超时")
     assert PLAN["goal"] in prompt
     assert "步骤 1" in prompt and "步骤 2" in prompt  # executed 摘要
     assert "工具超时" in prompt  # 失败原因
@@ -82,10 +80,7 @@ def test_build_planning_summarize_prompt_renders_results():
 def test_planning_prompt_compacts_catalog_but_keeps_goal_and_all_tool_names():
     """规划预算优先保住任务契约和能力发现，描述不足时显式省略。"""
     goal = "分析批次 A 良率下降原因并给出可验证结论"
-    tools = "\n".join(
-        f"- tool_{index}: " + f"工具 {index} 的很长业务说明" * 30
-        for index in range(8)
-    )
+    tools = "\n".join(f"- tool_{index}: " + f"工具 {index} 的很长业务说明" * 30 for index in range(8))
     original = PromptManager.build_planning_prompt(goal, tools)
 
     prompt = PromptManager.build_planning_prompt(
@@ -120,9 +115,9 @@ def test_replan_prompt_keeps_failure_dependencies_and_traceable_success():
 
     assert len(prompt) <= 1800
     assert "工具超时" in prompt
-    assert 'depends_on=[1]' in prompt
+    assert "depends_on=[1]" in prompt
     assert "yield_query" in prompt
-    assert 'batch\\\":\\\"A' in prompt or 'batch":"A' in prompt
+    assert 'batch\\":\\"A' in prompt or 'batch":"A' in prompt
     assert executed == original
 
 
@@ -160,9 +155,7 @@ def test_summarize_prompt_keeps_late_success_and_failure_reason_under_budget():
         }
     )
 
-    prompt = PromptManager.build_planning_summarize_prompt(
-        PLAN["goal"], executed, max_tokens=1800, count_tokens=len
-    )
+    prompt = PromptManager.build_planning_summarize_prompt(PLAN["goal"], executed, max_tokens=1800, count_tokens=len)
 
     assert len(prompt) <= 1800
     assert "步骤 3" in prompt

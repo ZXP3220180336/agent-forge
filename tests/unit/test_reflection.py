@@ -106,12 +106,12 @@ class _ReflectionLLM:
         yield build_message_event(spec.get("content", ""))
         return
 
-    async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None):
+    async def generate_structured(
+        self, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None
+    ):
         self.structured_calls += 1
         self.structured_messages.append(messages)
-        spec = self.structured_scripts[
-            min(self.structured_calls - 1, len(self.structured_scripts) - 1)
-        ]
+        spec = self.structured_scripts[min(self.structured_calls - 1, len(self.structured_scripts) - 1)]
         if isinstance(spec, Exception):
             raise spec
         if usage is not None and self.usage_spec:
@@ -294,7 +294,9 @@ async def test_reflect_max_refine_rounds_one_no_refine():
     """max_refine_rounds=1→自查 issues 但 0 次修正，直接采用初稿。"""
     llm = _ReflectionLLM(
         react_scripts=_react_scripts_with_draft(DRAFT),
-        structured_scripts=[{"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺信号"}]}],
+        structured_scripts=[
+            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺信号"}]}
+        ],
     )
     strategy = _make_strategy(llm)
     await _run(strategy, max_refine_rounds=1)
@@ -449,7 +451,8 @@ async def test_reflect_guardrails_passthrough_to_react():
 
     cancel_event = asyncio.Event()
     async for _ in strategy.execute(
-        "x", [{"role": "user", "content": "x"}],
+        "x",
+        [{"role": "user", "content": "x"}],
         **reasoning_execution_args(
             "reflection",
             max_iterations=5,
@@ -488,7 +491,10 @@ async def test_reflect_recritique_issues_refines_again():
         structured_scripts=[
             {"ok": False, "issues": [{"severity": "critical", "dimension": "grounding", "description": "证据不足"}]},
             REFINED,  # 修正 1
-            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺历史佐证"}]},  # 复查 refined → 新 issues
+            {
+                "ok": False,
+                "issues": [{"severity": "minor", "dimension": "completeness", "description": "缺历史佐证"}],
+            },  # 复查 refined → 新 issues
             REFINED2,  # 修正 2
             {"ok": True, "issues": []},  # 复查 refined2 → ok
         ],
@@ -512,7 +518,10 @@ async def test_reflect_reaches_limit_adopts_last():
         structured_scripts=[
             {"ok": False, "issues": [{"severity": "critical", "dimension": "grounding", "description": "证据不足"}]},
             REFINED,  # 修正 1
-            {"ok": False, "issues": [{"severity": "minor", "dimension": "completeness", "description": "仍缺信号"}]},  # 复查 refined → 仍有 issues → 达上限
+            {
+                "ok": False,
+                "issues": [{"severity": "minor", "dimension": "completeness", "description": "仍缺信号"}],
+            },  # 复查 refined → 仍有 issues → 达上限
         ],
     )
     strategy = _make_strategy(llm)
@@ -620,9 +629,7 @@ async def test_reflect_cost_limit_stops():
     )
     tools = ToolService(max_concurrent_tools=10)
     tools.register(_EchoTool())
-    strategy = ReflectionStrategy(
-        llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(20)
-    )
+    strategy = ReflectionStrategy(llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(20))
     await _run(strategy)
 
     assert strategy.outcome is not None
@@ -660,9 +667,7 @@ async def test_reflect_refined_adopted_on_cost_limit_after_refine():
     )
     tools = ToolService(max_concurrent_tools=10)
     tools.register(_EchoTool())
-    strategy = ReflectionStrategy(
-        llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(30)
-    )
+    strategy = ReflectionStrategy(llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(30))
 
     await _run(strategy)
 
@@ -732,9 +737,7 @@ async def test_reflect_critique_ok_after_cost_limit_is_clean_success():
     )
     tools = ToolService(max_concurrent_tools=10)
     tools.register(_EchoTool())
-    strategy = ReflectionStrategy(
-        llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(20)
-    )
+    strategy = ReflectionStrategy(llm=llm, tools=tools, cost_limiter=_FakeCostLimiterThreshold(20))
 
     await _run(strategy)
 
@@ -802,12 +805,8 @@ async def test_reflect_critique_ok_after_strict_deadline_keeps_facts_but_times_o
 @pytest.mark.asyncio
 async def test_reflect_context_overflow_is_guard_terminal_not_critique_failure():
     """请求上下文准入拒绝须保留专用终态，不得归为普通 CRITIQUE_FAILED。"""
-    overflow = ContextWindowExceededError(
-        model_key="fast", input_tokens=120, input_budget=100, max_tokens=20
-    )
-    llm = _ReflectionLLM(
-        react_scripts=_react_scripts_with_draft(DRAFT), structured_scripts=[overflow]
-    )
+    overflow = ContextWindowExceededError(model_key="fast", input_tokens=120, input_budget=100, max_tokens=20)
+    llm = _ReflectionLLM(react_scripts=_react_scripts_with_draft(DRAFT), structured_scripts=[overflow])
     strategy = _make_strategy(llm)
 
     await _run(strategy)
@@ -880,9 +879,7 @@ async def test_reflect_refine_context_rejection_keeps_full_critique():
             }
         ],
     }
-    overflow = ContextWindowExceededError(
-        model_key="fast", input_tokens=120, input_budget=100, max_tokens=20
-    )
+    overflow = ContextWindowExceededError(model_key="fast", input_tokens=120, input_budget=100, max_tokens=20)
     llm = _ReflectionLLM(
         react_scripts=_react_scripts_with_draft(DRAFT),
         structured_scripts=[critique, overflow, REFINED],
@@ -911,9 +908,7 @@ async def test_reflect_recritique_context_rejection_keeps_latest_refined_draft()
             }
         ],
     }
-    overflow = ContextWindowExceededError(
-        model_key="fast", input_tokens=120, input_budget=100, max_tokens=20
-    )
+    overflow = ContextWindowExceededError(model_key="fast", input_tokens=120, input_budget=100, max_tokens=20)
     llm = _ReflectionLLM(
         react_scripts=_react_scripts_with_draft(DRAFT),
         structured_scripts=[critique, REFINED, overflow],
@@ -936,7 +931,9 @@ async def test_reflect_cancel_event_stops_degrades_to_draft():
     cancel_event = asyncio.Event()
 
     class _CancelOnCritiqueLLM(_ReflectionLLM):
-        async def generate_structured(self, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None):
+        async def generate_structured(
+            self, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None
+        ):
             cancel_event.set()  # 自查调用后置位取消（模拟运行中用户取消）
             return await super().generate_structured(
                 messages,
@@ -1107,8 +1104,13 @@ async def test_reflect_passes_cancel_deadline_to_structured():
         captured["cancel_event"] = cancel_event
         captured["deadline"] = deadline
         return await orig(
-            messages, schema, model_key=model_key, max_tokens=max_tokens,
-            usage=usage, cancel_event=cancel_event, deadline=deadline,
+            messages,
+            schema,
+            model_key=model_key,
+            max_tokens=max_tokens,
+            usage=usage,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
 
     llm.generate_structured = rec
@@ -1148,12 +1150,19 @@ async def test_reflect_refusal_usage_kept_on_degrades():
     )
     orig = llm.generate_structured
 
-    async def fill_and_raise(messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None):
+    async def fill_and_raise(
+        messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None
+    ):
         if usage is not None:
             usage.update({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
         return await orig(
-            messages, schema, model_key=model_key, max_tokens=max_tokens,
-            usage=usage, cancel_event=cancel_event, deadline=deadline,
+            messages,
+            schema,
+            model_key=model_key,
+            max_tokens=max_tokens,
+            usage=usage,
+            cancel_event=cancel_event,
+            deadline=deadline,
         )
 
     llm.generate_structured = fill_and_raise

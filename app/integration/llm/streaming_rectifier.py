@@ -119,11 +119,7 @@ async def _backoff_sleep(
     终止信号（不再发起下一次整流/续接 create）。deadline 为调用方传入的 monotonic
     绝对时刻，不重算时长。
     """
-    retry_after = (
-        RetryHandler._extract_retry_after(exc)
-        if classify_error(exc) == ErrorCategory.RATE_LIMITED
-        else None
-    )
+    retry_after = RetryHandler._extract_retry_after(exc) if classify_error(exc) == ErrorCategory.RATE_LIMITED else None
     delay = min(
         StreamingRectifier._base_delay * (2**attempt),
         StreamingRectifier._max_delay,
@@ -132,9 +128,7 @@ async def _backoff_sleep(
         delay = random.uniform(0, delay)
     if retry_after is not None and 0 < retry_after <= StreamingRectifier._max_delay:
         delay = max(delay, retry_after)
-    await wait_with_execution_control(
-        delay, cancel_event=cancel_event, deadline=deadline
-    )
+    await wait_with_execution_control(delay, cancel_event=cancel_event, deadline=deadline)
 
 
 def _reset_dead_meta(result: StreamResult) -> None:
@@ -356,9 +350,7 @@ class StreamingRectifier:
                 # Facade 翻译 shared），不折普通 error 事件（否则被识别为 LLM_FAILED）。
                 raise
             except Exception as e:  # noqa: BLE001
-                await StreamingRectifier._log_failure(
-                    context, error=str(e)[:200], attempt_start=attempt_start
-                )
+                await StreamingRectifier._log_failure(context, error=str(e)[:200], attempt_start=attempt_start)
                 # 失败信号传给编排层（Agent 短路）：create 失败 → 本轮 LLM 调用
                 # 无结果，Agent 不应把「失败」当「空输出」继续空转重试。
                 exc_text = _describe_exception(e)
@@ -395,9 +387,7 @@ class StreamingRectifier:
                 stream_done = True
                 # settle + log硬取消/异常由下方 finally 兜底，非流中断，
                 # 靠 except 顶部的 stream_done 守卫原样上抛。
-                await StreamingRectifier._finish_success(
-                    context, attempt_start=attempt_start
-                )
+                await StreamingRectifier._finish_success(context, attempt_start=attempt_start)
                 return
             except _StreamCancel:
                 # 正常迭代中用户取消：请求在途 → 结算退差 + 记失败日志，再标记信号
@@ -445,21 +435,15 @@ class StreamingRectifier:
                 # emitted_any 由累积产物推导：usage/finish_reason/refusal 不算
                 # "首 token"，content/reasoning/tool_deltas 任一非空即视为已产出
                 # （累积语义在编排层从 result 状态推导，不依赖单 chunk 返回值，LLM-035）。
-                emitted_any = bool(
-                    result.content or result.reasoning_content or tool_deltas
-                )
+                emitted_any = bool(result.content or result.reasoning_content or tool_deltas)
 
                 # 整流：首 token 前 + 可恢复异常 + 未超整流上限 + 未外部取消 → 退避后
                 # 重试原请求（continue 回边到 for 下一轮，是最短的恢复路径）。
-                if _should_rectify(
-                    emitted_any, attempt, stream_max_retries, e, cancel_event
-                ):
+                if _should_rectify(emitted_any, attempt, stream_max_retries, e, cancel_event):
                     # LLM-044：整流退避可被 cancel/deadline 中断（wait helper 竞争）——
                     # 中断不再发起下一次整流 create。
                     try:
-                        await _backoff_sleep(
-                            attempt, e, cancel_event=cancel_event, deadline=deadline
-                        )
+                        await _backoff_sleep(attempt, e, cancel_event=cancel_event, deadline=deadline)
                     except _StreamCancel:
                         raise _StreamCancel(usage=result.usage)
                     except _DeadlineExceeded:
@@ -509,9 +493,7 @@ class StreamingRectifier:
                 #    部无退款 await 循环，规避取消态 finally「多 await 清理被再次打断」的 asyncio 陷阱。
                 res = active.pop("res", None)
                 if res is not None and not res.settled:
-                    await res.settle(
-                        None
-                    )  # 请求已发出（硬取消兜底）：保留全部预留，不 cancel（防配额虚增→429）
+                    await res.settle(None)  # 请求已发出（硬取消兜底）：保留全部预留，不 cancel（防配额虚增→429）
 
     # ------------------------------------------------------------------
     # 中断恢复策略（整流不适用时的收尾 / 半流续接链）
@@ -705,9 +687,7 @@ class StreamingRectifier:
                 if cont_tool_deltas:
                     result.tool_calls = StreamParser.merge_tool_calls(cont_tool_deltas)
                 cont_stream_done = True
-                await StreamingRectifier._finish_success(
-                    context, attempt_start=cont_start
-                )
+                await StreamingRectifier._finish_success(context, attempt_start=cont_start)
                 outcome.completed = True
                 return
             except _StreamCancel:
@@ -768,9 +748,7 @@ class StreamingRectifier:
     ) -> None:
         """中断收尾：结算退差 + 记录失败日志（用户取消/流中断共用）。"""
         await StreamingRectifier._settle_active(context)
-        await StreamingRectifier._log_failure(
-            context, error=error, attempt_start=attempt_start
-        )
+        await StreamingRectifier._log_failure(context, error=error, attempt_start=attempt_start)
 
     @staticmethod
     async def _settle_active(context: RectifierContext) -> None:
@@ -785,9 +763,7 @@ class StreamingRectifier:
         res = context.active.pop("res", None)
         if res is not None:
             try:
-                await res.settle(
-                    (context.result.usage or {}).get("total_tokens")
-                )  # 按实际 usage 退 TPM 差（RPM 不退）
+                await res.settle((context.result.usage or {}).get("total_tokens"))  # 按实际 usage 退 TPM 差（RPM 不退）
             except BaseException:
                 # settle 中途被取消 → 未终态 res 塞回 active，由 finally 兜底 settle(None) 收尾
                 context.active["res"] = res

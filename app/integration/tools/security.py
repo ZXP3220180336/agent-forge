@@ -44,9 +44,7 @@ class ToolAuditor:
     # 敏感键名（含 api_key / token / secret / password / authorization / credential，
     # 覆盖驼峰 apiKey / accessToken / passwd 变体与复数），序列化前掩码，防凭据落盘
     # （词边界避免 monkey 等误伤；(?i) 内联忽略大小写；authoriz\w* / credential\w* 覆盖后缀）
-    _SENSITIVE_KEY_RE = re.compile(
-        r"(?i)\b(api_?key|token|secret|passw(?:ord|d)?|authoriz\w*|credential\w*)\b"
-    )
+    _SENSITIVE_KEY_RE = re.compile(r"(?i)\b(api_?key|token|secret|passw(?:ord|d)?|authoriz\w*|credential\w*)\b")
     # 文本级敏感模式（error / content_preview 兜底掩码）：键值对 / Bearer / sk- 前缀
     _TEXT_MASK_RE = re.compile(
         r"(?i)((?:api_?key|token|secret|passw(?:ord|d)?|authoriz\w*|credential\w*)\s*[=:])([^\s,;，；'\"{}]+)"
@@ -69,11 +67,7 @@ class ToolAuditor:
         """递归掩码敏感键的值（含嵌套 dict / list），保留键名与结构。"""
         if isinstance(params, dict):
             return {
-                k: (
-                    "***"
-                    if self._SENSITIVE_KEY_RE.search(str(k))
-                    else self._mask_sensitive(v)
-                )
+                k: ("***" if self._SENSITIVE_KEY_RE.search(str(k)) else self._mask_sensitive(v))
                 for k, v in params.items()
             }
         if isinstance(params, list):
@@ -118,9 +112,7 @@ class ToolAuditor:
         else:
             level = logging.INFO
 
-        params_json = json.dumps(
-            self._mask_sensitive(parameters), ensure_ascii=False, default=str
-        )
+        params_json = json.dumps(self._mask_sensitive(parameters), ensure_ascii=False, default=str)
         await log_event_async(
             "tool_call",
             level=level,
@@ -134,9 +126,7 @@ class ToolAuditor:
             # error / content 为自由文本，走文本级掩码后落盘（防凭据经错误信息 / 页面内容泄露）
             error=self._mask_sensitive_text(error) if error else error,
             error_code=error_code.name if error_code else None,
-            content=self._mask_sensitive_text(content_preview)[
-                : self._content_preview_chars
-            ],
+            content=self._mask_sensitive_text(content_preview)[: self._content_preview_chars],
         )
 
 

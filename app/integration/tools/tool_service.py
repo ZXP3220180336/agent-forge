@@ -62,9 +62,7 @@ class ToolService:
         )
         # 外部工具热加载器（execute 惰性检查：无后台任务，见 loader.py）
         # 配置注入：装配根绑定的 settings 读取器 → 外部工具 CONFIG_KEYS 注册
-        self._external_loader = ExternalToolLoader(
-            self, config_source=external_config_source
-        )
+        self._external_loader = ExternalToolLoader(self, config_source=external_config_source)
 
     # ===== 注册管理（→ Registry + Stats 双写） =====
 
@@ -142,9 +140,7 @@ class ToolService:
 
     # ===== 统计（→ Stats） =====
 
-    def get_stats(
-        self, name: str | None = None
-    ) -> dict[str, ToolStats] | ToolStats | None:
+    def get_stats(self, name: str | None = None) -> dict[str, ToolStats] | ToolStats | None:
         """单工具统计（name 给定）或全量字典。"""
         return self._stats.get(name)
 

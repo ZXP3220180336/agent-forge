@@ -54,15 +54,15 @@ def _require_identity(name: str, value: str) -> None:
 class ToolCallContext:
     """一次领域工具调用的稳定身份与执行控制。"""
 
-    run_id: str
-    batch_id: str
-    tool_call_id: str
-    operation_id: str
-    cancel_events: tuple[asyncio.Event, ...]
-    run_stop: asyncio.Event
+    run_id: str  # 所属 Agent 运行身份
+    batch_id: str  # 所属的一批工具调用
+    tool_call_id: str  # 对应模型发出的工具调用 ID
+    operation_id: str  # 一次规范业务操作身份，重试共享该身份
+    cancel_events: tuple[asyncio.Event, ...]  # 多个取消来源组成的元组，例如本运行取消、父运行取消
+    run_stop: asyncio.Event  # 运行已经停止继续启动新业务调用
     workflow_id: str | None = None
-    deadline: float | None = None
-    cleanup_deadline: float | None = None
+    deadline: float | None = None  # 业务执行绝对期限
+    cleanup_deadline: float | None = None  # 清理阶段的边界
 
     def __post_init__(self) -> None:
         for name in ("run_id", "batch_id", "tool_call_id", "operation_id"):

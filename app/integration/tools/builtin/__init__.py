@@ -35,15 +35,9 @@ def _discover_tools() -> dict[str, type[BaseTool]]:
             continue
 
         for name, obj in inspect.getmembers(module, inspect.isclass):
-            if (
-                issubclass(obj, BaseTool)
-                and obj is not BaseTool
-                and not getattr(obj, "__abstractmethods__", None)
-            ):
+            if issubclass(obj, BaseTool) and obj is not BaseTool and not getattr(obj, "__abstractmethods__", None):
                 if name in _tool_classes:
-                    logger.warning(
-                        "工具类名冲突，后者覆盖 %s: %s", name, obj
-                    )
+                    logger.warning("工具类名冲突，后者覆盖 %s: %s", name, obj)
                 _tool_classes[name] = obj
 
     return _tool_classes

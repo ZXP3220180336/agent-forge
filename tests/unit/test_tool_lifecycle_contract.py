@@ -86,9 +86,7 @@ def test_collector_owns_both_recorded_and_returned_snapshots():
     ],
 )
 def test_tool_control_errors_are_shared_non_retryable_types(error_type, code):
-    error = error_type(
-        "stop", run_id="run-1", operation_id="operation-1", diagnostic_id="d-1"
-    )
+    error = error_type("stop", run_id="run-1", operation_id="operation-1", diagnostic_id="d-1")
     assert isinstance(error, NonRetryableError)
     assert error.code == code
     assert (error.run_id, error.operation_id, error.diagnostic_id) == (
@@ -133,9 +131,7 @@ async def test_gateway_requires_context_and_cancel_publishes_fact_before_raise()
     ],
 )
 @pytest.mark.asyncio
-async def test_control_check_order_is_cancel_then_deadline_then_run_stop(
-    cancelled, expired, stopped, expected
-):
+async def test_control_check_order_is_cancel_then_deadline_then_run_stop(cancelled, expired, stopped, expected):
     cancel_event = asyncio.Event()
     run_stop = asyncio.Event()
     if cancelled:

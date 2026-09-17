@@ -349,9 +349,7 @@ class StructuredOutput:
                 llm_service=llm_service,
                 messages=messages,
                 model_key=model_key,
-                max_tokens=max_tokens * 2
-                if max_tokens is not None
-                else StructuredOutput._default_max_tokens * 2,
+                max_tokens=max_tokens * 2 if max_tokens is not None else StructuredOutput._default_max_tokens * 2,
                 response_format=response_format,
                 stage="结构化输出截断重试",
                 usage=usage,
@@ -405,9 +403,7 @@ class StructuredOutput:
             # 回喂：clone + assistant 失败输出 + user 错误反馈（不污染调用方 messages）
             retry = await StructuredOutput._call_generate(
                 llm_service=llm_service,
-                messages=codec.build_reask_messages(
-                    messages, content, "\n".join(errors)
-                ),
+                messages=codec.build_reask_messages(messages, content, "\n".join(errors)),
                 model_key=model_key,
                 max_tokens=max_tokens,
                 response_format=response_format,
@@ -530,11 +526,7 @@ class StructuredOutput:
             result = await llm_service.generate(
                 messages=messages,
                 temperature=0,
-                max_tokens=(
-                    max_tokens
-                    if max_tokens is not None
-                    else StructuredOutput._default_max_tokens
-                ),
+                max_tokens=(max_tokens if max_tokens is not None else StructuredOutput._default_max_tokens),
                 response_format=response_format,
                 model_key=model_key,
                 # LLM-044：把执行控制信号透传到每次真实 SDK attempt（reserve/create/
@@ -639,24 +631,18 @@ class StructuredOutput:
                 codec.truncate_text_for_log(str(getattr(result, "refusal", "") or "")),
                 result.finish_reason,
             )
-            raise StructuredRefusalError(
-                f"{stage}拒答: finish_reason={result.finish_reason}"
-            )
+            raise StructuredRefusalError(f"{stage}拒答: finish_reason={result.finish_reason}")
         if failure == "tool_calls":
             logger.warning(
                 "%s转为工具调用: finish_reason=%s, content 为空",
                 stage,
                 result.finish_reason,
             )
-            raise StructuredToolCallError(
-                f"{stage}转为工具调用: finish_reason={result.finish_reason}"
-            )
+            raise StructuredToolCallError(f"{stage}转为工具调用: finish_reason={result.finish_reason}")
         if failure == "truncated":
             logger.warning(
                 "%s截断: finish_reason=%s",
                 stage,
                 result.finish_reason,
             )
-            raise StructuredTruncationError(
-                f"{stage}截断: finish_reason={result.finish_reason}"
-            )
+            raise StructuredTruncationError(f"{stage}截断: finish_reason={result.finish_reason}")
