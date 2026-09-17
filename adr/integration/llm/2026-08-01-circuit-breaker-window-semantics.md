@@ -20,12 +20,14 @@
 2. **fallback 成败不触碰窗口（fallback 隔离契约）**：成功不向窗口追加成功记录（否则稀释主链路错误率，主链路持续故障也永不熔断）；失败不追加失败记录、不改写冷却计时（备用链路的故障不是主链路故障的证据）。
 3. **请求级记账**：一次 `execute()` 只向窗口追加一条记录，单请求的多次重试不放大错误率（[LLM-020](../../../issues/integration/llm/2026-08-01-request-level-accounting.md)）。
 4. **参数关系**（各参数控制故障生命周期中**不同阶段**）：
+
    ```text
    时间轴：  首次失败 → 重试 → 重试 → ... → 熔断开启 → 等待 recovery → 半开探针 → 关闭/继续熔断
               ├── max_retries 控制 ──┤
                                              ├ window_seconds + error_threshold 控制 ┤
                                                                      ├ half_open_max_requests ┤
    ```
+
    - `max_retries` — 单次请求的"挣扎"次数。控制一个请求在放弃前尝试几次
    - `window_seconds` — 熔断评估的时间范围。窗口内累计请求数与失败数，过期记录剔除
    - `error_threshold` — 窗口内错误率阈值。总请求达标时，错误率 ≥ 阈值 → 熔断

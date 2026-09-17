@@ -37,7 +37,6 @@
 | LangChain `langchain-failover` | 只在主模型**产出第一个 token 前**死亡时 failover——"你永远不会得到重复的、半流输出" |
 | awaken 运行时 | 4 级恢复（ContinueText / SynthesizeToolUse / TruncateBeforeTool / WholeRestart），WholeRestart（整流重试）只在无文本、无完整工具调用时用 |
 
-
 ## Consequences
 
 - **正面**：首 token 前中断自动恢复（用户无感，整流不产生重复内容）；已产出 token 后中断不整流（避免重复输出/双倍计费/tool_calls 残缺）；结算闭环无配额泄漏；熔断器感知流级故障（create 正常但流频繁中断）。

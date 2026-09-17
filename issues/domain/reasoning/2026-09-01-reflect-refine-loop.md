@@ -19,7 +19,7 @@
 
 重构 `execute` 阶段二+三为**真迭代**（while 循环）：
 
-```
+``` python
 current = draft（初稿）
 while True:
     critique = 自查(current)          # 每次循环重新自查当前稿

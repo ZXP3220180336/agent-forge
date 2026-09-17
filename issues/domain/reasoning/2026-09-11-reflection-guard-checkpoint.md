@@ -11,7 +11,7 @@
 
 Reflection 的护栏复查挂在「自查调用返回 + usage 归账」之后，而该位置在 `critique.get("ok")` 判定**之前**。当自查返回 `ok=True`（报告已合格）但归账后累计成本恰好越过阈值时，护栏先命中，运行以 `_finalize_guard` 收尾：
 
-```
+``` python
 success = bool(current)      # True（稿子可用）
 degraded = True              # 尽管自查已通过
 error = "成本超限（累计 $X），采用最近稿（降级）"

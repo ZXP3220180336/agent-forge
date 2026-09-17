@@ -50,6 +50,7 @@ Agent 循环中，模型每轮输出的**回答内容（content）/ 思考内容
 | **OTel GenAI semconv** | span 三类：model / agent(`invoke_agent`) / tool，属性 `gen_ai.*` | OTel 标准化 | 任意 OTLP 后端 |
 
 **工业级共识**：
+
 1. **数据模型 = 树**（trace → turn → tool），比扁平数组强在表达「某轮 LLM → 其 N 个工具」父子关系 + 成本沿树聚合；`usage/cost` 只挂 LLM 节点防重复计数；
 2. **捕获点 = callback / wrapper（非侵入，横切）**：外围包装层，不改主循环；必须是**数据最全的点**（同时握有 LLM 输出 + 工具结果 + usage）；
 3. **存储 = 独立轨迹表**（`traces`/`observations`），与「对话历史 messages」语义正交（Langfuse 双库同理）；**批量写**（每次执行结束一次写整条 trace，非逐事件）；
@@ -118,16 +119,19 @@ class AgentTrace:                         # 一次 Agent 运行（单用户请�
 ### 3. 捕获点（两层：BaseAgent 生命周期 + 策略层数据最全点）
 
 **第一层（BaseAgent，横切生命周期）**：
+
 - `BaseAgent.__init__(trace_collector=...)`——统一入口，所有 Agent 接入；
 - `run()` 终结时（`_result` 就绪）：组装 `AgentTrace` 的 `input`（user_input）/ `output`（result.content）/ `status`（state）/ `total_usage` → `await trace_collector.complete(...)`；
 - 各子类 `_strategy_cycle` 把 `trace_collector` 透传给策略（ReActAgent → ReActStrategy.execute；PlannerAgent → 各阶段）。
 
 **第二层（策略层，数据最全点）**：
+
 - `ReActStrategy.execute()` 收 `trace_collector`（默认 None=零开销），**每轮边界**（LLM 调用后 + `_handle_tool_calls` 后）构造 `AgentStep` → `await trace_collector.on_turn_end(step)`；
 - `stream_result` 是**数据最全的点**（完整 content/reasoning/usage/tool_calls，非 SSE 截断后）——这是选定此捕获点的根本原因；
 - 未来 Planner / Reflection 在各自阶段边界构造 `AgentStep` → `on_turn_end`（同一端口，无新接线）。
 
 **否决项及理由**：
+
 - ❌ **api 层消费 SSE 重建轨迹**：SSE 事件截断（`tool_result` 200 字符 / reasoning 逐 token），拿不到完整 reasoning 全文、完整 tool result、usage 明细——丢数据；
 - ❌ **结果载体补全（ReActOutcome 加完整 turn 数组）**：中间轮数据在策略内需另存，且改策略产出契约（`ReActOutcome` 是桥接契约，扩大它 = 扩大所有消费方契约）；且 ReActOutcome 是 ReAct 专属——不满足横切（Planner/Reflection 无此载体）；
 - ❌ **仅策略层注入（不经过 BaseAgent）**：每个新 Agent 需自行接线，非横切——违背「与错误处理分发对齐」的定位；
