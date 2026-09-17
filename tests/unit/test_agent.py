@@ -13,13 +13,13 @@ import pytest
 
 from app.domain.agent import AgentContext, ReActAgent
 from app.domain.ports.llm_gateway import StreamResult
-from app.integration.tools.tool_service import ToolService
 from app.integration.tools.base import BaseTool, ToolResult
+from app.integration.tools.tool_service import ToolService
 from app.shared.error_handling import (
-    AgentRunError,
     AgentErrorAction,
     AgentErrorContext,
     AgentErrorKind,
+    AgentRunError,
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_error_event
@@ -88,7 +88,6 @@ class _NoopLLM:
 
     async def async_generate(self, *args, **kwargs):
         yield ""
-        return
 
 
 class _ErrorLLM:
@@ -98,7 +97,6 @@ class _ErrorLLM:
         if result is not None:
             result.error = "401 认证失败"
         yield build_error_event("LLM 调用失败: 401 认证失败")
-        return
 
 
 class _EmptyLLM:
@@ -109,7 +107,6 @@ class _EmptyLLM:
             result.finish_reason = ""
             result.content = ""
         yield ""
-        return
 
 
 class _ScriptedLLM:
@@ -126,7 +123,6 @@ class _ScriptedLLM:
             for key, value in spec.items():
                 setattr(result, key, value)
         yield ""
-        return
 
 
 @pytest.mark.asyncio
@@ -166,6 +162,7 @@ async def test_react_agent_passes_max_empty_retries_to_strategy():
 @pytest.mark.asyncio
 async def test_react_agent_passes_max_llm_fail_retries_to_strategy():
     """ReActAgent 经 AgentContext.max_llm_fail_retries 透传给 execute（失败重试上限硬终止）。"""
+
     async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.CONTINUE
 
@@ -246,9 +243,7 @@ async def test_strategy_cycle_short_circuits_on_llm_error():
 
     assert agent.result is not None
     assert agent.result.success is False, "LLM 失败应返回失败结果"
-    assert agent.result.error == "401 认证失败", (
-        f"应携带真实错误原因，实际: {agent.result.error}"
-    )
+    assert agent.result.error == "401 认证失败", f"应携带真实错误原因，实际: {agent.result.error}"
     assert agent.result.iterations == 1, "应在第 1 轮短路，不空转重试"
     assert any('"type": "done"' in e for e in events), "应产出 done 事件"
 
@@ -268,21 +263,18 @@ async def test_unknown_handler_raise_propagates():
     主循环未捕获异常 → UNKNOWN 分发（与其余 kind 统一 RAISE 语义，抛 AgentRunError
     而非 re-raise 原始异常）；BaseAgent.run 对 AgentRunError 不吞、上抛。
     """
+
     async def on_unknown(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.UNKNOWN, on_unknown)
 
-    agent = ReActAgent(
-        llm=_ThrowingLLM(), tools=None, error_handlers=registry
-    )
+    agent = ReActAgent(llm=_ThrowingLLM(), tools=None, error_handlers=registry)
     ctx = _ctx(max_iterations=3)
 
     with pytest.raises(AgentRunError) as exc_info:
-        async for _ in agent.run(
-            "hi", [{"role": "user", "content": "hi"}], ctx
-        ):
+        async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
             pass
 
     assert exc_info.value.kind == AgentErrorKind.UNKNOWN
@@ -292,21 +284,18 @@ async def test_unknown_handler_raise_propagates():
 @pytest.mark.asyncio
 async def test_agent_error_reraisd_not_swallowed():
     """策略内 RAISE 抛出的 AgentRunError → run 不吞，上抛给调用方。"""
+
     async def on_llm_failed(ctx: AgentErrorContext) -> AgentErrorAction:
         return AgentErrorAction.RAISE
 
     registry = ErrorHandlerRegistry()
     registry.register(AgentErrorKind.LLM_FAILED, on_llm_failed)
 
-    agent = ReActAgent(
-        llm=_ErrorLLM(), tools=None, error_handlers=registry
-    )
+    agent = ReActAgent(llm=_ErrorLLM(), tools=None, error_handlers=registry)
     ctx = _ctx(max_iterations=3)
 
     with pytest.raises(AgentRunError) as exc_info:
-        async for _ in agent.run(
-            "hi", [{"role": "user", "content": "hi"}], ctx
-        ):
+        async for _ in agent.run("hi", [{"role": "user", "content": "hi"}], ctx):
             pass
 
     assert exc_info.value.kind == AgentErrorKind.LLM_FAILED

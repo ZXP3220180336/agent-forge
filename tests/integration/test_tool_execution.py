@@ -155,9 +155,7 @@ async def test_read_file_outside_allowed_dir_rejected(tmp_path):
     service = ToolService()
     service.register(ReadFileTool())
 
-    result = await service.execute(
-        "readFile", {"file_path": str(tmp_path.parent / "secret.env")}
-    )
+    result = await service.execute("readFile", {"file_path": str(tmp_path.parent / "secret.env")})
 
     assert result.success is False
     assert "不在允许目录内" in result.error
@@ -288,18 +286,14 @@ async def test_web_browse_rejects_ssrf_target():
 @pytest.mark.asyncio
 async def test_web_browse_config_injects_timeout():
     """register_config 注入连接层超时 / 重定向（非硬编码）。"""
-    WebBrowseTool.register_config(
-        max_content_length=50_000, timeout=25.0, max_redirects=3
-    )
+    WebBrowseTool.register_config(max_content_length=50_000, timeout=25.0, max_redirects=3)
     try:
         tool = WebBrowseTool()
         await tool.on_unload()  # 重置全局单例，确保用注入值重建
         client = web_browse._get_http_client()
         assert client.timeout.connect == 25.0  # 注入超时生效
     finally:
-        WebBrowseTool.register_config(
-            max_content_length=50_000, timeout=15.0, max_redirects=5
-        )
+        WebBrowseTool.register_config(max_content_length=50_000, timeout=15.0, max_redirects=5)
         await WebBrowseTool().on_unload()  # 复位并关闭
 
 
@@ -438,8 +432,8 @@ async def test_code_exec_empty_workdir_ok():
 @pytest.mark.parametrize(
     "raw, expected",
     [
-        ("良率正常".encode("utf-8"), "良率正常"),
-        ("english only".encode("utf-8"), "english only"),
+        ("良率正常".encode(), "良率正常"),
+        (b"english only", "english only"),
         (b"", ""),
     ],
 )
@@ -545,9 +539,7 @@ async def test_search_reuses_tavily_client(monkeypatch):
         def search(self, **kwargs):
             return {"results": []}
 
-    monkeypatch.setattr(
-        "app.integration.tools.builtin.search.TavilyClient", _CountingTavily
-    )
+    monkeypatch.setattr("app.integration.tools.builtin.search.TavilyClient", _CountingTavily)
     tool = SearchTool()
     tool.register_config(api_key="test-key")
 

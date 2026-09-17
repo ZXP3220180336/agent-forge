@@ -100,7 +100,7 @@ def _chat_service(
     *,
     session_manager: FakeSessionManager,
     context_manager: ContextManager,
-    llm: "FakeLLM",
+    llm: FakeLLM,
     tools: ToolService,
     task_service: TaskService,
     agent_params: dict,
@@ -161,7 +161,7 @@ class FakeLLM:
                     },
                 }
             ]
-            yield "data: {\"type\": \"reasoning\", \"content\": \"需要调用工具\"}\n\n"
+            yield 'data: {"type": "reasoning", "content": "需要调用工具"}\n\n'
         else:
             result.content = outcome["content"]
             result.finish_reason = "stop"
@@ -186,9 +186,7 @@ def _parse_sse(chunks: list[str]) -> list[dict]:
 async def test_chat_send_message_react_loop(tmp_path, agent_params):
     """验证完整 ReAct 闭环：LLM 调工具 → 工具执行 → LLM 总结 → 消息保存"""
     # 1. 准备依赖
-    fake_sm = FakeSessionManager(
-        {"id": "s1", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
-    )
+    fake_sm = FakeSessionManager({"id": "s1", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"})
     context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
 
     target_file = tmp_path / "out.txt"
@@ -261,15 +259,15 @@ async def test_chat_send_message_react_loop(tmp_path, agent_params):
     assistant_msg = next(m for m in req2 if m["role"] == "assistant")
     assert "tool_calls" in assistant_msg, "assistant 消息必须携带 tool_calls 字段"
     tool_msg = next(m for m in req2 if m["role"] == "tool")
-    assert tool_msg["tool_call_id"] == assistant_msg["tool_calls"][0]["id"], "tool_call_id 必须与 assistant.tool_calls 配对"
+    assert tool_msg["tool_call_id"] == assistant_msg["tool_calls"][0]["id"], (
+        "tool_call_id 必须与 assistant.tool_calls 配对"
+    )
 
 
 @pytest.mark.asyncio
 async def test_chat_send_message_no_tools_plain_answer(agent_params):
     """LLM 直接给答复（不调工具）时，闭环仍正常"""
-    fake_sm = FakeSessionManager(
-        {"id": "s2", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
-    )
+    fake_sm = FakeSessionManager({"id": "s2", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"})
     context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
 
     fake_llm = FakeLLM([{"type": "stop", "content": "直接回答"}])
@@ -309,9 +307,7 @@ async def test_chat_send_message_no_tools_plain_answer(agent_params):
 @pytest.mark.asyncio
 async def test_chat_current_user_message_is_not_duplicated_in_llm_context(agent_params):
     """刚持久化的当前消息不能又作为历史与当前输入各出现一次。"""
-    fake_sm = _PersistedHistorySessionManager(
-        {"id": "s-current", "user_id": "user_x", "system_prompt": "sys"}
-    )
+    fake_sm = _PersistedHistorySessionManager({"id": "s-current", "user_id": "user_x", "system_prompt": "sys"})
     context_manager = ContextManager(
         session_manager=fake_sm,
         llm=TiktokenTokenCounter("gpt-4"),
@@ -339,20 +335,14 @@ async def test_chat_current_user_message_is_not_duplicated_in_llm_context(agent_
     async for _ in response.body_iterator:
         pass
 
-    current = [
-        item
-        for item in fake_llm.requests[0]
-        if item == {"role": "user", "content": "同一条当前问题"}
-    ]
+    current = [item for item in fake_llm.requests[0] if item == {"role": "user", "content": "同一条当前问题"}]
     assert len(current) == 1
 
 
 @pytest.mark.asyncio
 async def test_chat_stop_cancels_running_agent(agent_params):
     """/chat/stop 置位 → 运行中的 Agent 优雅取消（CANCELLED），流带取消事件结束。"""
-    fake_sm = FakeSessionManager(
-        {"id": "s3", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
-    )
+    fake_sm = FakeSessionManager({"id": "s3", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"})
     context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
     ts = TaskService()
 
@@ -400,9 +390,7 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch, agent_params):
     场景：LLM 首轮声明调工具（registry 空 → 协议错误会 CONTINUE 触发第二轮 LLM），
     首个事件推送后检测到断连 → 置位取消 → Agent 轮次边界收尾（calls 保持 1，不空转）。
     """
-    fake_sm = FakeSessionManager(
-        {"id": "s4", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"}
-    )
+    fake_sm = FakeSessionManager({"id": "s4", "user_id": "user_x", "system_prompt": "你是一个友好的AI助手"})
     context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
     ts = TaskService()
     fake_llm = FakeLLM(
@@ -450,9 +438,7 @@ async def test_chat_client_disconnect_auto_cancels(monkeypatch, agent_params):
 
     assert cancelled == ["s4"], "检测到断连应置位一次会话取消"
     assert fake_llm.calls == 1, "断连取消后不应再发起第二轮 LLM 调用（防空转烧钱）"
-    assert "tool_call" not in types and "done" not in types, (
-        f"断连后应停止向断连客户端推送后续事件: {types}"
-    )
+    assert "tool_call" not in types and "done" not in types, f"断连后应停止向断连客户端推送后续事件: {types}"
     assert ts.cancel_session("s4") is False, "流结束应清理该会话的活动运行"
 
 
@@ -462,9 +448,7 @@ async def test_chat_failure_before_first_event_clears_run_and_finishes_sse(
     agent_params,
 ):
     """运行登记后、首事件前失败仍输出 error/DONE，并释放自己的登记。"""
-    fake_sm = FakeSessionManager(
-        {"id": "s-fail", "user_id": "user_x", "system_prompt": "sys"}
-    )
+    fake_sm = FakeSessionManager({"id": "s-fail", "user_id": "user_x", "system_prompt": "sys"})
     context_manager = ContextManager(
         session_manager=fake_sm,
         llm=TiktokenTokenCounter("gpt-4"),
@@ -506,9 +490,7 @@ async def test_chat_failure_before_first_event_clears_run_and_finishes_sse(
 @pytest.mark.asyncio
 async def test_chat_consumer_aclose_cancels_and_cleans_without_done(agent_params):
     """消费者提前关闭会同步关闭子流、清登记，且关闭路径不额外产出 DONE。"""
-    fake_sm = FakeSessionManager(
-        {"id": "s-close", "user_id": "user_x", "system_prompt": "sys"}
-    )
+    fake_sm = FakeSessionManager({"id": "s-close", "user_id": "user_x", "system_prompt": "sys"})
     context_manager = ContextManager(
         session_manager=fake_sm,
         llm=TiktokenTokenCounter("gpt-4"),
@@ -541,9 +523,7 @@ async def test_chat_consumer_aclose_cancels_and_cleans_without_done(agent_params
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
-async def test_chat_asgi_disconnect_closes_run_and_body_iterator(
-    spec_version, monkeypatch, agent_params
-):
+async def test_chat_asgi_disconnect_closes_run_and_body_iterator(spec_version, monkeypatch, agent_params):
     """ASGI 两条断连分支都必须完成清理。
 
     2.4 由 `send()` 抛 OSError 触发（Starlette 转 `ClientDisconnect`）；2.3 由
@@ -556,9 +536,7 @@ async def test_chat_asgi_disconnect_closes_run_and_body_iterator(
     生成器随取消自然展开，清理会自行完成。故 2.3 参数是路径覆盖与「无悬挂运行 /
     许可可回收」的回归保护，不能单独证明边界清理必要。
     """
-    fake_sm = FakeSessionManager(
-        {"id": "s-send", "user_id": "user_x", "system_prompt": "sys"}
-    )
+    fake_sm = FakeSessionManager({"id": "s-send", "user_id": "user_x", "system_prompt": "sys"})
     context_manager = ContextManager(
         session_manager=fake_sm,
         llm=TiktokenTokenCounter("gpt-4"),
@@ -650,12 +628,8 @@ async def _run_with_iteration_budget(
 
     脚本每轮都调工具、从不给最终答复，因此循环必然耗尽：LLM 调用次数 == 生效的 max_iterations。
     """
-    fake_sm = FakeSessionManager(
-        {"id": "s_iter", "user_id": "user_x", "system_prompt": "sys"}
-    )
-    context_manager = ContextManager(
-        session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4")
-    )
+    fake_sm = FakeSessionManager({"id": "s_iter", "user_id": "user_x", "system_prompt": "sys"})
+    context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
     target_file = tmp_path / "out.txt"
     fake_llm = FakeLLM(
         [
@@ -672,9 +646,7 @@ async def _run_with_iteration_budget(
     WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
     registry.register(WriteFileTool())
 
-    request = SendMessageRequest(
-        session_id="s_iter", message="帮我写个文件", max_iterations=request_max_iterations
-    )
+    request = SendMessageRequest(session_id="s_iter", message="帮我写个文件", max_iterations=request_max_iterations)
     response = await send_message(
         request=request,
         user_id="user_x",
