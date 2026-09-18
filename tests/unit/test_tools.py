@@ -2,18 +2,17 @@
 ToolService 单元测试
 
 覆盖：
-    工具级并发信号量：并发执行工具数不超过 agent_max_concurrent_tools
+    共享准入：并发执行工具数不超过单运行/全局工具上限
     execute 基本流程：注册/执行/统计
-    异常时信号量释放
+    异常时 Permit 释放
 """
 
 import asyncio
 
 import pytest
 
-from app.config import settings
-from tests.tool_lifecycle import StandaloneToolService as ToolService
 from app.integration.tools.base import BaseTool, ToolResult
+from tests.tool_lifecycle import StandaloneToolService as ToolService
 
 
 class _SleepTool(BaseTool):
@@ -45,9 +44,8 @@ class _SleepTool(BaseTool):
 
 
 @pytest.mark.asyncio
-async def test_tool_service_limits_concurrency(monkeypatch):
-    """工具级并发不超过 agent_max_concurrent_tools。"""
-    monkeypatch.setattr(settings, "agent_max_concurrent_tools", 2)
+async def test_tool_service_limits_concurrency():
+    """工具级并发不超过构造时注入的单运行/全局准入上限。"""
     reg = ToolService(max_concurrent_tools=2)
     tool = _SleepTool(delay=0.02)
     reg.register(tool)
@@ -55,14 +53,13 @@ async def test_tool_service_limits_concurrency(monkeypatch):
     # 并发执行 5 次
     await asyncio.gather(*[reg.execute("sleep_tool", {}) for _ in range(5)])
 
-    assert tool.max_active <= 2, f"并发工具数应受信号量限制（2），实际 {tool.max_active}"
+    assert tool.max_active <= 2, f"并发工具数应受准入上限限制（2），实际 {tool.max_active}"
     assert tool.max_active >= 1
 
 
 @pytest.mark.asyncio
-async def test_tool_service_execute_basic(monkeypatch):
+async def test_tool_service_execute_basic():
     """execute 基本流程：成功返回 + 统计记录。"""
-    monkeypatch.setattr(settings, "agent_max_concurrent_tools", 5)
     reg = ToolService(max_concurrent_tools=5)
     tool = _SleepTool(delay=0)
     reg.register(tool)
@@ -77,9 +74,8 @@ async def test_tool_service_execute_basic(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tool_service_releases_semaphore_on_error(monkeypatch):
-    """工具异常时信号量仍释放（async with 保证）。"""
-    monkeypatch.setattr(settings, "agent_max_concurrent_tools", 2)
+async def test_tool_service_releases_permit_on_error():
+    """工具异常时 Permit 仍释放（finally 保证），后续调用不被占坑阻塞。"""
     reg = ToolService(max_concurrent_tools=2)
 
     class _FailTool(_SleepTool):
@@ -88,7 +84,7 @@ async def test_tool_service_releases_semaphore_on_error(monkeypatch):
 
     reg.register(_FailTool(delay=0))
 
-    # 第一次异常，信号量应释放；第二次仍能进入（不阻塞）
+    # 第一次异常，Permit 应释放；第二次仍能进入（不阻塞）
     r1 = await reg.execute("sleep_tool", {})
     assert not r1.success
     r2 = await reg.execute("sleep_tool", {})

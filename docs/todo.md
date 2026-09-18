@@ -354,7 +354,7 @@ P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿�
 | --- | --- | --- | --- |
 | ① 调用前后处理与安全重试 / 已完成 | P1：已分离真实执行、结果处理和非关键观测；BaseTool 默认禁止重试，只有显式安全声明和次数余额同时满足才重复；见 [TOOLS-050](../issues/integration/tools/2026-09-14-executor-postprocessing-retry.md) | S2、S3、S8 | 红测闭合；工具相关 94 passed、全量 991 passed。生产适配器与 SDK 内部重试上界仍归 Piece ④逐项核验，不影响本 piece 的 Executor 边界验收 |
 | ② 运行身份、控制信号与独立事实 / 已完成 | P3-A＋P4-A：已实现公开上下文、事实入口和类型化终止；Application 创建 run_id，贯穿 Gateway、Agent、策略及测试替身 | S1、S3、S4、S8 | 强制 call/facts 契约、同会话多 run 取消隔离、批次事实先接管和 shared 异常依赖方向已由专项与跨层测试覆盖；真实后台句柄仍按 Piece ④边界待实施 |
-| ③ 共享准入与配置迁移 / 待实施 | P3-A：实现 Admission 的全局/单运行容量、有界排队、按运行轮转和资源联合准入；同步配置字段、Container、settings.py 注释及配置文档 | S3、S5、配置规格 | 容量不超限；撤回与取得许可竞态不泄漏；无关运行可继续；旧键无兼容别名，改名不扩大总并发 |
+| ③ 共享准入与配置迁移 / 已完成（进程内） | P3-A：已实现 ToolAdmission 的全局/单运行容量、有界排队、按运行轮转、可中断等待与撤回/关闭转换；同步配置字段、Container、settings.py 注释及配置文档 | S3、S5、配置规格 | 全局/单运行容量、队列上限、取消/deadline 竞态、撤回/关闭转换与放行同刻不泄漏、Permit 幂等释放、旧键迁移及 Executor 层准入拒绝出口已由定向测试覆盖；资源联合准入和跨进程 fencing 仍归后续 Piece⑦/⑧ |
 | ④ 真实执行与有界清理接管 / 待实施 | P3-A：实现 Supervisor、AttemptHandle 及首批只读适配器的真实完成跟踪、清理和迟回事实接管 | S2、S3、S5、S6、S8 | 真实线程未结束不退容量；迟回值有 Owner；清理与接管有界；依赖不在仍被使用时提前关闭 |
 | ⑤ 并行成果、协议历史与终态 / 待实施 | P4-A＋P5-A：在 ② 的事实接线上完善 BatchRunner/Collector、ReAct 历史及事件提交，完成只读交付 A 验收 | S1、S4、S8 | 部分完成后取消仍保留兄弟成果；协议消息正确配对；done 唯一；终态后无新业务调用 |
 | ⑥ 持久意图、事实账本与恢复 / 待实施 | P2：实现存储端口、数据库适配器、迁移和恢复接线；覆盖条件更新、事件幂等、意图比较及累计核验次数 | S3、S7、S8 | 必需意图写入失败时零执行；旧事实不覆盖新事实；重启不重放业务、不重置核验次数；通过真实数据库验证 |
@@ -461,7 +461,7 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 
 ### 本轮评审记录
 
-2026-09-14 最新结论：Piece ①、②已完成。Piece ②新增强制 `ToolCallContext/ToolFactSink` 契约，chat/Application 创建唯一 run 身份，TaskService 按 run 隔离且按 session 取消全部活动运行；三种 Agent/策略透传父 run 控制，ReAct 为每批/每 call 建立独立身份并在类型化终止前接管事实；Integration 先保存事实副本再通知 Domain。定向策略/Agent/工具生命周期 232 项、全量 1015 项通过，`scripts.verify_alignment` 与 `git diff --check` 通过。Piece ③～⑧待实施，线程/进程真实句柄、迟回值和有界清理仍归 Piece ④。
+2026-09-18 最新结论：Piece ①、②已完成，Piece ③ 已完成进程内共享准入。Container 向 ToolService 注入全局/单运行限额等标量配置，由 ToolService 构造唯一 `ToolAdmission` 并注入 ToolExecutor，维护全局/单运行在途上限、两级有界等待队列、按运行轮转和取消/deadline 可中断等待；队列满或准入超时返回 `CAPACITY_EXCEEDED`，不进入工具重试但按正常退出点留审计；旧 `agent_max_concurrent_tools` 配置入口已迁移，两级 pending 上限的大小关系在 `Settings` 层校验。Piece ③ 验收项已全部由定向测试覆盖：容量、队列上限、取消/deadline 竞态、撤回/关闭转换与「撤回与放行同刻不泄漏 Permit」竞态、Permit 幂等释放、旧键迁移。Piece ④～⑧待实施，真实线程/进程句柄、资源联合准入、迟回值和持久恢复仍未完成。
 
 历史背景见 [C-02 文档设计交接](history/completed-work.md#c-02-p0-design-history)，不在活动计划中重复各轮验证叙述。
 

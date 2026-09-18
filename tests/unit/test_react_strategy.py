@@ -18,7 +18,6 @@ import time
 import pytest
 from jsonschema import SchemaError
 
-from app.config import settings
 from app.domain.ports.llm_gateway import StreamResult
 from app.domain.reasoning import ReActStrategy, ToolExecutionOptions
 from app.domain.reasoning.react import _terminal_result
@@ -2740,9 +2739,8 @@ async def test_react_tool_failures_raise_arbitration():
 
 
 @pytest.mark.asyncio
-async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
+async def test_react_execute_tool_calls_parallel_preserves_order():
     """execute_tool_calls：tool_messages 顺序保持 = tool_calls 输入顺序。"""
-    monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)
     reg = _make_registry(
         max_concurrent=10,
         tools=[
@@ -2771,9 +2769,8 @@ async def test_react_execute_tool_calls_parallel_preserves_order(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_react_execute_tool_calls_actually_concurrent(monkeypatch):
+async def test_react_execute_tool_calls_actually_concurrent():
     """execute_tool_calls：并行执行总耗时 < 串行和。"""
-    monkeypatch.setattr(settings, "agent_max_concurrent_tools", 10)
     reg = _make_registry(
         max_concurrent=10,
         tools=[_DelayTool("tool_a", delay=0.05), _DelayTool("tool_b", delay=0.05)],

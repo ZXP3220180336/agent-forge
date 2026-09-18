@@ -14,7 +14,7 @@
 - 记忆配置：MEMORY_ENABLED, MEMORY_MAX_SHORT_TERM, ...
 - 数据库配置：DATABASE_URL, DATABASE_POOL_SIZE, ...
 - Redis 配置：REDIS_URL, REDIS_SESSION_TTL
-- 工具配置：TOOL_TIMEOUT, TOOL_MAX_RETRIES
+- 工具配置：TOOL_TIMEOUT, TOOL_MAX_RETRIES, TOOL_MAX_CONCURRENT_EXECUTIONS*
 - Tavily 配置：TAVILY_API_KEY, ...
 - 日志配置：LOG_LEVEL, LOG_FORMAT, ...
 - 监控配置：METRICS_ENABLED, METRICS_PORT
@@ -28,10 +28,10 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 import httpx
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -186,7 +186,11 @@ class Settings(BaseSettings):
 
     # 并发控制配置
     agent_max_concurrent_tasks: int = 10  # 最大并发任务数
-    agent_max_concurrent_tools: int = 3  # 单个任务最大并发工具数
+    tool_max_concurrent_executions_per_run: int = 3  # 单运行最大在途工具数
+    tool_max_concurrent_executions: int = 3  # 所有运行共享的全局在途工具数
+    tool_max_pending_calls: int = 30  # 全局工具排队上限
+    tool_max_pending_calls_per_run: int = 6  # 单运行工具排队上限
+    tool_admission_timeout_seconds: float = 30.0  # 单次准入等待上限
     agent_task_queue_size: int = 50  # 任务队列大小
     agent_worker_pool_size: int = 5  # 工作线程池大小
 
@@ -305,6 +309,41 @@ class Settings(BaseSettings):
         if v < 1 or v > 100:
             raise ValueError(f"并发任务数必须在 1-100 之间，当前值: {v}")
         return v
+
+    @field_validator(
+        "tool_max_concurrent_executions_per_run",
+        "tool_max_concurrent_executions",
+        "tool_max_pending_calls",
+        "tool_max_pending_calls_per_run",
+    )
+    @classmethod
+    def validate_tool_admission_counts(cls, v: int) -> int:
+        """工具准入容量和队列上限必须为正整数。"""
+        if v < 1:
+            raise ValueError(f"工具准入参数必须为正整数，当前值: {v}")
+        return v
+
+    @field_validator("tool_admission_timeout_seconds")
+    @classmethod
+    def validate_tool_admission_timeout(cls, v: float) -> float:
+        """工具准入等待必须为正数。"""
+        if v <= 0:
+            raise ValueError(f"工具准入等待必须为正数，当前值: {v}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_tool_pending_bounds(self) -> Self:
+        """单运行排队上限不能大于全局排队上限（ToolAdmission 的同名约束）。
+
+        单独校验每个字段看不到这层关系；提前到配置层报错，避免配置通过校验、却
+        在 Container 装配 ToolAdmission 时才失败。
+        """
+        if self.tool_max_pending_calls_per_run > self.tool_max_pending_calls:
+            raise ValueError(
+                "tool_max_pending_calls_per_run 不能大于 tool_max_pending_calls，"
+                f"当前值: {self.tool_max_pending_calls_per_run} > {self.tool_max_pending_calls}"
+            )
+        return self
 
     @field_validator("agent_priority_queue_size")
     @classmethod
@@ -442,7 +481,11 @@ class Settings(BaseSettings):
         """获取并发控制配置字典"""
         return {
             "max_concurrent_tasks": self.agent_max_concurrent_tasks,
-            "max_concurrent_tools": self.agent_max_concurrent_tools,
+            "max_concurrent_tools_per_run": self.tool_max_concurrent_executions_per_run,
+            "max_concurrent_tools": self.tool_max_concurrent_executions,
+            "max_pending_tool_calls": self.tool_max_pending_calls,
+            "max_pending_tool_calls_per_run": self.tool_max_pending_calls_per_run,
+            "tool_admission_timeout_seconds": self.tool_admission_timeout_seconds,
             "task_queue_size": self.agent_task_queue_size,
             "worker_pool_size": self.agent_worker_pool_size,
         }

@@ -28,6 +28,7 @@ class ErrorCode(StrEnum):
     JSON_PARSE = "JSON_PARSE"  # 参数 JSON 解析失败
     VALIDATION = "VALIDATION"  # 参数校验失败
     REJECTED = "REJECTED"  # 审批拒绝
+    CAPACITY_EXCEEDED = "CAPACITY_EXCEEDED"  # 共享准入容量或等待队列已满
     TIMEOUT = "TIMEOUT"  # 执行超时（executor 外层 wait_for，工具整体挂起）
     UNKNOWN = "UNKNOWN"  # 未捕获异常
 

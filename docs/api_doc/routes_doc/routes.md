@@ -244,7 +244,7 @@ Authorization: Bearer <token>
 ## 配置关联
 
 - Agent 运行参数（含 `agent_max_iterations`、`agent_max_tool_protocol_retries` 与其它模型/执行/上下文护栏）由 `container.agent_params` 注入 `ChatService`
-- 并发约束（`agent_max_concurrent_tasks` / `agent_max_concurrent_tools`）作用于 TaskService / ToolService
+- 并发约束（`agent_max_concurrent_tasks` / `tool_max_concurrent_executions*`）作用于 TaskService / ToolAdmission
 - 完整配置项见 [config 文档](../../config_doc/config.md)
 
 ---

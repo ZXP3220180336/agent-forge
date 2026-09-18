@@ -1,4 +1,4 @@
-"""工具执行器：信号量 + 重试 + 超时 + 校验 + 截断 + 审计 + 统计 + 钩子。"""
+"""工具执行器：共享准入 + 重试 + 超时 + 校验 + 截断 + 审计 + 统计 + 钩子。"""
 
 import asyncio
 import copy
@@ -16,6 +16,7 @@ from app.domain.ports.tool_execution import (
     ToolFactSink,
 )
 from app.domain.ports.tool_gateway import ErrorCode, ToolResult
+from app.integration.tools.admission import ToolAdmission
 from app.integration.tools.base import BaseTool
 from app.integration.tools.hooks import ExecutionHooks
 from app.integration.tools.registry import ToolRegistry
@@ -39,7 +40,7 @@ logger = get_logger("tools.executor")
 
 
 class ToolExecutor:
-    """执行编排：在信号量内运行工具（重试/超时/校验/截断/审计），记录统计并触发钩子。
+    """执行编排：在共享准入内运行工具（重试/超时/校验/截断/审计），记录统计并触发钩子。
 
     依赖注入 registry（找工具）/ stats（统计记录）/ hooks（成功通知）/
     validator（参数校验）/ result_processor（结果截断）/ auditor（审计留痕）。
@@ -57,6 +58,7 @@ class ToolExecutor:
         auditor: ToolAuditor | None = None,
         approval_gate: ApprovalGate | None = None,
         max_concurrent_tools: int = 3,
+        admission: ToolAdmission | None = None,
         tool_timeout: int = 30,
         tool_max_retries: int = 3,
         observation_timeout: float = 0.2,
@@ -71,8 +73,13 @@ class ToolExecutor:
         self._tool_timeout = tool_timeout
         self._tool_max_retries = tool_max_retries
         self._observation_timeout = observation_timeout
-        # 信号量构造期创建：asyncio 原语 3.10+ 惰性绑定事件循环，构造期创建仅需保证实例就绪
-        self._tool_semaphore = asyncio.Semaphore(max_concurrent_tools)
+        # 直接构造 Executor 时退化为同限额准入；生产装配注入跨运行共享的准入器。
+        # 判定用 is None 而非真值：准入器是有状态对象，将来实现 __len__/__bool__ 也不会被误判为空。
+        self._admission = (
+            ToolAdmission(global_limit=max_concurrent_tools, per_run_limit=max_concurrent_tools)
+            if admission is None
+            else admission
+        )
         # per-tool 锁：concurrency_safe=False 的工具同实例内串行化
         self._tool_locks: dict[str, asyncio.Lock] = {}
         # Integration 先接管事实；已交付且已完成清理的快照可释放。
@@ -165,10 +172,14 @@ class ToolExecutor:
         call: ToolCallContext,
         facts: ToolFactSink,
     ) -> ToolResult:
-        """执行工具（信号量最外层，包裹含重试退避的完整流程）。
+        """执行工具（共享准入最外层，包裹含重试退避的完整流程）。
 
-        async with 天然保证异常/取消时释放信号量，不会挂死占坑。
+        Permit 在 finally 中释放，异常/取消不会泄漏共享容量。准入拒绝（队列满或
+        等待耗尽）不执行工具、不进入重试，但仍按“每次 execute 退出点 1 条”留审计。
         """
+
+        # 入口时刻用于准入拒绝的审计耗时：它包含排队等待，不是执行耗时。
+        entry_started_at = time.monotonic()
 
         # 预登记一次事实，确保至少有一条 NOT_STARTED 记录，避免上层 run 只收到空事实。
         self._publish_fact(
@@ -181,19 +192,41 @@ class ToolExecutor:
         )
 
         # 入口终止：调用前检查取消 / 绝对期限 / run 停止，“快速拒绝”，
-        # 可以避免信号量被占用后的取消态依然排队等待，不会进入信号量排队，也不会占用并发槽。
+        # 可以避免已经取消的调用进入准入队列，也不会占用在途容量。
         self.check_abort(call)
 
-        # 如果调用已经进入信号量等待，取消信号到达后，
-        # asyncio.Semaphore.acquire() 本身不会立即被 cancel_event 唤醒。
-        # 任务仍可能要等到其他调用释放信号量然后取得并发许可后，才能执行第二次检查。
-        # 【即取消后不会继续执行真实工具，但不保证排队等待会立即结束。】
-        # 这也是为什么进入信号量排队之前要增加“快速拒绝”的原因
-        async with self._tool_semaphore:
-            # 排队竞态：取得并发许可后再次检查取消 / 绝对期限 / run 停止，处理排队期间的竞态，
-            # 避免信号量排队期间被取消后仍进入执行。
-            self.check_abort(call)
+        # 准入等待可被取消 / deadline 中断；None 表示队列满或准入预算耗尽。
+        permit = await self._admission.acquire(call)
+        if permit is None:
+            result = ToolResult(
+                success=False,
+                content="",
+                error="工具调用排队容量已满或准入等待超时",
+                error_code=ErrorCode.CAPACITY_EXCEEDED,
+            )
 
+            # 准入拒绝也是 execute 的退出点，与未注册 / 校验失败一样留痕；工具未执行，
+            # 风险等级取注册表实际声明（未注册时退化为 L0）。
+            await self._audit(
+                self._registry.get(name),
+                parameters,
+                result,
+                started_at=entry_started_at,
+                tool_name=name,
+            )
+
+            self._publish_fact(
+                call,
+                facts,
+                revision=1,
+                execution_state=ToolExecutionState.NOT_STARTED,
+                effect_state=ToolEffectState.NONE,
+                cleanup_state=ToolCleanupState.NOT_NEEDED,
+                result=result,
+            )
+            return result
+
+        try:
             # 真实执行（含重试循环、审计、统计、钩子）
             result, execution_state, cleanup_state = await self._execute_impl(
                 name,
@@ -204,6 +237,8 @@ class ToolExecutor:
                 call=call,
                 facts=facts,
             )
+        finally:
+            permit.release()
 
         # 真实调用返回后先发布事实，再复查控制；取消不会抹除已发生结果。
         effect_state = (
@@ -221,10 +256,14 @@ class ToolExecutor:
             result=result,
         )
 
-        # 调用后终态：复查取消 / 绝对期限 / run 停止，避免在信号量释放后才发现调用已被取消。
+        # 调用后终态：复查取消 / 绝对期限 / run 停止，避免在 Permit 释放后才发现调用已被取消。
         self.check_abort(call)
 
         return result
+
+    async def close(self) -> None:
+        """停止新工具准入并撤回排队调用；在途调用由后续生命周期组件接管。"""
+        await self._admission.close()
 
     async def _execute_impl(
         self,
@@ -237,7 +276,7 @@ class ToolExecutor:
         call: ToolCallContext,
         facts: ToolFactSink,
     ) -> tuple[ToolResult, ToolExecutionState, ToolCleanupState]:
-        """执行工具（带参数校验、自动重试、结果截断、审计留痕），在信号量保护内调用。"""
+        """执行工具（带参数校验、自动重试、结果截断、审计留痕），在准入保护内调用。"""
         started_at = time.monotonic()
 
         # 1. 查找工具

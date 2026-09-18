@@ -102,7 +102,7 @@
 
 | # | 特性 | 状态 | 备注 |
 | --- | --- | --- | --- |
-| 14 | 并行工具执行 | ✅ | `asyncio.gather` 保序 + 信号量 + per-tool 锁（`execute_tool_calls`），比 LangChain 默认串行更先进 |
+| 14 | 并行工具执行 | ✅ | `asyncio.gather` 保序 + ToolAdmission 共享准入 + per-tool 锁（`execute_tool_calls`），比 LangChain 默认串行更先进 |
 | 15 | 结构化输出约束 | ✅ | Final Answer 工具模式：`output_schema` 注入 final_answer 工具，模型最后调用提交结构化结果并终止循环（模型原生、无额外调用）；参数校验失败回喂（VALIDATION）自纠 |
 | 16 | guardrail | ❌ | 无输入 / 输出 guardrail（增强项，当前单用户本地场景不强制） |
 | 17 | 权限 / 审批 | ✅ | ApprovalGate / RiskLevel L0-L3 / 审计——工具层工程护栏完整（`app/integration/tools/security.py`） |

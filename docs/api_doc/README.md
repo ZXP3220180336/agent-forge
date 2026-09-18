@@ -157,7 +157,7 @@ API 的**对外暴露层**，承担协议适配与服务编排：
 ## 配置关联
 
 - Agent 运行参数由 `container.agent_params` 在启动时注入 `ChatService`，请求仅可覆盖 `max_iterations`
-- 并发约束（`agent_max_concurrent_tasks` / `agent_max_concurrent_tools`）作用于 TaskService / ToolService
+- 并发约束（`agent_max_concurrent_tasks` / `tool_max_concurrent_executions*`）作用于 TaskService / ToolAdmission
 - 全部配置项见 [config 文档](../config_doc/config.md)
 
 ---

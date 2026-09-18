@@ -42,7 +42,7 @@
     - [配置优先级](#配置优先级)
     - [.env 文件示例](#env-文件示例)
   - [配置消费导航](#配置消费导航)
-  - [工具生命周期 P0 配置（待实施规格）](#工具生命周期-p0-配置待实施规格)
+  - [工具生命周期 P0 配置（Piece③ 已接入）](#工具生命周期-p0-配置piece③-已接入)
   - [相关文档](#相关文档)
 
 ---
@@ -90,7 +90,7 @@ app/config/
 | `llm_fast_config` | dict | 快速模型参数字典（model 为空时回退主模型） |
 | `llm_embedding_config` | dict | 嵌入模型参数字典（api_key / base_url / model / dimensions） |
 | `agent_config` | dict | Agent 运行参数字典（max_iterations / timeout / streaming / priority_levels / default_priority / high_priority_timeout / low_priority_timeout / priority_queue_size） |
-| `concurrency_config` | dict | 并发控制参数字典（max_concurrent_tasks / max_concurrent_tools / task_queue_size / worker_pool_size） |
+| `concurrency_config` | dict | 并发控制参数字典（任务并发、工具全局/单运行准入、两级等待上限及工具准入等待） |
 | `database_config` | dict | 数据库连接参数字典（url / pool_size / max_overflow / echo） |
 | `redis_config` | dict | Redis 连接参数字典（url / session_ttl） |
 | `memory_config` | dict | 记忆系统参数字典（enabled / max_short_term / vector_db / collection） |
@@ -355,11 +355,12 @@ llm_service = LLMService(**settings.llm_config)
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `AGENT_MAX_CONCURRENT_TASKS` | int | 10 | 最大并发任务数（验证边界 1-100） |
-| `AGENT_MAX_CONCURRENT_TOOLS` | int | 3 | 单个任务最大并发工具数 |
+| `TOOL_MAX_CONCURRENT_EXECUTIONS_PER_RUN` | int | 3 | 单运行最大在途工具数 |
+| `TOOL_MAX_CONCURRENT_EXECUTIONS` | int | 3 | 所有运行共享的全局在途工具数 |
 | `AGENT_TASK_QUEUE_SIZE` | int | 50 | 任务队列大小 |
 | `AGENT_WORKER_POOL_SIZE` | int | 5 | 工作线程池大小 |
 
-落地：`AGENT_MAX_CONCURRENT_TASKS` → `TaskService` 任务级信号量；`AGENT_MAX_CONCURRENT_TOOLS` → `ToolService` 工具级信号量。信号量用 `async with` 管理，异常/取消时自动释放。详见 [task.md](../application_doc/task_doc/task.md) 与 [tool_service.md](../integration_doc/tools_doc/tool_service.md)。
+落地：`AGENT_MAX_CONCURRENT_TASKS` → `TaskService` 任务级信号量；`TOOL_MAX_CONCURRENT_EXECUTIONS*` → `ToolAdmission` 全局/单运行共享准入。工具 Permit 在 Executor `finally` 中幂等释放，取消与 deadline 可中断排队。详见 [task.md](../application_doc/task_doc/task.md)、[admission.md](../integration_doc/tools_doc/admission.md) 与 [tool_service.md](../integration_doc/tools_doc/tool_service.md)。
 
 ### 6. 记忆系统配置
 
@@ -470,7 +471,8 @@ LLM_REASONING_TEMPERATURE=0.7
 
 # ===== Agent 并发配置 =====
 AGENT_MAX_CONCURRENT_TASKS=20
-AGENT_MAX_CONCURRENT_TOOLS=5
+TOOL_MAX_CONCURRENT_EXECUTIONS_PER_RUN=3
+TOOL_MAX_CONCURRENT_EXECUTIONS=5
 
 # ===== 数据库配置 =====
 DATABASE_URL="postgresql+asyncpg://user:pass@localhost/db"
@@ -500,16 +502,16 @@ REDIS_URL="redis://localhost:6379/0"
 
 <a id="tool-lifecycle-p0"></a>
 
-## 工具生命周期 P0 配置（待实施规格）
+## 工具生命周期 P0 配置（Piece③ 已接入）
 
-2026-09-13：[TOOLS-ADR-008 P0](../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#tool-lifecycle-p0-spec)的初始配置选择。以下新增键尚未进入 settings、环境变量解析或 Container，不能按生产可用配置使用。初值服务本地小并发验证，不是工业通用最佳参数；实施时依据负载证据调整须同步本表。
+2026-09-17：[TOOLS-ADR-008 P0](../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#tool-lifecycle-p0-spec) 的 Piece③ 配置已进入 `settings.py` 与 Container。初值服务本地小并发验证，不是工业通用最佳参数；实施时依据负载证据调整须同步本表。
 
 | 配置键 | 初始值/约束 | 消费者与含义 |
 | --- | --- | --- |
-| tool_max_concurrent_executions_per_run | 3，正整数 | 单运行在途上限；实施时替代 agent_max_concurrent_tools 的配置入口，不保留旧名兼容别名。旧键当前实际控制共享服务全局，迁移须同时接入下行全局上限，不能静默扩大总并发 |
+| tool_max_concurrent_executions_per_run | 3，正整数 | 单运行在途上限；已替代 `agent_max_concurrent_tools`，不保留旧配置名兼容别名 |
 | tool_max_concurrent_executions | 3，正整数 | Admission 全局真实在途上限；单运行实际上限取 min(本键, tool_max_concurrent_executions_per_run) |
 | tool_max_pending_calls | 30，正整数 | 全局等待队列上限；不是允许创建无限并发 task |
-| tool_max_pending_calls_per_run | 6，正整数且不大于全局等待上限 | 单运行排队限制，溢出明确拒绝，不在 Executor 自动循环重试 |
+| tool_max_pending_calls_per_run | 6，正整数且不大于全局等待上限 | 单运行排队限制，溢出明确拒绝，不在 Executor 自动循环重试；与全局等待上限的大小关系由 `Settings` 模型校验器与 `ToolAdmission` 构造期同时校验 |
 | tool_admission_timeout_seconds | 30，正有限数 | 每个 attempt 的准入等待上限：首次从 Facade 入口起（含刷新/审批），重试从退避结束后重新准入起；均含排队/必需意图记录并被总 deadline 收紧。耗尽仅表示该 attempt 未调度，保留前次执行事实与实际次数，不将整个 operation 记为未执行 |
 | tool_cleanup_timeout_seconds | 1，正有限数 | 每调用清理/移交的最大等待；取与领域剩余清理窗口的较小值，不逐层新增宽限 |
 | tool_observation_timeout_seconds | 0.2，正有限数 | 每次调用非关键观测总预算，非每 Hook 重新给一份 |

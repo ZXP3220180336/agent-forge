@@ -6,23 +6,24 @@ ToolExecutor 组件集成测试（经 ToolService Facade）
     成功结果按 tool.max_output_length 统一截断
     concurrency_safe=False 同工具串行化 / True 可并发
     审计在 success / failure / validation / not-found 各路径各记录一条
+    准入拒绝：CAPACITY_EXCEEDED + NOT_STARTED 事实 + 审计一条，工具不执行
 """
 
 import asyncio
 
 import pytest
 
+from app.domain.ports.tool_execution import ToolExecutionState
 from app.domain.ports.tool_gateway import ErrorCode
 from app.integration.tools.base import BaseTool, ToolResult
-from tests.tool_lifecycle import (
-    StandaloneToolExecutor as ToolExecutor,
-    StandaloneToolService as ToolService,
-)
 from app.integration.tools.hooks import ExecutionHooks
 from app.integration.tools.registry import ToolRegistry
 from app.integration.tools.result_processor import ResultProcessor
 from app.integration.tools.security import RiskLevel, ToolAuditor
 from app.integration.tools.stats import ToolStatsCollector
+from tests.tool_lifecycle import StandaloneToolExecutor as ToolExecutor
+from tests.tool_lifecycle import StandaloneToolService as ToolService
+from tests.tool_lifecycle import execution_kwargs
 
 
 class _ConcurrentTool(BaseTool):
@@ -218,6 +219,74 @@ async def test_audit_on_tool_failure():
     assert len(spy.records) == 1
     assert spy.records[0]["success"] is False
     assert "业务失败" in spy.records[0]["error"]
+
+
+class _HoldingTool(_ParamTool):
+    """占住在途名额的慢工具：execute 阻塞到 release 置位，用于制造排队与容量拒绝。"""
+
+    def __init__(self, release: asyncio.Event) -> None:
+        self._release = release
+        self.started = asyncio.Event()
+        self.calls = 0
+
+    @property
+    def risk_level(self) -> RiskLevel:
+        return RiskLevel.L1_WRITE
+
+    async def execute(self, **kwargs) -> ToolResult:
+        self.calls += 1
+        self.started.set()
+        await self._release.wait()
+        return ToolResult(success=True, content="done")
+
+
+@pytest.mark.asyncio
+async def test_capacity_rejection_yields_capacity_exceeded_with_audit_and_fact():
+    """准入拒绝：CAPACITY_EXCEEDED + NOT_STARTED 终局事实 + 审计 1 条，工具未执行、不重试。"""
+    release = asyncio.Event()
+    spy = _SpyAuditor()
+    service = ToolService(
+        auditor=spy,
+        max_concurrent_tools_per_run=1,
+        max_concurrent_tools_global=1,
+        max_pending_calls=1,
+        max_pending_calls_per_run=1,
+        admission_timeout_seconds=0.05,  # 队列满之外的兜底出口，避免测试挂在默认 30s
+    )
+    tool = _HoldingTool(release)
+    service.register(tool)
+
+    holder = asyncio.create_task(service.execute("param_tool", {"count": 1}))
+    await tool.started.wait()
+
+    queued = asyncio.create_task(service.execute("param_tool", {"count": 1}))
+    await asyncio.sleep(0)  # 让 queued 进入等待队列，占满唯一排队名额
+    assert service._executor._admission.pending == 1
+
+    facts_kwargs = execution_kwargs()
+    rejected = await service.execute("param_tool", {"count": 1}, **facts_kwargs)
+
+    assert rejected.success is False
+    assert rejected.error_code == ErrorCode.CAPACITY_EXCEEDED
+
+    # 事实：终局保持 NOT_STARTED，并带上拒绝结果
+    facts = facts_kwargs["facts"].snapshot()
+    assert len(facts) == 1
+    assert facts[0].execution_state == ToolExecutionState.NOT_STARTED
+    assert facts[0].result is not None
+    assert facts[0].result.error_code == ErrorCode.CAPACITY_EXCEEDED
+
+    # 审计：拒绝也是 execute 的退出点，1 条，且风险级取注册表实际声明（非 L0 兜底）
+    assert len(spy.records) == 1
+    assert spy.records[0]["tool_name"] == "param_tool"
+    assert spy.records[0]["error_code"] == ErrorCode.CAPACITY_EXCEEDED
+    assert spy.records[0]["risk_level"] == RiskLevel.L1_WRITE
+
+    # 工具只被 holder 进入过一次；拒绝的调用从未执行
+    assert tool.calls == 1
+
+    release.set()
+    await asyncio.gather(holder, queued)
 
 
 class _SlowTool(_ParamTool):

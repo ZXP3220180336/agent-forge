@@ -1,6 +1,6 @@
 # ToolService 工具服务说明文档
 
-> **更新日期**：2026-09-16
+> **更新日期**：2026-09-17
 > **模块**：`app/integration/tools/tool_service.py`
 > **文档定位**：ToolService 独立说明 —— 工具系统的对外统一入口（容器 + 执行 + 统计 + 钩子 + 内置工具装配 + 选择 + 校验 + 截断 + 审计）。
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -31,7 +31,7 @@ ToolService 是**工具系统的对外统一入口**（Facade），聚合六大�
 5. **钩子机制**：工具执行成功后运行扩展钩子（异步 / 同步皆可，钩子失败不影响工具执行）
 6. **内置工具装配**：`init_default_tools()` 用 importlib 扫描 `builtin` 包，幂等注册
 7. **外部工具热加载**：`execute` 入口惰性检查 `external/` 目录，变化即重扫（无后台任务，见 [external.md](external.md)）
-8. **生命周期回收**：`shutdown()` 遍历已注册工具调 `on_unload`（内置工具随应用生命周期，容器关闭时调用；外部工具卸载已走 loader）
+8. **生命周期回收**：`shutdown()` 先终止共享工具准入（撤回排队调用，不可逆），再遍历已注册工具调 `on_unload`（内置工具随应用生命周期，容器关闭时调用；外部工具卸载已走 loader）
 
 ### 组件装配
 
@@ -40,7 +40,8 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 ├── ToolRegistry        注册中心：容器 + Schema 导出 + 元数据查询
 ├── ToolSelector        选择器：选注入子集（默认全量注入）
 ├── ParameterValidator  校验器：jsonschema 严格校验 + 错误归因
-├── ToolExecutor        调度器：信号量 / 重试 / 超时 / 截断 / 审计编排
+├── ToolAdmission       共享准入：全局/单运行容量、有界排队、取消可中断等待
+├── ToolExecutor        调度器：准入 / 重试 / 超时 / 截断 / 审计编排
 ├── ResultProcessor     结果处理器：head+tail 截断 + 错误归一化
 ├── ToolAuditor         安全审计：风险分级 + 审计留痕（日志，不拦截）
 ├── ApprovalGate        审批通道：requires_approval 工具执行前确认（默认放行）
@@ -55,10 +56,11 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 
 ### 设计原则
 
-1. **工具级并发信号量**：限制单任务内最大并发工具调用数（`agent_max_concurrent_tools`），是 **Agent 维度（GPU / 服务器资源）**，而非 LLM API 维度（RPM / TPM 由 `reservation_limiter` 覆盖）
-2. **`async with` 保证释放**：信号量在 `execute` 入口获取，异常 / 取消时自动释放
-3. **幂等装配**：`init_default_tools` 按**注册 key（实例 `tool.name`）**判断是否已存在，重复调用不重复注册
-4. **审计常开**：审计默认启用（不设 settings 开关），L2 起 WARNING 级别便于 ops 检索
+1. **共享准入**：`ToolAdmission` 同时维护全局与单运行在途上限，多个 Agent 共用同一进程内容量
+2. **有界等待**：全局/单运行排队有上限，取消和 deadline 可中断等待；队列溢出不进入工具重试
+3. **Permit 幂等释放**：Executor 在 `finally` 释放已取得许可，异常 / 取消不会泄漏容量
+4. **幂等装配**：`init_default_tools` 按**注册 key（实例 `tool.name`）**判断是否已存在，重复调用不重复注册
+5. **审计常开**：审计默认启用（不设 settings 开关），L2 起 WARNING 级别便于 ops 检索
 
 ## 核心类与方法
 
@@ -82,15 +84,15 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 | `add_execution_hook` | `(hook: Callable) -> None` | 注册执行钩子 `async def hook(tool_name, parameters, result)` |
 | `init_default_tools` | `() -> list[str]` | 注册全部内置工具（幂等），返回新增**类名**列表 |
 | `refresh_external_tools` | `async () -> None` | 手动触发外部工具重扫（加载新增 / 重载修改 / 卸载删除） |
-| `shutdown` | `async () -> None` | 关闭全部已注册工具资源（调用 on_unload，幂等；容器关闭时调用） |
+| `shutdown` | `async () -> None` | 终止共享工具准入（不可逆）并关闭全部已注册工具资源（调用 on_unload，幂等；容器关闭时调用） |
 
 ## 关键实现详解
 
 ### 执行编排（委托 ToolExecutor）
 
-`execute()` 完整执行流程（信号量 → 校验 → 重试 → 截断 → 审计 → 串行化）见 [executor.md](executor.md)，本处只列 Facade 视角要点：
+`execute()` 完整执行流程（共享准入 → 校验 → 重试 → 截断 → 审计 → 串行化）见 [executor.md](executor.md)，本处只列 Facade 视角要点：
 
-- 工具级并发信号量限制单任务并发（`agent_max_concurrent_tools`），`async with` 保证异常 / 取消时释放
+- ToolAdmission 限制全局/单运行并发，Permit 在 Executor `finally` 中释放
 - 参数校验失败返回**可归因错误**（jsonschema，见 [validator.md](validator.md)）
 - 成功结果 head+tail 统一截断（`tool.max_output_length`，见 [result_processor.md](result_processor.md)）
 - 每次 `execute()` 审计 1 条最终结果，覆盖全路径（见 [security.md](security.md)）
@@ -122,7 +124,7 @@ def init_default_tools(self) -> list[str]:
 
 ### 生命周期回收 `shutdown`
 
-`container.shutdown` **最先**调 `tool_service.shutdown()`（[container.py](../../../app/container.py)）——`on_unload` 可能依赖 redis / LLM，须在基础设施关闭前执行（对齐 agentflow 关闭清理链）。`shutdown` 遍历已注册工具调 `on_unload`：内置工具随应用生命周期回收（如 web_browse 关闭全局 httpx 连接池）；外部工具卸载已由 loader 走 `on_unload`（幂等，此处对残留实例二次兜底）。单工具失败仅 warning，可重复调用。范式取舍见 [ADR TOOLS-ADR-006](../../../adr/integration/tools/2026-08-17-tool-lifecycle-paradigm.md)。
+`container.shutdown` **最先**调 `tool_service.shutdown()`（[container.py](../../../app/container.py)）——`on_unload` 可能依赖 redis / LLM，须在基础设施关闭前执行（对齐 agentflow 关闭清理链）。`shutdown` 分两步：**先** `executor.close()` 终止共享工具准入并撤回排队调用（[admission.md](admission.md)），该转换不可逆——之后任何 `execute` 抛 `ToolRunStoppedError`，被撤回的排队者按 `CAPACITY_EXCEEDED` 返回；**再**遍历已注册工具调 `on_unload`：内置工具随应用生命周期回收（如 web_browse 关闭全局 httpx 连接池）；外部工具卸载已由 loader 走 `on_unload`（幂等，此处对残留实例二次兜底）。单工具失败仅 warning，可重复调用。范式取舍见 [ADR TOOLS-ADR-006](../../../adr/integration/tools/2026-08-17-tool-lifecycle-paradigm.md)。
 
 ### 边缘情况
 
@@ -175,7 +177,7 @@ await container.tool_service.refresh_external_tools()
 
 相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config_doc/config.md) 工具配置 / Agent 并发控制节）。
 
-> ToolService 构造时读取 `agent_max_concurrent_tools` 创建信号量；`timeout` / `max_retries` 为调用方可覆盖的执行上限，是否重试仍由适配器安全声明决定。`tool_observation_timeout` 当前为构造参数，配置系统接线随 C-02 Piece ③完成。截断上限经内置工具 `register_config` 注入后由 `max_output_length` 属性暴露。
+> Container 将 `tool_max_concurrent_executions`、`tool_max_concurrent_executions_per_run`、两级 pending 上限和 `tool_admission_timeout_seconds` 注入 ToolService，由它构造唯一的 `ToolAdmission` 并注入 ToolExecutor；`timeout` / `max_retries` 为调用方可覆盖的执行上限，是否重试仍由适配器安全声明决定。截断上限经内置工具 `register_config` 注入后由 `max_output_length` 属性暴露。
 
 ---
 

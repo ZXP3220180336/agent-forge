@@ -85,6 +85,7 @@
 | app/integration/llm/structured_codec.py | ✅ | docs/integration_doc/llm_doc/structure.md | tests/unit/test_generate_structured.py | R1 纯转换与校验；公开调用测试覆盖双副本与回喂边界 |
 | app/integration/llm/token_counter.py | ✅ | docs/integration_doc/llm_doc/token_counter.md | tests/unit/test_token_counter.py | tiktoken 计数实现（get_encoder/content_to_text/TiktokenTokenCounter，经 LLMService.count_* 对外） |
 | app/integration/tools/assembler.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/integration/test_tool_execution.py | 内置工具幂等装配 |
+| app/integration/tools/admission.py | ✅ | docs/integration_doc/tools_doc/admission.md | tests/unit/test_tool_admission.py | 全局/单运行共享准入、有界排队、轮转公平、可中断等待与撤回/关闭转换 |
 | app/integration/tools/base.py | ✅ | docs/integration_doc/tools_doc/tools.md | tests/unit/test_tool_executor_components.py | BaseTool 抽象 + 元数据 + 保守安全重试声明 + 校验委托 + 生命周期钩子 |
 | app/integration/tools/executor.py | ✅ | docs/integration_doc/tools_doc/executor.md | tests/unit/test_tool_executor_components.py | 执行编排：安全重试、控制复查及 Integration 优先事实接管；生命周期契约另见 test_tool_lifecycle_contract.py |
 | app/integration/tools/hooks.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tool_hooks.py | 成功路径有界通知 + 参数/结果快照隔离；Executor 组合边界另见 test_tool_executor_components.py |

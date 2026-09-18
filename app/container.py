@@ -265,7 +265,11 @@ class Container:
 
         # 注册内置工具到全局注册中心
         self.tool_service = ToolService(
-            max_concurrent_tools=settings.agent_max_concurrent_tools,
+            max_concurrent_tools_per_run=settings.tool_max_concurrent_executions_per_run,
+            max_concurrent_tools_global=settings.tool_max_concurrent_executions,
+            max_pending_calls=settings.tool_max_pending_calls,
+            max_pending_calls_per_run=settings.tool_max_pending_calls_per_run,
+            admission_timeout_seconds=settings.tool_admission_timeout_seconds,
             tool_timeout=settings.tool_timeout,
             tool_max_retries=settings.tool_max_retries,
             external_config_source=lambda key: getattr(settings, key, None),

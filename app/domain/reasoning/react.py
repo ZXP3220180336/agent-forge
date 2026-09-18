@@ -788,7 +788,7 @@ class ReActStrategy:
         并行执行工具调用列表，追加结果到 messages，记录到 _tool_call_records。
 
         并发执行：asyncio.gather 并行执行所有工具（并发度由 ToolService 的
-        工具级信号量 agent_max_concurrent_tools 限制）。gather 保证结果顺序 =
+        ToolAdmission 全局/单运行准入限制）。gather 保证结果顺序 =
         输入顺序，因此 tool_messages / _tool_call_records 的顺序与 tool_calls
         一致——OpenAI 兼容 API 要求 tool 消息与前置 assistant.tool_calls 的
         tool_call_id 配对，顺序不能乱。

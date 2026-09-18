@@ -23,6 +23,11 @@ VALIDATOR_CASES = [
     ("llm_temperature", [2.5, -0.1]),
     ("agent_max_iterations", [0, 101]),
     ("agent_max_concurrent_tasks", [0, 101]),
+    ("tool_max_concurrent_executions_per_run", [0, -1]),
+    ("tool_max_concurrent_executions", [0, -1]),
+    ("tool_max_pending_calls", [0, -1]),
+    ("tool_max_pending_calls_per_run", [0, -1]),
+    ("tool_admission_timeout_seconds", [0, -1.0]),
     ("agent_priority_queue_size", [0, 10001]),
     ("llm_embedding_dimensions", [0, -5]),
     ("jwt_expire_minutes", [0, 10081]),
@@ -51,6 +56,13 @@ VALID_BOUNDARY_CASES = [
     ("llm_temperature", [0.0, 2.0]),
     ("agent_max_iterations", [1, 100]),
     ("agent_max_concurrent_tasks", [1, 100]),
+    ("tool_max_concurrent_executions_per_run", [1, 3]),
+    ("tool_max_concurrent_executions", [1, 3]),
+    # 准入队列上限的下界取决于同级字段：单运行排队不得超过全局排队，因此全局只列
+    # 默认值 30 这一合法边界，1 与成对约束由 test_tool_pending_bounds_pair 覆盖。
+    ("tool_max_pending_calls", [30]),
+    ("tool_max_pending_calls_per_run", [1, 6]),
+    ("tool_admission_timeout_seconds", [0.1, 30.0]),
     ("agent_priority_queue_size", [1, 10000]),
     ("llm_embedding_dimensions", [1]),
     ("jwt_expire_minutes", [1, 10080]),
@@ -73,6 +85,15 @@ def test_validators_accept_boundaries(field, valid_values):
     for value in valid_values:
         s = _make(**{field: value})
         assert getattr(s, field) == value
+
+
+def test_tool_pending_bounds_pair():
+    """准入队列上限成对校验：单运行不得超过全局，两侧都取 1 的下界合法。"""
+    s = _make(tool_max_pending_calls=1, tool_max_pending_calls_per_run=1)
+    assert (s.tool_max_pending_calls, s.tool_max_pending_calls_per_run) == (1, 1)
+
+    with pytest.raises(ValidationError):
+        _make(tool_max_pending_calls=1, tool_max_pending_calls_per_run=6)
 
 
 # ===== 属性 / 配置字典 =====
@@ -215,13 +236,21 @@ def test_agent_config():
 def test_concurrency_config():
     s = _make(
         agent_max_concurrent_tasks=2,
-        agent_max_concurrent_tools=1,
+        tool_max_concurrent_executions_per_run=1,
+        tool_max_concurrent_executions=2,
+        tool_max_pending_calls=3,
+        tool_max_pending_calls_per_run=1,
+        tool_admission_timeout_seconds=4.0,
         agent_task_queue_size=3,
         agent_worker_pool_size=4,
     )
     assert s.concurrency_config == {
         "max_concurrent_tasks": 2,
-        "max_concurrent_tools": 1,
+        "max_concurrent_tools_per_run": 1,
+        "max_concurrent_tools": 2,
+        "max_pending_tool_calls": 3,
+        "max_pending_tool_calls_per_run": 1,
+        "tool_admission_timeout_seconds": 4.0,
         "task_queue_size": 3,
         "worker_pool_size": 4,
     }

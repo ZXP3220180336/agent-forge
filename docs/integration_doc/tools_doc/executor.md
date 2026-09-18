@@ -1,10 +1,10 @@
 # 执行调度器（ToolExecutor）说明文档
 
-> **更新日期**：2026-09-14
+> **更新日期**：2026-09-17
 > **模块**：`app/integration/tools/executor.py`
-> **职责**：工具执行编排 —— 信号量 / 参数校验接入 / 超时 / 重试 / 结果截断 / 审计 / 统计 / 钩子 / per-tool 串行化
+> **职责**：工具执行编排 —— 共享准入 / 参数校验 / 超时 / 重试 / 结果截断 / 审计 / 统计 / 钩子 / per-tool 串行化
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
-> **工业级对照**：对齐工业界「执行调度器」（网关统一分发、并发池 concurrency-safe/exclusive 屏障、超时重试）；本组件在信号量内完成全部执行期横切关注点
+> **工业级对照**：对齐工业界「执行调度器」（网关统一分发、共享准入、concurrency-safe/exclusive 屏障、超时重试）；本组件在 Permit 内完成全部执行期横切关注点
 
 ---
 
@@ -14,7 +14,7 @@
   - [📋 目录](#-目录)
   - [设计目标](#设计目标)
   - [核心概念解释](#核心概念解释)
-    - [工具级并发信号量](#工具级并发信号量)
+    - [共享工具准入](#共享工具准入)
     - [per-tool 串行化锁](#per-tool-串行化锁)
     - [重试与超时](#重试与超时)
     - [组件接入点](#组件接入点)
@@ -32,16 +32,16 @@
 ## 设计目标
 
 1. **执行期横切关注点单点收敛**：参数校验、超时、重试、结果截断、审计、统计、钩子、并发控制、人工审批全部由 executor 编排，工具本身只实现业务逻辑
-2. **并发安全**：工具级信号量限制单任务并发；`concurrency_safe=False` 工具同实例内串行化
+2. **并发安全**：共享准入限制全局/单运行并发；`concurrency_safe=False` 工具同实例内串行化
 3. **可靠执行**：超时保护；仅在适配器显式确认本次失败可安全重复且次数未耗尽时渐进式退避重试
-4. **全路径审计**：成功 / 失败 / 未注册 / 校验失败 / 超时均留痕
+4. **全路径审计**：成功 / 失败 / 未注册 / 校验失败 / 超时 / 审批拒绝 / 准入拒绝均留痕
 5. **人工审批可插拔**：`requires_approval` 工具经 `ApprovalGate` 确认（默认放行），未来接真实审批仅换注入实现
 
 ## 核心概念解释
 
-### 工具级并发信号量
+### 共享工具准入
 
-`_tool_semaphore = asyncio.Semaphore(max_concurrent_tools)`（默认 3）限制**单任务内**最大并发工具调用数，保护 GPU / 服务器资源。`async with` 天然保证异常 / 取消时释放，不挂死占坑。
+`ToolAdmission` 同时限制所有运行的全局在途数和单运行在途数，并维护按运行轮转的有界等待队列。准入等待可被取消或 deadline 中断；队列满或准入预算耗尽返回 `CAPACITY_EXCEEDED`，不会进入工具重试。取得的 `ToolPermit` 在 Executor 的 `finally` 中幂等释放。
 
 ### per-tool 串行化锁
 
@@ -59,7 +59,7 @@
 
 **超时优先级（调用方显式 > 工具自声明 > 全局配置）**：`execute(timeout=...)` 显式传入最高优先；否则用工具声明的 `BaseTool.timeout`（如 code_exec 60s / readFile 5s）；两者均缺省时用全局 `tool_timeout`（默认 30s）。工具按自身耗时特征声明默认值，编排层可按需覆盖。
 
-**错误码**：各失败路径返回结构化 `error_code`（六码定义见 [tools.md](tools.md) `ErrorCode`）；工具业务失败透传其业务码（默认 `None`）。错误码与 `error` 中文归因并存：前者供审计聚合与证据链可审计性，后者供 LLM 修正。
+**错误码**：各失败路径返回结构化 `error_code`（七码定义见 [tools.md](tools.md) `ErrorCode`）；工具业务失败透传其业务码（默认 `None`）。错误码与 `error` 中文归因并存：前者供审计聚合与证据链可审计性，后者供 LLM 修正。
 
 ### 组件接入点
 
@@ -79,28 +79,30 @@ ToolExecutor（依赖注入，无 settings 直接依赖）
 ├── approval_gate        → 人工审批确认（默认 AutoApprovalGate 放行）
 ├── stats                → 统计记录（ToolStatsCollector）
 ├── hooks                → 成功通知（ExecutionHooks）
-├── _tool_semaphore      → 工具级并发信号量
+├── _admission           → 全局/单运行共享准入与有界排队
 └── _tool_locks          → per-tool 串行化锁（concurrency_safe=False）
 ```
 
-组件全部构造期注入（`ToolService` 装配，可自定义替换），信号量构造期创建（asyncio 原语 3.10+ 惰性绑定事件循环，构造期创建仅保证实例就绪）。
+组件全部构造期注入（`ToolService` 装配，可自定义替换），准入器状态由所属事件循环维护。
 
 ## 执行流程
 
 ```text
 execute(name, parameters, timeout, max_retries, retry_delay, *, call, facts)
   0. 保存 NOT_STARTED 快照；检查 cancel → deadline → run_stop
-  async with _tool_semaphore                # 工具级并发信号量
-    1. 查工具：未注册 → 审计（保留原始名，risk 兜底 L0）→ 返回 "工具 '...' 未注册"
-    2. 解析执行参数：timeout = 调用方显式 or tool.timeout（自声明）or 全局 tool_timeout
+  1. ToolAdmission.acquire(call)            # 全局/单运行准入与可中断等待
+     · 队列满/准入超时 → 审计 → CAPACITY_EXCEEDED，未执行且不重试
+     · 取消/期限 → 抛类型化控制异常（不写审计，由上层终态承接）
+  2. 查工具：未注册 → 审计（保留原始名，risk 兜底 L0）→ 返回 "工具 '...' 未注册"
+  3. 解析执行参数：timeout = 调用方显式 or tool.timeout（自声明）or 全局 tool_timeout
        · max_retries = 调用方显式 or 全局 tool_max_retries
-    3. 参数解析：str → json.loads（失败 → 审计 → 返回 "参数 JSON 解析失败: {e}"）
+    4. 参数解析：str → json.loads（失败 → 审计 → 返回 "参数 JSON 解析失败: {e}"）
        · 结果必须为**字符串键 dict**——数组/标量/null（LLM 误输出）或非 str 键 dict → 审计 → 返回 JSON_PARSE（避免 `**parameters` 抛 TypeError 逃逸）
-    4. jsonschema 校验：issues = tool.validation_issues(**parameters)
+    5. jsonschema 校验：issues = tool.validation_issues(**parameters)
        · 非空 → 审计 → 返回 "参数验证失败: {归因列表}"        # 可归因，非 kwargs 转储
-    5. 人工审批：if tool.requires_approval → await approval_gate.request(name, parameters)
+    6. 人工审批：if tool.requires_approval → await approval_gate.request(name, parameters)
        · 拒绝 → 审计 → 返回 "工具调用被拒绝：等待人工审批"（默认 AutoApprovalGate 放行）
-    6. 执行（concurrency_safe=False 时 per-tool 锁串行化）：
+    7. 执行（concurrency_safe=False 时 per-tool 锁串行化）：
        重试循环 for attempt in range(max_retries)：
        · 创建 attempt_id，发布 RUNNING
        · asyncio.wait_for(tool.execute(**parameters), timeout)
@@ -108,17 +110,18 @@ execute(name, parameters, timeout, max_retries, retry_delay, *, call, facts)
               → 在副本上截断 → 统计 → 返回处理后结果或原结果
        · 返回失败 / 超时 / 异常 → 记 error（normalize_error）→ 统计
        · can_retry=True 且 attempt 尚有余额 → 退避 asyncio.sleep(retry_delay * 2^attempt)
-    7. 在剩余观察预算内先审计最终结果；成功时再通知快照 Hook
-    8. 发布 operation 终局或 UNKNOWN/PENDING 事实；复查控制 → 返回或类型化终止
+    8. 在剩余观察预算内先审计最终结果；成功时再通知快照 Hook
+    9. 发布 operation 终局或 UNKNOWN/PENDING 事实；复查控制 → 返回或类型化终止
 ```
 
-**统计记录时机**：每次真实尝试（成功 / 失败 / 超时 / 异常）`stats.record` 一次；**钩子触发**：仅 `result.success` 时 `hooks.run`；**审计**：每次 execute 退出点 1 条最终结果（不做 per-attempt）。
+**统计记录时机**：每次真实尝试（成功 / 失败 / 超时 / 异常）`stats.record` 一次，准入拒绝不是真实尝试、不记统计；**钩子触发**：仅 `result.success` 时 `hooks.run`；**审计**：每次 execute 正常退出点 1 条最终结果（不做 per-attempt），含准入拒绝；cancel / deadline / run_stop 的类型化控制异常不是正常退出点，不写审计，由上层终态承接。
 
 ## 对外接口
 
 | 方法 | 签名 | 说明 |
 | --- | --- | --- |
-| `execute` | `async (name, parameters, timeout=None, max_retries=None, retry_delay=1.0, *, call, facts) -> ToolResult` | 强制携运行上下文与事实入口，在信号量内执行完整流程 |
+| `execute` | `async (name, parameters, timeout=None, max_retries=None, retry_delay=1.0, *, call, facts) -> ToolResult` | 强制携运行上下文与事实入口，在共享准入 Permit 内执行完整流程 |
+| `close` | `async () -> None` | 终止工具准入并撤回排队调用；由 `ToolService.shutdown` 调用，不可逆 |
 | `check_abort` | `(call) -> None` | cancel→deadline→run_stop 同步复查；命中抛 shared 类型化异常 |
 | `prune_tool_lock` | `(name: str) -> None` | 注销工具时清理 per-tool 锁（由 ToolService.unregister 调用） |
 
@@ -132,8 +135,9 @@ execute(name, parameters, timeout, max_retries, retry_delay, *, call, facts)
 4. **并发下统计**：同步字典更新（无锁），多任务并发时统计为尽力而为
 5. **统计 / 审计 / 钩子失败**：不影响工具执行结果；异步 Hook 和审计共享观察预算（审计优先），同步 Hook 必须非阻塞；吞取消回调的独立接管归 C-02 Piece ④
 6. **局部 timeout**：attempt 事实为 UNKNOWN/PENDING，不能据 asyncio task 被取消推定底层线程结束；真实句柄与迟回事实接管归 Piece ④
-6. **成功路径截断先于统计 / 钩子**：钩子看到的 `result.content` 为截断后内容
-7. **审批拒绝**：`requires_approval` 工具被 gate 拒绝 → 返回 `"工具调用被拒绝：等待人工审批"`，工具不执行，审计 1 条
+7. **成功路径截断先于统计 / 钩子**：钩子看到的 `result.content` 为截断后内容
+8. **审批拒绝**：`requires_approval` 工具被 gate 拒绝 → 返回 `"工具调用被拒绝：等待人工审批"`，工具不执行，审计 1 条
+9. **准入拒绝**：队列满或准入等待耗尽 → 返回 `CAPACITY_EXCEEDED`，工具不执行、`NOT_STARTED` 事实、审计 1 条；审计耗时自 execute 入口起算，含排队等待，工具元数据取注册表实际声明（未注册时兜底 L0）
 
 ## 配置项清单
 
@@ -141,14 +145,17 @@ execute(name, parameters, timeout, max_retries, retry_delay, *, call, facts)
 
 | 配置 | 说明 |
 | --- | --- |
-| `max_concurrent_tools` | 工具级并发信号量（`agent_max_concurrent_tools` 注入） |
+| `tool_max_concurrent_executions` | 所有运行共享的全局在途上限 |
+| `tool_max_concurrent_executions_per_run` | 单运行在途上限 |
+| `tool_max_pending_calls` / `tool_max_pending_calls_per_run` | 全局/单运行等待队列上限 |
+| `tool_admission_timeout_seconds` | 单次准入等待上限 |
 | `tool_timeout` | 单次执行超时（秒）；优先级：调用方显式 > 工具自声明 `timeout` > 本配置 |
 | `tool_max_retries` | 最大执行次数（含首次） |
-| `tool_observation_timeout` | 每次调用的非关键异步 Hook/审计共享边界；当前为 ToolService 构造参数，配置系统接线由 C-02 Piece ③完成 |
+| `tool_observation_timeout` | 每次调用的非关键异步 Hook/审计共享边界 |
 
 ## 测试状态
 
-`tests/unit/test_tool_executor_components.py` 覆盖参数/并发/审计/超时/计数与最近失败归因，并新增成功后处理失败不重放、默认禁止重试、显式安全重试、判断异常停止、Hook 超时和快照隔离、统计及审计失败不覆盖结果。既有 `test_tools.py`、`test_tool_hooks.py`、`test_tool_audit.py` 和 Agent 工具编排测试作为回归护栏；实际数量以测试收集结果为准。
+`tests/unit/test_tool_admission.py` 覆盖全局容量、单运行隔离、轮转公平、队列上限、取消、准入超时、撤回/关闭转换与「撤回与放行同刻不泄漏 Permit」竞态；`tests/unit/test_tool_executor_components.py` 覆盖参数/并发/审计/超时/计数与最近失败归因，并新增准入拒绝的 `CAPACITY_EXCEEDED` + 终局事实 + 审计、成功后处理失败不重放、默认禁止重试、显式安全重试、判断异常停止、Hook 超时和快照隔离、统计及审计失败不覆盖结果。既有 `test_tools.py`、`test_tool_hooks.py`、`test_tool_audit.py` 和 Agent 工具编排测试作为回归护栏；实际数量以测试收集结果为准。
 
 ## 设计决策
 

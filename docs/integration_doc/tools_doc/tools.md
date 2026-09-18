@@ -1,6 +1,6 @@
 # 工具模块接口文档
 
-> **更新日期**：2026-09-14
+> **更新日期**：2026-09-17
 > **模块**：`app/integration/tools/`
 > **文档定位**：工具系统对外接口契约 + 六大子组件导航。执行细节（并发 / 重试 / 截断 / 审计）见对应子文档，本文不重复。
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -32,7 +32,8 @@ app/integration/tools/
 ├── registry.py            ← ToolRegistry 注册中心（容器 + Schema 导出 + 元数据查询）
 ├── selector.py            ← ToolSelector 选择器（协议 + DefaultToolSelector 全量注入）
 ├── validator.py           ← ParameterValidator 参数校验器（jsonschema 严格校验）
-├── executor.py            ← ToolExecutor 执行调度器（信号量 / 重试 / 超时 / 校验 / 截断 / 审计 / 审批拦截）
+├── admission.py           ← ToolAdmission 共享准入（全局/单运行容量、有界排队）
+├── executor.py            ← ToolExecutor 执行调度器（准入 / 重试 / 超时 / 校验 / 截断 / 审计 / 审批拦截）
 ├── result_processor.py    ← ResultProcessor 结果处理器（head+tail 截断 + 错误归一化）
 ├── security.py            ← RiskLevel / ToolAuditor / ApprovalGate 安全审计（分级 + 审计 + 审批通道）
 ├── stats.py               ← ToolStats / ToolStatsCollector 执行统计
@@ -49,7 +50,7 @@ app/integration/tools/
 1. **Facade 模式**：`ToolService` 是唯一对外入口，内部六大子组件不对外暴露
 2. **依赖倒置**：领域层只依赖 `ToolGateway` 端口；`ToolService` 结构实现之（非显式继承）
 3. **零 settings 依赖**：tools 模块不直接 import settings，配置经 `container.py` 的 `register_config` / 构造参数注入
-4. **工具级并发信号量**：限制单任务内最大并发工具数（`agent_max_concurrent_tools`），保护 GPU / 服务器资源
+4. **共享工具准入**：限制全局与单运行在途工具数，维护有界等待和取消可中断的 Permit 生命周期
 5. **外部工具惰性检查**：`execute` 入口对比 external 目录签名，变化才重扫（无后台任务，对齐「变更 → 下次调用生效」）
 
 ### 设计启示（来自 Agent 行为实验）
@@ -99,7 +100,7 @@ class ToolGateway(Protocol):
 
 `call/facts` 是强制生命周期契约：Domain 提供 run/batch/call/operation 身份及控制信号，Integration 先接管事实再同步通知批次收集器。三类全局控制终止使用 shared 的类型化异常；单工具 timeout 仍由 `ToolResult(ErrorCode.TIMEOUT)` 表达。完整字段见 [领域端口说明](../../domain_doc/ports_doc/ports.md#工具运行上下文与事实)。
 
-`ErrorCode`（[app/domain/ports/tool_gateway.py](../../../app/domain/ports/tool_gateway.py)）系统级 6 码：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数 JSON 解析失败）/ `VALIDATION`（校验失败）/ `REJECTED`（审批拒绝）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。工具业务错误为 `None`（`error` 字符串承载 LLM 归因）——**错误码 + 中文归因并存**：错误码供审计聚合与证据链可审计性，`error` 供 LLM 修正。
+`ErrorCode`（[app/domain/ports/tool_gateway.py](../../../app/domain/ports/tool_gateway.py)）系统级 7 码：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数 JSON 解析失败）/ `VALIDATION`（校验失败）/ `REJECTED`（审批拒绝）/ `CAPACITY_EXCEEDED`（共享准入容量或等待队列已满，工具未执行且不重试）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。工具业务错误为 `None`（`error` 字符串承载 LLM 归因）——**错误码 + 中文归因并存**：错误码供审计聚合与证据链可审计性，`error` 供 LLM 修正。
 
 ### `ToolService` 方法
 
@@ -136,7 +137,8 @@ ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#
 | 工具注册中心 | registry.py | 容器 + Schema 导出 + 按风险/分类查询 | [registry.md](registry.md) |
 | 工具选择器 | selector.py | 选注入子集（默认全量，预留召回） | [selector.md](selector.md) |
 | 参数校验器 | validator.py | jsonschema 严格校验 + 错误归因 | [validator.md](validator.md) |
-| 执行调度器 | executor.py | 信号量 / 重试 / 超时 / 校验 / 截断 / 审计 / 审批拦截编排 | [executor.md](executor.md) |
+| 共享准入 | admission.py | 全局/单运行容量、有界排队和可中断等待 | [admission.md](admission.md) |
+| 执行调度器 | executor.py | 准入 / 重试 / 超时 / 校验 / 截断 / 审计 / 审批拦截编排 | [executor.md](executor.md) |
 | 结果处理器 | result_processor.py | head+tail 截断 + 错误归一化 | [result_processor.md](result_processor.md) |
 | 安全审计 | security.py | 风险分级 + 审计留痕 + 审批通道 | [security.md](security.md) |
 

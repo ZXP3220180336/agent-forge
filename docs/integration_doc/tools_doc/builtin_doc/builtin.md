@@ -53,7 +53,7 @@ app/integration/tools/
 Agent 层 (LLM 运行时)
     │ 调用 tool_service.execute("search", ...)
     ▼
-执行调度 (ToolExecutor，经 ToolService 门面)  ← 参数验证 / 超时 / 重试 / 统计 / 信号量
+执行调度 (ToolExecutor，经 ToolService 门面)  ← 共享准入 / 参数验证 / 超时 / 重试 / 统计
     ▼
 Tool 层 (BaseTool)            ← builtin 子模块，每个工具一个 execute()
     ▼

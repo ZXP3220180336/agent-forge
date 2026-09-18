@@ -2,6 +2,7 @@
 工具系统模块
 """
 
+from .admission import ToolAdmission, ToolPermit
 from .base import BaseTool, ToolResult
 from .result_processor import ResultProcessor
 from .security import ApprovalGate, AutoApprovalGate, RiskLevel, ToolAuditor
@@ -17,7 +18,9 @@ __all__ = [
     "ParameterValidator",
     "ResultProcessor",
     "RiskLevel",
+    "ToolAdmission",
     "ToolAuditor",
+    "ToolPermit",
     "ToolResult",
     "ToolSelector",
     "ToolService",

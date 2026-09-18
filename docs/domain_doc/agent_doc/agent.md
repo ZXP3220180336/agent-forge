@@ -62,7 +62,7 @@ app/domain/agent/
 2. **生命周期与策略分离**：agent/ 层提供统一运行入口、上下文和结果桥接，reasoning/ 层实现可独立复用并可相互组合的领域推理流程——依赖方向 `agent → reasoning`，策略层不反向依赖
 3. **运行隔离**：每次 run 的上下文在运行期间不变；同一实例拒绝并发复用
 4. **显式边界映射**：三个 Agent 桥接把 `AgentContext` 映射为 reasoning 的六类不可变执行参数值对象；reasoning 不反向依赖 AgentContext，Planner/Reflection 的专属恢复次数进入 `RecoveryBudget`
-4. **LLM / Agent 分层清晰**：LLM 层单轮推理、Token 提取、连接重试；Agent 层循环编排、工具调用、结果判定
+5. **LLM / Agent 分层清晰**：LLM 层单轮推理、Token 提取、连接重试；Agent 层循环编排、工具调用、结果判定
 
 ### 依赖关系
 
@@ -289,7 +289,8 @@ Agent 模块与 `settings.py` 配置项关联（完整表见 [config 文档](../
 | `agent_max_tool_protocol_retries` | 2 | `AgentContext.max_tool_protocol_retries` 生产值（三策略内嵌 ReAct 的协议修正上限） |
 | `agent_max_same_action_turns` | 3 | `AgentContext.max_same_action_turns` 生产值（循环停滞检测上限） |
 | `agent_max_refine_rounds` | 2 | `AgentContext.max_refine_rounds` 生产值（Reflection 修正 / Planner replan 共用修复尝试上限） |
-| `agent_max_concurrent_tools` | 3 | 单任务工具级并发（ToolGateway） |
+| `tool_max_concurrent_executions_per_run` | 3 | 单运行工具在途上限（ToolGateway） |
+| `tool_max_concurrent_executions` | 3 | 所有运行共享的工具在途上限 |
 
 ---
 

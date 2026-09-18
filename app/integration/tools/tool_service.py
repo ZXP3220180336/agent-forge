@@ -9,6 +9,7 @@ from typing import Any
 
 from app.domain.ports.tool_execution import ToolCallContext, ToolFactSink
 from app.domain.ports.tool_gateway import ToolResult
+from app.integration.tools.admission import ToolAdmission
 from app.integration.tools.assembler import ToolAssembler
 from app.integration.tools.base import BaseTool
 from app.integration.tools.executor import ToolExecutor
@@ -34,6 +35,12 @@ class ToolService:
         tool_timeout: int = 30,
         tool_max_retries: int = 3,
         *,
+        # 准入门禁参数一律 keyword-only：插在既有位置参数之间会让旧的位置调用静默错位。
+        max_concurrent_tools_per_run: int | None = None,
+        max_concurrent_tools_global: int | None = None,
+        max_pending_calls: int = 30,
+        max_pending_calls_per_run: int = 6,
+        admission_timeout_seconds: float = 30.0,
         selector: ToolSelector | None = None,
         validator: ParameterValidator | None = None,
         result_processor: ResultProcessor | None = None,
@@ -47,6 +54,17 @@ class ToolService:
         self._hooks = ExecutionHooks()
         self._assembler = ToolAssembler()
         self._selector = selector or DefaultToolSelector()
+        # max_concurrent_tools 保留为直接构造 ToolService 的程序化入口；生产配置
+        # 分别注入全局和单运行限额，避免多个 Agent 各自拥有独立准入容量。
+        per_run_limit = max_concurrent_tools if max_concurrent_tools_per_run is None else max_concurrent_tools_per_run
+        global_limit = max_concurrent_tools if max_concurrent_tools_global is None else max_concurrent_tools_global
+        admission = ToolAdmission(
+            global_limit=global_limit,
+            per_run_limit=per_run_limit,
+            max_pending=max_pending_calls,
+            max_pending_per_run=max_pending_calls_per_run,
+            admission_timeout=admission_timeout_seconds,
+        )
         self._executor = ToolExecutor(
             self._registry,
             self._stats,
@@ -55,7 +73,8 @@ class ToolService:
             result_processor=result_processor,
             auditor=auditor,
             approval_gate=approval_gate,
-            max_concurrent_tools=max_concurrent_tools,
+            max_concurrent_tools=per_run_limit,
+            admission=admission,
             tool_timeout=tool_timeout,
             tool_max_retries=tool_max_retries,
             observation_timeout=tool_observation_timeout,
@@ -119,7 +138,7 @@ class ToolService:
         call: ToolCallContext,
         facts: ToolFactSink,
     ) -> ToolResult:
-        """执行工具（信号量 + 参数验证 + 自动重试 + 超时 + 统计 + 截断 + 审计 + 钩子）。
+        """执行工具（共享准入 + 参数验证 + 自动重试 + 超时 + 统计 + 截断 + 审计 + 钩子）。
 
         入口先做外部工具惰性检查（目录变化 → 重扫），对齐「变更 → 下次调用生效」。
         """
@@ -161,11 +180,14 @@ class ToolService:
         return self._assembler.assemble(self._registry, self._stats)
 
     async def shutdown(self) -> None:
-        """关闭全部已注册工具资源（调用 on_unload，幂等）。
+        """关闭工具服务：终止工具准入，再关闭全部已注册工具资源（幂等）。
 
+        先 `executor.close()` 终止共享准入并撤回排队调用；该转换不可逆——之后任何
+        `execute` 会抛 `ToolRunStoppedError`，排队者按 `CAPACITY_EXCEEDED` 返回。
         内置工具随应用生命周期，由装配根 shutdown 调用；外部工具卸载已由 loader 走
         on_unload，此处对其幂等（on_unload 实现应可重复调用）。单工具失败不阻断其余。
         """
+        await self._executor.close()
         for name in list(self._registry.list_tools()):
             tool = self._registry.get(name)
             if tool is None:

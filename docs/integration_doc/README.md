@@ -65,7 +65,8 @@ app/integration/
     ├── registry.py               ← ToolRegistry 注册中心（容器 + Schema 导出 + 元数据查询）
     ├── selector.py               ← ToolSelector 选择器（全量注入，预留召回）
     ├── validator.py              ← ParameterValidator 参数校验器（jsonschema 严格校验）
-    ├── executor.py               ← ToolExecutor 执行调度器（信号量/重试/超时/校验/截断/审计）
+    ├── admission.py              ← ToolAdmission 共享准入（全局/单运行容量、有界排队）
+    ├── executor.py               ← ToolExecutor 执行调度器（准入/重试/超时/校验/截断/审计）
     ├── result_processor.py       ← ResultProcessor 结果处理器（head+tail 截断 + 错误归一化）
     ├── security.py               ← RiskLevel / ToolAuditor 安全审计（分级 + 留痕）
     ├── stats.py                  ← ToolStats / ToolStatsCollector 执行统计
@@ -169,7 +170,8 @@ app/integration/
 | `ToolRegistry` | registry.py | 注册中心：容器 + Schema 导出 + 按风险/分类查询 |
 | `ToolSelector` | selector.py | 选择器：选注入子集（默认全量注入，预留召回） |
 | `ParameterValidator` | validator.py | 校验器：jsonschema 严格校验 + 错误归因 |
-| `ToolExecutor` | executor.py | 调度器：信号量 / 重试 / 超时 / 校验 / 截断 / 审计编排 |
+| `ToolAdmission` | tools/admission.py | 全局/单运行共享准入、有界排队和取消可中断等待 |
+| `ToolExecutor` | executor.py | 调度器：准入 / 重试 / 超时 / 校验 / 截断 / 审计编排 |
 | `ResultProcessor` | result_processor.py | 结果处理器：head+tail 截断 + 错误归一化 |
 | `ToolAuditor` | security.py | 安全审计：风险分级 L0-L3 + 审计留痕 |
 | `ToolStatsCollector` | stats.py | 执行统计（调用次数 / 成功率 / 平均耗时） |
@@ -181,7 +183,7 @@ app/integration/
 
 **外部工具**（`external/` + `ExternalToolLoader`）：文件放入目录即被 `execute` 惰性检查发现，下次调用生效（无后台任务），见 [外部工具热加载](tools_doc/external.md)。
 
-**执行流程**：信号量内 → 查注册表 → 参数校验（jsonschema 归因）→ 重试循环（`asyncio.wait_for` + 指数退避）→ 结果截断（head+tail）→ 统计 + 钩子 + 审计。
+**执行流程**：共享准入 Permit → 查注册表 → 参数校验（jsonschema 归因）→ 重试循环（`asyncio.wait_for` + 指数退避）→ 结果截断（head+tail）→ 统计 + 钩子 + 审计。
 
 ## Embedding 服务
 
@@ -196,7 +198,7 @@ app/integration/
 ```text
 用户 → FastAPI 路由 → ReActAgent（领域层，ReAct 循环）
     → LLMGateway.async_generate（集成层：限流 → 重试/熔断 → 整流 → 解析 → 事件）
-    → LLM 返回 tool_calls → ToolGateway.execute（集成层：信号量 → 校验 → 执行 → 重试 → 统计）
+    → LLM 返回 tool_calls → ToolGateway.execute（集成层：共享准入 → 校验 → 执行 → 重试 → 统计）
     → 观察结果回填 → 继续推理 → 最终答案
 ```
 
@@ -220,6 +222,6 @@ app/integration/
 - [应用层说明](../application_doc/README.md)
 - [领域层说明](../domain_doc/README.md)
 - [LLM 层详解](llm_doc/llm.md) · [传输错误处理](llm_doc/error.md) · [执行控制](llm_doc/execution_control.md) · [StreamParser](llm_doc/streaming.md) · [单流消费](llm_doc/stream_consumption.md) · [整流策略](llm_doc/streaming_rectifier.md) · [限流](llm_doc/limiter.md) · [结构化](llm_doc/structure.md) · [成本计算](llm_doc/cost_tracker.md) · [TokenCounter](llm_doc/token_counter.md) · [请求预算](llm_doc/request_budget.md)
-- [ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md) · [外部工具热加载](tools_doc/external.md) · [执行调度](tools_doc/executor.md) · [注册中心](tools_doc/registry.md) · [校验](tools_doc/validator.md) · [结果处理](tools_doc/result_processor.md) · [安全审计](tools_doc/security.md) · [选择器](tools_doc/selector.md) · [统计](tools_doc/stats.md)
+- [ToolService 详解](tools_doc/tool_service.md) · [工具模块接口](tools_doc/tools.md) · [共享准入](tools_doc/admission.md) · [内置工具详解](tools_doc/builtin_doc/builtin.md) · [外部工具热加载](tools_doc/external.md) · [执行调度](tools_doc/executor.md) · [注册中心](tools_doc/registry.md) · [校验](tools_doc/validator.md) · [结果处理](tools_doc/result_processor.md) · [安全审计](tools_doc/security.md) · [选择器](tools_doc/selector.md) · [统计](tools_doc/stats.md)
 - [Embedding 详解](embedding_doc/embedding.md)
 - [配置说明](../config_doc/config.md)
