@@ -10,18 +10,20 @@
 
 ## 📋 目录
 
-- [设计目标](#设计目标)
-- [核心概念解释](#核心概念解释)
-  - [execute 惰性检查](#execute-惰性检查)
-  - [加载 / 重载 / 卸载](#加载--重载--卸载)
-  - [生命周期钩子](#生命周期钩子)
-  - [全链路留痕](#全链路留痕)
-- [对外接口](#对外接口)
-- [外部工具编写约定](#外部工具编写约定)
-- [边界情况](#边界情况)
-- [升级路径](#升级路径)
-- [测试状态](#测试状态)
-- [相关文档](#相关文档)
+- [外部工具热加载（ExternalToolLoader）说明文档](#外部工具热加载externaltoolloader说明文档)
+  - [📋 目录](#-目录)
+  - [设计目标](#设计目标)
+  - [核心概念解释](#核心概念解释)
+    - [execute 惰性检查](#execute-惰性检查)
+    - [加载 / 重载 / 卸载](#加载--重载--卸载)
+    - [生命周期钩子](#生命周期钩子)
+    - [全链路留痕](#全链路留痕)
+  - [对外接口](#对外接口)
+  - [外部工具编写约定](#外部工具编写约定)
+  - [边界情况](#边界情况)
+  - [升级路径](#升级路径)
+  - [测试状态](#测试状态)
+  - [相关文档](#相关文档)
 
 ---
 
@@ -80,7 +82,6 @@ loader 每次操作记录结构化日志（`app.tools.external`）：加载成�
 
 加载和注册不代表获准执行。插件默认 UNKNOWN，须按[能力启用边界](execution.md#当前启用边界)由可信适配器明确声明只读且无需强制审计，才可正式执行/导出。`describe_execution` 不得发起业务副作用；真实线程须经 `invoke` 中的 `execution.run_sync` 登记。注册/加载钩子仍属于受信 Python 代码，不是沙箱隔离。
 
-
 在 `app/integration/tools/external/`（或 `ToolService` 构造注入的目录）放置 `.py` 文件，每个文件可定义多个 `BaseTool` 子类：
 
 ```python
@@ -131,7 +132,7 @@ class MyTool(BaseTool):
 3. **文件级部分失败** → 回滚本文件全部已注册实例（文件级原子性）
 4. **`__init__.py` 与 `_` 开头文件** → 不参与扫描
 5. **重载失败降级**：文件改坏 → 工具暂不可用（旧实例已卸载）→ 修复文件即恢复
-6. **在飞 execute 与重载**：旧实例引用跑完；持锁时 `prune_tool_lock` 跳过，串行化不破坏
+6. **在飞 execute 与重载**：活动调用或后台真实执行未结束时**整文件延后重载**——`_unload_file` 返回 False，`_reload_file` 放弃本次重载并保留旧实例与签名，待下一次刷新重试；旧实例引用此时继续跑完。持锁时 `prune_tool_lock` 跳过，串行化不破坏
 7. **execute 热路径**：每次 execute 进入 `maybe_refresh()`；TTL 内复用签名、不执行 glob/stat，到期后经线程池检查目录签名，签名变化才重扫（见上方「execute 惰性检查」）
 8. **参数 Schema 定义非法** → 注册期拒绝并回滚本文件，与「文件级部分失败」同一出口（其余工具不受影响）；回滚同时释放**当前实例**已建立的 `on_load` 资源，不留无人追踪的连接或句柄
 
@@ -146,7 +147,7 @@ class MyTool(BaseTool):
 
 ## 测试状态
 
-`tests/unit/test_tool_loader.py`（26 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / 注册失败回滚释放当前实例资源 / 重名跳过时释放失败不重复释放 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / maybe_refresh TTL 短路 / maybe_refresh TTL 过期重检 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）/ 兄弟模块清理（_drop_modules + 卸载清理）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
+`tests/unit/test_tool_loader.py`（29 用例）：加载（首扫 / 新增）/ 重载（mtime 变化）/ 卸载 / 冲突拒绝 / 语法错误 / 目录缺失 / 文件级回滚 / 注册失败回滚释放当前实例资源 / 重名跳过时释放失败不重复释放 / on_load / on_load 失败 / on_unload / health_check / maybe_refresh 惰性 / maybe_refresh TTL 短路 / maybe_refresh TTL 过期重检 / 排除规则 / 非法文件名 / 配置注入（CONFIG_KEYS → register_config，无 config_source 跳过）/ 兄弟模块清理（_drop_modules + 卸载清理）。executor 侧 `test_prune_tool_lock_skips_held`（重载锁竞态）。
 
 ## 相关文档
 

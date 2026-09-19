@@ -1,7 +1,7 @@
 # 配置管理模块 对外接口文档
 
 > **对应代码**：`app/config/`（[settings.py](../../app/config/settings.py)）
-> **更新日期**：2026-08-29
+> **更新日期**：2026-09-19
 > **文档定位**：配置模块对外接口契约（`settings` 单例 + 聚合属性）与全项目配置项参考手册
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。
 
@@ -9,7 +9,7 @@
 
 ## 📋 目录
 
-新增待实施规格见[工具生命周期 P0 配置](#tool-lifecycle-p0)；不代表 settings 已提供这些字段。
+工具生命周期 P0 配置见[工具生命周期 P0 配置](#tool-lifecycle-p0)；其中 Piece③④ 所需字段已进入 `settings.py` 与 Container，记录写入、核验、持久保留和宿主字段仍待实施。
 
 - [配置管理模块 对外接口文档](#配置管理模块-对外接口文档)
   - [📋 目录](#-目录)
@@ -42,7 +42,7 @@
     - [配置优先级](#配置优先级)
     - [.env 文件示例](#env-文件示例)
   - [配置消费导航](#配置消费导航)
-  - [工具生命周期 P0 配置（Piece③ 已接入）](#工具生命周期-p0-配置piece③-已接入)
+  - [工具生命周期 P0 配置（Piece③④ 已接入）](#tool-lifecycle-p0)
   - [相关文档](#相关文档)
 
 ---
@@ -502,7 +502,7 @@ REDIS_URL="redis://localhost:6379/0"
 
 <a id="tool-lifecycle-p0"></a>
 
-## 工具生命周期 P0 配置（Piece③ 已接入）
+## 工具生命周期 P0 配置（Piece③④ 已接入）
 
 2026-09-19：[TOOLS-ADR-008 P0](../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#tool-lifecycle-p0-spec) 的 Piece③、④所需配置已进入 `settings.py` 与 Container；记录写入、核验、持久保留和宿主配置仍属于后续切片。初值服务本地小并发验证，不是工业通用最佳参数；实施时依据负载证据调整须同步本表。
 
@@ -522,7 +522,7 @@ REDIS_URL="redis://localhost:6379/0"
 | tool_reconcile_max_attempts | 3，至少 1 | 每个未决操作累计自动核验次数，持久计数，重启不重置 |
 | tool_reconcile_timeout_seconds | 5，正有限数 | 每次确定性只读核验上限；无可信核验方法时零次直接人工处理 |
 | tool_fact_retention_days | 30，正整数 | 已完全结束且无恢复/冲突责任的记录最短保留期；不自动删除未决事实 |
-| tool_shutdown_timeout_seconds | 5，正有限数 | 工具服务停止准入、清理和必要刷写的整体窗口，不是各组件各给一份 |
+| tool_shutdown_timeout_seconds | 5，正有限数 | 工具服务停止准入、清理和必要刷写的整体窗口；ToolService 以此等待整个收尾，Executor / Supervisor 的内层排空各自也以该值作为本级上限，嵌套后总时长由最外层窗口收紧 |
 | tool_host_shutdown_timeout_seconds | 10，工具关闭窗口必须小于本值的 80% | 宿主整体窗口，最后 20% 保留给强退确认；仅受支持宿主入口消费 |
 | tool_execution_scope | B 必填非空、稳定字符串 | 同一主机上的物理执行范围身份；不允许按 run/tenant 任意生成以绕开共享资源 |
 | tool_owner_lock_path | B 必填绝对本地路径 | 位于工具可修改范围之外，同一 scope 所有入口共用；禁止运行时自动删锁抢锁 |

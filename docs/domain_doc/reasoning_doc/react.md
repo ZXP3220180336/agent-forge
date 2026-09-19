@@ -1,7 +1,7 @@
 # ReActStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/react.py`
-> **更新日期**：2026-09-16
+> **更新日期**：2026-09-19
 > **职责**：ReAct 领域推理流程——推理 ↔ 工具调用的完整循环（含工具并行原语、错误分发、结构化最终答案、上下文预算 + 成本上限 + 循环停滞护栏）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [executor.md](../agent_doc/executor.md)（`ReActAgent`）；工业级对标见 [react_benchmark.md](react_benchmark.md)
@@ -423,6 +423,10 @@ result = strategy.outcome  # ReActOutcome
 - [REASON-016 跨策略执行护栏](../../../issues/domain/reasoning/2026-09-10-cross-strategy-guard-priority.md)：类型化四类优先级、付费调用前后对称复查与成功结果先接管后终止（已修复）
 - [REASON-017 工具协议修正缺少独立上限](../../../issues/domain/reasoning/2026-09-10-tool-protocol-retry-limit.md)：三类协议修正仅受全局迭代数间接约束，且无效消息可能污染历史；已补共享连续预算、入口边界和三策略透传（已修复）
 
+## 工具受控执行的终止接线
+
+工具边界的 `ToolCancelledError`、`ToolDeadlineExceededError`、`ToolRunStoppedError` 在工具事实接管后继续类型化上抛，不进入 UNKNOWN。C-02 Piece④ 使真实等待及时响应这些信号；完整领域终态、并行兄弟任务清理和协议历史提交仍属于 Piece⑤。ReAct 外层硬 timeout 保留原有成果兜底，两条路径分别测试，不能依赖内部 deadline 与硬 timeout 的调度先后来选择预期。
+
 ---
 
 ## 相关文档
@@ -434,8 +438,3 @@ result = strategy.outcome  # ReActOutcome
 - [领域端口契约](../ports_doc/ports.md)（LLMGateway / ToolGateway / ContextBudgetPort / CostLimiterPort 契约）
 - [ReAct 工业级对标基准](react_benchmark.md)（能力基准与差距清单）
 - [领域层说明](../README.md)
-
-
-### 工具受控执行的终止接线
-
-工具边界的 `ToolCancelledError`、`ToolDeadlineExceededError`、`ToolRunStoppedError` 在工具事实接管后继续类型化上抛，不进入 UNKNOWN。C-02 Piece④ 使真实等待及时响应这些信号；完整领域终态、并行兄弟任务清理和协议历史提交仍属于 Piece⑤。ReAct 外层硬 timeout 保留原有成果兜底，两条路径分别测试，不能依赖内部 deadline 与硬 timeout 的调度先后来选择预期。

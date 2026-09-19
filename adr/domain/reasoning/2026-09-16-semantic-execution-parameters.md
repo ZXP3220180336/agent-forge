@@ -64,7 +64,7 @@
 上，跨签名迁移的兼容 shim 会反向污染；测试构造器应放在测试侧装配位置，而不是在生产类上保留
 `**kwargs` 入口。
 
-定向与全量验证结果记录在 [R-03 计划](../../../docs/todo.md#r-03-reasoning-execution-parameters)。
+定向与全量验证结果记录在 [R-03 交接](../../../docs/history/completed-work.md)。
 
 ## 关联记录
 

@@ -11,6 +11,7 @@
 | 同一缺陷出现不同触发条件 | REASON-004/006 的能力侧与数据侧最终合并到一个协议问题；按表现重复建档曾造成同一机制的状态漂移。 | [协议错误 Issue](../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)；[工程规范](engineering/ai-engineering-rules.md)。 |
 | 模块、目录或包出口调整 | 旧迁移曾漏掉不带 `docs/` 前缀的相对链接，过早替换通用路径也破坏具体路径；入口文件名、导入和实际目录不一致曾导致 ImportError。检查现有目录比根据错误字符串推定根因可靠。 | [独特迁移记录](history/completed-work.md)（原交接无独立 Issue）；[项目工作流](engineering/project-workflow.md)。 |
 | 功能完成后更新文档与 ALIGNMENT | 成本、取消和停滞能力完成后，模块说明仍保留旧构造参数与异常计数；R2 提取删除私有方法后，ADR 和调用图仍称保留薄委托。除路径和链接外，还须对照实际调用点核对文字、图表与接口清单；历史完成标记不能代替当前入口核对。 | [工具文档漂移](../issues/integration/tools/2026-08-20-doc-drift.md)、[R2 文档勘误](../adr/integration/llm/2026-09-15-request-execution-boundary.md)；[项目工作流](engineering/project-workflow.md)。 |
+| 复用上一轮标注「已核实」的遗留清单 | 清单自述已核实不等于逐条成立：本次 8 项中 2 项所述缺陷根本不存在（把已经正确的表述记为错误），另 2 项范围被夸大（「表述不完整」「用语不准」被写成「与实现不符」）。照单执行会去改一个不存在的问题，并漏掉真正要改的措辞。执行前对每项独立取证，区分**事实错误**与**表述不完整**；下结论前确认引用的符号/行数是否仍然存在。回填时保留哪些原述被推翻，供下一轮判断该来源的可信度。 | 2026-09-19 W-03 复核；[项目待办](todo.md)（W-03 条目）、[文档证据规则](engineering/documentation/README.md)。 |
 
 ## Agent 调用、结果与终态
 

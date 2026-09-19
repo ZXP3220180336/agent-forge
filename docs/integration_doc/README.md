@@ -1,7 +1,7 @@
 # 集成层说明文档
 
 > **对应代码**：`app/integration/`
-> **更新日期**：2026-08-30
+> **更新日期**：2026-09-19
 > **文档定位**：能力/集成层（`app/integration/`）—— Agent 外部**能力接入**：模型（LLM 网关 + 嵌入）、工具（执行能力）、检索（向量，待规划）；是领域端口 `LLMGateway` / `ToolGateway` / `EmbeddingPort` 的适配器实现方。
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。边界：（🔶 已实现，未接线）
 

@@ -76,12 +76,13 @@ ToolService（Facade，唯一对外入口，实现 ToolGateway）
 | `register` | `(tool: BaseTool) -> None` | 注册工具；重名抛 `ValueError`，参数定义非法抛 `SchemaError`；注册成功后初始化统计 |
 | `unregister` | `(name: str) -> bool` | 注销工具及其统计与 per-tool 锁 |
 | `get` | `(name: str) -> BaseTool \| None` | 获取工具实例 |
+| `is_tool_active` | `(tool: BaseTool) -> bool` | 该工具是否仍有在途调用或由 Supervisor 持有的真实执行；loader 据此延后卸载旧版本 |
 | `list_tools` | `() -> list[str]` | 列出全部已注册工具名 |
 | `list_by_risk` | `(risk_level: RiskLevel) -> list[BaseTool]` | 按风险等级过滤（预留管理界面） |
 | `list_by_category` | `(category: str) -> list[BaseTool]` | 按功能域过滤（预留管理界面） |
 | `get_openai_tools` | `() -> list[dict]` | OpenAI Tool Schema（启用过滤后经选择器） |
 | `get_openai_responses` | `() -> list[dict]` | OpenAI Response Schema（全部已启用工具） |
-| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0, *, call, facts) -> ToolResult` | `call/facts` 必填；入口先做外部工具惰性检查，再委托 Executor |
+| `execute` | `(name, parameters, timeout=None, max_retries=None, retry_delay=1.0, *, call, facts) -> ToolResult` | `call/facts` 必填；入口先预登记调用事实并复查运行控制，再按需做外部工具惰性检查，最后委托 Executor |
 | `get_stats` | `(name=None) -> dict \| ToolStats \| None` | 单工具或全量统计 |
 | `get_all_stats_summary` | `() -> dict` | 总调用 / 总成功 / 总失败 / 总成功率 / 各工具详情 |
 | `add_execution_hook` | `(hook: Callable) -> None` | 注册执行钩子 `async def hook(tool_name, parameters, result)` |

@@ -1,6 +1,6 @@
 # 已完成工作的交接记录
 
-整理日期：2026-09-15。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
+整理日期：2026-09-19。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
 
@@ -155,6 +155,18 @@ LLM 包入口曾重导出内部子组件，与“LLMService 为消费方 Facade�
 
 旧空目录删除曾受沙箱限制；git 不追踪空目录，未影响当时迁移。没有证据证明这些目录今天仍存在，因此不挂为新的清理任务。文档移动后的相对链接、包入口文件名和导入路径均在维护时按实际目录核验；不将早期 `(unknown location)` 导入排查经验解释为唯一根因。
 
+### 2026-09-19：W-01 工具线程所有权与启用边界的交接
+
+W-01 完成后的测试文件分工：工具执行/事实/加载/生命周期替身在 `test_tool_executor_components.py`、`test_tool_fact_ownership.py`、`test_tool_attempt_lifecycle.py`、`test_tool_loader.py`、`test_tools.py`；Agent/策略消费替身在 `test_agent.py`、`test_react_strategy.py`、`test_react_strategy_nonstream.py`、`test_reflection.py`、`test_reflection_agent.py`；审批/选择/注册替身在 `test_tool_approval.py`、`test_tool_selector.py`、`test_tool_registry_metadata.py`（以上均在 `tests/unit/`）。`tests/integration/test_chat_flow.py` 改用真实 readFile，保留完整聊天闭环与迭代预算验证。该分工不使用生产绕过开关或全局 mock 放宽门禁。
+
+该批保留的边界声明：线程取消后仍可能完成已开始的同步工作；不宣称撤销写入、原子写入或跨重启安全。截至该批，注册 10 个内置工具、模型可用 8 个只读工具；WriteFileTool 的受控适配器已修，writeFile / code_exec 的正式执行仍等待交付 B。缺陷闭环见上方完成索引。
+
+### 2026-09-19：W-03 文档复核结论
+
+W-03 的 8 项遗留已逐条复核并修改（7 份文档，无代码改动）：其中 2 项原述不准确、2 项范围被夸大，照单执行会去改并不存在的缺陷。复核方法与已证实的教训见 [lessons](../lessons.md) 的「复用上一轮标注已核实的遗留清单」条目，不再在此重复。
+
+唯一未执行项是 `ToolRegistry` 导出方法死代码的删除。它属契约变更，与既有 ADR 决定冲突，仍未关闭，只维护在[项目待办](../todo.md)。
+
 ## 已有 Issue / ADR 的完成索引
 
 下表只导航，不重复展开已经有正式归属的规则和修复过程。
@@ -172,5 +184,9 @@ LLM 包入口曾重导出内部子组件，与“LLMService 为消费方 Facade�
 | 上下文、成本、最终答案、工具反馈 | [语义预算 ADR](../../adr/domain/reasoning/2026-08-28-context-budget.md) · [请求预算 ADR](../../adr/integration/llm/2026-09-06-request-context-budget.md) · [成本 ADR](../../adr/domain/reasoning/2026-08-30-cost-limit.md) · [结构化答案 ADR](../../adr/domain/reasoning/2026-08-28-structured-output.md) · [工具反馈 ADR](../../adr/domain/reasoning/2026-08-27-tool-error-feedback.md) |
 | 工具组件、校验与整体审查 | [六组件 ADR](../../adr/integration/tools/2026-08-17-six-component-alignment.md) · [jsonschema ADR](../../adr/integration/tools/2026-08-17-jsonschema-strict-validation.md) · [TOOLS-049](../../issues/integration/tools/2026-08-20-code-review-fixes.md) |
 | 共享类型、统一异常与 TokenCounter 演进 | [标识类型 ADR](../../adr/shared/types/2026-08-24-type-identifiers.md) · [异常树 ADR](../../adr/shared/exceptions/2026-08-24-exception-hierarchy.md) · [异常边界 ADR](../../adr/shared/exceptions/2026-08-28-exception-system-optimization.md) · [TokenCounter 已替代 ADR](../../adr/integration/llm/2026-08-24-token-counter-port.md) |
+| W-01 写文件真实线程与交付 B 启用边界 | [TOOLS-057](../../issues/integration/tools/2026-09-19-write-thread-ownership.md) · [TOOLS-058](../../issues/integration/tools/2026-09-19-unprotected-tool-enablement.md) |
+| W-02 执行声明适配器边界 | [TOOLS-059](../../issues/integration/tools/2026-09-19-execution-spec-boundary.md) |
+| R-02 Agent 基类契约与桥接整理 | [AGENT-001](../../issues/domain/agent/2026-09-16-base-contract-drift.md) · [BaseAgent 契约 ADR](../../adr/domain/agent/2026-09-16-base-agent-contract.md) |
+| R-03 Reasoning 执行参数语义分组 | [REASON-026](../../issues/domain/reasoning/2026-09-16-execute-parameter-drift.md) · [参数分组 ADR](../../adr/domain/reasoning/2026-09-16-semantic-execution-parameters.md) |
 
 更早 RateLimiter 审查和 reserve/settle 的完成清单只保留其现行[限流组件说明](../integration_doc/llm_doc/limiter.md)作为入口；旧 `app/services/` 路径、重复“待评审”空节和逐轮测试数不另存一份。

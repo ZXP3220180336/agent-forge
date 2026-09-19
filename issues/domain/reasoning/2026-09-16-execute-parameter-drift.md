@@ -34,7 +34,7 @@ Planner/Reflection 内部 ReAct 调用中重复列出；增加一种控制或预
 测试直接覆盖对象冻结、Event 可传播、运行作用域与负预算校验、`None/0` 区分和
 Planner/Reflection 缺失预算；三种 Agent、
 三策略、嵌套 ReAct、双通道、取消、deadline、usage 与工具事实继续回归。最终验证数量见
-[R-03 计划](../../../docs/todo.md#r-03-reasoning-execution-parameters)。
+[R-03 交接](../../../docs/history/completed-work.md)。
 
 原语迁移时曾遗留测试侧的兼容 shim（策略子类用 `kwargs.setdefault` 注入旧标量 `run_id` / `run_stop`）。
 测试子类在生产调用链上，迁移后连 `_handle_tool_calls` 的正常调用也被塞入 `run_id`，使全部走

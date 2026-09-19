@@ -1,49 +1,12 @@
 # 项目待办
 
-## W-02：执行声明适配器边界（2026-09-19）
-
-授权：用户要求验证并修复声明异常及非法返回；沿用 UNKNOWN 拒绝门禁。
-
-- [x] 测试：三个执行检查点、两种导出、同运行恢复及控制异常传播。
-- [x] execution.py 统一安全读取；executor.py 与 tool_service.py 替换入口。
-- [x] 更新契约、Issue 与教训；完成定向、全量及独立复审。
-
-Gate：E3/E4/E5/E6/E8；不新增状态或变更重试策略。可选项：无。评审：已完成。先 18 failed / 2 passed 复现；定向 49 passed，全量 1431 passed（51.35 秒，1 条既有 Starlette 弃用警告）。Ruff、格式、ALIGNMENT 与 diff 检查通过；独立复审无阻断。覆盖异常/非法类型、签名错误、三个检查点、控制信号传播、资源释放、同运行恢复及混合导出。见 [TOOLS-059](../issues/integration/tools/2026-09-19-execution-spec-boundary.md)。
-
-## W-01：写文件真实线程与交付 B 启用边界（2026-09-19）
-
-授权：用户确认立即修复 WriteFileTool 线程登记，并落实 B 未就绪时的正式启用边界；不建设持久账本、跨工具资源保护或崩溃恢复，不提交 Git。现有 Piece③④工作区改动保留。
-
-- [x] `tests/unit/test_tool_write_execution.py`：先复现取消/超时后的真实线程、Permit、串行锁和同文件连续写；`app/integration/tools/builtin/file_ops.py`：补 MAY_WRITE、受控 invoke 和完整同步写入。
-- [x] `tests/unit/test_tool_enablement.py`：先复现不受保护工具的执行/导出；`execution.py` 共享纯判断、`executor.py` 审批与尝试前拒绝、`tool_service.py` 两协议导出过滤；`tool_gateway.py` 对齐 REJECTED 注释。
-- [x] 相关测试夹具明确声明自身只读属性；`tests/integration/test_tool_execution.py` 区分独立适配器测试与正式门禁验证；`test_tool_readonly_execution.py` 更新写工具分类断言。根据失败清单分配其他测试文件，不使用生产绕过开关或全局 mock 放宽门禁。
-- [x] 同步 execution/工具/内置工具文档、父导航及 ALIGNMENT；在既有生命周期 ADR 补实施证据；新增两个根因 Issue 及索引，更新 lessons。
-- [x] 定向、全量回归、独立复审、文档对齐与 diff 检查，回填评审。
-
-Gate：E3/E4/E5/E6/E8，复用已有 Supervisor/Handle，不新增状态类或持久保护抽象。线程取消后仍可能完成已开始的同步工作；不宣称撤销写入、原子写入或跨重启安全。可选项：无；完整 B 能力保持后续归属。
-
-测试文件分工落实：工具执行/事实/加载/生命周期替身在 `test_tool_executor_components.py`、`test_tool_fact_ownership.py`、`test_tool_attempt_lifecycle.py`、`test_tool_loader.py`、`test_tools.py`；Agent/策略消费替身在 `test_agent.py`、`test_react_strategy.py`、`test_react_strategy_nonstream.py`、`test_reflection.py`、`test_reflection_agent.py`；审批/选择/注册替身在 `test_tool_approval.py`、`test_tool_selector.py`、`test_tool_registry_metadata.py`（以上均位于 tests/unit）。`tests/integration/test_chat_flow.py` 改用真实 readFile，保留完整聊天闭环和迭代预算验证。
-
-评审（2026-09-19）：写线程先 7 failed / 1 passed；门禁先 13 failed，串行等待声明变化另先 1 failed。新增真实写测试覆盖 mkdir/open/write/close × 取消/单次超时/硬取消，真实文件关闭、Permit/串行锁保留及连续写不交错。门禁覆盖审批前、每 attempt 及真实调用前复核，两种模型导出与直接点名拒绝；不设生产绕过。消费者无副作用替身显式声明只读，PARTIAL/UNKNOWN 的低层解释测试保留。
-
-最终 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --tb=short`：1398 passed、1 条已有第三方弃用警告；独立复审新增两套及 attempt 生命周期 49 passed，无阻断发现。本轮生产文件/新增测试/两份集成测试 Ruff 检查及格式检查、文档对齐、UTF-8/LF、新增文档本地链接和 `git diff --check` 通过。没有修改全局配置、启用 B 的持久保护或提交 Git。
-
-问题闭环见 [TOOLS-057](../issues/integration/tools/2026-09-19-write-thread-ownership.md) 与 [TOOLS-058](../issues/integration/tools/2026-09-19-unprotected-tool-enablement.md)。当前注册 10 个内置工具，模型可用 8 个只读工具；WriteFileTool 的受控适配器已修，writeFile/code_exec 正式执行仍等待 B。
-
-## W-03：Piece④ 复核遗留的文档同步与死代码（2026-09-19，待确认）
-
-来源：W-01/W-02 完成后的独立校验。以下均为已核实的非阻断遗留，不影响当前运行行为；未获授权前不改动，不据此扩大 B 的范围。
-
-- [ ] `external.md` 边界情况「在飞 execute 与重载」仍写「旧实例引用跑完」，与同文件加载/卸载段的延后重载矛盾；实现为在途实例未结束时整文件延后。
-- [ ] `config.md` 三处与实现不符：目录处「不代表 settings 已提供这些字段」、小节标题「Piece③ 已接入」、`tool_shutdown_timeout_seconds` 的「不是各组件各给一份」（实际 ToolService、Executor、Supervisor 三处嵌套等待各取满该值）。
-- [ ] `tool_service.md` 方法表缺公开方法 `is_tool_active`；`execute` 行仍写「入口先做外部工具惰性检查」，实际先预登记事实并检查运行控制。
-- [ ] `executor.md` 把只读工具抛 `TimeoutError` 的外部效果说成 `UNKNOWN`（实际按 `READ_ONLY` 声明记 `NONE`）；`external.md` 测试用例数未含本次新增用例。
-- [ ] `react.md` 新增的「工具受控执行的终止接线」落在「## 相关文档」之后，成为该节子标题。
-- [ ] `todo.md` R-01 扫描表仍引用已删除的 `_execute_impl`，行数 641 已过期。
-- [ ] `ALIGNMENT.md`、`integration_doc/README.md`、`tools.md`、`react.md` 的更新日期未随本次编辑更新；`test_tool_readonly_execution.py`、`test_tool_write_execution.py`、`test_tool_enablement.py` 未在其所属条目的测试栏登记。
-- [ ] 死代码：`ToolRegistry.get_openai_responses` 自 `ToolService` 改走启用过滤后无任何调用方；`ToolRegistry.get_openai_tools` 亦无生产调用方（仅注册中心元数据测试直接使用）。
-
 更新：2026-09-19。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
+
+## W-03 遗留：ToolRegistry 导出方法死代码（2026-09-19）
+
+W-03 的 8 项复核已完成并归档，逐项结论、被推翻的原述与验证证据见[完成记录](history/completed-work.md)。仅第 8 项因属契约变更未执行，保留如下。
+
+- [ ] `ToolRegistry.get_openai_responses` 全仓无调用方，`get_openai_tools` 仅注册中心元数据测试直接使用；生产路径走 ToolService 版本（`class ToolService` 不继承 `ToolRegistry`，两者同名方法独立）。删除属契约变更，与 [TOOLS-ADR-008](../adr/integration/tools/2026-08-17-six-component-alignment.md) 第 22 行「保持全量转储」的既有决定冲突，须先修订该决策再独立执行。
 
 <a id="refactoring-plan"></a>
 
@@ -57,7 +20,7 @@ Gate：E3/E4/E5/E6/E8，复用已有 Supervisor/Handle，不新增状态类或�
 
 ### 范围依据与取舍
 
-2026-09-14 静态扫描覆盖 `app/` 下 131 个 Python 文件、18,353 行，其中 9 个文件达到 500 行；结合领域推理、LLM、工具三个子智能体的只读分析，核对主调用者、测试入口及模块契约。行数包含空行、注释与文档字符串，是本轮快照而非验收阈值；没有据此断言业务 Bug 或测试已通过。每批开始前重新核对代码，不依赖固定行号执行。
+2026-09-14 静态扫描覆盖 `app/` 下 131 个 Python 文件、18,353 行，其中 9 个文件达到 500 行；结合领域推理、LLM、工具三个子智能体的只读分析，核对主调用者、测试入口及模块契约。行数包含空行、注释与文档字符串，是本轮快照而非验收阈值；没有据此断言业务 Bug 或测试已通过。每批开始前重新核对代码，不依赖固定行号执行。R1～R4、R6 与 C-02 Piece③④ 完成后，表中各行数均已变化（如 `executor.py` 由 641 增至 875 行），本表保留为 2026-09-14 的范围依据，不代表当前行数。
 
 | 主范围文件 | 本轮结构证据 | 决定与边界 |
 | --- | --- | --- |
@@ -67,7 +30,7 @@ Gate：E3/E4/E5/E6/E8，复用已有 Supervisor/Handle，不新增状态类或�
 | `app/integration/llm/streaming_rectifier.py` | 1,020 行；`rectified_stream` 229 行；策略与单流读取、看门狗、chunk 累积、接缝、结算混合。 | 分离单流消费；整流器继续拥有重试、续接和结算决策。 |
 | `app/integration/llm/llm_service.py` | 722 行；`_plan_request` 130 行；Facade 混入请求构造、配额选择、请求闭包与 Reservation 转移。 | 提取内部请求执行，保留公开 API、异常翻译、结果通道与成本/计数代理。 |
 | `app/integration/llm/structured.py` | 843 行；纯 schema/JSON 处理与降级、截断扩容、校验回喂混合。 | 先提取无 I/O 的解析校验函数，调用及预算继续留在原组件。 |
-| `app/integration/tools/executor.py` | 641 行；`_execute_impl` 144 行、`_execute_with_retry` 198 行；准备、许可、尝试、事实与观测收尾交织。 | 合并到 C-02 Piece ③④；采用已有 ADR 的准入与执行接管边界。 |
+| `app/integration/tools/executor.py` | 641 行；`_execute_impl` 144 行、`_execute_with_retry` 198 行；准备、许可、尝试、事实与观测收尾交织。（该两方法已在 C-02 Piece③④ 拆分为准备 / 单次尝试 / 完成阶段，当前不再存在；文件现为 875 行。） | 合并到 C-02 Piece ③④；采用已有 ADR 的准入与执行接管边界。 |
 | `app/api/routes/chat.py` | 196 行；`send_message` 139 行；HTTP/SSE 与会话校验、Agent 创建、运行登记、上下文、结果保存同处。 | 迁移聊天用例到 Application，路由保留传输适配与断连信号转换。 |
 
 以上是结构治理价值排序的候选集合，不是缺陷严重度清单。优先提取有语义的函数或现有类方法；新对象须有独立生命周期、状态所有权或真实变化原因。采用前轮已核查的 [Extract Function](https://refactoring.com/catalog/extractFunction.html) 与 [Extract Class](https://refactoring.com/catalog/extractClass.html) 手法，不新增通用框架。若实施形成新的结构性决定，按记录规范写入对应 ADR；工具结构继续引用 [TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)，不另设竞争正文。
@@ -252,80 +215,6 @@ TaskService 信号量。两轮复核完成后未发现剩余 P0～P3 问题。
 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r6-all-final`，
 1247 项通过（43.39 秒），仅有既有 Starlette/httpx 弃用提示。最终文档对齐、模块编译与差异格式
 检查通过。R5 与 C-02 Piece ③～⑧均未修改，本批按用户要求保留为未提交工作区。
-
-## R-02：Agent 基类契约与桥接整理（已完成）
-
-日期：2026-09-16。目标：保持 `agent/` 管理统一运行生命周期、`reasoning/` 管理可独立复用的领域
-推理流程，在不改变三策略算法、Guard、usage、重试或终态语义的前提下，清理 BaseAgent 未兑现的
-扩展承诺和冗余状态，并收敛三个桥接重复的上下文前置检查。
-
-| 文件组 | 修改目的 | 边界 |
-| --- | --- | --- |
-| `app/domain/agent/base.py` | 删除未接线的四个 `on_*` 钩子、未使用的 `_tool_call_history` 与无转换路径的 `WAITING`；新增 `_require_context()` 统一桥接前置检查 | 不增加通用执行模板，不接管策略 Guard、usage、结果或重试 |
-| `app/domain/agent/executor.py`、`planner.py`、`reflection.py` | 复用 `_require_context()`；修正“纯算法”等过时说明 | 参数仍显式映射，不引入 `**kwargs` 参数包，不上移 `_cancel_event` |
-| `app/domain/reasoning/react.py` | 修正 Planner/Reflection 的真实复用调用方和策略定位注释 | 不改变 `execute` / `execute_tool_calls` 行为 |
-| Agent/ReAct 模块说明、问题记录与索引 | 同步公共状态、方法表、两层职责和修复证据 | `max_refine_rounds` / `max_replan_rounds` 拆分仅保留独立候选，不随本任务实施 |
-
-验收：三个 Agent 桥接继续传递原有全部参数；策略可直接执行和嵌套；生成器关闭、事实接管、状态与
-异常行为不变。运行 Agent/Planner/Reflection、策略生成器和嵌套事实定向测试，再运行全量测试、
-文档对齐、编译及差异格式检查。问题闭环见 [AGENT-001](../issues/domain/agent/2026-09-16-base-contract-drift.md)。
-
-### 评审
-
-已完成计划范围。BaseAgent 只保留真实运行生命周期与唯一必要的 `_strategy_cycle` 抽象契约；四个
-无调用钩子、无消费者的工具历史和无转换路径的 `WAITING` 已删除。三个桥接主循环的相同上下文
-前置检查提取为 `_require_context()`，并仍逐项显式传递原有参数。E9 复核结论为无需新增 State、Policy 或
-通用执行模板；Guard、usage、重试、成果接管和策略终态继续留在 reasoning。
-
-定向回归 50 项通过；全量回归 1248 项通过（47.05 秒），仅有既有 Starlette/httpx 弃用提示。
-ALIGNMENT 校验、`app`/`tests` 编译及过时符号检索通过。对外兼容边缘仅限仓库外调用方若曾引用未
-兑现的钩子或 `WAITING`；项目内无消费者，故不保留空壳，并以
-[BaseAgent 契约 ADR](../adr/domain/agent/2026-09-16-base-agent-contract.md) 记录该公共契约取舍。两轮独立
-复核未发现运行行为 P0/P1 问题；其指出的 ADR 缺口、残留旧术语、代码分区标题、导航和记录状态
-均已修正。
-参数拆分仍是独立候选，R5 与 C-02 未改动。
-
-### R-02 补充：移除 ReActAgent 工具原语转发（已授权）
-
-`ReActAgent._execute_tool_calls()` 无生产调用，Planner / Reflection 组合的是完整
-`ReActStrategy.execute()`；并行与保序在策略测试中已有等价覆盖。删除该转发和 Agent 层重复测试，
-同步当前模块说明、ADR 与工具调用导航。保持 `ReActStrategy.execute_tool_calls()` 的协议、取消、期限、
-清理、事件及消息行为不变；R5 与 C-02 不纳入本补充任务。
-
-补充评审：转发方法及 Agent 层两项重复测试已删除；策略层既有并行与保序测试继续通过。定向回归
-25 项、全量回归 1246 项通过（47.90 秒），测试总数减少 2 项与删除的重复测试一致，仅有 1 项既有
-Starlette/httpx 弃用提示。未改变 `ReActStrategy.execute_tool_calls()` 或任何运行契约。
-
-<a id="r-03-reasoning-execution-parameters"></a>
-
-## R-03：Reasoning 执行参数语义分组（已完成）
-
-日期：2026-09-16。目标：把 ReAct、Planner、Reflection `execute()` 共享的二十余个标量参数按变化
-原因收敛为不可变值对象，降低新增参数对桥接、嵌套策略和测试调用面的扩散，同时保持三策略现有
-Guard、重试计数、取消、deadline、usage、工具执行和终态语义。
-
-| 文件组 | 修改目的 | 边界 |
-| --- | --- | --- |
-| `app/domain/reasoning/execution.py`、包导出 | 新增 `ReasoningRunScope`、`ModelOptions`、`ExecutionLimits`、`ContextWindowLimits`、`RecoveryBudget`、`ToolExecutionOptions` 六个 `frozen=True, slots=True` 值对象 | 不建立扁平万能 Context；`None` 在 replan/refine 字段仅表示策略不适用，`0` 表示适用但无恢复次数 |
-| 三份 reasoning 策略 | `execute()` 改收语义对象；Planner/Reflection 向子 ReAct 显式透传，Planner 仅以剩余时间替换 `ExecutionLimits` | `user_input`、可变 `messages`、`output_schema`、`baseline_usage`、`stream_mode` 保持显式；策略专属恢复预算从 `RecoveryBudget` 读取 |
-| 三份 Agent 桥接 | 将 `AgentContext` 显式映射为六类 reasoning 值对象 | 保持 `agent → reasoning` 单向依赖；不让 reasoning import `AgentContext`，不引入 `**kwargs` 参数袋 |
-| 直接策略测试与正式文档 | 迁移所有调用方，增加值对象及 `None/0` 契约测试，同步接口、调用链、ADR/Issue/ALIGNMENT 导航 | 不保留新旧签名双入口，不借机修改策略行为或 R5/C-02 |
-
-验收：三种 Agent 主链路、三策略直接运行、Planner/Reflection 嵌套 ReAct、双通道、重试预算、取消、
-deadline、usage 与工具事实测试通过；再运行全量测试、ALIGNMENT、编译、过时标量调用检索和差异检查。
-
-### R-03 评审
-
-- [x] 六类 `frozen=True, slots=True` 值对象已落地；`ReasoningRunScope` 在副作用前校验运行身份和
-  Event 控制链，`RecoveryBudget` 拒绝负数并保留 `None`（不适用）与 `0`（适用但无恢复）区别。
-- [x] 三策略入口、三个 Agent 桥接及 Planner/Reflection 子 ReAct 已迁移；Planner 仅替换剩余墙钟，
-  run、stream、retry、usage 基线、取消、deadline 和工具事实所有权保持原契约。
-- [x] `user_input`、可变 `messages`、`output_schema`、`baseline_usage`、`stream_mode` 保持显式；没有
-  旧签名兼容层，也没有把 `AgentContext` 或工具原语并入 reasoning 参数对象。
-- [x] 接口 docstring、Reasoning/Agent 模块说明、父导航、ALIGNMENT、ADR、REASON-026 与 lessons 已同步。
-- [x] 合并定向回归 280 项通过；最终全量 `1261 passed`（唯一警告为 Starlette TestClient 的已知弃用
-  提示）。`scripts/verify_alignment.py`、`compileall`、过时标量签名检索和 `git diff --check` 均通过。
-- [x] 独立只读复核发现的运行作用域/负预算不变量已修复并复审关闭；最终无 P0–P2 遗留。
 
 <a id="c-02-lifecycle"></a>
 
@@ -532,7 +421,7 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 
 验证：真实线程/取消/deadline/硬取消、迟回值、清理移交、关闭依赖、退避释放容量、未确认事实容量封顶、审批及观测边界已通过定向测试；最新三个执行/事实套件 40 项通过。最终全量 1353 项通过（47.35 秒），包含重试后准入拒绝保留实际次数回归。对齐与差异检查通过。使用 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/AppData/Local/Temp/agent-forge-piece4-tests`；Ruff 受影响核心文件通过。全改动文件 Ruff 扫描另报告存量 settings/test_react 的长注释、旧测试未使用 noqa 和未标 ClassVar 的类属性；未扩大清理范围。Starlette/httpx 弃用提示不在本次业务改动内。
 
-Piece⑤～⑧仍待实施：ReAct 保持类型化工具控制异常向上传播，完整批次终态和协议提交尚未落地；当前写工具/未知插件不能被宣称具备 B 级保护；W-01 已落实正式执行及模型导出的启用门禁，B 完成前拒绝副作用、未知效果和强制审计能力。目录级资源联合准入、持久记录/恢复、子进程树与宿主强退均未实现。
+Piece⑤～⑧仍待实施：ReAct 保持类型化工具控制异常向上传播，完整批次终态和协议提交尚未落地；当前写工具/未知插件不能被宣称具备 B 级保护；正式执行及模型导出的启用门禁已落实（见[完成记录](history/completed-work.md)），B 完成前拒绝副作用、未知效果和强制审计能力。目录级资源联合准入、持久记录/恢复、子进程树与宿主强退均未实现。
 
 历史背景见 [C-02 文档设计交接](history/completed-work.md#c-02-p0-design-history)，不在活动计划中重复各轮验证叙述。
 
