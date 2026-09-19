@@ -41,6 +41,18 @@ Ruff 配置在 `[tool.ruff]`，`line-length` 取编码规范上限 120。**E501 
 
 独立脚本采用 `uv run python -m scripts.xxx`，避免直接运行 `uv run ./scripts/xxx.py` 改变导入路径。独立脚本顶部必须初始化 UTF-8，使用 `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`；包装流或测试替身需检查能力并提供等效编码处理，不能省略 UTF-8 输出要求。此约定只负责控制台编码，不允许把密钥写入输出。
 
+### 行尾约定（LF）
+
+仓库以 `.gitattributes` 声明 `* text=auto eol=lf`：检出为 LF，不再经过各机器的 `core.autocrlf`（Git for Windows 默认为 `true`，会把工作区检出成 CRLF）。
+
+未声明时工作区会同时存在 CRLF、LF 和混行尾文件，而**这类问题在 git 里看不见**：git 按归一化后的内容比较，混行尾文件的 `git status`、`git diff`、`git add` 结果与干净版本没有差别，只有 `uv run ruff format --check .` 读工作区字节时才会失败（`[tool.ruff.format]` 的 `line-ending` 取默认 `auto`，按文件主导行尾判定）。因此新增或改写文件时保持 LF，不要使用会把行尾写成 CRLF 的写入路径。
+
+核对工作区是否残留非 LF 行尾：
+
+```bash
+git ls-files --eol | grep -E 'w/(crlf|mixed)'   # 应无输出
+```
+
 ## 启动方式
 
 从真实仓库根以模块形式运行，避免直接脚本执行改变导入搜索路径：

@@ -1,0 +1,9 @@
+# 统一仓库行尾为 LF。
+#
+# 不声明时，工作区行尾取决于各机器的 core.autocrlf：Git for Windows 默认为 true，
+# 会把检出写成 CRLF，而多数写入工具默认输出 LF，于是同一个文件里出现混行尾。
+# git 只按归一化后的内容比较，看不见这种差异，最后只有 ruff format 之类的
+# 工作区工具会失败。声明 eol=lf 后 checkout 不再经过 autocrlf，跨机器一致。
+#
+# 约定与验证方式见 docs/project/deployment.md 的「行尾约定」一节。
+* text=auto eol=lf
