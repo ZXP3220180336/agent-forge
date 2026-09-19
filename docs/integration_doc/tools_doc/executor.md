@@ -1,6 +1,6 @@
 # 执行调度器（ToolExecutor）说明文档
 
-> **更新日期**：2026-09-17
+> **更新日期**：2026-09-19
 > **模块**：`app/integration/tools/executor.py`
 > **职责**：工具执行编排 —— 共享准入 / 参数校验 / 超时 / 重试 / 结果截断 / 审计 / 统计 / 钩子 / per-tool 串行化
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -50,6 +50,8 @@
 ### 重试与超时
 
 `asyncio.wait_for(tool.execute(...), timeout)` 包裹每次尝试；重试循环上界为 `range(max_retries)`（`max_retries` 实为**最大执行次数**，含首次；`max_retries=0` clamp 为一次）。每个 attempt 建立独立身份并发布 RUNNING→终局事实。失败后只有 `BaseTool.can_retry(result_or_error)` 显式返回 True 且仍有次数时，才退避 `retry_delay * 2^attempt`。默认 `can_retry=False`，次数余额不会单独授权重复执行；参数校验失败、未注册、JSON 解析失败直接返回。
+
+适配器返回值在真实调用边界统一收敛：先判类型，再按字段契约逐项校验。动态加载的工具即使违反类型标注返回字典、字符串或 `None`，或返回 `ToolResult` 但字段越界（`content` 非字符串、`success` 非布尔、`error` 非字符串、`error_code` 非 `ErrorCode`、`effect_state` 非枚举），都会被转换为 `ErrorCode.UNKNOWN` 的失败结果，效果状态保持 `UNKNOWN`，发布终局事实并停止重试；不会让 `AttributeError` / `TypeError` 逃逸到 ReAct 批次。检查范围按**下游如何消费该字段**确定：`content` 会被 ReAct 切片、`error_code` 会被取 `.value`（越界即抛异常），`success` 走真值判定（越界会把失败静默当成业务成功）；`metadata` 无消费方、`execution_time` 与 `retry_count` 由执行器覆写，不在边界内。越界值不做静默强转——强转会把适配器缺陷变成看起来正常的观测回喂给模型。
 
 全局控制按取消→绝对 deadline→run_stop 检查。执行前命中时先保留 NOT_STARTED 事实再抛 shared 类型化异常；执行返回后先发布结果事实再复查，取消不会抹除已发生结果。事实发布顺序固定为 Integration 自有深副本→Domain sink；sink 编程错误会置位该 run 的 stop 信号并原样传播。
 
@@ -106,10 +108,12 @@ execute(name, parameters, timeout, max_retries, retry_delay, *, call, facts)
        重试循环 for attempt in range(max_retries)：
        · 创建 attempt_id，发布 RUNNING
        · asyncio.wait_for(tool.execute(**parameters), timeout)
-       · 成功 → 接管原结果并填 execution_time / retry_count
-              → 在副本上截断 → 统计 → 返回处理后结果或原结果
-       · 返回失败 / 超时 / 异常 → 记 error（normalize_error）→ 统计
-       · can_retry=True 且 attempt 尚有余额 → 退避 asyncio.sleep(retry_delay * 2^attempt)
+       · 调用出口分三类：成功返回 / 返回失败结果 / 超时或异常（适配器非法返回值在这里
+         收敛为 UNKNOWN 失败；超时与异常的归因文本先经 normalize_error 归一化）
+       · 三个出口共用同一段收尾：填执行元数据（execution_time / retry_count）→ 发布该
+         attempt 的终局事实 → 统计一次
+       · 成功 → 在副本上截断 → 返回处理后结果或原结果
+       · 失败 → 交给重试判定；can_retry=True 且 attempt 尚有余额 → 退避 asyncio.sleep(retry_delay * 2^attempt)
     8. 在剩余观察预算内先审计最终结果；成功时再通知快照 Hook
     9. 发布 operation 终局或 UNKNOWN/PENDING 事实；复查控制 → 返回或类型化终止
 ```

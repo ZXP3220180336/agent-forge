@@ -1,6 +1,6 @@
 # 项目待办
 
-更新：2026-09-17。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
+更新：2026-09-19。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
 <a id="refactoring-plan"></a>
 
@@ -348,7 +348,7 @@ P0-A 冻结运行/批次/调用身份、独立事实入口、类型化终止、�
 
 #### P0 规格的实施 piece
 
-P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿用 P1～P5 的任务归属。字段、状态及默认值以 ADR/配置规格为唯一正文；具体文件分工沿用下方对应 P 阶段，不在此复制。Piece①、②已兑现，后续 piece 仍待实施；局部完成不代表整套生命周期闭环。
+P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿用 P1～P5 的任务归属。字段、状态及默认值以 ADR/配置规格为唯一正文；具体文件分工沿用下方对应 P 阶段，不在此复制。Piece①～③已兑现，后续 piece 仍待实施；局部完成不代表整套生命周期闭环。
 
 | Piece / 当前状态 | 范围与实施归属 | 主要规格依据 | 完成条件 |
 | --- | --- | --- | --- |
@@ -378,7 +378,7 @@ P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿�
 
 验收：SDK/工具执行计数不因后处理失败增加；0/1/N 计数保持明确；永久错误无盲重试；无观测异常覆盖已接管结果。
 
-**复审遗留**：适配器返回非 `ToolResult` 时，本次改动已把 `execution_time` / `retry_count` 填充与 `result.success` 读取移出任何异常分类范围，`AttributeError` 会逃逸 `ToolExecutor.execute`，再经 `react.py` 无 `try` 的 `_execute_one` 中断整批工具调用（探针复现；改动前由外层 `except Exception` 收编为 `UNKNOWN` 失败结果）。外部工具经 `loader.py` 动态收集，属信任边界。修复方向：真实调用返回后先按 `isinstance(result, ToolResult)` 收编为 `UNKNOWN` 失败（不进入重试），再填充执行元数据。触发条件：Piece ④ 为适配器开启安全重试前，或外部工具接入验证时。
+**复审遗留（已修复，2026-09-19）**：适配器返回非 `ToolResult`、或返回 `ToolResult` 但字段越界时，`ToolExecutor` 现在都在真实调用返回边界统一收敛为 `ErrorCode.UNKNOWN` 的失败结果，效果状态为 `UNKNOWN`，发布终局事实且不进入重试；不再让 `AttributeError` / `TypeError` 逃逸并中断 ReAct 工具批次，也不再让非布尔 `success` 被真值判定当作业务成功。检查范围按下游消费方式确定（见 [executor 文档](integration_doc/tools_doc/executor.md)）。新增回归覆盖非 ToolResult 与非法的五种字段（content / success / error / error_code / effect_state），各断言单次执行、终局事实与禁止重试。真实线程/进程迟回值仍归 Piece ④。
 
 ### P2：持久事实垂直切片与装配
 
@@ -461,7 +461,7 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 
 ### 本轮评审记录
 
-2026-09-18 最新结论：Piece ①、②已完成，Piece ③ 已完成进程内共享准入。Container 向 ToolService 注入全局/单运行限额等标量配置，由 ToolService 构造唯一 `ToolAdmission` 并注入 ToolExecutor，维护全局/单运行在途上限、两级有界等待队列、按运行轮转和取消/deadline 可中断等待；队列满或准入超时返回 `CAPACITY_EXCEEDED`，不进入工具重试但按正常退出点留审计；旧 `agent_max_concurrent_tools` 配置入口已迁移，两级 pending 上限的大小关系在 `Settings` 层校验。Piece ③ 验收项已全部由定向测试覆盖：容量、队列上限、取消/deadline 竞态、撤回/关闭转换与「撤回与放行同刻不泄漏 Permit」竞态、Permit 幂等释放、旧键迁移。Piece ④～⑧待实施，真实线程/进程句柄、资源联合准入、迟回值和持久恢复仍未完成。
+2026-09-19 最新结论：Piece ①、②已完成，Piece ③ 已完成进程内共享准入。另修复适配器返回值越界逃逸的问题：非 `ToolResult` 与字段越界（content / success / error / error_code / effect_state）都在真实调用边界收敛为 `UNKNOWN` 失败、发布终局事实且不重试；相关工具执行回归通过。Container 向 ToolService 注入全局/单运行限额等标量配置，由 ToolService 构造唯一 `ToolAdmission` 并注入 ToolExecutor，维护全局/单运行在途上限、两级有界等待队列、按运行轮转和取消/deadline 可中断等待；队列满或准入超时返回 `CAPACITY_EXCEEDED`，不进入工具重试但按正常退出点留审计；旧 `agent_max_concurrent_tools` 配置入口已迁移，两级 pending 上限的大小关系在 `Settings` 层校验。Piece ③ 验收项已全部由定向测试覆盖：容量、队列上限、取消/deadline 竞态、撤回/关闭转换与「撤回与放行同刻不泄漏 Permit」竞态、Permit 幂等释放、旧键迁移。Piece ④～⑧待实施，真实线程/进程句柄、资源联合准入、迟回值和持久恢复仍未完成。
 
 历史背景见 [C-02 文档设计交接](history/completed-work.md#c-02-p0-design-history)，不在活动计划中重复各轮验证叙述。
 

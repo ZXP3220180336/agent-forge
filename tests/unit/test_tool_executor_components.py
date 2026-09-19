@@ -362,6 +362,85 @@ async def test_uncaught_exception_maps_to_unknown():
 
 
 @pytest.mark.asyncio
+async def test_invalid_tool_result_is_normalized_without_retry():
+    """适配器返回非 ToolResult 时收敛为 UNKNOWN，不逃逸也不重复执行。"""
+
+    class _InvalidResultTool(_ParamTool):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, **kwargs):
+            self.calls += 1
+            return {"success": True, "content": "非法返回"}
+
+        def can_retry(self, result_or_error):
+            raise AssertionError("非法返回不应进入重试判断")
+
+    tool = _InvalidResultTool()
+    service = ToolService(tool_max_retries=3)
+    service.register(tool)
+    facts_kwargs = execution_kwargs()
+
+    result = await service.execute("param_tool", {"count": 1}, **facts_kwargs)
+
+    assert tool.calls == 1
+    assert result.success is False
+    assert result.error_code == ErrorCode.UNKNOWN
+    assert "类型 dict" in result.error
+    facts = facts_kwargs["facts"].snapshot()
+    terminal = [fact for fact in facts if fact.attempt_id is not None][-1]
+    assert terminal.execution_state == ToolExecutionState.FAILED
+    assert terminal.cleanup_state.value == "COMPLETE"
+    assert terminal.result is not None
+    assert terminal.result.error_code == ErrorCode.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_reason"),
+    [
+        ({"success": True, "content": None}, "content"),
+        ({"success": True, "content": 123}, "content"),
+        ({"success": "yes", "content": "ok"}, "success"),
+        ({"success": False, "content": "", "error": {"msg": "x"}}, "error"),
+        ({"success": False, "content": "", "error_code": "TIMEOUT"}, "error_code"),
+        ({"success": True, "content": "ok", "effect_state": "NONE"}, "effect_state"),
+    ],
+    ids=["content-None", "content-int", "success-str", "error-dict", "error_code-str", "effect_state-str"],
+)
+@pytest.mark.asyncio
+async def test_invalid_tool_result_fields_are_normalized_without_retry(payload, expected_reason):
+    """ToolResult 字段越界同样在真实调用边界收敛为 UNKNOWN，不逃逸也不重复执行。"""
+
+    class _BadFieldTool(_ParamTool):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, **kwargs):
+            self.calls += 1
+            return ToolResult(**payload)
+
+        def can_retry(self, result_or_error):
+            raise AssertionError("非法返回不应进入重试判断")
+
+    tool = _BadFieldTool()
+    service = ToolService(tool_max_retries=3)
+    service.register(tool)
+    facts_kwargs = execution_kwargs()
+
+    result = await service.execute("param_tool", {"count": 1}, **facts_kwargs)
+
+    assert tool.calls == 1
+    assert result.success is False
+    assert result.error_code == ErrorCode.UNKNOWN
+    assert expected_reason in result.error
+    facts = facts_kwargs["facts"].snapshot()
+    terminal = [fact for fact in facts if fact.attempt_id is not None][-1]
+    assert terminal.execution_state == ToolExecutionState.FAILED
+    assert terminal.result is not None
+    assert terminal.result.error_code == ErrorCode.UNKNOWN
+
+
+@pytest.mark.asyncio
 async def test_prune_tool_lock_skips_held():
     """外部工具重载场景：在飞 execute 持锁时 prune 跳过；释放后才清理。"""
     executor = ToolExecutor(ToolRegistry(), ToolStatsCollector(), ExecutionHooks())

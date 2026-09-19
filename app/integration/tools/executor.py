@@ -38,6 +38,17 @@ from app.shared.exceptions import (
 
 logger = get_logger("tools.executor")
 
+# 适配器返回值必须满足的字段契约：(字段名, 期望类型, 是否允许 None)。
+# 范围是「执行器会读取或转交领域」的字段；metadata 无消费方、execution_time 与
+# retry_count 由执行器覆写，都不在此表内。见 ToolExecutor._invalid_result_reason。
+_RESULT_FIELD_CONTRACT: tuple[tuple[str, type, bool], ...] = (
+    ("success", bool, False),
+    ("content", str, False),
+    ("error", str, True),
+    ("error_code", ErrorCode, True),
+    ("effect_state", ToolEffectState, False),
+)
+
 
 class ToolExecutor:
     """执行编排：在共享准入内运行工具（重试/超时/校验/截断/审计），记录统计并触发钩子。
@@ -446,15 +457,16 @@ class ToolExecutor:
     ) -> tuple[ToolResult, float, ToolExecutionState, ToolCleanupState]:
         """重试循环：超时保护 + 渐进式退避 + 成功截断 + 统计 + 钩子。"""
         name = tool.name
-        last_error: str | None = None
-        last_error_code: ErrorCode | None = None
         last_result: ToolResult | None = None
+        # 失败载体：异常出口传异常对象，结果出口传 ToolResult（`can_retry` 两者都接受）。
+        failure: ToolResult | BaseException
         actual_retries = 0
         execution_state = ToolExecutionState.NOT_STARTED
         cleanup_state = ToolCleanupState.NOT_NEEDED
         observation_remaining = self._observation_timeout
 
         for attempt in range(max_retries):
+            retry_allowed = True
             # 重试竞态：每轮循环前检查取消 / 绝对期限 / run 停止，
             # 避免在重试退避期间被取消后仍进入执行。
             self.check_abort(call)
@@ -482,149 +494,133 @@ class ToolExecutor:
                 # 包装的同步 SDK 调用（如 Tavily 搜索）**无法被取消**——线程池线程会继续运行至底层返回，
                 # 超时后资源不立即释放。这是 `to_thread` + 超时的固有行为（非泄漏）。
                 # 【“本地等待超时”不等于“远端工具已经停止”】
+                result = ToolResult(
+                    success=False,
+                    content="",
+                    error=self._normalize_error(f"工具执行超时（{timeout}秒）"),
+                    error_code=ErrorCode.TIMEOUT,
+                )
+                failure = error
                 execution_state = ToolExecutionState.UNKNOWN
                 cleanup_state = ToolCleanupState.PENDING
-                failure: ToolResult | BaseException = error
-                last_error = self._normalize_error(f"工具执行超时（{timeout}秒）")
-                last_error_code = ErrorCode.TIMEOUT
-                # 覆盖上次业务失败结果：全败收尾统一归因「最近一次失败」（超时优先于更早的业务失败）
-                last_result = None
-                elapsed = time.monotonic() - start_time
-                observation_remaining = self._record_stats(
-                    name,
-                    success=False,
-                    elapsed=elapsed,
-                    observation_remaining=observation_remaining,
-                )
-
-                self._publish_fact(
-                    call,
-                    facts,
-                    revision=1,
-                    attempt_id=attempt_id,
-                    execution_state=ToolExecutionState.UNKNOWN,
-                    effect_state=ToolEffectState.UNKNOWN,
-                    cleanup_state=ToolCleanupState.PENDING,
-                    result=ToolResult(
-                        success=False,
-                        content="",
-                        error=last_error,
-                        error_code=last_error_code,
-                        retry_count=attempt + 1,
-                    ),
-                )
-
+                effect_state = ToolEffectState.UNKNOWN
             except Exception as error:  # noqa: BLE001
+                result = ToolResult(
+                    success=False,
+                    content="",
+                    error=self._normalize_error(f"工具执行异常: {error!s}"),
+                    error_code=ErrorCode.UNKNOWN,
+                )
+                failure = error
                 execution_state = ToolExecutionState.FAILED
                 cleanup_state = ToolCleanupState.COMPLETE
-                failure = error
-                last_error = self._normalize_error(f"工具执行异常: {error!s}")
-                last_error_code = ErrorCode.UNKNOWN
-                # 同上：异常覆盖更早的业务失败，避免错误归因错位（审计 / 证据链按最终失败归类）
-                last_result = None
-                elapsed = time.monotonic() - start_time
-                observation_remaining = self._record_stats(
-                    name,
-                    success=False,
-                    elapsed=elapsed,
-                    observation_remaining=observation_remaining,
-                )
-
-                self._publish_fact(
-                    call,
-                    facts,
-                    revision=1,
-                    attempt_id=attempt_id,
-                    execution_state=ToolExecutionState.FAILED,
-                    effect_state=ToolEffectState.UNKNOWN,
-                    cleanup_state=ToolCleanupState.COMPLETE,
-                    result=ToolResult(
+                effect_state = ToolEffectState.UNKNOWN
+            else:
+                invalid_reason = self._invalid_result_reason(result)
+                if invalid_reason is not None:
+                    # 动态加载的适配器只受类型标注约束，而标注不是运行时约束；非法返回值
+                    # 先在这里收敛为标准失败结果，再走统一的接管、审计与统计路径。
+                    result = ToolResult(
                         success=False,
                         content="",
-                        error=last_error,
-                        error_code=last_error_code,
-                        retry_count=attempt + 1,
-                    ),
-                )
-
-            else:
+                        error=f"工具返回了非法结果: {invalid_reason}",
+                        error_code=ErrorCode.UNKNOWN,
+                        effect_state=ToolEffectState.UNKNOWN,
+                    )
+                    # 契约已破：不允许再执行同一业务调用，也无需再问适配器的重试声明。
+                    retry_allowed = False
                 # execute 已返回，因此本地尝试已完成；业务错误码不反推执行阶段。
-                # 远端效果独立采用 result.effect_state，仍可为 UNKNOWN/PARTIAL。
+                # 远端效果独立采用 result.effect_state（非法返回已收敛为 UNKNOWN）。
+                failure = result
                 execution_state = ToolExecutionState.SUCCEEDED if result.success else ToolExecutionState.FAILED
                 cleanup_state = ToolCleanupState.COMPLETE
-                # 真实调用已返回；以下处理不属于调用失败，异常不得触发工具重放。
-                # 填充执行元数据：retry_count = 实际执行次数（第 1 次尝试 = 1，0 基索引 +1），
-                # 成功 / 失败路径口径一致（全败路径用 actual_retries = 同一语义）
-                elapsed = time.monotonic() - start_time
-                result.execution_time = round(elapsed, 4)
-                result.retry_count = attempt + 1
-                self._publish_fact(
-                    call,
-                    facts,
-                    revision=1,
-                    attempt_id=attempt_id,
-                    execution_state=(ToolExecutionState.SUCCEEDED if result.success else ToolExecutionState.FAILED),
-                    effect_state=result.effect_state,
-                    cleanup_state=ToolCleanupState.COMPLETE,
-                    result=result,
+                effect_state = result.effect_state
+
+            # 三个出口共用同一段收尾：填执行元数据 → 发布终局事实 → 记录统计。
+            # 此时真实调用已返回或已抛出，异常不得触发工具重放；retry_count 为实际执行
+            # 次数（0 基索引 +1），成功 / 失败及全败路径口径一致。
+            elapsed = time.monotonic() - start_time
+            result.execution_time = round(elapsed, 4)
+            result.retry_count = attempt + 1
+            self._publish_fact(
+                call,
+                facts,
+                revision=1,
+                attempt_id=attempt_id,
+                execution_state=execution_state,
+                effect_state=effect_state,
+                cleanup_state=cleanup_state,
+                result=result,
+            )
+            observation_remaining = self._record_stats(
+                name,
+                success=result.success,
+                elapsed=elapsed,
+                observation_remaining=observation_remaining,
+            )
+
+            if result.success:
+                # 原始结果已归调用层所有；展示处理在副本上执行，失败时保留原结果。
+                try:
+                    processed_result = copy.deepcopy(result)
+                    self._result_processor.truncate_result(processed_result, max_length=tool.max_output_length)
+                except Exception as error:  # noqa: BLE001
+                    logger.warning("工具结果展示处理失败（保留原结果）: %s", error)
+                    processed_result = result
+                return (
+                    processed_result,
+                    observation_remaining,
+                    execution_state,
+                    cleanup_state,
                 )
 
-                if result.success:
-                    # 原始结果已归调用层所有；展示处理在副本上执行，失败时保留原结果。
-                    try:
-                        processed_result = copy.deepcopy(result)
-                        self._result_processor.truncate_result(processed_result, max_length=tool.max_output_length)
-                    except Exception as error:  # noqa: BLE001
-                        logger.warning("工具结果展示处理失败（保留原结果）: %s", error)
-                        processed_result = result
-                    observation_remaining = self._record_stats(
-                        name,
-                        success=True,
-                        elapsed=elapsed,
-                        observation_remaining=observation_remaining,
-                    )
-                    return (
-                        processed_result,
-                        observation_remaining,
-                        execution_state,
-                        cleanup_state,
-                    )
-
-                # 执行返回失败（如文件不存在）→ 记录错误与业务码，准备重试
-                last_error = self._normalize_error(result.error or "工具执行失败")
-                last_error_code = result.error_code  # 透传工具业务码（默认 None）
-                last_result = result
-                failure = result
-                observation_remaining = self._record_stats(
-                    name,
-                    success=False,
-                    elapsed=elapsed,
-                    observation_remaining=observation_remaining,
-                )
+            # 失败归因：保留本次尝试的结果，全败收尾即按「最近一次失败」归类
+            # （超时 / 异常优先于更早的业务失败，error_code 反映真正的最后一次失败）。
+            last_result = result
 
             actual_retries += 1
 
             # 仅在安全声明允许重试且未超出次数预算时才进入下一轮循环；否则直接 break。
-            if attempt >= max_retries - 1 or not self._can_retry(tool, failure):
+            if attempt >= max_retries - 1 or not retry_allowed or not self._can_retry(tool, failure):
                 break
 
             # 已同时满足安全声明和次数预算，才进入下一次真实执行。
             wait = retry_delay * (2**attempt)
             await asyncio.sleep(wait)
 
-        # 所有重试均失败：retry_count = 实际执行次数（每轮循环 +1，与成功路径 attempt+1 口径一致）
-        # last_result 仅保留「最近一次业务失败」；最后一次为超时 / 异常时回退到 last_error / last_error_code
-        result = last_result or ToolResult(
-            success=False,
-            content="",
-            error=last_error,
-            error_code=last_error_code,
-            retry_count=actual_retries,
-        )
+        # 所有重试均失败：last_result 是最近一次尝试的结果（循环至少执行一次，max_retries 已 clamp），
+        # retry_count 统一收口为实际执行次数，与成功路径 attempt+1 同口径。
+        result = last_result or ToolResult(success=False, content="", error="工具未产生执行结果")
         result.retry_count = actual_retries
-        if result.execution_time is None:
-            result.execution_time = 0.0
         return result, observation_remaining, execution_state, cleanup_state
+
+    @staticmethod
+    def _invalid_result_reason(result: object) -> str | None:
+        """返回值违反 `ToolResult` 契约时返回原因；合法返回 `None`。
+
+        `BaseTool` 的类型标注约束不了动态加载的外部适配器。检查范围按**下游如何消费
+        该字段**确定，不按“会不会抛异常”确定：
+
+        - `content` 会被 ReAct 切片、`error_code` 会被取 `.value` → 越界即抛异常；
+        - `success` 走真值判定 → 越界会把失败静默当成业务成功；
+        - `error` 与 `effect_state` 会被转交事实与审计，必须是声明类型。
+
+        `metadata` 是无消费方的扩展位，`execution_time` / `retry_count` 由执行器覆写，
+        都不在边界内。越界值一律收敛为 `UNKNOWN` 失败，不做静默强转——强转会把适配器
+        缺陷变成看起来正常的观测回喂给模型。
+
+        字段契约用 `getattr` 逐项取值：静态检查按声明类型会把这些校验判为死代码，而
+        边界要防的正是“运行时违反声明类型”。
+        """
+        if not isinstance(result, ToolResult):
+            return f"类型 {type(result).__name__}"
+        for field, expected, optional in _RESULT_FIELD_CONTRACT:
+            value = getattr(result, field)
+            if value is None and optional:
+                continue
+            if not isinstance(value, expected):
+                return f"字段 {field} 为 {type(value).__name__}"
+        return None
 
     @staticmethod
     def _can_retry(tool: BaseTool, failure: ToolResult | BaseException) -> bool:
