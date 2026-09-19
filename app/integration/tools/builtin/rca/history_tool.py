@@ -4,6 +4,7 @@ from typing import Any
 
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.base import BaseTool
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.security import RiskLevel
 
 from .data import search_history
@@ -11,6 +12,9 @@ from .data import search_history
 
 class SearchHistoricalRcaTool(BaseTool):
     """检索历史 RCA 案例——用过往『症状 → 根因』经验佐证当前排查结论。"""
+
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     @property
     def name(self) -> str:

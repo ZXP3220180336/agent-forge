@@ -14,6 +14,7 @@ ReActStrategy 单元测试
 import asyncio
 import json
 import time
+from dataclasses import replace
 
 import pytest
 from jsonschema import SchemaError
@@ -22,6 +23,7 @@ from app.domain.ports.llm_gateway import StreamResult
 from app.domain.reasoning import ReActStrategy, ToolExecutionOptions
 from app.domain.reasoning.react import _terminal_result
 from app.integration.tools.base import BaseTool, ToolResult
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.tool_service import ToolService
 from app.shared.error_handling import (
     AgentErrorAction,
@@ -31,7 +33,7 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.events import build_error_event, build_message_event
-from app.shared.exceptions import ContextWindowExceededError, LLMDeadlineExceededError
+from app.shared.exceptions import ContextWindowExceededError, LLMDeadlineExceededError, ToolDeadlineExceededError
 from tests.reasoning_execution import reasoning_execution_args, reasoning_run_scope
 
 
@@ -54,6 +56,10 @@ class _EchoTool(BaseTool):
             "required": ["text"],
         }
 
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        """测试替身仅操作内存，不产生外部副作用。"""
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
+
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=True, content=f"echo:{kwargs.get('text', '')}")
 
@@ -72,6 +78,10 @@ class _FailingTool(BaseTool):
     @property
     def parameters(self) -> dict:
         return {"type": "object", "properties": {}}
+
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        """测试替身仅操作内存，不产生外部副作用。"""
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=False, content="", error="模拟执行失败")
@@ -95,6 +105,10 @@ class _FailingToolNamed(BaseTool):
     @property
     def parameters(self) -> dict:
         return {"type": "object", "properties": {}}
+
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        """测试替身仅操作内存，不产生外部副作用。"""
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=False, content="", error=self._error)
@@ -123,6 +137,10 @@ class _DelayTool(BaseTool):
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
         }
+
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        """测试替身仅操作内存，不产生外部副作用。"""
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     async def execute(self, **kwargs) -> ToolResult:
         self.exec_started.append(time.monotonic())
@@ -941,8 +959,16 @@ async def test_post_call_cost_with_tool_calls_only_keeps_previous_visible_result
     assert len(strategy.outcome.tool_calls) == 1, "第二轮未执行工具不能进入证据链"
 
 
-async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result():
-    """当前轮仅有未执行工具调用时，工具执行期超时应保留上一轮可见成果。"""
+@pytest.mark.parametrize("deadline_mode", ["outer_hard", "internal"])
+async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(deadline_mode):
+    """区分外层硬超时兜底和真实工具类型化 deadline，不能依赖二者调度先后。"""
+
+    class _DeadlineBoundaryService(ToolService):
+        async def execute(self, *args, **kwargs):
+            if deadline_mode == "outer_hard":
+                # 仅此用例隔离内部 deadline，明确命中 ReAct 外层硬 timeout。
+                kwargs["call"] = replace(kwargs["call"], deadline=None)
+            return await super().execute(*args, **kwargs)
 
     class _SecondCallSlowEcho(_EchoTool):
         def __init__(self):
@@ -968,30 +994,43 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
         ]
     )
     tool = _SecondCallSlowEcho()
+    tools = _DeadlineBoundaryService(max_concurrent_tools=10)
+    tools.register(tool)
     strategy = ReActStrategy(
         llm=llm,
-        tools=_make_registry(tools=[tool]),
+        tools=tools,
     )
 
-    async for _ in strategy.execute(
-        "hi",
-        [{"role": "user", "content": "hi"}],
-        **reasoning_execution_args(
-            "react",
-            max_iterations=3,
-            temperature=0.2,
-            max_tokens=1024,
-            # 余量放大：第一轮（脚本 LLM + echo）必须在预算内跑完，否则慢机器上假失败
-            max_execution_time=1.0,
-        ),
-    ):
-        pass
+    async def consume():
+        async for _ in strategy.execute(
+            "hi",
+            [{"role": "user", "content": "hi"}],
+            **reasoning_execution_args(
+                "react",
+                max_iterations=3,
+                temperature=0.2,
+                max_tokens=1024,
+                # 余量放大：第一轮（脚本 LLM + echo）必须在预算内跑完，否则慢机器上假失败
+                max_execution_time=1.0,
+            ),
+        ):
+            pass
 
+    if deadline_mode == "internal":
+        with pytest.raises(ToolDeadlineExceededError):
+            await consume()
+        assert tool.calls == 2
+        assert any(f.result and f.result.content == "echo:first" for f in strategy.tool_facts)
+        await tools.shutdown()
+        return
+    await consume()
     assert strategy.outcome is not None
     assert strategy.outcome.content == "上一轮阶段成果"
     assert "超时" in (strategy.outcome.error or "")
     assert tool.calls == 2
     assert len(strategy.outcome.tool_calls) == 1, "第二轮未完成工具不能进入证据链"
+
+    await tools.shutdown()
 
 
 @pytest.mark.asyncio

@@ -62,4 +62,12 @@
 | [TOOLS-052](2026-09-15-register-rollback-resource-leak.md) | 注册失败回滚遗漏当前实例的资源释放 | P2 | ✅ 已修复 | loader | 2026-09-15 | 2026-09-15 |
 | [TOOLS-053](2026-09-15-effective-schema-preflight.md) | 包装后 Schema 预检异常未转换及条件复用边界 | P2 | ✅ 已修复 | validator / tool_service 文档 | 2026-09-15 | 2026-09-15 |
 
+| [TOOLS-054](2026-09-19-observation-cancel-ownership.md) | 吞取消的异步观测超出预算且没有独立拥有者 | P2 | ✅ 已修复 | executor / execution | 2026-09-19 | 2026-09-19 |
+
+| [TOOLS-055](2026-09-19-thread-cleanup-evidence.md) | 清理窗口内完成的线程证据丢失 | P1 | ✅ 已修复 | execution | 2026-09-19 | 2026-09-19 |
+| [TOOLS-056](2026-09-19-plugin-file-unload-race.md) | 多工具文件卸载期间兄弟工具仍可被调用 | P2 | ✅ 已修复 | loader | 2026-09-19 | 2026-09-19 |
+| [TOOLS-057](2026-09-19-write-thread-ownership.md) | 写文件未登记线程导致容量与串行锁提前释放 | P2 | ✅ 已修复 | file_ops | 2026-09-19 | 2026-09-19 |
+| [TOOLS-058](2026-09-19-unprotected-tool-enablement.md) | 交付 B 未就绪能力仍被导出和执行 | P2 | ✅ 已修复 | executor / tool_service / execution | 2026-09-19 | 2026-09-19 |
+| [TOOLS-059](2026-09-19-execution-spec-boundary.md) | 执行声明异常及非法返回污染调用边界 | P2 | ✅ 已修复 | executor / tool_service / execution | 2026-09-19 | 2026-09-19 |
+
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

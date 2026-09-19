@@ -42,6 +42,7 @@ from app.integration.tools.builtin import (
     WebBrowseTool,
     WriteFileTool,
 )
+from app.integration.tools.execution import ToolExecutionSettings
 from app.integration.tools.tool_service import ToolService
 
 from .config import settings
@@ -272,6 +273,12 @@ class Container:
             admission_timeout_seconds=settings.tool_admission_timeout_seconds,
             tool_timeout=settings.tool_timeout,
             tool_max_retries=settings.tool_max_retries,
+            execution_settings=ToolExecutionSettings(
+                cleanup_timeout_seconds=settings.tool_cleanup_timeout_seconds,
+                observation_timeout_seconds=settings.tool_observation_timeout_seconds,
+                max_recovery_records=settings.tool_max_recovery_records,
+                shutdown_timeout_seconds=settings.tool_shutdown_timeout_seconds,
+            ),
             external_config_source=lambda key: getattr(settings, key, None),
         )
         try:

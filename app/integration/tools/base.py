@@ -6,12 +6,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.security import RiskLevel
 from app.integration.tools.validator import ParameterValidator
 from app.shared.json_schema import create_schema_validator
+
+from .execution import ToolExecutionSpec
+
+if TYPE_CHECKING:
+    from .execution import ToolAttemptHandle
 
 # 模块级校验器单例（无状态）；与 executor 注入实例配置恒等（reject_unknown=True）
 _validator = ParameterValidator()
@@ -54,6 +59,15 @@ class BaseTool(ABC):
         Returns:
             ToolResult: 执行结果
         """
+
+    async def invoke(self, parameters: dict[str, Any], execution: ToolAttemptHandle) -> ToolResult:
+        """受控调用入口；控制上下文与业务参数分开，避免隐藏参数碰撞。"""
+        execution.check_abort()
+        return await self.execute(**parameters)
+
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        """默认效果未知；只有受信适配器能显式声明只读能力。"""
+        return ToolExecutionSpec()
 
     def can_retry(self, result_or_error: ToolResult | BaseException) -> bool:
         """本次失败是否可安全自动重试。

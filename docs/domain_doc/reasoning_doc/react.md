@@ -434,3 +434,8 @@ result = strategy.outcome  # ReActOutcome
 - [领域端口契约](../ports_doc/ports.md)（LLMGateway / ToolGateway / ContextBudgetPort / CostLimiterPort 契约）
 - [ReAct 工业级对标基准](react_benchmark.md)（能力基准与差距清单）
 - [领域层说明](../README.md)
+
+
+### 工具受控执行的终止接线
+
+工具边界的 `ToolCancelledError`、`ToolDeadlineExceededError`、`ToolRunStoppedError` 在工具事实接管后继续类型化上抛，不进入 UNKNOWN。C-02 Piece④ 使真实等待及时响应这些信号；完整领域终态、并行兄弟任务清理和协议历史提交仍属于 Piece⑤。ReAct 外层硬 timeout 保留原有成果兜底，两条路径分别测试，不能依赖内部 deadline 与硬 timeout 的调度先后来选择预期。

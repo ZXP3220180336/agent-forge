@@ -9,6 +9,7 @@ import pytest
 from jsonschema import SchemaError
 
 from app.integration.tools.base import BaseTool, ToolResult
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.registry import ToolRegistry
 from app.integration.tools.security import RiskLevel
 
@@ -35,6 +36,10 @@ class _ReadTool(BaseTool):
     @property
     def category(self) -> str:
         return "search"
+
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        """测试替身仅操作内存，不产生外部副作用。"""
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=True, content="ok")

@@ -3,7 +3,7 @@
 > **ID**：TOOLS-ADR-008
 > **日期**：2026-09-13
 > **决策状态**：六项方案选择已接受并回填；接口类型、配置值、迁移及部署机制由 P0 冻结，不重开已定方向。
-> **实现状态**：待实施。本次只有源码核验、研究与文档记录，不代表运行链路已兑现。
+> **实现状态**：部分兑现。Piece①～④完成进程内基础、事实端口、准入及真实执行接管；领域完整批次提交和持久保护仍未完成。实际测试与后续范围见[当前计划](../../../docs/todo.md#c-02-implementation-pieces)及[对齐表](../../../docs/ALIGNMENT.md)。
 > **范围**：Domain 工具编排 → ToolGateway → Integration 工具执行及清理 → 持久事实 → Domain 协议历史与终态。
 > **主归属**：Integration/tools；跨层协作以领域端口及装配根注入实现。
 > **计划**：[C-02 生命周期实施计划](../../../docs/todo.md#c-02-lifecycle)
@@ -412,6 +412,8 @@ Piece①已分离真实调用与后处理异常范围，并把工具重试改为
 监管与释放、并行兄弟有界收尾、最终协议历史和持久恢复仍分别属于 Piece③～⑧；在对应真实
 资源和存储测试闭合前，不宣称交付 A/B 或整份 ADR 已全部实施。后续进度与验收命令见
 [todo](../../../docs/todo.md#c-02-implementation-pieces)。
+
+2026-09-19 补充实施：WriteFileTool 完整同步工作进入受控线程并声明 MAY_WRITE；当前正式网关落实 A/B 启用门禁，只导出/执行明确只读且不要求强制审计的工具。写适配器修复不代表 B 已完成；不新增绕过配置。原因和验证见 [TOOLS-057](../../../issues/integration/tools/2026-09-19-write-thread-ownership.md) 与 [TOOLS-058](../../../issues/integration/tools/2026-09-19-unprotected-tool-enablement.md)。
 
 ## 关联及历史条款承接
 

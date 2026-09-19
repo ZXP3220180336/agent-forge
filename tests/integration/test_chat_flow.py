@@ -5,7 +5,7 @@ chat_router → ReActAgent 桥接集成测试
     用户输入 → LLM 思考 → 工具调用 → 工具执行 → LLM 总结 → 回复用户
 
 不依赖外部 API / 数据库：用 Fake LLM 编排"首轮调工具、次轮给最终答复"，
-真实 ToolService + WriteFileTool 验证工具真实执行。
+真实 ToolService + ReadFileTool 验证当前获准的只读工具真实执行。
 
 用法：装配 ChatService 后直接调用 send_message()，消费 StreamingResponse.body_iterator。
 """
@@ -24,7 +24,7 @@ from app.application.context.context_manager import ContextManager
 from app.application.task.task_service import TaskService
 from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm.token_counter import TiktokenTokenCounter
-from app.integration.tools.builtin import WriteFileTool
+from app.integration.tools.builtin import ReadFileTool
 from app.integration.tools.tool_service import ToolService
 
 
@@ -190,19 +190,20 @@ async def test_chat_send_message_react_loop(tmp_path, agent_params):
     context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
 
     target_file = tmp_path / "out.txt"
+    target_file.write_text("你好", encoding="utf-8")
     fake_llm = FakeLLM(
         [
-            {"type": "tool_calls", "tool": "writeFile", "args": {"file_path": str(target_file), "content": "你好"}},
-            {"type": "stop", "content": "文件已写入"},
+            {"type": "tool_calls", "tool": "readFile", "args": {"file_path": str(target_file)}},
+            {"type": "stop", "content": "文件已读取"},
         ]
     )
 
     registry = ToolService()
-    WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
-    registry.register(WriteFileTool())
+    ReadFileTool.register_config(allowed_dirs=(str(tmp_path),))
+    registry.register(ReadFileTool())
 
     # 2. 调用 send_message（手动传入依赖）
-    request = SendMessageRequest(session_id="s1", message="帮我写个文件", max_iterations=5)
+    request = SendMessageRequest(session_id="s1", message="帮我读个文件", max_iterations=5)
     response = await send_message(
         request=request,
         user_id="user_x",
@@ -232,11 +233,11 @@ async def test_chat_send_message_react_loop(tmp_path, agent_params):
     assert events[-1]["type"] == "DONE_FRAME", f"末帧应为 [DONE]: {types[-1]}"
 
     tool_call = next(e for e in events if e["type"] == "tool_call")
-    assert tool_call["content"] == "writeFile"
+    assert tool_call["content"] == "readFile"
 
     # 5. 工具真实执行
-    assert target_file.exists(), "writeFile 工具未实际执行"
-    assert target_file.read_text(encoding="utf-8") == "你好"
+    tool_result = next(e for e in events if e["type"] == "tool_result")
+    assert "你好" in tool_result["content"], "readFile 工具未实际返回文件内容"
 
     # 6. 消息保存：user 消息（发送时）+ assistant 回复（流结束后）
     roles = [m["role"] for m in fake_sm.saved_messages]
@@ -244,7 +245,7 @@ async def test_chat_send_message_react_loop(tmp_path, agent_params):
     assert "assistant" in roles, f"缺少 assistant 消息: {roles}"
 
     assistant = next(m for m in fake_sm.saved_messages if m["role"] == "assistant")
-    assert assistant["content"] == "文件已写入"
+    assert assistant["content"] == "文件已读取"
     assert assistant["session_id"] == "s1"
 
     # 7. ReAct 循环：首轮调工具 + 次轮给答复
@@ -630,23 +631,24 @@ async def _run_with_iteration_budget(
     """
     fake_sm = FakeSessionManager({"id": "s_iter", "user_id": "user_x", "system_prompt": "sys"})
     context_manager = ContextManager(session_manager=fake_sm, llm=TiktokenTokenCounter("gpt-4"))
-    target_file = tmp_path / "out.txt"
+    for index in range(5):
+        (tmp_path / f"out-{index}.txt").write_text(f"v{index}", encoding="utf-8")
     fake_llm = FakeLLM(
         [
             {
                 "type": "tool_calls",
-                "tool": "writeFile",
+                "tool": "readFile",
                 # 参数逐轮不同：避免触发相同动作停滞检测，保证耗尽路径只由迭代上限决定
-                "args": {"file_path": str(target_file), "content": f"v{index}"},
+                "args": {"file_path": str(tmp_path / f"out-{index}.txt")},
             }
             for index in range(5)
         ]
     )
     registry = ToolService()
-    WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
-    registry.register(WriteFileTool())
+    ReadFileTool.register_config(allowed_dirs=(str(tmp_path),))
+    registry.register(ReadFileTool())
 
-    request = SendMessageRequest(session_id="s_iter", message="帮我写个文件", max_iterations=request_max_iterations)
+    request = SendMessageRequest(session_id="s_iter", message="帮我读几个文件", max_iterations=request_max_iterations)
     response = await send_message(
         request=request,
         user_id="user_x",

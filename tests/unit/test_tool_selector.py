@@ -9,6 +9,7 @@ ToolSelector 工具选择器单元测试
 """
 
 from app.integration.tools.base import BaseTool, ToolResult
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.selector import DefaultToolSelector
 from tests.tool_lifecycle import StandaloneToolService as ToolService
 
@@ -27,6 +28,10 @@ class _ATool(BaseTool):
     @property
     def parameters(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
+
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        """测试替身仅操作内存，不产生外部副作用。"""
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=True, content="A")

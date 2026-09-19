@@ -66,6 +66,7 @@ app/integration/
     ├── selector.py               ← ToolSelector 选择器（全量注入，预留召回）
     ├── validator.py              ← ParameterValidator 参数校验器（jsonschema 严格校验）
     ├── admission.py              ← ToolAdmission 共享准入（全局/单运行容量、有界排队）
+    ├── execution.py              ← 能力启用边界、真实任务/线程与有界接管
     ├── executor.py               ← ToolExecutor 执行调度器（准入/重试/超时/校验/截断/审计）
     ├── result_processor.py       ← ResultProcessor 结果处理器（head+tail 截断 + 错误归一化）
     ├── security.py               ← RiskLevel / ToolAuditor 安全审计（分级 + 留痕）
@@ -171,6 +172,7 @@ app/integration/
 | `ToolSelector` | selector.py | 选择器：选注入子集（默认全量注入，预留召回） |
 | `ParameterValidator` | validator.py | 校验器：jsonschema 严格校验 + 错误归因 |
 | `ToolAdmission` | tools/admission.py | 全局/单运行共享准入、有界排队和取消可中断等待 |
+| `ToolExecutionSupervisor` | tools/execution.py | 真实执行所有权、清理窗口和关闭保护；见[组件说明](tools_doc/execution.md) |
 | `ToolExecutor` | executor.py | 调度器：准入 / 重试 / 超时 / 校验 / 截断 / 审计编排 |
 | `ResultProcessor` | result_processor.py | 结果处理器：head+tail 截断 + 错误归一化 |
 | `ToolAuditor` | security.py | 安全审计：风险分级 L0-L3 + 审计留痕 |

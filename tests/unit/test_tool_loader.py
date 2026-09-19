@@ -13,6 +13,7 @@ ExternalToolLoader 单元测试
     排除 __init__.py / _ 开头；非法文件名（my-tool.py）走哈希模块名
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -20,8 +21,9 @@ from types import ModuleType
 
 import pytest
 
-from app.domain.ports.tool_gateway import ToolResult
+from app.domain.ports.tool_gateway import ErrorCode, ToolResult
 from app.integration.tools.base import BaseTool
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.loader import ExternalToolLoader
 from tests.tool_lifecycle import StandaloneToolService as ToolService
 
@@ -30,6 +32,7 @@ def _tool_source(name: str, content: str = "ok", *, extra: str = "") -> str:
     """生成一个继承 BaseTool 的工具文件源码（类名 = name.title() + Tool）。"""
     return f'''\
 from app.integration.tools.base import BaseTool
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.domain.ports.tool_gateway import ToolResult
 
 class {name.title()}Tool(BaseTool):
@@ -39,6 +42,8 @@ class {name.title()}Tool(BaseTool):
     def description(self): return "{name} tool"
     @property
     def parameters(self): return {{"type": "object", "properties": {{}}, "required": []}}
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
     async def execute(self, **kwargs): return ToolResult(success=True, content="{content}")
 {extra}
 '''
@@ -64,8 +69,78 @@ class _FixedTool(BaseTool):
     def parameters(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
 
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
+
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=True, content=self._content)
+
+
+async def test_active_old_version_defers_hot_unload(tmp_path, monkeypatch):
+    service = ToolService()
+    loader = ExternalToolLoader(service, default_directory=str(tmp_path))
+    path = _write_tool_file(tmp_path, "active.py", _tool_source("active"))
+    await loader.scan_once()
+    old = service.get("active")
+    active = True
+    monkeypatch.setattr(service, "is_tool_active", lambda tool: active and tool is old)
+    path.unlink()
+    await loader.scan_once()
+    assert service.get("active") is old
+    active = False
+    await loader.scan_once()
+    assert service.get("active") is None
+    await service.shutdown()
+
+
+async def test_file_unload_blocks_sibling_calls_before_first_cleanup(service, loader, tmp_path, monkeypatch):
+    """首个工具清理挂起时，同文件其他工具也必须已停止接收新调用。"""
+    path = _write_tool_file(tmp_path, "pair.py", _tool_source("alpha") + _tool_source("beta"))
+    await loader.scan_once()
+    monkeypatch.setattr(service, "_external_loader", loader)
+    await loader.maybe_refresh()
+    # 固定本场景为 TTL 内调用，避免机器负载使测试意外进入等待刷新路径。
+    monkeypatch.setattr("app.integration.tools.loader._DIR_SIGNATURE_TTL", float("inf"))
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def unload_alpha():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(service.get("alpha"), "on_unload", unload_alpha)
+    path.unlink()
+    refresh = asyncio.create_task(service.refresh_external_tools())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        result = await asyncio.wait_for(service.execute("beta", {}), timeout=1)
+        assert result.error_code == ErrorCode.NOT_REGISTERED
+    finally:
+        release.set()
+        await refresh
+        await service.shutdown()
+
+
+async def test_cancelled_refresh_waiter_does_not_cancel_load_transaction(tmp_path, monkeypatch):
+    service = ToolService()
+    loader = ExternalToolLoader(service, default_directory=str(tmp_path))
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def scan():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(loader, "_scan_once", scan)
+    waiter = asyncio.create_task(loader.scan_once())
+    await entered.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    close = asyncio.create_task(loader.close())
+    await asyncio.sleep(0)
+    assert not close.done()
+    release.set()
+    await close
+    await service.shutdown()
 
 
 @pytest.fixture

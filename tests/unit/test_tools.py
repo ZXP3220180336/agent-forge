@@ -12,7 +12,15 @@ import asyncio
 import pytest
 
 from app.integration.tools.base import BaseTool, ToolResult
+from app.integration.tools.execution import (
+    ToolEffectClass,
+    ToolExecutionSettings,
+    ToolExecutionSpec,
+    ToolShutdownIncompleteError,
+)
+from app.shared.exceptions import ToolCancelledError
 from tests.tool_lifecycle import StandaloneToolService as ToolService
+from tests.tool_lifecycle import execution_kwargs
 
 
 class _SleepTool(BaseTool):
@@ -34,6 +42,9 @@ class _SleepTool(BaseTool):
     @property
     def parameters(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
+
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     async def execute(self, **kwargs) -> ToolResult:
         self.active += 1
@@ -147,5 +158,92 @@ async def test_tool_service_shutdown_idempotent_and_tolerates_failure():
     await service.shutdown()  # 不抛异常（on_unload 失败被捕获）
     await service.shutdown()  # 幂等
 
-    assert boom.unloaded == 2
-    assert good.unloaded == 2
+    assert boom.unloaded == 1
+    assert good.unloaded == 1
+
+
+async def test_shutdown_budget_does_not_discard_pending_unload():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class SlowUnload(_ShutdownSpyTool):
+        async def on_unload(self):
+            self.unloaded += 1
+            entered.set()
+            await release.wait()
+
+    service = ToolService(execution_settings=ToolExecutionSettings(shutdown_timeout_seconds=0.01))
+    tool = SlowUnload()
+    service.register(tool)
+    try:
+        with pytest.raises(ToolShutdownIncompleteError):
+            await service.shutdown()
+        assert entered.is_set()
+        assert tool.unloaded == 1
+    finally:
+        release.set()
+        await service.shutdown()
+    assert tool.unloaded == 1
+
+
+async def test_cancelled_shutdown_task_can_be_retried():
+    class InterruptedUnload(_ShutdownSpyTool):
+        async def on_unload(self):
+            self.unloaded += 1
+            if self.unloaded == 1:
+                raise asyncio.CancelledError
+
+    service = ToolService()
+    tool = InterruptedUnload()
+    service.register(tool)
+    with pytest.raises(asyncio.CancelledError):
+        await service.shutdown()
+    await service.shutdown()
+    assert tool.unloaded == 2
+
+
+async def test_hard_cancel_of_shutdown_waiter_preserves_cleanup_owner():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class SlowUnload(_ShutdownSpyTool):
+        async def on_unload(self):
+            self.unloaded += 1
+            entered.set()
+            await release.wait()
+
+    service = ToolService()
+    tool = SlowUnload()
+    service.register(tool)
+    waiter = asyncio.create_task(service.shutdown())
+    await entered.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert not service._shutdown_task.done()
+    release.set()
+    await service.shutdown()
+    assert tool.unloaded == 1
+
+
+async def test_cancel_during_refresh_returns_control_without_starting_tool(monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    service = ToolService()
+    tool = _SleepTool(delay=0)
+    service.register(tool)
+    kwargs = execution_kwargs()
+
+    async def slow_scan():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(service._external_loader, "_scan_once", slow_scan)
+    task = asyncio.create_task(service.execute(tool.name, {}, **kwargs))
+    await entered.wait()
+    kwargs["call"].cancel_events[0].set()
+    try:
+        with pytest.raises(ToolCancelledError):
+            await asyncio.wait_for(task, 1)
+        assert tool.max_active == 0
+        assert not service._external_loader._refresh_task.done()
+    finally:
+        release.set()
+        await service.shutdown()

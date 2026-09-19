@@ -103,7 +103,7 @@ class ToolAdmission:
     def pending(self) -> int:
         return self._pending
 
-    async def acquire(self, call: ToolCallContext) -> ToolPermit | None:
+    async def acquire(self, call: ToolCallContext, *, deadline: float | None = None) -> ToolPermit | None:
         """等待并取得许可；队列满或准入等待耗尽返回 ``None``。
 
         等待期间同时监听调用取消、运行停止、绝对 deadline 和准入等待上限。
@@ -121,6 +121,9 @@ class ToolAdmission:
                 run_id=call.run_id,
                 operation_id=call.operation_id,
             )
+
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
 
         # 先拒绝超出队列容量的调用，避免无界增长；此时尚未创建等待者。
         if self._pending >= self.max_pending or (self._pending_by_run.get(call.run_id, 0) >= self.max_pending_per_run):
@@ -157,7 +160,8 @@ class ToolAdmission:
         for event in watched:
             control_tasks.add(asyncio.create_task(event.wait()))
         deadline_task = asyncio.create_task(self._sleep_until(call.deadline))
-        timeout_task = asyncio.create_task(asyncio.sleep(self.admission_timeout))
+        remaining = self.admission_timeout if deadline is None else max(0.0, deadline - time.monotonic())
+        timeout_task = asyncio.create_task(asyncio.sleep(remaining))
         control_tasks.update((deadline_task, timeout_task))
         try:
             # Future 与所有终止条件竞争，谁先完成就先处理谁。

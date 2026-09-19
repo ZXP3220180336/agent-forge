@@ -2,7 +2,7 @@
 
 > **更新日期**：2026-08-17
 > **模块**：`app/integration/tools/selector.py`
-> **职责**：从注册工具集中选出本次注入 LLM 的工具子集（预留接口，默认全量注入）
+> **职责**：从通过启用门禁的候选集中选出本次注入 LLM 的工具子集（预留接口，默认全量注入）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。边界：（仅接口 + 默认实现，向量召回未实现）
 
 ---
@@ -37,7 +37,7 @@ LLM 每轮 Function Calling 都收到全部工具定义，工具集超过阈值�
 
 - 工具数 <50：默认全量注入，零配置
 - 工具数 >50：实现 `ToolSelector` 协议（embedding 粗排 + 可选 Rerank 精排），构造期注入 `ToolService(selector=MySelector())`，Facade 与 Agent 零改动
-- `get_openai_responses()` 不走选择器（保持全量转储，该 API 当前零生产者）
+- `get_openai_responses()` 不走选择器（同样先做启用过滤，再导出全部获准工具）
 
 ## 设计决策
 

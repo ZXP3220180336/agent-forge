@@ -50,7 +50,7 @@
 | 多次真实响应合并一次返回 | 只回填末次成功漏掉前序消耗，`not target` 又曾把合法空 dict 当无累加对象；实际可得 usage 与不可得消耗要分开，估算不能冒充实际计量。 | [LLM-038/039](../issues/integration/llm/2026-09-02-usage-accounting.md)、[LLM-047](../issues/integration/llm/2026-09-09-deadline-usage-propagation-closed-loop.md)；[流式规范](engineering/integration-rules.md)。 |
 | 手动置熔断状态测试 fallback | OPEN 若已过 cooldown 会转 HALF_OPEN，测试实际走主链路；原绿灯因此固化了错误的“共享主窗口”前提。需要验证真正命中的模型与路径。 | [LLM-041](../issues/integration/llm/2026-09-06-fallback-window-and-quota.md)；[请求规范](engineering/integration-rules.md)。 |
 | 宣称 best-effort 或新增异常分类 | 搜到 raise 未追踪外层短路曾误判异常是否到达 Reflection；SDK 原始异常越过 Facade 也使领域 AppError 捕获失效。 | [REASON-010](../issues/domain/reasoning/2026-09-01-reflection-degradation-coverage.md)、[异常归一 ADR](../adr/integration/llm/2026-09-01-openai-error-normalization.md)；[异常规范](engineering/integration-rules.md)。 |
-| 扩展 handler、日志或审计影响业务收尾 | 非关键观测必须有界并隔离异常，且最终 Guard 后不能再留下可阻塞提交的 await。LLM 调用日志已在共享入口收口；其他观测路径仍需逐入口核验。 | [LLM-049](../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md)、[ADR-003](../adr/2026-09-12-sdk-call-guard-response-commit.md)；[G0](engineering/ai-engineering-rules.md#g0)。 |
+| 扩展 handler、日志或审计影响业务收尾 | 非关键观测必须有界并隔离异常，且最终 Guard 后不能再留下可阻塞提交的 await。LLM 调用日志已在共享入口收口；工具异步观测进一步验证了 wait_for 无法严格限制吞取消协程，需要有界等待加独立任务 Owner；其他观测路径仍需逐入口核验。 | [TOOLS-054](../issues/integration/tools/2026-09-19-observation-cancel-ownership.md)、[LLM-049](../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md)、[ADR-003](../adr/2026-09-12-sdk-call-guard-response-commit.md)；[G0](engineering/ai-engineering-rules.md#g0)。 |
 | 用户可见错误、截断与审计脱敏 | 长度裁剪挡不住前部敏感值；成功 Hooks 也不能覆盖工具未注册、解析/校验失败等审计路径。诊断价值不构成对外保留秘密的豁免。 | [UNKNOWN 脱敏](../issues/domain/reasoning/2026-08-30-unknown-error-redaction.md)、[审计脱敏](../issues/integration/tools/2026-08-19-audit-sensitive-key-masking.md)、[工具六组件 ADR](../adr/integration/tools/2026-08-17-six-component-alignment.md)；[异常](engineering/integration-rules.md)与[工具规范](engineering/integration-rules.md)。 |
 
 ## 测试与维护环境
@@ -64,7 +64,18 @@
 | 配置键改名或迁移消费方 | 测试中的 `monkeypatch.setattr(settings, ...)` 在字段不再被组件读取后仍然通过，断言实际由构造参数满足，patch 只是空转；只按“测试仍绿”判断改名完成会留下这种假覆盖。改名后须逐条核对 patch 目标是否还在读取路径上，需要覆盖生产装配就改用真实 Container 入口。 | 2026-09-18 Piece③ 工具准入配置迁移评审；[项目工作流](engineering/project-workflow.md)。 |
 | 涉及时序竞态或文档格式检查 | 时间预算不足会让测试命中提前入口；无限等待会使失败挂起。中文表格列宽应按项目实际 lint 配置核验，不能把旧脚本做法提升为每次必跑的通用要求。 | [LLM-047](../issues/integration/llm/2026-09-09-deadline-usage-propagation-closed-loop.md)、[完成记录](history/completed-work.md)；[项目工作流](engineering/project-workflow.md)。 |
 
+## 工具后台结果与批量卸载
+
+线程等待取消后的失败事实被确认，不代表线程原始值已接管；清理窗口内完成仍须保留未交付证据。文件级卸载检查后，必须在首个 await 前关闭全文件入口，逐个注销仍会留下兄弟工具竞态。见 [TOOLS-055](../issues/integration/tools/2026-09-19-thread-cleanup-evidence.md)、[TOOLS-056](../issues/integration/tools/2026-09-19-plugin-file-unload-race.md)。
+
 ## Schema 预检覆盖与包装
 
 - 标准子树元校验覆盖按对象身份复用，引用访问还取决于资源作用域；二者不能共用去重键。见 [SCHEMA-004](../issues/shared/json_schema/2026-09-15-repeated-meta-validation.md) 与 [E8](engineering/ai-engineering-rules.md#gates)。
 - 包装 Schema 不只可能覆盖非法定义，也可能意外修复原悬空引用或使合法引用失效。原定义与有效定义均须保持失败出口，优化只在可证明语义未变时复用。见 [TOOLS-053](../issues/integration/tools/2026-09-15-effective-schema-preflight.md) 与[参数校验契约](integration_doc/tools_doc/validator.md)。
+
+## 工具适配器登记与分期启用
+
+- 工具取消时需要证明真实 I/O 已结束：线程池包裹的 mkdir/open/write/close 必须完整登记到宿主，不能用协程结束推定资源已回收。见 [TOOLS-057](../issues/integration/tools/2026-09-19-write-thread-ownership.md) 与[执行契约](integration_doc/tools_doc/execution.md)。
+- 分期计划把能力列在后续批次，不等于当前已注册路径可以无保护执行。注册、模型可见和正式可执行集合应按现有启用条件区分；改只读声明不能替代保护。见 [TOOLS-058](../issues/integration/tools/2026-09-19-unprotected-tool-enablement.md) 与 [ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)。
+
+- 适配器边界不仅要捕获调用异常，还须验证返回类型，避免非法对象进入完成回调；共用入口需核对执行与导出两条路径。控制信号即使继承 Exception 也不能被普通故障回落吞掉。见 [TOOLS-059](../issues/integration/tools/2026-09-19-execution-spec-boundary.md)。

@@ -4,6 +4,7 @@ from typing import Any
 
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.base import BaseTool
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.security import RiskLevel
 
 from .data import query_yield
@@ -11,6 +12,9 @@ from .data import query_yield
 
 class QueryBatchYieldTool(BaseTool):
     """查询指定批次良率记录（按工艺 step），识别骤降——良率异常排查第一步。"""
+
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     @property
     def name(self) -> str:

@@ -87,6 +87,7 @@
 | app/integration/tools/assembler.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/integration/test_tool_execution.py | 内置工具幂等装配 |
 | app/integration/tools/admission.py | ✅ | docs/integration_doc/tools_doc/admission.md | tests/unit/test_tool_admission.py | 全局/单运行共享准入、有界排队、轮转公平、可中断等待与撤回/关闭转换 |
 | app/integration/tools/base.py | ✅ | docs/integration_doc/tools_doc/tools.md | tests/unit/test_tool_executor_components.py | BaseTool 抽象 + 元数据 + 保守安全重试声明 + 校验委托 + 生命周期钩子 |
+| app/integration/tools/execution.py | ✅ | docs/integration_doc/tools_doc/execution.md | tests/unit/test_tool_execution_supervisor.py | 进程内真实句柄、有界清理与迟回值接管；启用门禁见 test_tool_enablement.py；Executor跨层验证见 test_tool_attempt_lifecycle.py，持久恢复未实现 |
 | app/integration/tools/executor.py | ✅ | docs/integration_doc/tools_doc/executor.md | tests/unit/test_tool_executor_components.py | 执行编排：安全重试、控制复查及 Integration 优先事实接管；生命周期契约另见 test_tool_lifecycle_contract.py |
 | app/integration/tools/hooks.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tool_hooks.py | 成功路径有界通知 + 参数/结果快照隔离；Executor 组合边界另见 test_tool_executor_components.py |
 | app/integration/tools/loader.py | ✅ | docs/integration_doc/tools_doc/external.md | tests/unit/test_tool_loader.py | 外部工具热加载（execute 惰性检查 + 生命周期钩子） |
@@ -95,10 +96,10 @@
 | app/integration/tools/security.py | ✅ | docs/integration_doc/tools_doc/security.md | tests/unit/test_tool_audit.py | 风险分级 L0-L3 + 审计 + 审批通道（默认放行；审批测试 test_tool_approval.py） |
 | app/integration/tools/selector.py | ✅ | docs/integration_doc/tools_doc/selector.md | tests/unit/test_tool_selector.py | 工具选择器（默认全量注入，预留） |
 | app/integration/tools/stats.py | ✅ | docs/integration_doc/tools_doc/stats.md | tests/unit/test_tools.py | 执行统计 |
-| app/integration/tools/tool_service.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tools.py | Facade 强制透传 call/facts；契约另经 test_tool_lifecycle_contract.py 覆盖；外部工具热加载与生命周期回收 |
+| app/integration/tools/tool_service.py | ✅ | docs/integration_doc/tools_doc/tool_service.md | tests/unit/test_tools.py | Facade 强制透传 call/facts，模型仅导出获准工具；契约另经 test_tool_lifecycle_contract.py 覆盖；外部工具热加载与生命周期回收 |
 | app/integration/tools/validator.py | ✅ | docs/integration_doc/tools_doc/validator.md | tests/unit/test_tool_validator.py | 参数校验器：jsonschema 严格校验 + 错误归因 |
-| app/integration/tools/builtin/code_exec.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置命令执行（L2 危险 + 黑名单） |
-| app/integration/tools/builtin/file_ops.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置文件读写（readFile L0 / writeFile L1） |
+| app/integration/tools/builtin/code_exec.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置命令适配器（L2 危险 + 黑名单）；B 未就绪，正式执行/导出关闭 |
+| app/integration/tools/builtin/file_ops.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置文件读写；写适配器线程登记见 test_tool_write_execution.py，writeFile 正式准入等待 B |
 | app/integration/tools/builtin/search.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置搜索（L0，Tavily） |
 | app/integration/tools/builtin/web_browse.py | ✅ | docs/integration_doc/tools_doc/builtin_doc/builtin.md | tests/integration/test_tool_execution.py | 内置网页抓取（L0，HTML→文本 + on_unload 连接池回收） |
 | app/integration/tools/external/http_api.py | ✅ | docs/integration_doc/tools_doc/external.md | tests/unit/test_http_api_tool.py | 外部工具示例：REST API 调用（生命周期钩子演示） |

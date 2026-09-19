@@ -3,12 +3,16 @@
 """
 
 import asyncio
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from tavily import TavilyClient
 
 from ..base import BaseTool, ToolResult
+from ..execution import ToolEffectClass, ToolExecutionSpec
 from ..security import RiskLevel
+
+if TYPE_CHECKING:
+    from ..execution import ToolAttemptHandle
 
 
 class SearchTool(BaseTool):
@@ -28,7 +32,7 @@ class SearchTool(BaseTool):
     def _get_client(self, api_key: str) -> TavilyClient:
         """获取 TavilyClient（实例级复用；api_key 变化时重建）。"""
         if self._client is None or self._client_api_key != api_key:
-            self._client = TavilyClient(api_key=api_key)
+            self._client = TavilyClient(api_key=api_key, timeout=self.timeout)
             self._client_api_key = api_key
         return self._client
 
@@ -73,7 +77,18 @@ class SearchTool(BaseTool):
             "required": ["query"],
         }
 
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
+
+    async def invoke(self, parameters: dict[str, Any], execution: ToolAttemptHandle) -> ToolResult:
+        """宿主持有真实线程句柄，外层取消不代表搜索线程已经停止。"""
+        return await execution.run_sync(self._search_sync, **parameters)
+
     async def execute(self, **kwargs) -> ToolResult:
+        """独立调用入口；生产执行器使用 invoke 跟踪线程生命周期。"""
+        return await asyncio.to_thread(self._search_sync, **kwargs)
+
+    def _search_sync(self, **kwargs) -> ToolResult:
         """
         执行搜索
 
@@ -97,9 +112,8 @@ class SearchTool(BaseTool):
 
         try:
             tavily = self._get_client(api_key)
-            # 同步 IO 放入独立线程，不阻塞事件循环
-            response = await asyncio.to_thread(
-                tavily.search,
+            # 已安装 SDK 单次 search 发起一次请求；不叠加适配器自动重试。
+            response = tavily.search(
                 query=kwargs["query"],
                 search_depth=self._search_depth,
                 include_answer=True,

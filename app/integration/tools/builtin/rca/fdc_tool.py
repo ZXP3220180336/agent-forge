@@ -4,6 +4,7 @@ from typing import Any
 
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.base import BaseTool
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.security import RiskLevel
 
 from .data import query_fdc
@@ -11,6 +12,9 @@ from .data import query_fdc
 
 class QueryFdcParamsTool(BaseTool):
     """查询设备 FDC 工艺参数偏离——确认工艺窗口是否越界。"""
+
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     @property
     def name(self) -> str:

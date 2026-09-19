@@ -122,7 +122,7 @@ LLM 调用契约（流式 / 非流式 / 结构化 / 成本估算 / Token 计量�
 | `retry_count` | `int` | 重试次数 |
 | `effect_state` | `ToolEffectState` | 外部效果确定性；默认 `UNKNOWN`，可信只读适配器可声明 `NONE` |
 
-**`ErrorCode`（系统级错误码，StrEnum）**：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数解析失败）/ `VALIDATION`（参数校验失败）/ `REJECTED`（审批拒绝）/ `CAPACITY_EXCEEDED`（共享准入容量或等待队列已满，工具未执行）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。
+**`ErrorCode`（系统级错误码，StrEnum）**：`NOT_REGISTERED`（未注册）/ `JSON_PARSE`（参数解析失败）/ `VALIDATION`（参数校验失败）/ `REJECTED`（能力未启用或审批拒绝）/ `CAPACITY_EXCEEDED`（共享准入容量或等待队列已满，工具未执行）/ `TIMEOUT`（执行超时）/ `UNKNOWN`（未捕获异常）。
 
 ### 工具运行上下文与事实
 

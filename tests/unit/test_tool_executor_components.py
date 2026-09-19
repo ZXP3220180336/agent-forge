@@ -16,6 +16,7 @@ import pytest
 from app.domain.ports.tool_execution import ToolExecutionState
 from app.domain.ports.tool_gateway import ErrorCode
 from app.integration.tools.base import BaseTool, ToolResult
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.hooks import ExecutionHooks
 from app.integration.tools.registry import ToolRegistry
 from app.integration.tools.result_processor import ResultProcessor
@@ -51,6 +52,9 @@ class _ConcurrentTool(BaseTool):
     def concurrency_safe(self) -> bool:
         return self._safe
 
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
+
     async def execute(self, **kwargs) -> ToolResult:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -77,6 +81,9 @@ class _ParamTool(BaseTool):
             "properties": {"count": {"type": "integer"}},
             "required": ["count"],
         }
+
+    def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(success=True, content="ok")
@@ -260,7 +267,9 @@ async def test_capacity_rejection_yields_capacity_exceeded_with_audit_and_fact()
     await tool.started.wait()
 
     queued = asyncio.create_task(service.execute("param_tool", {"count": 1}))
-    await asyncio.sleep(0)  # 让 queued 进入等待队列，占满唯一排队名额
+    async with asyncio.timeout(1):
+        while service._executor._admission.pending != 1:
+            await asyncio.sleep(0)
     assert service._executor._admission.pending == 1
 
     facts_kwargs = execution_kwargs()

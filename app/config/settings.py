@@ -27,6 +27,7 @@
 """
 
 from functools import lru_cache
+from math import isfinite
 from pathlib import Path
 from typing import Literal, Self
 
@@ -190,7 +191,11 @@ class Settings(BaseSettings):
     tool_max_concurrent_executions: int = 3  # 所有运行共享的全局在途工具数
     tool_max_pending_calls: int = 30  # 全局工具排队上限
     tool_max_pending_calls_per_run: int = 6  # 单运行工具排队上限
-    tool_admission_timeout_seconds: float = 30.0  # 单次准入等待上限
+    tool_cleanup_timeout_seconds: float = 1.0  # 单次执行取消后的最大清理窗口
+    tool_observation_timeout_seconds: float = 0.2  # 单次调用非关键观测总预算
+    tool_max_recovery_records: int = 30  # 启动前预留的执行跟踪条目上限
+    tool_shutdown_timeout_seconds: float = 5.0  # 工具服务关闭总预算
+    tool_admission_timeout_seconds: float = 30.0  # 每次准入等待上限，首次包含刷新/审批
     agent_task_queue_size: int = 50  # 任务队列大小
     agent_worker_pool_size: int = 5  # 工作线程池大小
 
@@ -315,6 +320,7 @@ class Settings(BaseSettings):
         "tool_max_concurrent_executions",
         "tool_max_pending_calls",
         "tool_max_pending_calls_per_run",
+        "tool_max_recovery_records",
     )
     @classmethod
     def validate_tool_admission_counts(cls, v: int) -> int:
@@ -323,12 +329,17 @@ class Settings(BaseSettings):
             raise ValueError(f"工具准入参数必须为正整数，当前值: {v}")
         return v
 
-    @field_validator("tool_admission_timeout_seconds")
+    @field_validator(
+        "tool_admission_timeout_seconds",
+        "tool_cleanup_timeout_seconds",
+        "tool_observation_timeout_seconds",
+        "tool_shutdown_timeout_seconds",
+    )
     @classmethod
     def validate_tool_admission_timeout(cls, v: float) -> float:
-        """工具准入等待必须为正数。"""
-        if v <= 0:
-            raise ValueError(f"工具准入等待必须为正数，当前值: {v}")
+        """工具生命周期的等待上限必须为有限正数。"""
+        if not isfinite(v) or v <= 0:
+            raise ValueError(f"工具等待上限必须为有限正数，当前值: {v}")
         return v
 
     @model_validator(mode="after")
@@ -338,6 +349,8 @@ class Settings(BaseSettings):
         单独校验每个字段看不到这层关系；提前到配置层报错，避免配置通过校验、却
         在 Container 装配 ToolAdmission 时才失败。
         """
+        if self.tool_max_recovery_records < self.tool_max_concurrent_executions:
+            raise ValueError("tool_max_recovery_records 不能小于 tool_max_concurrent_executions")
         if self.tool_max_pending_calls_per_run > self.tool_max_pending_calls:
             raise ValueError(
                 "tool_max_pending_calls_per_run 不能大于 tool_max_pending_calls，"

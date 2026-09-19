@@ -4,6 +4,7 @@ from typing import Any
 
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.base import BaseTool
+from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.security import RiskLevel
 
 from .data import query_defects
@@ -11,6 +12,9 @@ from .data import query_defects
 
 class QueryDefectMapTool(BaseTool):
     """查询批次 wafer 缺陷分布——确认缺陷模式与类型（证据链关键一环）。"""
+
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     @property
     def name(self) -> str:

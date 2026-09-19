@@ -504,7 +504,7 @@ REDIS_URL="redis://localhost:6379/0"
 
 ## 工具生命周期 P0 配置（Piece③ 已接入）
 
-2026-09-17：[TOOLS-ADR-008 P0](../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#tool-lifecycle-p0-spec) 的 Piece③ 配置已进入 `settings.py` 与 Container。初值服务本地小并发验证，不是工业通用最佳参数；实施时依据负载证据调整须同步本表。
+2026-09-19：[TOOLS-ADR-008 P0](../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#tool-lifecycle-p0-spec) 的 Piece③、④所需配置已进入 `settings.py` 与 Container；记录写入、核验、持久保留和宿主配置仍属于后续切片。初值服务本地小并发验证，不是工业通用最佳参数；实施时依据负载证据调整须同步本表。
 
 | 配置键 | 初始值/约束 | 消费者与含义 |
 | --- | --- | --- |

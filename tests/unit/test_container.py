@@ -5,6 +5,8 @@ initialize() 只 stub 掉外部基础设施（Redis 连接、asyncpg 引擎、se
 均为离线安全，真实执行。测试后会恢复被 initialize() 污染的全局注册表。
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 import app.container as container_module
@@ -17,6 +19,7 @@ from app.integration.llm.reservation_limiter import ReservationLimiterManager
 from app.integration.llm.retry import RetryHandlerManager
 from app.integration.llm.streaming_rectifier import StreamingRectifier
 from app.integration.llm.structured import StructuredOutput
+from app.integration.tools.execution import ToolShutdownIncompleteError
 
 # initialize() 会修改这些类级注册表/配置，测试后恢复为快照
 _GLOBAL_STATE = {
@@ -241,3 +244,20 @@ async def test_shutdown_safe_when_nothing_initialized():
     c = Container()
     await c.shutdown()
     assert c.initialized is False
+
+
+async def test_incomplete_tool_shutdown_keeps_shared_dependencies_open(monkeypatch):
+    c = Container()
+    c.initialized = True
+    c.tool_service = AsyncMock()
+    c.tool_service.shutdown.side_effect = ToolShutdownIncompleteError("仍有真实线程")
+    c.redis = AsyncMock()
+    c._engine = AsyncMock()
+    close_llm = AsyncMock()
+    monkeypatch.setattr(ClientManager, "close_all", close_llm)
+    with pytest.raises(ToolShutdownIncompleteError):
+        await c.shutdown()
+    c.redis.close.assert_not_awaited()
+    c._engine.dispose.assert_not_awaited()
+    close_llm.assert_not_awaited()
+    assert c.initialized is True

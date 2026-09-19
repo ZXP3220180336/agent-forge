@@ -1,6 +1,6 @@
 # 外部工具热加载（ExternalToolLoader）说明文档
 
-> **更新日期**：2026-08-24
+> **更新日期**：2026-09-19
 > **模块**：`app/integration/tools/loader.py`
 > **职责**：从外部目录发现 `BaseTool` 子类并纳入注册中心 —— 加载 / 重载 / 卸载 / 生命周期钩子 / 全链路留痕
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
@@ -46,8 +46,8 @@
 ### 加载 / 重载 / 卸载
 
 - **加载**：`importlib.util.spec_from_file_location` 动态导入（快照 sys.modules 追踪工具模块 + 兄弟模块）→ 收集 `BaseTool` 子类（过滤规则与 builtin 一致）→ **配置注入（`CONFIG_KEYS` → `register_config`）** → 实例化 → `on_load()` → 冲突检查 → `service.register`
-- **重载**（mtime 或 size 变化）：nuke-and-repave —— 先卸载旧实例再加载新实例；在飞 execute 持 per-tool 锁时 `prune_tool_lock` 跳过（executor 保证串行化不破坏）
-- **卸载**（文件删除）：`on_unload()` → `service.unregister` → 清理 sys.modules（工具模块 + 兄弟模块，防旧缓存）
+- **重载**（mtime 或 size 变化）：先检查旧实例是否仍被调用持有；活动调用或后台真实执行尚未结束时，保留旧实例并延后重载。可安全卸载后再加载新实例。
+- **卸载**（文件删除）：确认整个文件所属工具均无活动 Owner → 同步注销该文件全部工具 → 逐一 `on_unload()` → 清理 sys.modules（工具模块 + 兄弟模块，防旧缓存）。活动检查与全部注销之间没有 await，避免首个工具清理挂起时新调用取得同文件的其他工具。
 - **模块名**：合法标识符文件名用真实包名（`app.integration.tools.external.<stem>`，保证文件内相对导入与 loader 恒等）；非法标识符（`my-tool.py`）回退 sha1 哈希模块名
 - **文件级原子性**：单文件多工具，任一实例化 / `on_load` / 注册失败 → 回滚本文件已注册实例，不留半加载态
 
@@ -58,7 +58,7 @@
 | 钩子 | 调用时机 | 用途 |
 | --- | --- | --- |
 | `async on_load()` | 实例化后、注册前 | 建立连接 / 加载配置；失败 → 该工具跳过并回滚 |
-| `async on_unload()` | 注销前 | 释放连接 / 子进程 / 定时器；异常不影响卸载流程 |
+| `async on_unload()` | 热卸载已注销且无活动 Owner；应用关闭已完成执行排空 | 释放连接 / 子进程 / 定时器；异常不影响其余工具清理 |
 | `async health_check() -> bool` | 预留，当前不自动调用 | 健康检查，供未来巡检隔离 |
 
 ### 全链路留痕
@@ -74,7 +74,12 @@ loader 每次操作记录结构化日志（`app.tools.external`）：加载成�
 
 `ToolService` 封装（对外入口）：`execute` 内部自动惰性检查；`refresh_external_tools()` 手动触发重扫；container 启动时主动调一次（外部工具冷启动即对 LLM 的 `get_openai_tools()` 注入可见）。
 
+这里的 Owner 表示“谁还在使用这个具体工具实例”。不仅前台协程算活动调用，取消后仍运行的受控线程也由 Supervisor 持有该实例。热刷新不能仅看协程已返回或工具名字是否相同，就关闭旧连接。应用关闭先停止准入并等待有界排空；若真实执行仍未结束，关闭会报告未完成，不能继续关闭其在用依赖。详细执行接管见[执行器说明](executor.md)。
+
 ## 外部工具编写约定
+
+加载和注册不代表获准执行。插件默认 UNKNOWN，须按[能力启用边界](execution.md#当前启用边界)由可信适配器明确声明只读且无需强制审计，才可正式执行/导出。`describe_execution` 不得发起业务副作用；真实线程须经 `invoke` 中的 `execution.run_sync` 登记。注册/加载钩子仍属于受信 Python 代码，不是沙箱隔离。
+
 
 在 `app/integration/tools/external/`（或 `ToolService` 构造注入的目录）放置 `.py` 文件，每个文件可定义多个 `BaseTool` 子类：
 
@@ -106,6 +111,8 @@ class MyTool(BaseTool):
 ```
 
 **约定要点**：
+
+工具的受控入口是 `invoke(parameters, execution)`，默认委托 `execute`；同步 SDK 适配器应覆写入口并通过 `execution.run_sync` 跟踪实际线程。`describe_execution(parameters)` 默认效果 UNKNOWN，不能仅因 HTTP 方法是 GET 或风险标签是 L0 就自动改成 READ_ONLY。接口和示例统一见 [BaseTool 基类详解](builtin_doc/builtin.md#受控执行与效果声明)。
 
 1. **命名唯一**：`name` 不得与 builtin（内置工具注册名清单见 [builtin.md](builtin_doc/builtin.md)「开发新工具要点」）或已加载工具冲突
 2. **配置注入**：模块级声明 `CONFIG_KEYS`（settings 键元组）+ 类实现 `register_config`——loader 加载时从装配根绑定的 `config_source`（settings 读取器）取值注入，路径与内置工具一致；未声明 `CONFIG_KEYS` 或不实现 `register_config` 则跳过注入

@@ -1,6 +1,6 @@
 # builtin 内置工具子模块说明
 
-> **更新日期**：2026-08-30
+> **更新日期**：2026-09-19
 > **文档定位**：工具层 `app/integration/tools/builtin/` 子模块 —— 内置工具的定义、自动发现机制与各工具实现详解。
 > 状态与验证见 [ALIGNMENT](../../../ALIGNMENT.md)。
 > **前置阅读**：[工具模块总览](../tools.md)（ToolService / ToolExecutor 并发控制、重试机制在此说明，本文不重复）
@@ -22,7 +22,7 @@
 
 ## 模块概述
 
-`builtin` 是工具层 `app/integration/tools/` 下的**内置工具子模块**，存放随系统发布、开箱即用的工具实现，与 `external` 子模块（第三方工具，热加载，见 [external.md](../external.md)）互为补充。
+`builtin` 是工具层 `app/integration/tools/` 下的**内置工具子模块**，存放随系统发布的工具实现，正式可用范围受[启用门禁](../execution.md#当前启用边界)约束，与 `external` 子模块（第三方工具，热加载，见 [external.md](../external.md)）互为补充。
 
 ```text
 app/integration/tools/
@@ -55,12 +55,16 @@ Agent 层 (LLM 运行时)
     ▼
 执行调度 (ToolExecutor，经 ToolService 门面)  ← 共享准入 / 参数验证 / 超时 / 重试 / 统计
     ▼
-Tool 层 (BaseTool)            ← builtin 子模块，每个工具一个 execute()
+Tool 层 (BaseTool)            ← invoke 控制入口 → execute 或受控同步工作
     ▼
-基础设施 (Tavily / httpx / aiofiles / subprocess)
+基础设施 (Tavily / httpx / 同步文件 I/O / subprocess)
 ```
 
 ---
+
+写文件的 `invoke` 已将建目录、打开、写入和关闭合并为一次 `run_sync(_write_sync, ...)`，明确声明 MAY_WRITE。取消只结束等待；线程真实退出后才释放 Permit 和串行锁。已开始的写入仍可能完成，迟回结果由 Supervisor 保存，不承诺撤销或原子写入。
+
+该适配器修复由 `tests/unit/test_tool_write_execution.py` 独立验证，不能代替 B 的持久账本、跨工具资源保护或启用验收。`writeFile` 与 `code_exec` 当前均不对模型导出，正式调用被拒绝；只读工具保持原能力。
 
 ## 自动发现机制
 
@@ -144,6 +148,20 @@ from app.integration.tools.builtin import __all__ as builtin_tools    # 或遍�
 
 `BaseTool`（`app/integration/tools/base.py`）是所有工具的抽象基类，定义了 4 个必须实现的抽象成员，并提供元数据属性、Schema 导出与参数校验委托。
 
+### 受控执行与效果声明
+
+| 内部协作接口 | 含义 |
+| --- | --- |
+| `async invoke(parameters: dict[str, Any], execution: ToolAttemptHandle) -> ToolResult` | Executor 的生产调用入口；默认先 `execution.check_abort()`，再委托 `execute(**parameters)` |
+| `describe_execution(parameters: dict[str, Any]) -> ToolExecutionSpec` | 无业务副作用地声明调用效果；默认 UNKNOWN，不因风险等级为 L0 就认为只读 |
+| `can_retry(result_or_error) -> bool` | 默认 False；只有适配器明确证明可重复执行时才覆写 |
+
+`parameters` 是工具业务参数，`execution` 是宿主控制句柄。分开传递可以避免将取消或期限偷偷塞入业务参数。涉及同步 SDK 或文件读取时，适配器覆写 `invoke`，通过 `execution.run_sync()` 提交整个同步工作。Supervisor 保存真实线程 Future：等待协程取消后，线程可能仍在执行，容量和依赖引用要等它真正结束才释放。
+
+Search、ReadFile、WebBrowse 和五个 RCA 模拟查询显式声明 READ_ONLY；writeFile、code_exec、通用 HTTP 和未分类插件不继承这个声明，其效果与持久保护另按[工具生命周期 ADR](../../../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)处理。资源联合准入不由本节的只读声明代替。
+
+直接调用 `execute()` 保留独立使用能力，但 Search/ReadFile 的该入口使用普通线程委托，不具备宿主 Supervisor 的接管保证；生产链路应经过 ToolService → Executor → `invoke()`。
+
 ### 抽象接口（子类必须实现）
 
 ```python
@@ -169,7 +187,7 @@ class BaseTool(ABC):
 | `name` | `str` | LLM、注册中心 | 唯一标识，如 `"search"`、`"readFile"` |
 | `description` | `str` | LLM | 描述工具功能与适用场景，LLM 据此决定是否调用 |
 | `parameters` | `dict` | LLM | OpenAI Function Calling 格式的 JSON Schema，LLM 据此构造参数 |
-| `execute` | `ToolResult` | executor | 实际执行逻辑，必须是 `async def` |
+| `execute` | `ToolResult` | 默认 invoke / 独立调用 | 实际执行逻辑，必须是 `async def` |
 
 ### 元数据属性（分级标注 + 审计用，默认值由内置工具覆写）
 
@@ -234,22 +252,19 @@ class ToolResult:
 | 描述 | 网页搜索引擎，处理时事、事实及知识库外信息 |
 | 参数 | `query: string`（必填） |
 | 依赖 | Tavily API，需配置 `TAVILY_API_KEY`；未配置时直接返回失败 |
-| 执行方式 | 同步 SDK 经 `asyncio.to_thread` 包装，**不阻塞事件循环** |
+| 执行方式 | `invoke` 经 `execution.run_sync` 跟踪完整同步搜索及结果转换，不阻塞事件循环 |
 | 风险级 | L0 只读（category=search，并发安全） |
 | 默认超时 | 15s（executor 外层保护） |
 
 **实现要点：**
 
 ```python
-response = await asyncio.to_thread(
-    tavily.search,
-    query=kwargs["query"],
-    search_depth=self._search_depth,   # register_config 注入，默认 "basic"
-    include_answer=True,
-)
+# invoke 内部调用：线程返回值本身就是完整 ToolResult，迟回时仍可接管。
+return await execution.run_sync(self._search_sync, **parameters)
 ```
 
 - **客户端复用**：`TavilyClient` 实例级单例（`_get_client`，api_key 变化时重建），对齐 web_browse httpx 单例的复用意图
+- **SDK 请求边界**：构造 TavilyClient 时显式传入 `timeout=self.timeout`。已安装 SDK 的 search 为单次请求，适配器没有另加自动重试；请求超时不等于线程已强制停止，Supervisor 仍持有真实完成责任。
 - 搜索深度取 `self._search_depth`（由装配根经 `register_config` 注入 settings 值，可选 `"basic"` / `"advanced"`）
 - 返回**优先取直接答案**：`response.get("answer")` 非空时直接返回，`metadata["source"] = "tavily_answer"` 且 `metadata["urls"]` = 前 3 条来源 URL（证据链可回溯）
 - 否则格式化搜索结果列表（`- 标题: 内容`，行尾追加 `（来源: url）`），`metadata` 记录 `source="tavily_search"` 与 `count`
@@ -264,7 +279,7 @@ response = await asyncio.to_thread(
 | --- | --- |
 | 描述 | 读取指定路径的文本文件内容 |
 | 参数 | `file_path: string`（必填，绝对路径） |
-| 执行方式 | `aiofiles.open(path, "rb")` 二进制读取 + `decode_output` 双解码（UTF-8 → 系统 locale 回退） |
+| 执行方式 | `invoke` 通过 `run_sync` 执行完整 `getsize→open→read/seek→close`，二进制内容由 `decode_output` 解码 |
 | 风险级 | L0 只读（category=file，并发安全） |
 | 默认超时 | 5s（本地读快） |
 | 结果截断 | ResultProcessor 统一 head+tail 截断（`max_output_length`，默认 100_000） |
@@ -273,6 +288,7 @@ response = await asyncio.to_thread(
 **实现要点：**
 
 - 返回完整文件内容，截断由 [ResultProcessor](../result_processor.md) 统一处理（head+tail）
+- 文件打开与关闭都在线程内部的 `with open(...)` 中完成。取消等待不会从另一个协程提前关闭正在读取的文件，也不会把取消包装层误当成真实读取结束。
 - **大文件分段读取**：`os.path.getsize` 预检，超阈值（单段 `max_output_length×3` 字节 × 2）时二进制 seek 分段读 head+tail（内存受限），保留首尾；最终截断标记仍由 ResultProcessor 统一生成
 - **路径白名单**：`file_path` 经 `abspath + normcase` 规范化后必须位于允许目录内（等于或为子路径，`os.sep` 分隔防 `/data` 误放行 `/database`），防 `..` 穿越；白名单外返回业务错误
 - `FileNotFoundError` → `"文件 '...' 未找到"`；其它异常 → `"读取文件失败: ..."`
@@ -285,7 +301,7 @@ response = await asyncio.to_thread(
 | --- | --- |
 | 描述 | 将指定内容写入文本文件，文件不存在则创建 |
 | 参数 | `file_path: string`（必填）、`content: string`（必填） |
-| 执行方式 | `aiofiles.open(path, "w", encoding="utf-8")` 异步写入 |
+| 执行方式 | 受控 `invoke → run_sync(_write_sync)`；同步建目录、打开、写入、关闭为同一次线程工作 |
 | 特性 | **自动创建父目录**（`os.makedirs(dir_path, exist_ok=True)`） |
 | 风险级 | L1 写（category=file，**非并发安全** → 同工具串行化） |
 | 默认超时 | 5s（本地写快） |
@@ -449,7 +465,7 @@ _http_client = httpx.AsyncClient(
 5. 开头总是调用 `self.validate_parameters(**kwargs)` 做参数校验（executor 已做，此为兜底）
 6. **按需覆写元数据**：`risk_level`（默认 L0）、`category`、`concurrency_safe`（写 / 子进程类设为 `False`）、`max_output_length`（结果截断上限）、`timeout`（工具自声明默认超时，None 沿用全局 30s）、`requires_approval`（需人工审批时设为 `True`）
 7. 所有异常捕获为 `ToolResult(success=False, error=...)`，不让异常抛出
-8. 同步 IO（如第三方 SDK）用 `asyncio.to_thread` 包装，避免阻塞事件循环
+8. 生产同步 IO（如第三方 SDK）在 `invoke` 中通过 `execution.run_sync` 跟踪；整个工作需返回可接管结果并自行关闭其局部资源
 
 ---
 

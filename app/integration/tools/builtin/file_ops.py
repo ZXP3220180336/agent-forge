@@ -4,14 +4,16 @@
 
 import asyncio
 import os
-from typing import Any, ClassVar
-
-import aiofiles
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from app.shared.encoding import decode_output
 
 from ..base import BaseTool, ToolResult
+from ..execution import ToolEffectClass, ToolExecutionSpec
 from ..security import RiskLevel
+
+if TYPE_CHECKING:
+    from ..execution import ToolAttemptHandle
 
 
 def _normalize_allowed_dirs(allowed_dirs: tuple[str, ...]) -> tuple[str, ...]:
@@ -89,8 +91,19 @@ class ReadFileTool(BaseTool):
             "required": ["file_path"],
         }
 
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
+
+    async def invoke(self, parameters: dict[str, Any], execution: ToolAttemptHandle) -> ToolResult:
+        """在线程内完成打开、读取和关闭，文件句柄不跨线程移交。"""
+        return await execution.run_sync(self._read_sync, **parameters)
+
     async def execute(self, **kwargs) -> ToolResult:
-        """读取文件内容"""
+        """独立调用入口；生产调用由 invoke 保留真实线程所有权。"""
+        return await asyncio.to_thread(self._read_sync, **kwargs)
+
+    def _read_sync(self, **kwargs) -> ToolResult:
+        """读取及关闭属于同一同步工作，取消协程不会提前关闭在用文件。"""
 
         if not self.validate_parameters(**kwargs):
             return self._invalid_params_result(**kwargs)
@@ -108,13 +121,13 @@ class ReadFileTool(BaseTool):
             # UTF-8 中文最多 3 字节/字符，单段取 max_output_length×3 字节 ≈ 可容纳 max_output_length 字符
             size = os.path.getsize(file_path)
             max_bytes = self._max_output_length * 3
-            async with aiofiles.open(file_path, "rb") as file:
+            with open(file_path, "rb") as file:
                 if size <= max_bytes * 2:
-                    content = decode_output(await file.read())
+                    content = decode_output(file.read())
                 else:
-                    head = decode_output(await file.read(max_bytes))
-                    await file.seek(size - max_bytes)
-                    tail = decode_output(await file.read(max_bytes))
+                    head = decode_output(file.read(max_bytes))
+                    file.seek(size - max_bytes)
+                    tail = decode_output(file.read(max_bytes))
                     content = head + "\n...（文件过大，仅读取首尾）\n" + tail
 
             # 正常路径返回完整内容；大文件分段读取保留首尾，截断标记由 ResultProcessor 统一生成
@@ -179,8 +192,20 @@ class WriteFileTool(BaseTool):
             "required": ["file_path", "content"],
         }
 
-    async def execute(self, **kwargs) -> ToolResult:
-        """写入文件内容"""
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        """明确写入能力；线程登记不代表交付 B 的持久保护已经就绪。"""
+        return ToolExecutionSpec(effect_class=ToolEffectClass.MAY_WRITE)
+
+    async def invoke(self, parameters: dict[str, Any], execution: ToolAttemptHandle) -> ToolResult:
+        """登记完整同步写入，真实关闭文件后才允许宿主释放资源。"""
+        return await execution.run_sync(self._write_sync, **parameters)
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """独立适配器入口；正式调用须经过 ToolService 启用门禁和受控 invoke。"""
+        return await asyncio.to_thread(self._write_sync, **kwargs)
+
+    def _write_sync(self, **kwargs: Any) -> ToolResult:
+        """建目录、打开、写入及关闭在同一线程内完成，不跨协程移交文件句柄。"""
 
         if not self.validate_parameters(**kwargs):
             return self._invalid_params_result(**kwargs)
@@ -194,13 +219,13 @@ class WriteFileTool(BaseTool):
             )
 
         try:
-            # 自动创建父目录（同步 IO 放线程池，不阻塞事件循环）
+            # 整个操作已由调用入口派入线程池；协程取消不会伪造真实线程完成。
             dir_path = os.path.dirname(file_path)
             if dir_path:
-                await asyncio.to_thread(os.makedirs, dir_path, exist_ok=True)
+                os.makedirs(dir_path, exist_ok=True)
 
-            async with aiofiles.open(file_path, "w", encoding="utf-8") as file:
-                await file.write(kwargs["content"])
+            with open(file_path, "w", encoding="utf-8") as file:
+                file.write(kwargs["content"])
             return ToolResult(success=True, content=f"成功写入 '{file_path}'")
         except Exception as e:  # noqa: BLE001
             return ToolResult(success=False, content="", error=f"写入文件失败: {e!s}")

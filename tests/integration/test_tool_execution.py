@@ -1,9 +1,9 @@
 """
 内置工具真实执行集成测试
 
-用真实 ToolService + 内置工具验证端到端执行（不依赖网络）：
-- writeFile / readFile：tmp_path 真实读写，含父目录自动创建与缺失文件错误
-- code_exec：真实子进程执行安全命令 + 危险命令前缀拦截
+用真实 ToolService 验证只读链路及 B 门禁；写入/命令保留独立适配器测试（不证明正式启用）：
+- writeFile 独立写入 / readFile 网关读取：tmp_path 真实读写，含父目录创建与缺失文件错误
+- code_exec 独立适配器：真实子进程执行安全命令 + 危险命令前缀拦截
 - search：未配置 key 时的优雅失败（显式重置，避免读到 .env 真实 key 触发网络）
 - init_default_tools 装配完整性（5 个内置工具）
 """
@@ -11,6 +11,7 @@
 import asyncio
 import locale
 import sys
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -30,18 +31,14 @@ from tests.tool_lifecycle import StandaloneToolService as ToolService
 
 @pytest.mark.asyncio
 async def test_write_and_read_file_roundtrip(tmp_path):
-    """writeFile → readFile 真实读写，父目录自动创建"""
+    """独立写适配器创建文件，正式只读网关读取；写网关仍由 B 门禁关闭。"""
     target = tmp_path / "nested" / "out.txt"
     WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
     ReadFileTool.register_config(allowed_dirs=(str(tmp_path),))
     service = ToolService()
-    service.register(WriteFileTool())
     service.register(ReadFileTool())
 
-    write_result = await service.execute(
-        "writeFile",
-        {"file_path": str(target), "content": "你好，世界"},
-    )
+    write_result = await WriteFileTool().execute(file_path=str(target), content="你好，世界")
     assert write_result.success is True
     assert target.exists()
     assert target.read_text(encoding="utf-8") == "你好，世界"
@@ -65,14 +62,8 @@ async def test_read_file_missing_returns_error(tmp_path):
 
 @pytest.mark.asyncio
 async def test_code_exec_runs_python():
-    """真实子进程执行 python 计算，返回标准输出"""
-    service = ToolService()
-    service.register(CodeExecTool())
-
-    result = await service.execute(
-        "code_exec",
-        {"command": f'"{sys.executable}" -c "print(2+2)"'},
-    )
+    """独立适配器执行 python 返回标准输出，不通过正式网关启用命令工具。"""
+    result = await CodeExecTool().execute(command=f'"{sys.executable}" -c "print(2+2)"')
 
     assert result.success is True
     assert "4" in result.content
@@ -82,10 +73,7 @@ async def test_code_exec_runs_python():
 @pytest.mark.asyncio
 async def test_code_exec_rejects_forbidden_command():
     """危险命令前缀被安全策略拦截，不真正执行"""
-    service = ToolService()
-    service.register(CodeExecTool())
-
-    result = await service.execute("code_exec", {"command": "rm -rf /"})
+    result = await CodeExecTool().execute(command="rm -rf /")
 
     assert result.success is False
     assert "安全策略" in result.error
@@ -123,6 +111,31 @@ async def test_init_default_tools_registers_all():
         "query_defect_map",
         "search_historical_rca",
     }
+    # 注册清单保留能力定义；模型只见当前获准执行的八个只读工具。
+    assert len(service.get_openai_tools()) == 8
+    assert len(service.get_openai_responses()) == 8
+    assert {item["function"]["name"] for item in service.get_openai_tools()}.isdisjoint({"writeFile", "code_exec"})
+    await service.shutdown()
+
+
+@pytest.mark.parametrize("name", ["writeFile", "code_exec"])
+async def test_unprotected_builtin_cannot_execute_through_service(tmp_path, monkeypatch, name):
+    """真实副作用工具在正式入口被拒绝，不能靠直接指定名称绕过模型导出门禁。"""
+    target = tmp_path / "must-not-exist.txt"
+    tool = WriteFileTool() if name == "writeFile" else CodeExecTool()
+    monkeypatch.setattr(WriteFileTool, "_allowed_dirs", (str(tmp_path),))
+    invoke = AsyncMock(side_effect=AssertionError("未启用工具不能启动"))
+    monkeypatch.setattr(tool, "invoke", invoke)
+    service = ToolService()
+    service.register(tool)
+    parameters = {"file_path": str(target), "content": "no"} if name == "writeFile" else {"command": "echo no"}
+    result = await service.execute(name, parameters)
+    assert result.error_code == ErrorCode.REJECTED
+    assert not target.exists()
+    invoke.assert_not_awaited()
+    assert service.get_openai_tools() == []
+    assert service.get_openai_responses() == []
+    await service.shutdown()
 
 
 @pytest.mark.asyncio
@@ -164,15 +177,9 @@ async def test_read_file_outside_allowed_dir_rejected(tmp_path):
 
 @pytest.mark.asyncio
 async def test_write_file_outside_allowed_dir_rejected(tmp_path):
-    """白名单外路径被拒绝（writeFile 不能覆盖项目源码）。"""
+    """独立适配器也保留白名单边界，不能用单元调用绕开路径检查。"""
     WriteFileTool.register_config(allowed_dirs=(str(tmp_path),))
-    service = ToolService()
-    service.register(WriteFileTool())
-
-    result = await service.execute(
-        "writeFile",
-        {"file_path": str(tmp_path.parent / "settings.py"), "content": "x"},
-    )
+    result = await WriteFileTool().execute(file_path=str(tmp_path.parent / "settings.py"), content="x")
 
     assert result.success is False
     assert "不在允许目录内" in result.error
@@ -245,7 +252,7 @@ class _FakeSubprocessProc:
 
 @pytest.mark.asyncio
 async def test_code_exec_timeout_kills_subprocess(monkeypatch):
-    """executor 超时取消时，工具主动 kill 子进程，不留孤儿。"""
+    """独立命令适配器被取消时仍主动 kill 直接子进程，不证明完整进程树保证。"""
     captured: dict[str, _FakeSubprocessProc] = {}
 
     async def fake_create_subprocess_shell(*args, **kwargs) -> _FakeSubprocessProc:
@@ -258,15 +265,9 @@ async def test_code_exec_timeout_kills_subprocess(monkeypatch):
         fake_create_subprocess_shell,
     )
 
-    service = ToolService()
-    service.register(CodeExecTool())
-
-    result = await service.execute("code_exec", {"command": "sleep 30"}, timeout=1)
-
-    assert result.success is False
-    assert result.error_code == ErrorCode.TIMEOUT
-    assert "工具执行超时" in result.error
-    # 关键：子进程已被 kill，executor 超时未导致孤儿进程残留
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(CodeExecTool().execute(command="sleep 30"), timeout=0.05)
+    # 被测边界为适配器取消后的直接子进程回收。
     assert captured["proc"].killed is True
 
 
@@ -403,10 +404,7 @@ async def test_code_exec_output_capped(monkeypatch):
         fake_create_subprocess_shell,
     )
 
-    service = ToolService()
-    service.register(CodeExecTool())
-
-    result = await service.execute("code_exec", {"command": "gen huge output"})
+    result = await CodeExecTool().execute(command="gen huge output")
 
     assert result.success is True  # returncode 0
     # 输出被限制在 cap（max_output_length×3=300k）附近，而非完整 40 万
@@ -417,13 +415,7 @@ async def test_code_exec_output_capped(monkeypatch):
 @pytest.mark.asyncio
 async def test_code_exec_empty_workdir_ok():
     """workdir 空串归一为 None（cwd 用默认），不抛异常。"""
-    service = ToolService()
-    service.register(CodeExecTool())
-
-    result = await service.execute(
-        "code_exec",
-        {"command": f'"{sys.executable}" -c "print(1)"', "workdir": ""},
-    )
+    result = await CodeExecTool().execute(command=f'"{sys.executable}" -c "print(1)"', workdir="")
 
     assert result.success is True
     assert "1" in result.content
@@ -474,7 +466,7 @@ async def test_search_answer_includes_source_urls(monkeypatch):
     }
     monkeypatch.setattr(
         "app.integration.tools.builtin.search.TavilyClient",
-        lambda api_key: _FakeTavily(resp),
+        lambda api_key, timeout: _FakeTavily(resp),
     )
     tool = SearchTool()
     tool.register_config(api_key="test-key")
@@ -498,7 +490,7 @@ async def test_search_results_include_source_urls(monkeypatch):
     }
     monkeypatch.setattr(
         "app.integration.tools.builtin.search.TavilyClient",
-        lambda api_key: _FakeTavily(resp),
+        lambda api_key, timeout: _FakeTavily(resp),
     )
     tool = SearchTool()
     tool.register_config(api_key="test-key")
@@ -516,7 +508,7 @@ async def test_search_result_missing_url_tolerated(monkeypatch):
     resp = {"results": [{"title": "A", "content": "内容A"}]}
     monkeypatch.setattr(
         "app.integration.tools.builtin.search.TavilyClient",
-        lambda api_key: _FakeTavily(resp),
+        lambda api_key, timeout: _FakeTavily(resp),
     )
     tool = SearchTool()
     tool.register_config(api_key="test-key")
@@ -533,7 +525,7 @@ async def test_search_reuses_tavily_client(monkeypatch):
     calls = {"n": 0}
 
     class _CountingTavily:
-        def __init__(self, api_key):
+        def __init__(self, api_key, timeout):
             calls["n"] += 1
 
         def search(self, **kwargs):

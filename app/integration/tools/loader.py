@@ -2,7 +2,7 @@
 
 对齐工业级热插拔「内嵌式可信插件」档（见 ADR 2026-08-17-external-tool-hot-reload）：
 
-- **execute 惰性检查**：无后台任务，`maybe_refresh()` 在工具调用入口对比目录签名，
+- **execute 惰性检查**：无常驻扫描任务，`maybe_refresh()` 在工具调用入口对比目录签名，
   变化才重扫——对齐工业标准「变更 → 下次调用生效」；
 - **生命周期钩子**：加载前 `on_load()` / 卸载前 `on_unload()`，`health_check()` 预留巡检；
 - **全链路留痕**：加载 / 重载 / 卸载 / 冲突拒绝 / 失败均结构化日志；
@@ -59,8 +59,9 @@ def _collect_tool_classes(module: ModuleType) -> list[type[BaseTool]]:
 class ExternalToolLoader:
     """外部工具加载器：目录发现 → 注册中心，execute 惰性检查感知变化。
 
-    无后台任务。每次工具调用经 `maybe_refresh()` 对比目录签名（文件集 + mtime/size），
-    变化才应用 diff（新增加载 / 修改重载 / 删除卸载）。
+    每次工具调用经 `maybe_refresh()` 对比目录签名（文件集 + mtime/size），
+    变化才应用 diff（新增加载 / 修改重载 / 删除卸载）。没有常驻扫描器；临时检查及
+    刷新任务由本组件持有，调用者取消不会丢弃装载事务，close 等待它们完成。
     """
 
     def __init__(
@@ -79,15 +80,29 @@ class ExternalToolLoader:
         self._file_sigs: dict[str, tuple[int, int]] = {}  # 绝对路径 -> 上次扫描的 (mtime, size)
         self._last_dir_check = 0.0  # 上次目录签名 stat 时间（monotonic，TTL 用）
         self._scan_lock = asyncio.Lock()
+        self._refresh_task: asyncio.Task[None] | None = None
+        self._check_task: asyncio.Task[None] | None = None
+        self._closed = False
 
     # ===== 对外接口 =====
 
     async def maybe_refresh(self) -> None:
+        """loader 接管目录检查和装载任务；调用者取消仅撤回自身等待。"""
+        if self._closed:
+            return
+        if self._check_task is None or self._check_task.done():
+            self._check_task = asyncio.create_task(self._maybe_refresh())
+            self._check_task.add_done_callback(self._observe_refresh)
+        await asyncio.shield(self._check_task)
+
+    async def _maybe_refresh(self) -> None:
         """execute 入口调用：TTL 内零磁盘 IO，签名变化才重扫（变更最多延迟 1s 生效）。
 
         目录签名（glob + stat）经 `asyncio.to_thread` 执行，不阻塞事件循环；
         TTL（`_DIR_SIGNATURE_TTL`）限制热路径 stat 频率（1s 内最多一次）。
         """
+        if self._closed:
+            return
         now = time.monotonic()
         if now - self._last_dir_check < _DIR_SIGNATURE_TTL:
             return  # TTL 内复用上次签名结果，不做磁盘 IO
@@ -97,6 +112,29 @@ class ExternalToolLoader:
         await self.scan_once()
 
     async def scan_once(self) -> None:
+        """共享刷新任务由 loader 持有；单个调用者取消不打断插件的装载事务。"""
+        if self._closed:
+            return
+        if self._refresh_task is None or self._refresh_task.done():
+            self._refresh_task = asyncio.create_task(self._scan_once())
+            self._refresh_task.add_done_callback(self._observe_refresh)
+        await asyncio.shield(self._refresh_task)
+
+    @staticmethod
+    def _observe_refresh(task: asyncio.Task[None]) -> None:
+        # 即使最后一个调用者已退出，仍取走后台失败，避免无人接管异常。
+        if not task.cancelled():
+            task.exception()
+
+    async def close(self) -> None:
+        """停止新刷新并等待已有事务；关闭预算由 ToolService 统一约束。"""
+        self._closed = True
+        if self._check_task is not None:
+            await asyncio.shield(self._check_task)
+        if self._refresh_task is not None:
+            await asyncio.shield(self._refresh_task)
+
+    async def _scan_once(self) -> None:
         """应用磁盘 diff（新增 / 修改 / 删除），更新目录签名。可手动调用（幂等）。
 
         注意：`_scan_lock` 为 asyncio.Lock（不可重入），加载流程在锁内 await 用户
@@ -123,7 +161,8 @@ class ExternalToolLoader:
                 elif self._file_sigs.get(path) != file_sig:
                     await self._reload_file(path, file_sig)
 
-            self._signature = sig
+            # 在途旧版本不能卸载，保留未完成的签名，让下一次刷新继续处理。
+            self._signature = sig if self._file_sigs == current else None
 
     # ===== 目录与签名 =====
 
@@ -278,26 +317,34 @@ class ExternalToolLoader:
         logger.info("外部工具已注册: %s", [t.name for t in registered])
         return True
 
-    async def _unload_file(self, path: str) -> None:
-        """卸载一个文件拥有的全部工具：on_unload → 注销 → 清理模块缓存。"""
-        tool_names = self._file_tools.pop(path, [])
+    async def _unload_file(self, path: str) -> bool:
+        """卸载一个文件拥有的全部工具：全部注销 → on_unload → 清理模块缓存。"""
+        tool_names = self._file_tools.get(path, [])
+        tools = {name: self._service.get(name) for name in tool_names}
+        if any(self._service.is_tool_active(tool) for tool in tools.values() if tool is not None):
+            return False
+        self._file_tools.pop(path, None)
         self._file_sigs.pop(path, None)
-        for name in tool_names:
-            tool = self._service.get(name)
+        # 文件级检查与全部注销之间没有 await；首个清理挂起时，兄弟工具也已关闭新调用入口。
+        for name, tool in tools.items():
+            if tool is not None:
+                self._service.unregister(name)
+        for name, tool in tools.items():
             if tool is not None:
                 try:
                     await tool.on_unload()
                 except Exception as e:  # noqa: BLE001 — 卸载清理失败不影响注销
                     logger.warning("外部工具 on_unload 失败（继续卸载）: %s: %s", name, e)
-                self._service.unregister(name)
             logger.info("外部工具卸载: %s", name)
         # 清理本次导入的全部模块（工具模块 + 兄弟模块），防重载用到旧兄弟代码
         for module_name in self._file_modules.pop(path, set()):
             sys.modules.pop(module_name, None)
+        return True
 
     async def _reload_file(self, path: str, file_sig: tuple[int, int]) -> None:
         """重载：nuke-and-repave（先卸载旧实例再加载新实例）。"""
-        await self._unload_file(path)
+        if not await self._unload_file(path):
+            return
         ok = await self._load_file(path, file_sig)
         if ok:
             self._file_sigs[path] = file_sig

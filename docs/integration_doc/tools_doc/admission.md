@@ -1,6 +1,6 @@
 # 工具共享准入说明
 
-> **更新日期**：2026-09-18
+> **更新日期**：2026-09-19
 > **模块**：`app/integration/tools/admission.py`
 > **职责**：维护工具调用的全局/单运行在途容量、有界等待队列、按运行轮转和 Permit 释放。
 
@@ -13,11 +13,11 @@
 
 ```text
 ToolExecutor
-  → ToolAdmission.acquire(call)
+  → ToolAdmission.acquire(call, deadline=首轮准入绝对期限)
       ├─ cancel/deadline/run_stop → 抛类型化控制异常
       ├─ 队列达到全局或单运行上限 → 返回 None
       ├─ 准入等待超时 → 返回 None
-      └─ 取得 Permit → 执行器负责 finally release()
+      └─ 取得 Permit → start 成功后由 Supervisor 在真实完成时 release()
 ```
 
 返回 `None` 会由 Executor 生成 `CAPACITY_EXCEEDED` 的 `ToolResult`，执行状态为
@@ -26,7 +26,7 @@ ToolExecutor
 
 合法状态转换为 `QUEUED → GRANTED → RELEASED` 与 `QUEUED → WITHDRAWN`。`close_run`
 实现按运行的 WITHDRAWN：撤回该运行尚未取得的等待者（写入 `None`），不触碰已取得 Permit
-的在途调用——后者仍由执行器 `finally` 释放。当前生产调用方只有全局 `close()`；按运行的
+的在途调用——后者由真实执行 Owner 在完成后释放。当前生产调用方只有全局 `close()`；按运行的
 撤回随运行生命周期切片接入，在此之前不额外暴露调用点。
 
 每个运行拥有 FIFO 队列，调度器在有可用容量时按运行轮转。单运行已达到在途上限时，
@@ -34,7 +34,9 @@ ToolExecutor
 改变既有只读工具行为。
 
 取消和绝对期限会直接竞争排队 Future，排队不会等到其他工具自然释放后才发现终止。撤回等待
-者不会伪造已经取得 Permit 的执行完成；在途责任仍由执行器及后续真实句柄接管组件负责。
+者不会伪造已经取得 Permit 的执行完成；在途责任仍由执行器及 [Supervisor](execution.md) 负责。
+
+首次准入可传入 Facade 计算的绝对 `deadline`，将插件刷新、审批和排队计入同一窗口；省略时从本次 acquire 开始计算配置等待上限。该参数与 `call.deadline` 的业务总期限分别解释，前者耗尽返回 None，后者传播类型化期限异常。
 
 ## 代码阅读指南
 

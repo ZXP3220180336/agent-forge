@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 import httpx
 
 from ..base import BaseTool, ToolResult
+from ..execution import ToolEffectClass, ToolExecutionSpec
 from ..security import RiskLevel, SSRFError, ssrf_on_request
 
 
@@ -168,6 +169,9 @@ def _get_http_client() -> httpx.AsyncClient:
 
 class WebBrowseTool(BaseTool):
     """网页浏览工具"""
+
+    def describe_execution(self, parameters: dict[str, Any]) -> ToolExecutionSpec:
+        return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
 
     _max_content_length: ClassVar[int] = 50_000
     _timeout: ClassVar[float] = 15.0  # httpx 连接层超时（秒），经 register_config 注入

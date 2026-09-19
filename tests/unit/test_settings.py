@@ -17,6 +17,20 @@ def _make(**kwargs) -> Settings:
     return Settings(_env_file=None, **kwargs)
 
 
+@pytest.mark.parametrize(
+    "key", ["tool_cleanup_timeout_seconds", "tool_observation_timeout_seconds", "tool_shutdown_timeout_seconds"],
+)
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_tool_execution_timeouts_must_be_positive_finite(key, value):
+    with pytest.raises(ValidationError):
+        _make(**{key: value})
+
+
+def test_recovery_tracking_capacity_covers_global_execution_slots():
+    with pytest.raises(ValidationError):
+        _make(tool_max_recovery_records=2, tool_max_concurrent_executions=3)
+
+
 # ===== 字段校验器 =====
 
 VALIDATOR_CASES = [
