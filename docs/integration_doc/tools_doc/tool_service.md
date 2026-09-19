@@ -37,7 +37,7 @@ ToolService 是**工具系统的对外统一入口**（Facade），聚合六大�
 
 ```text
 ToolService（Facade，唯一对外入口，实现 ToolGateway）
-├── ToolRegistry        注册中心：容器 + Schema 导出 + 元数据查询
+├── ToolRegistry        注册中心：容器 + 元数据查询（Schema 导出由本 Facade 独占）
 ├── ToolSelector        选择器：选注入子集（默认全量注入）
 ├── ParameterValidator  校验器：jsonschema 严格校验 + 错误归因
 ├── ToolAdmission       共享准入：全局/单运行容量、有界排队、取消可中断等待

@@ -62,7 +62,7 @@ app/integration/
 ├── tools/                        ← 工具系统（ToolService Facade + 六大子组件 + 内置工具）
     ├── base.py                   ← BaseTool / ToolResult（元数据 + 校验委托 + 生命周期钩子）
     ├── tool_service.py           ← ToolService（统一 Facade，对外入口）
-    ├── registry.py               ← ToolRegistry 注册中心（容器 + Schema 导出 + 元数据查询）
+    ├── registry.py               ← ToolRegistry 注册中心（容器 + 元数据查询）
     ├── selector.py               ← ToolSelector 选择器（全量注入，预留召回）
     ├── validator.py              ← ParameterValidator 参数校验器（jsonschema 严格校验）
     ├── admission.py              ← ToolAdmission 共享准入（全局/单运行容量、有界排队）
@@ -168,7 +168,7 @@ app/integration/
 
 | 子组件 | 文件 | 职责 |
 | --- | --- | --- |
-| `ToolRegistry` | registry.py | 注册中心：容器 + Schema 导出 + 按风险/分类查询 |
+| `ToolRegistry` | registry.py | 注册中心：容器 + 按风险/分类查询（Schema 导出归 Facade） |
 | `ToolSelector` | selector.py | 选择器：选注入子集（默认全量注入，预留召回） |
 | `ParameterValidator` | validator.py | 校验器：jsonschema 严格校验 + 错误归因 |
 | `ToolAdmission` | tools/admission.py | 全局/单运行共享准入、有界排队和取消可中断等待 |

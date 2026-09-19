@@ -1,7 +1,7 @@
 # 工具模块问题追踪
 
 > **用途**：登记 Integration 层工具模块（`app/integration/tools/` 及其跨模块关联方）审查/审核发现的问题，追踪从发现 → 分析 → 修复 → 验证的完整生命周期。
-> **更新日期**：2026-08-20
+> **更新日期**：2026-09-19
 > **关联**：[工具模块接口文档](../../../docs/integration_doc/tools_doc/tools.md) · [builtin 工具说明](../../../docs/integration_doc/tools_doc/builtin_doc/builtin.md)
 
 ## 问题索引
@@ -69,5 +69,6 @@
 | [TOOLS-057](2026-09-19-write-thread-ownership.md) | 写文件未登记线程导致容量与串行锁提前释放 | P2 | ✅ 已修复 | file_ops | 2026-09-19 | 2026-09-19 |
 | [TOOLS-058](2026-09-19-unprotected-tool-enablement.md) | 交付 B 未就绪能力仍被导出和执行 | P2 | ✅ 已修复 | executor / tool_service / execution | 2026-09-19 | 2026-09-19 |
 | [TOOLS-059](2026-09-19-execution-spec-boundary.md) | 执行声明异常及非法返回污染调用边界 | P2 | ✅ 已修复 | executor / tool_service / execution | 2026-09-19 | 2026-09-19 |
+| [TOOLS-060](2026-09-19-registry-export-dead-code.md) | ToolRegistry 保留绕过启用过滤的 Schema 导出 | P3 | ✅ 已修复 | registry | 2026-09-19 | 2026-09-19 |
 
 登记、状态和维护规则见 [记录规范](../../../docs/engineering/documentation/records.md)。本表保留本模块的既有编号序列；历史状态为当时记录，不代表本轮重新验证。

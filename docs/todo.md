@@ -2,12 +2,6 @@
 
 更新：2026-09-19。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
-## W-03 遗留：ToolRegistry 导出方法死代码（2026-09-19）
-
-W-03 的 8 项复核已完成并归档，逐项结论、被推翻的原述与验证证据见[完成记录](history/completed-work.md)。仅第 8 项因属契约变更未执行，保留如下。
-
-- [ ] `ToolRegistry.get_openai_responses` 全仓无调用方，`get_openai_tools` 仅注册中心元数据测试直接使用；生产路径走 ToolService 版本（`class ToolService` 不继承 `ToolRegistry`，两者同名方法独立）。删除属契约变更，与 [TOOLS-ADR-008](../adr/integration/tools/2026-08-17-six-component-alignment.md) 第 22 行「保持全量转储」的既有决定冲突，须先修订该决策再独立执行。
-
 <a id="refactoring-plan"></a>
 
 ## R-01：代码职责与编排边界重构（R1～R4、R6 已完成；R5 随 C-02 暂缓）

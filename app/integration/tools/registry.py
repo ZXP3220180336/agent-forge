@@ -1,6 +1,4 @@
-"""工具注册表 — 工具容器 + OpenAI 格式导出 + 元数据查询。"""
-
-from typing import Any
+"""工具注册表 — 工具容器 + 元数据查询。"""
 
 from app.integration.tools.base import BaseTool
 from app.integration.tools.security import RiskLevel
@@ -8,7 +6,10 @@ from app.shared.json_schema import create_schema_validator
 
 
 class ToolRegistry:
-    """工具容器：注册 / 注销 / 查询 / 导出（原 ToolService 容器职责拆分）。"""
+    """工具容器：注册 / 注销 / 查询（原 ToolService 容器职责拆分）。
+
+    不提供 Schema 导出：模型可见性只由 Facade 决定，容器若也导出会绕过启用过滤。
+    """
 
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
@@ -50,11 +51,3 @@ class ToolRegistry:
     def list_by_category(self, category: str) -> list[BaseTool]:
         """按功能域过滤工具（供按域选择 / 管理界面查询）。"""
         return [tool for tool in self._tools.values() if tool.category == category]
-
-    def get_openai_tools(self) -> list[dict[str, Any]]:
-        """OpenAI Tool Schema 列表。"""
-        return [tool.to_openai_tool() for tool in self._tools.values()]
-
-    def get_openai_responses(self) -> list[dict[str, Any]]:
-        """OpenAI Response Schema 列表。"""
-        return [tool.to_openai_response() for tool in self._tools.values()]

@@ -20,6 +20,8 @@
 - **选择器只留接口不实现召回**：`ToolSelector` Protocol + `DefaultToolSelector`（全量注入）。当前 5 个工具属小体量，LLM 原生选择即可；>50 工具时实现向量召回，构造期注入 `ToolService(selector=...)`，Facade 与 Agent 零改动
 - **结果截断收敛单点**：内置工具删除各自内联截断（只留前 N），统一由 `ResultProcessor` 做 head+tail 截断（默认 7:3，中间标记替换），`max_length=tool.max_output_length`（工具自声明），避免双重截断
 - **get_openai_tools 经选择器，get_openai_responses 全量**：后者当前零生产者，保持全量转储（改动成本高于收益）
+
+  > **修订（2026-09-19）**：本条的委托机制已失效。当时 `get_openai_responses` 是委托给 `ToolRegistry` 的，[TOOLS-058](../../../issues/integration/tools/2026-09-19-unprotected-tool-enablement.md) 为关闭未就绪能力把 Facade 两条导出改为基于启用过滤自产，registry 副本随之成为可绕过门禁的死路径，并在 [TOOLS-060](../../../issues/integration/tools/2026-09-19-registry-export-dead-code.md) 删除。「responses 全量、不走选择器」的 Facade 语义未变，本条决定继续有效。
 - **ToolGateway 协议签名不变**：`get_openai_tools()` 保持零参数，选择器构造期注入，Agent / API 层零改动
 
 ## Consequences

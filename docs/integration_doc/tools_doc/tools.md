@@ -29,7 +29,7 @@
 app/integration/tools/
 ├── __init__.py            ← 包标记
 ├── tool_service.py        ← ToolService（Facade，唯一对外入口，实现 ToolGateway）
-├── registry.py            ← ToolRegistry 注册中心（容器 + Schema 导出 + 元数据查询）
+├── registry.py            ← ToolRegistry 注册中心（容器 + 元数据查询）
 ├── selector.py            ← ToolSelector 选择器（协议 + DefaultToolSelector 全量注入）
 ├── validator.py           ← ParameterValidator 参数校验器（jsonschema 严格校验）
 ├── admission.py           ← ToolAdmission 共享准入（全局/单运行容量、有界排队）
@@ -139,7 +139,7 @@ ToolService 全部方法签名 / 说明见 [ToolService 说明](tool_service.md#
 
 | 子组件 | 文件 | 职责 | 文档 |
 | --- | --- | --- | --- |
-| 工具注册中心 | registry.py | 容器 + Schema 导出 + 按风险/分类查询 | [registry.md](registry.md) |
+| 工具注册中心 | registry.py | 容器 + 按风险/分类查询（Schema 导出归 Facade） | [registry.md](registry.md) |
 | 工具选择器 | selector.py | 选注入子集（默认全量，预留召回） | [selector.md](selector.md) |
 | 参数校验器 | validator.py | jsonschema 严格校验 + 错误归因 | [validator.md](validator.md) |
 | 共享准入 | admission.py | 全局/单运行容量、有界排队和可中断等待 | [admission.md](admission.md) |

@@ -165,7 +165,7 @@ W-01 完成后的测试文件分工：工具执行/事实/加载/生命周期替
 
 W-03 的 8 项遗留已逐条复核并修改（7 份文档，无代码改动）：其中 2 项原述不准确、2 项范围被夸大，照单执行会去改并不存在的缺陷。复核方法与已证实的教训见 [lessons](../lessons.md) 的「复用上一轮标注已核实的遗留清单」条目，不再在此重复。
 
-唯一未执行项是 `ToolRegistry` 导出方法死代码的删除。它属契约变更，与既有 ADR 决定冲突，仍未关闭，只维护在[项目待办](../todo.md)。
+唯一未执行项是 `ToolRegistry` 导出方法死代码的删除。后续复核推翻了它的原述：所称冲突来自六组件对齐 ADR（非 ADR-008）第 22 行，而该行记录的是当时的委托机制，已随 TOOLS-058 把 Facade 导出改为启用过滤自产后失效，Facade 的全量语义未变。删除据此执行并记为 [TOOLS-060](../../issues/integration/tools/2026-09-19-registry-export-dead-code.md)，W-03 至此全部关闭。
 
 ## 已有 Issue / ADR 的完成索引
 
@@ -188,5 +188,6 @@ W-03 的 8 项遗留已逐条复核并修改（7 份文档，无代码改动）�
 | W-02 执行声明适配器边界 | [TOOLS-059](../../issues/integration/tools/2026-09-19-execution-spec-boundary.md) |
 | R-02 Agent 基类契约与桥接整理 | [AGENT-001](../../issues/domain/agent/2026-09-16-base-contract-drift.md) · [BaseAgent 契约 ADR](../../adr/domain/agent/2026-09-16-base-agent-contract.md) |
 | R-03 Reasoning 执行参数语义分组 | [REASON-026](../../issues/domain/reasoning/2026-09-16-execute-parameter-drift.md) · [参数分组 ADR](../../adr/domain/reasoning/2026-09-16-semantic-execution-parameters.md) |
+| W-03 遗留容器导出死代码 | [TOOLS-060](../../issues/integration/tools/2026-09-19-registry-export-dead-code.md) |
 
 更早 RateLimiter 审查和 reserve/settle 的完成清单只保留其现行[限流组件说明](../integration_doc/llm_doc/limiter.md)作为入口；旧 `app/services/` 路径、重复“待评审”空节和逐轮测试数不另存一份。

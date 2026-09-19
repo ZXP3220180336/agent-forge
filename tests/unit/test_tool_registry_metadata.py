@@ -1,8 +1,9 @@
 """
-ToolRegistry 元数据查询单元测试
+ToolRegistry 容器单元测试
 
 覆盖：
-    all_tools / list_by_risk / list_by_category 过滤正确性
+    all_tools / list_by_risk / list_by_category 过滤正确性；
+    注册 / 注销 / 重名 / 定义预检边界
 """
 
 import pytest
@@ -170,6 +171,6 @@ def test_invalid_schema_tool_does_not_break_batch_export():
     with pytest.raises(SchemaError):
         reg.register(_LegacySchemaTool())
 
-    names = [t["function"]["name"] for t in reg.get_openai_tools()]
+    names = [tool.to_openai_tool()["function"]["name"] for tool in reg.all_tools()]
 
     assert names == ["read", "write", "exec"]
