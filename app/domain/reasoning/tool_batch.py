@@ -19,8 +19,10 @@ from app.shared.exceptions import ToolCancelledError, ToolDeadlineExceededError,
 
 _Result = TypeVar("_Result")
 _CONTROL_ERRORS = (ToolCancelledError, ToolDeadlineExceededError, ToolRunStoppedError)
-# 兄弟报出控制异常后，留给其他在途兄弟收尾的上界（实际取其与 cleanup_deadline 的较小值）
-_BATCH_CLEANUP_GRACE = 1.0
+# 兄弟报出控制异常后，留给其他在途兄弟收尾的上界（实际取其与 cleanup_deadline 的较小值）。
+# 默认值与配置规格的 tool_batch_cleanup_grace_seconds 一致；生产值由 Container 注入到
+# ExecutionLimits 后经 `run` 传入，本常量只在直接调用方未提供时兜底。
+DEFAULT_BATCH_CLEANUP_GRACE = 1.0
 
 
 class ToolBatchCollector:
@@ -67,8 +69,13 @@ class ToolBatchRunner:
         execute: Callable[[int], Coroutine[Any, Any, _Result]],
         *,
         cleanup_deadline: float | None = None,
+        batch_cleanup_grace: float = DEFAULT_BATCH_CLEANUP_GRACE,
     ) -> list[_Result | BaseException | None]:
-        """先预登记全部调用，再逐个接管完成值；控制异常留给调用方选择终态。"""
+        """先预登记全部调用，再逐个接管完成值；控制异常留给调用方选择终态。
+
+        `batch_cleanup_grace` 是首个控制异常后给在途兄弟的收尾上界，实际取它与
+        `cleanup_deadline` 的较小值；由调用方按运行配置传入，本组件不读配置。
+        """
         for call in calls:
             # 预登记：为每个 call 写入 revision=0 的 NOT_STARTED 事实。目的是让"从未启动"也有事实可查，
             # revision=0 保证任何真实事实（revision>=1）都能覆盖它。
@@ -103,7 +110,7 @@ class ToolBatchRunner:
                     # 首个控制异常启动宽限；stop_at is None 守卫使多个兄弟同时报异常时不叠加
                     if isinstance(error, _CONTROL_ERRORS) and stop_at is None:
                         stop_at = min(
-                            time.monotonic() + _BATCH_CLEANUP_GRACE,
+                            time.monotonic() + batch_cleanup_grace,
                             cleanup_deadline if cleanup_deadline is not None else float("inf"),
                         )
 
@@ -129,7 +136,7 @@ class ToolBatchRunner:
             # 已有控制异常时沿用其剩余宽限：重设会让硬取消再整取一份宽限，收尾窗口翻倍。
             if stop_at is None:
                 stop_at = min(
-                    time.monotonic() + _BATCH_CLEANUP_GRACE,
+                    time.monotonic() + batch_cleanup_grace,
                     cleanup_deadline if cleanup_deadline is not None else float("inf"),
                 )
             raise

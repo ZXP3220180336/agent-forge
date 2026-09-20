@@ -1,7 +1,7 @@
 # ReActStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/react.py`
-> **更新日期**：2026-09-20
+> **更新日期**：2026-09-21
 > **职责**：ReAct 领域推理流程——推理 ↔ 工具调用的完整循环（含工具并行原语、错误分发、结构化最终答案、上下文预算 + 成本上限 + 循环停滞护栏）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [executor.md](../agent_doc/executor.md)（`ReActAgent`）；工业级对标见 [react_benchmark.md](react_benchmark.md)
@@ -294,7 +294,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 | --- | --- | --- |
 | `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
 | `execute(user_input, messages, *, run, model, limits, context_window, recovery, tool_execution, output_schema=None, stream_mode=True, baseline_usage=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；六类值对象分别承载运行身份、模型、执行限制、上下文、恢复预算和工具执行限制。同实例并发 execute 明确拒绝，Planner/Reflection 子跑继承父 run 控制 |
-| `execute_tool_calls(..., *, run, tool_execution=..., deadline=None, cleanup_deadline=None, assistant_message=None) -> AsyncGenerator[str]` | 异步生成器 | 为当前批次创建唯一 batch/operation 身份，向 Gateway 传 `call/facts`；调用 ID 非法时零真实请求；先接管批次事实并按输入顺序提交完整协议回执，再发事件或类型化上抛 |
+| `execute_tool_calls(..., *, run, tool_execution=..., deadline=None, cleanup_deadline=None, batch_cleanup_grace=模块默认, assistant_message=None) -> AsyncGenerator[str]` | 异步生成器 | 为当前批次创建唯一 batch/operation 身份，向 Gateway 传 `call/facts`；调用 ID 非法时零真实请求；先接管批次事实并按输入顺序提交完整协议回执，再发事件或类型化上抛 |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
 | `tool_facts` | 只读属性 | 返回本次运行已接管事实的深复制元组；不会暴露策略内部列表或可变 `ToolResult.metadata` 引用 |
 
@@ -366,6 +366,7 @@ result = strategy.outcome  # ReActOutcome
 | `agent_max_llm_fail_retries` | int | 2 | LLM 失败重试上限：LLM 调用失败最多重试 N 次，第 N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏，防 handler CONTINUE 无限重试） |
 | `agent_max_tool_protocol_retries` | int | 2 | 工具调用协议修正上限：三类协议异常共享连续预算；最多修正 N 次，第 N+1 次仍异常则终止（0=首次异常即终止） |
 | `agent_max_same_action_turns` | int | 3 | 循环停滞检测：连续相同工具调用（工具+参数）超过 N 轮，下一轮仍相同则 STALLED 终止 |
+| `tool_batch_cleanup_grace_seconds` | float | 1.0 | `batch_cleanup_grace` 生产值（批次首个控制异常后给在途兄弟的收尾上界，秒）；完整约束见 [config](../../config_doc/config.md#tool-lifecycle-p0) |
 
 `AgentContext.max_context_tokens` 无独立 `agent_max_context_tokens` 配置——生产值复用全局 `max_context_tokens`（默认 128000，LLM 上下文窗口，见 [config](../../config_doc/config.md)）由装配根注入；轮次预算由 `agent_max_context_rounds`（8）配置。完整配置表见 [config 文档](../../config_doc/config.md)。
 
@@ -377,7 +378,7 @@ result = strategy.outcome  # ReActOutcome
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）/ timeout/max_retries 透传 ToolGateway（默认 None 走执行器全局）
-- **工具结局还原（纯函数）**：未正常返回时按已接管事实还原四态回执（无事实 / 仅预登记 NOT_STARTED → 未执行；attempt 快照无结果 → 结果尚未确认；事实已带结果 → 原样回执）/ 权威事实优先级（在途 RUNNING 的 attempt 快照 > 带结果的操作事实 > 最后一个 attempt 快照 > 操作事实；预登记 NOT_STARTED 不盖过 attempt 快照，在途重试不得采信操作事实里的旧结果）/ 参数不可用降级为空参 / 失败记录 → kind 聚类且保持记录顺序
+- **工具结局还原（纯函数）**：未正常返回时按已接管事实还原四态回执（无事实 / 仅预登记 NOT_STARTED → 未执行；attempt 快照无结果 → 结果尚未确认；事实已带结果 → 原样回执）/ 权威事实优先级（在途 RUNNING 的 attempt 快照 > 带结果的操作事实 > 最后一个 attempt 快照 > 操作事实；预登记 NOT_STARTED 不盖过 attempt 快照，在途重试不得采信操作事实里的旧结果；操作事实的归属显式规定为「带结果的优先、同为带结果取最后插入」，不依赖插入序）/ 参数不可用降级为空参 / 失败记录 → kind 聚类且保持记录顺序
 - **时间上限**：首轮超时降级 / 中途超时保留部分进度 / 宽松上限不影响完成 / `None` 显式不设限 / 内部普通 `TimeoutError` 归 UNKNOWN / 外部 task cancel 与异 task `aclose()` 不被吞
 - **统一护栏**：`cancel > deadline > cost > context` 直接契约 / 基线已超成本时零 LLM 调用 / 流式与非流式调用后取消优先于成本且 usage 不丢 / 宽松上限与未配置 limiter 不触发
 - **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛 / 重试轮不追加空 assistant 消息

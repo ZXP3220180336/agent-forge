@@ -322,6 +322,8 @@ class Container:
             "max_tool_protocol_retries": settings.agent_max_tool_protocol_retries,
             # 循环停滞检测（连续相同工具调用防死循环）
             "max_same_action_turns": settings.agent_max_same_action_turns,
+            # 批次首个控制异常后给在途兄弟的收尾窗口（干净收尾所需的短等待，非整个清理预算）
+            "batch_cleanup_grace": settings.tool_batch_cleanup_grace_seconds,
         }
 
         # 成本上限：agent_max_cost 未配置（None）或 LLM 服务降级 → 不注入，ReAct 循环零开销。

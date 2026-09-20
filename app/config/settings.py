@@ -192,6 +192,7 @@ class Settings(BaseSettings):
     tool_max_pending_calls: int = 30  # 全局工具排队上限
     tool_max_pending_calls_per_run: int = 6  # 单运行工具排队上限
     tool_cleanup_timeout_seconds: float = 1.0  # 单次执行取消后的最大清理窗口
+    tool_batch_cleanup_grace_seconds: float = 1.0  # 批次首个控制异常后给在途兄弟的有界收尾窗口
     tool_observation_timeout_seconds: float = 0.2  # 单次调用非关键观测总预算
     tool_max_recovery_records: int = 30  # 启动前预留的执行跟踪条目上限
     tool_shutdown_timeout_seconds: float = 5.0  # 工具服务关闭总预算
@@ -332,6 +333,7 @@ class Settings(BaseSettings):
     @field_validator(
         "tool_admission_timeout_seconds",
         "tool_cleanup_timeout_seconds",
+        "tool_batch_cleanup_grace_seconds",
         "tool_observation_timeout_seconds",
         "tool_shutdown_timeout_seconds",
     )

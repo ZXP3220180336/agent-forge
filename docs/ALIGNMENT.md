@@ -1,6 +1,6 @@
 # 代码模块 ↔ 文档 ↔ 测试 对齐表
 
-> 更新日期：2026-09-19
+> 更新日期：2026-09-20
 > 原则：本表是模块状态、文档与测试路径的唯一维护登记。实现需由代码和实际测试核验，代码偏差不能自动改写已确认契约；新增/移动/删除模块或覆盖变化时同步本表和所属说明。
 > 状态徽标：✅ 代码、文档、测试文件齐全 ｜ 🔶 已实现但文档或测试不全 ｜ ⬜ 空壳待实现。文件映射已在仓库核验；徽标不代表本轮运行了业务测试或逐项验证了运行契约。
 > 本表维持既有路径与五列表头，所有路径相对仓库根。2026-09-13 在工作区运行全量 pytest 与 `scripts.verify_alignment`；后者检查模块登记、路径存在性、非空文件与状态要求，业务行为由测试覆盖。
@@ -56,7 +56,7 @@
 | app/domain/reasoning/planner.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 三阶段编排与语义预算接线；上下文超限保留 usage/plan/步骤事实且不进入同语义 fallback |
 | app/domain/reasoning/_planner_steps.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 步骤规范化、公开计划快照和单步审计记录纯转换；不接管 replan/usage/终态 |
 | app/domain/reasoning/reflection.py | ✅ | docs/domain_doc/reasoning_doc/reflection.md | tests/unit/test_reflection.py | Reflection 自查/修正；语义缩减只影响 prompt 视图；Guard 终止保留最近稿、原始证据、critique 与 usage |
-| app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现；批次部分成果、完整协议回执与类型化控制传播另经 test_tool_lifecycle_wiring.py 覆盖；流式/非流式双通道 |
+| app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现；批次部分成果、完整协议回执、类型化控制传播与真实线程路径（经 handle.run_sync 的完整批次）另经 test_tool_lifecycle_wiring.py 覆盖；流式/非流式双通道 |
 | app/domain/reasoning/_react_protocol.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_protocol.py | ReAct final_answer、调用身份与动作指纹纯协议转换；不接管协议预算、历史或工具执行 |
 | app/domain/reasoning/tool_batch.py | ✅ | docs/domain_doc/reasoning_doc/tool_batch.md | tests/unit/test_tool_lifecycle_contract.py | Collector 负责 revision 去重、深快照与关闭；Runner 负责并行结果、控制时兄弟有界收尾；跨层接管及协议配对经 test_tool_lifecycle_wiring.py 覆盖 |
 | app/infrastructure/database.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，DB 由 container 直管 |

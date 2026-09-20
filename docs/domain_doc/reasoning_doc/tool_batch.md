@@ -2,7 +2,7 @@
 
 > **对应代码**：`app/domain/reasoning/tool_batch.py`
 > **文档定位**：组件说明——Domain 内部事实所有权与批次隔离契约
-> **更新日期**：2026-09-20
+> **更新日期**：2026-09-21
 > **状态与映射**：[ALIGNMENT](../../ALIGNMENT.md) 中 `app/domain/reasoning/tool_batch.py` 行
 
 ## 目录
@@ -197,16 +197,16 @@ _execute_one(index)                       (react.py)
 
 ## 配置关联
 
-本组件**不直接读取配置**：`cleanup_deadline` 由领域外层（ReAct）按运行硬取消时刻派生后传入。批次宽限目前是模块常量 `_BATCH_CLEANUP_GRACE`，不受配置控制；集成侧每次真实调用的清理等待由[配置参考](../../config_doc/config.md#tool-lifecycle-p0)的 `tool_cleanup_timeout_seconds` 维护，两者在各自作用域内独立生效。该差异已记录待处理，见 [todo](../../todo.md)。
+本组件**不直接读取配置**：`cleanup_deadline` 由领域外层（ReAct）按运行硬取消时刻派生后传入；批次宽限同样由调用方经 `run(batch_cleanup_grace=...)` 注入，生产值来自[配置参考](../../config_doc/config.md#tool-lifecycle-p0)的 `tool_batch_cleanup_grace_seconds`，经装配根 → `AgentContext` → `ExecutionLimits` 透传，本组件只保留与配置默认一致的常量兜底。集成侧每次真实调用的清理等待由同表的 `tool_cleanup_timeout_seconds` 维护。三者作用域独立，互不叠加。
 
 ## 验证入口
 
-`tests/unit/test_tool_lifecycle_contract.py` 覆盖 revision 幂等、关闭边界和双向快照隔离；`tests/unit/test_tool_lifecycle_wiring.py` 覆盖部分成功加三类控制异常、未知回执、真实 ToolService 并行取消、提前关闭与协议配对。当前实现、接线与验证状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准。
+`tests/unit/test_tool_lifecycle_contract.py` 覆盖 revision 幂等、关闭边界、双向快照隔离、批次宽限由调用方注入（取样默认值会超出上界）与硬取消沿用剩余宽限；`tests/unit/test_tool_lifecycle_wiring.py` 覆盖部分成功加三类控制异常、未知回执、真实 ToolService 并行取消、真实线程路径、提前关闭与协议配对。当前实现、接线与验证状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准。
 
 ## 设计决策与问题记录
 
 - [TOOLS-ADR-008](../../../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)：S1（公开接口及事实所有权）、S3（文件、类与方法职责）、S4（实际消费方与批次执行接口）、S8（方法级验收）定义本组件的正式契约；D4（沿现有清理窗口规则、不重新累计宽限）与 D5（批次收集器协调兄弟、不机械取消）解释宽限与收尾语义。
-- 本组件的未处理项集中在 [todo](../../todo.md) 的 C-02「Piece⑤ 复核遗留」，本文不复制清单。
+- 本组件的历史未处理项（批次宽限配置化、收尾窗口不与硬取消叠加等）已全部关闭，结论见[完成记录](../../history/completed-work.md)的「C-02 Piece⑤ 复核遗留」小节，本文不复制清单。
 
 ## 相关文档
 

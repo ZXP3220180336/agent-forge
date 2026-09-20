@@ -1,7 +1,7 @@
 # 配置管理模块 对外接口文档
 
 > **对应代码**：`app/config/`（[settings.py](../../app/config/settings.py)）
-> **更新日期**：2026-09-19
+> **更新日期**：2026-09-21
 > **文档定位**：配置模块对外接口契约（`settings` 单例 + 聚合属性）与全项目配置项参考手册
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。
 
@@ -514,6 +514,7 @@ REDIS_URL="redis://localhost:6379/0"
 | tool_max_pending_calls_per_run | 6，正整数且不大于全局等待上限 | 单运行排队限制，溢出明确拒绝，不在 Executor 自动循环重试；与全局等待上限的大小关系由 `Settings` 模型校验器与 `ToolAdmission` 构造期同时校验 |
 | tool_admission_timeout_seconds | 30，正有限数 | 每个 attempt 的准入等待上限：首次从 Facade 入口起（含刷新/审批），重试从退避结束后重新准入起；均含排队/必需意图记录并被总 deadline 收紧。耗尽仅表示该 attempt 未调度，保留前次执行事实与实际次数，不将整个 operation 记为未执行 |
 | tool_cleanup_timeout_seconds | 1，正有限数 | 每调用清理/移交的最大等待；取与领域剩余清理窗口的较小值，不逐层新增宽限 |
+| tool_batch_cleanup_grace_seconds | 1，正有限数 | 批次内首个控制异常后给在途兄弟的收尾上界；实际取与领域剩余清理窗口的较小值，不越过运行硬取消时刻 |
 | tool_observation_timeout_seconds | 0.2，正有限数 | 每次调用非关键观测总预算，非每 Hook 重新给一份 |
 | tool_max_recovery_records | 30，正整数且不小于全局在途上限 | 未完成事实记录/恢复条目上限；在真实执行前预留所需条目，不在取消后丢弃已有事实腾位置 |
 | tool_record_max_attempts | 3，至少 1 | 必需事实写入总尝试，包含首次；仅重试幂等存储操作 |

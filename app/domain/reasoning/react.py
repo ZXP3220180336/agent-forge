@@ -50,7 +50,7 @@ from app.domain.ports.tool_execution import (
     ToolFact,
 )
 from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
-from app.domain.reasoning.tool_batch import ToolBatchCollector, ToolBatchRunner
+from app.domain.reasoning.tool_batch import DEFAULT_BATCH_CLEANUP_GRACE, ToolBatchCollector, ToolBatchRunner
 from app.shared.error_handling import (
     AgentErrorAction,
     AgentErrorKind,
@@ -229,8 +229,8 @@ def _aborted_call_outcome(
     权威事实按「在途 attempt 事实 > 已带结果的操作事实 > 最后一个 attempt 事实 > 操作事实」
     选取：预登记的 NOT_STARTED 不得盖过已完成的 attempt 快照（旧 / 外部 Gateway 可能只发布
     attempt 事实）；还有 attempt 停在 RUNNING 时不得采信操作事实里的旧结果。
-    取操作事实用 `next()` 的插入序，当前每个 call 至多一条 `attempt_id is None` 事实——
-    业务键复用引入第二条非规范操作事实前，必须在此显式规定归属。
+    操作事实的归属是显式的：带结果的优先，同为带结果时取最后插入的一条；启动前那条无结果的
+    预登记只用于「从未启动」的结论，不参与终局判定。
 
     参数解析失败按空参回执且不再次调用工具（工具本就没执行，报未执行比报参数错误更准）。
     返回 (结果, 回执参数, 耗时)。
@@ -247,8 +247,15 @@ def _aborted_call_outcome(
 
     # ② 在事实里挑出权威的那一条。一个 call 最多两类事实：
     #    操作事实（attempt_id 为空，启动前预登记）+ 每次真实尝试的 attempt 事实（attempt_id 非空）。
-    operation_fact = next((fact for fact in call_facts if fact.attempt_id is None), None)
+    #    操作事实可能不止一条：业务键复用时真实事实引用原规范操作，而 call 持自己的新
+    #    operation_id，同一 call 因此出现两条 attempt_id 为空的事实。归属显式规定为「带结果的
+    #    优先、同为带结果取最后插入」，不依赖「先插入的是哪条」——预登记那条只用于证明未启动。
+    operation_facts = [fact for fact in call_facts if fact.attempt_id is None]
     attempt_facts = [fact for fact in call_facts if fact.attempt_id is not None]
+    operation_fact = next(
+        (fact for fact in reversed(operation_facts) if fact.result is not None),
+        operation_facts[-1] if operation_facts else None,
+    )
     # 还有 attempt 停在 RUNNING 时这个 call 没有终局，优先按「结果尚未确认」回执：
     # 操作事实在每次 attempt 完成时都会被重发（revision=attempt+1），在途重试期间它带的是
     # 上一次尝试的旧结果，直接采信会把「未确认」报成「已确认失败」。
@@ -716,6 +723,7 @@ class ReActStrategy:
                             run=run,
                             deadline=deadline,
                             cleanup_deadline=hard_timeout_at,
+                            batch_cleanup_grace=limits.batch_cleanup_grace,
                             assistant_message=assistant_msg,
                         ):
                             yield event
@@ -1233,6 +1241,7 @@ class ReActStrategy:
         tool_execution: ToolExecutionOptions = _DEFAULT_TOOL_EXECUTION,
         deadline: float | None = None,
         cleanup_deadline: float | None = None,
+        batch_cleanup_grace: float = DEFAULT_BATCH_CLEANUP_GRACE,
         assistant_message: dict | None = None,
     ) -> AsyncGenerator[str]:
         """
@@ -1247,6 +1256,10 @@ class ReActStrategy:
 
         **tool_execution**：透传给 ToolGateway.execute（字段为 None = 走执行器全局或工具
         自声明，见 execute() docstring）——供原语复用方按需覆盖，默认不覆盖任何一项。
+
+        **batch_cleanup_grace**：首个控制异常后给在途兄弟的收尾上界，实际取其与
+        `cleanup_deadline` 的较小值。由 `execute` 从 ExecutionLimits 传入（生产值来自配置），
+        本层不读配置；直接复用本原语时走模块默认。
 
         SSE 事件只在主 generator 内按顺序 yield（不在并发 task 内 yield， 避免事件交错）。
 
@@ -1361,7 +1374,12 @@ class ReActStrategy:
         # 事实存下来并组装回执，不能出现「工具跑了、历史里却没有回执」这种缺口。
         execution_error: BaseException | None = None
         try:
-            await runner.run(contexts, _execute_one, cleanup_deadline=cleanup_deadline)
+            await runner.run(
+                contexts,
+                _execute_one,
+                cleanup_deadline=cleanup_deadline,
+                batch_cleanup_grace=batch_cleanup_grace,
+            )
         except BaseException as error:  # noqa: BLE001 -- 硬取消也须先提交可得批次事实和协议回执
             execution_error = error
         finally:
@@ -1494,6 +1512,7 @@ class ReActStrategy:
         run: ReasoningRunScope,
         deadline: float | None,
         cleanup_deadline: float | None,
+        batch_cleanup_grace: float,
         assistant_message: dict | None,
     ) -> AsyncGenerator[str]:
         """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。"""
@@ -1509,6 +1528,7 @@ class ReActStrategy:
             run=run,
             deadline=deadline,
             cleanup_deadline=cleanup_deadline,
+            batch_cleanup_grace=batch_cleanup_grace,
             assistant_message=assistant_message,
         ):
             yield event

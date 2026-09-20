@@ -1,6 +1,6 @@
 # 已完成工作的交接记录
 
-整理日期：2026-09-19。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
+整理日期：2026-09-21。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
 
@@ -166,6 +166,21 @@ W-01 完成后的测试文件分工：工具执行/事实/加载/生命周期替
 W-03 的 8 项遗留已逐条复核并修改（7 份文档，无代码改动）：其中 2 项原述不准确、2 项范围被夸大，照单执行会去改并不存在的缺陷。复核方法与已证实的教训见 [lessons](../lessons.md) 的「复用上一轮标注已核实的遗留清单」条目，不再在此重复。
 
 唯一未执行项是 `ToolRegistry` 导出方法死代码的删除。后续复核推翻了它的原述：所称冲突来自六组件对齐 ADR（非 ADR-008）第 22 行，而该行记录的是当时的委托机制，已随 TOOLS-058 把 Facade 导出改为启用过滤自产后失效，Facade 的全量语义未变。删除据此执行并记为 [TOOLS-060](../../issues/integration/tools/2026-09-19-registry-export-dead-code.md)，W-03 至此全部关闭。
+
+### 2026-09-20/21：C-02 Piece⑤ 复核遗留（D1～D5）与 ADR 状态口径修正
+
+Piece⑤ 复核列出的 9 项遗留已全部关闭，**均无独立 Issue**，因此结论写在这里；逐轮验证叙述仍随 C-02 计划维护，见[当前计划](../todo.md#c-02-lifecycle)。
+
+- **回执的操作事实归属改为显式规则**（`react.py` 的 `_aborted_call_outcome`）：执行器每次 attempt 完成都会重发操作事实（`revision=attempt+1`、`attempt_id=None`），在途重试期间它带的是**上一次尝试的旧结果**，所以「操作事实带结果 ⇒ 已确认终局」不成立——重试中被取消的调用会被报成「已确认失败」。现按「在途 RUNNING 的 attempt 快照 > 带结果的操作事实 > 最后一个 attempt 快照 > 操作事实」选取；操作事实内部再按「带结果的优先、同为带结果取最后插入」定归属，业务键复用引入第二条非期望操作事实时不再依赖插入序。
+- **批次收尾宽限已配置化**：新增 `tool_batch_cleanup_grace_seconds`（默认 1.0），经 `settings → container.agent_params → AgentContext.batch_cleanup_grace → ExecutionLimits → execute → _handle_tool_calls → execute_tool_calls → ToolBatchRunner.run` 注入；`tool_batch.DEFAULT_BATCH_CLEANUP_GRACE` 只在直接调用方未提供时兜底。此前它是第三个硬编码清理窗口，改配置不影响它，与配置规格及 TOOLS-ADR-008 D7 不一致。取值与约束见[配置参考](../config_doc/config.md#tool-lifecycle-p0)。
+- **畸形调用结构不再抛 `KeyError`**：协议判据只校验调用 `id`，缺 `function` 的调用能通过四类判据。新增唯一取值入口 `tool_call_name`（结构缺失归 `unknown`），供停滞指纹、执行取参、final_answer 过滤与停机组装共用。**只修指纹不够**——`_finalize_stalled` 的停机组装是同一处直接下标，只修前者会把崩溃点挪到「连续 4 轮相同畸形调用」。保留原语义：按「工具 `unknown` 未注册」失败回喂模型，不升级为协议类 `PARSE_FAILED`（属契约变更，未做）。
+- **宽限耗尽与异常优先级改由测试锁定**：合作取消的任务会被收尾处的一次 `wait(timeout=0)` 捕获（`CancelledError` 写入 `outcomes`），吞掉取消的留在 `pending`、`outcomes` 为 `None`；被捕获者进 `unexpected_errors`，但按固定优先级被 `control_errors` 的三类控制异常掩盖，回执口径不受影响。此前只有注释与一次人工实测，无断言守护。
+- **wiring 套件补真实线程覆盖**：新增真实 ToolService + 受控 `invoke`（`execution.run_sync`）走完整 ReAct 批次的用例；取消语义用例仍保留纯协程替身（取消时序比真实线程确定），两者互补而非替代。
+- 另删一处恒真断言，并修正[批次组件说明](../domain_doc/reasoning_doc/tool_batch.md)结构图中并不存在的「调用级准入」——`_admission.acquire` 全仓只在 `_request_approval`（仅审批工具）与每次 attempt 两处。
+
+两处 ADR 的**状态陈述与正文矛盾**已修正，只改状态、不改写历史条款：[Agent 错误处理横切入口](../../adr/domain/agent/2026-08-28-agent-error-handling.md) 头部原写「对标增强项 #23（未实现）…实现另行安排」，正文却记同日已实现；[TokenCounter 端口](../../adr/integration/llm/2026-08-24-token-counter-port.md) 原标「已替代」，读起来像尚有未完成条款。前者核对 `app/shared/error_handling.py` 的 `ErrorHandlerRegistry` 与 `AgentErrorKind` 确实存在，后者核对 `domain/ports/token_counter.py` 已不存在、ContextManager 经 `LLMGateway` 计数。
+
+可复用经验：**新增 `AgentContext` 字段必须同时更新测试替身形状**（`tests/conftest.py` 的共享 `agent_params` 与 `test_container.py` 的完整装配断言）。只跑定向测试会漏掉，首轮全量才暴露 17 项。
 
 ## 已有 Issue / ADR 的完成索引
 

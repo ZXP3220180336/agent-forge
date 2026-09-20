@@ -47,11 +47,13 @@ class ModelOptions:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionLimits:
-    """推理循环的轮次、墙钟和重复动作上限。"""
+    """推理循环的轮次、墙钟、重复动作上限与批次收尾窗口。"""
 
     max_iterations: int = 10
     max_execution_time: float | None = None
     max_same_action_turns: int = 3
+    # 批次首个控制异常后给在途兄弟的有界收尾窗口；默认值与配置规格一致，生产值由装配根注入。
+    batch_cleanup_grace: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)

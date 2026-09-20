@@ -86,7 +86,10 @@ class AgentContext:
     )
     max_tool_protocol_retries: int = 2  # 工具调用协议修正上限（0=首次协议异常即终止）
     max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）上限
-    max_refine_rounds: int = 2  # 修复尝试上限：Reflection 修正（初稿 1 + 修正上限 max_refine_rounds-1）与 Planner replan（步骤失败重规划预算）共用
+    batch_cleanup_grace: float = 1.0  # 批次首个控制异常后给在途兄弟工具的有界收尾窗口（秒）
+    # 修复尝试上限：Reflection 修正（初稿 1 + 修正上限 max_refine_rounds-1）
+    # 与 Planner replan（步骤失败重规划预算）共用
+    max_refine_rounds: int = 2
     stream_mode: bool = True  # LLM 通道：True=流式 async_generate（默认，chat SSE 订阅者）；
     # False=非流式 generate()（后台子 Agent 无人逐 token 订阅，Phase C 编排按需置 False）。
     # 注：勿与 settings.agent_streaming 混淆——该字段仅是 agent_config 元数据出口，

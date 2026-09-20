@@ -149,6 +149,7 @@ async def test_initialize_happy_path(monkeypatch):
         "max_tool_protocol_retries": settings.agent_max_tool_protocol_retries,
         "max_llm_fail_retries": settings.agent_max_llm_fail_retries,
         "max_same_action_turns": settings.agent_max_same_action_turns,
+        "batch_cleanup_grace": settings.tool_batch_cleanup_grace_seconds,
     }
     # 成本上限：未配置（默认 None）→ cost_limiter 为 None（不启用）
     assert c.cost_limiter is None

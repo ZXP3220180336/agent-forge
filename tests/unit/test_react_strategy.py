@@ -1096,10 +1096,11 @@ def _call_fact(
     revision: int,
     execution_state: ToolExecutionState,
     result: ToolResult | None = None,
+    operation_id: str = "operation-1",
 ) -> ToolFact:
     """构造某个 call 的事实快照（attempt_id=None 即操作事实）。"""
     return ToolFact(
-        operation_id="operation-1",
+        operation_id=operation_id,
         attempt_id=attempt_id,
         run_id="run-1",
         batch_id="batch-1",
@@ -1181,9 +1182,7 @@ def test_aborted_call_outcome_keeps_in_flight_retry_unconfirmed() -> None:
     first_attempt = ToolResult(False, "", error="第一次尝试失败")
     facts = [
         _call_fact(attempt_id=None, revision=1, execution_state=ToolExecutionState.FAILED, result=first_attempt),
-        _call_fact(
-            attempt_id="attempt-1", revision=1, execution_state=ToolExecutionState.FAILED, result=first_attempt
-        ),
+        _call_fact(attempt_id="attempt-1", revision=1, execution_state=ToolExecutionState.FAILED, result=first_attempt),
         _call_fact(attempt_id="attempt-2", revision=0, execution_state=ToolExecutionState.RUNNING),
     ]
 
@@ -1192,6 +1191,46 @@ def test_aborted_call_outcome_keeps_in_flight_retry_unconfirmed() -> None:
     assert exec_result.success is False
     assert "尚未确认" in exec_result.error
     assert exec_result.effect_state == ToolEffectState.UNKNOWN
+
+
+def test_aborted_call_outcome_fixes_operation_fact_ownership_explicitly() -> None:
+    """两条 `attempt_id is None` 的操作事实并存时，归属按显式规则而非插入序。
+
+    业务键复用后真实事实引用原规范操作，而 call 持自己的新 `operation_id`，同一 call 因此
+    出现两条操作事实：一条是启动前无结果的预登记，一条是带结果的真实终局。取「先插入的那条」
+    会把已确认的结果误报成「未执行」。
+    """
+    confirmed = ToolResult(True, "canonical", execution_time=0.5)
+    preregistered = _call_fact(
+        attempt_id=None, revision=0, execution_state=ToolExecutionState.NOT_STARTED, operation_id="call-op"
+    )
+    published = _call_fact(
+        attempt_id=None,
+        revision=1,
+        execution_state=ToolExecutionState.SUCCEEDED,
+        result=confirmed,
+        operation_id="canonical-op",
+    )
+
+    exec_result, _, elapsed = _aborted_call_outcome(_aborted_call(), [preregistered, published])
+
+    assert exec_result == confirmed
+    assert elapsed == 0.5
+
+    # 同为带结果时取最后插入的一条（收集顺序在后的更新）。
+    newer = ToolResult(True, "newer", execution_time=0.75)
+    later = _call_fact(
+        attempt_id=None,
+        revision=2,
+        execution_state=ToolExecutionState.SUCCEEDED,
+        result=newer,
+        operation_id="canonical-op",
+    )
+
+    exec_result, _, elapsed = _aborted_call_outcome(_aborted_call(), [preregistered, published, later])
+
+    assert exec_result == newer
+    assert elapsed == 0.75
 
 
 def test_aborted_call_outcome_zeroes_elapsed_without_timing() -> None:

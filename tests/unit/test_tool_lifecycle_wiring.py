@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 
 import pytest
@@ -225,6 +226,45 @@ async def test_react_collects_fact_before_control_exception_propagates(error_typ
 
 
 @pytest.mark.asyncio
+async def test_react_forwards_batch_cleanup_grace_from_limits_to_the_batch():
+    """执行入口把 ExecutionLimits 的批次宽限透传到批次收尾，不让它退回模块默认值。
+
+    这条链路过四层（execute → _handle_tool_calls → execute_tool_calls → runner），任一层漏传
+    都只会退回默认的 1 秒，功能表面仍正常；因此用同一场景的耗时差异锁定：给 0.15 秒时明显
+    早于默认值结束。
+    """
+    second_started = asyncio.Event()
+
+    class _LateSiblingGateway(_FactGateway):
+        async def execute(self, name, parameters, *args, call, facts, **kwargs):
+            if name == "two":
+                second_started.set()
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.05)  # 吞掉取消：即时轮询捕获不到，留在本轮 pending
+                    raise
+            await second_started.wait()
+            await super().execute(name, parameters, *args, call=call, facts=facts, **kwargs)
+            raise ToolCancelledError("stopped", run_id=call.run_id, operation_id=call.operation_id)
+
+    strategy = ReActStrategy(llm=_ToolBatchLLM(), tools=_LateSiblingGateway())
+    messages = [{"role": "user", "content": "x"}]
+    started = time.monotonic()
+
+    with pytest.raises(ToolCancelledError):
+        await _consume(
+            strategy.execute(
+                "x",
+                messages,
+                **reasoning_execution_args("react", max_iterations=3, run_id="run-1", batch_cleanup_grace=0.15),
+            )
+        )
+
+    assert time.monotonic() - started < 0.6
+
+
+@pytest.mark.asyncio
 async def test_control_error_masks_unexpected_error_in_same_batch():
     """同批既有控制异常又有意外异常时上抛控制异常，且两条调用都留下回执。
 
@@ -425,6 +465,86 @@ async def test_real_tool_service_parallel_cancel_keeps_completed_sibling_and_val
     assert strategy.outcome is None and strategy._tool_call_records[0]["success"] is True
     assert strategy._tool_call_records[1]["success"] is False
     assert any(fact.result and fact.result.content == "one" for fact in strategy.tool_facts)
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_real_tool_service_runs_batch_on_worker_threads_and_releases_handles():
+    """真实线程路径的接线覆盖：工具经 `handle.run_sync` 在 worker 线程执行，收尾后句柄释放。
+
+    本文件其余用例的替身工具都是纯协程，从不产生真实线程，清理层因此不被覆盖。本用例用真实
+    ToolService + 受控 `invoke`，验证同一批接线在真实线程上仍成立：回执按输入顺序配对、终态
+    正常完成、批次结束后实例可被卸载。
+    """
+    worker_threads: list[int] = []
+
+    class _ThreadedReadTool(BaseTool):
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        @property
+        def name(self) -> str:
+            return self._name
+
+        @property
+        def description(self) -> str:
+            return "read"
+
+        @property
+        def parameters(self) -> dict:
+            return {"type": "object", "properties": {}}
+
+        def describe_execution(self, parameters: dict) -> ToolExecutionSpec:
+            return ToolExecutionSpec(effect_class=ToolEffectClass.READ_ONLY)
+
+        async def invoke(self, parameters: dict, execution) -> ToolResult:
+            return await execution.run_sync(self._read_sync)
+
+        def _read_sync(self) -> ToolResult:
+            worker_threads.append(threading.get_ident())
+            return ToolResult(True, self._name)
+
+        async def execute(self, **kwargs) -> ToolResult:
+            raise AssertionError("受控入口应经 invoke，不经 execute")
+
+    class _OneBatchLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def async_generate(self, *args, result: StreamResult, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                result.finish_reason = "tool_calls"
+                result.tool_calls = _calls()
+            else:
+                result.finish_reason = "stop"
+                result.content = "完成"
+            if False:
+                yield ""
+
+    llm = _OneBatchLLM()
+    service = ToolService(max_concurrent_tools=3)
+    tools = [_ThreadedReadTool("one"), _ThreadedReadTool("two")]
+    for tool in tools:
+        service.register(tool)
+    strategy = ReActStrategy(llm=llm, tools=service)
+    messages = [{"role": "user", "content": "x"}]
+
+    async for _ in strategy.execute(
+        "x", messages, **reasoning_execution_args("react", max_iterations=3, run_id="run-1")
+    ):
+        pass
+
+    # 真实线程：两次同步工作都发生在事件循环线程之外
+    assert len(worker_threads) == 2
+    assert threading.get_ident() not in worker_threads
+    # 接线结论与协程替身一致
+    assert llm.calls == 2
+    assert strategy.outcome is not None and strategy.outcome.success is True
+    assert strategy.outcome.content == "完成"
+    assert [message["tool_call_id"] for message in messages if message["role"] == "tool"] == ["call-1", "call-2"]
+    # 收尾：真实句柄已释放，实例可被卸载
+    assert not any(service.is_tool_active(tool) for tool in tools)
     await service.shutdown()
 
 

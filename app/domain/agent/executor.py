@@ -95,6 +95,7 @@ class ReActAgent(BaseAgent):
                 max_iterations=ctx.max_iterations,
                 max_execution_time=ctx.max_execution_time,
                 max_same_action_turns=ctx.max_same_action_turns,
+                batch_cleanup_grace=ctx.batch_cleanup_grace,
             ),
             context_window=ContextWindowLimits(
                 max_rounds=ctx.max_context_rounds,

@@ -201,6 +201,39 @@ async def test_grace_exhausted_poll_captures_cooperative_cancel_only():
 
 
 @pytest.mark.asyncio
+async def test_batch_cleanup_grace_is_taken_from_the_caller():
+    """收尾窗口由调用方注入：给 0.15 秒时整批在约 0.15 秒内收尾，而非模块默认的 1 秒。
+
+    窗口此前是硬编码常量，改配置不影响它；本测试锁定「注入值真的生效」，取样默认值会
+    明显超出 0.6 秒上界。
+    """
+    runner = ToolBatchRunner(ToolBatchCollector())
+    started = time.monotonic()
+
+    async def execute(index: int):
+        if index == 0:
+            await asyncio.sleep(0.02)
+            raise ToolCancelledError("stopped", run_id="run-1", operation_id="operation-1")
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.02)  # 吞掉取消：留到收尾窗口耗尽
+            raise
+
+    outcomes = await runner.run(
+        [_context(), _context(tool_call_id="call-2", operation_id="operation-2")],
+        execute,
+        batch_cleanup_grace=0.15,
+    )
+    elapsed = time.monotonic() - started
+
+    assert isinstance(outcomes[0], ToolCancelledError)
+    assert outcomes[1] is None
+    assert elapsed < 0.6
+    await asyncio.sleep(0.05)  # 让吞掉取消的任务自然收尾
+
+
+@pytest.mark.asyncio
 async def test_hard_cancel_reuses_grace_started_by_control_error():
     """控制异常已启动宽限后再遭硬取消，沿用剩余宽限，不重取一份。
 

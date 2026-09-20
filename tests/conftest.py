@@ -25,4 +25,5 @@ def agent_params() -> dict:
         "max_llm_fail_retries": 2,
         "max_tool_protocol_retries": 2,
         "max_same_action_turns": 3,
+        "batch_cleanup_grace": 1.0,
     }

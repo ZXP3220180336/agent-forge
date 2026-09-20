@@ -167,6 +167,7 @@ class ChatService:
                 max_llm_fail_retries=self._agent_params["max_llm_fail_retries"],
                 max_tool_protocol_retries=self._agent_params["max_tool_protocol_retries"],
                 max_same_action_turns=self._agent_params["max_same_action_turns"],
+                batch_cleanup_grace=self._agent_params["batch_cleanup_grace"],
             )
 
             # 7. 为当前请求创建独立 Agent

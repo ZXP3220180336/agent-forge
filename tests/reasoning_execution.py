@@ -58,6 +58,7 @@ def reasoning_execution_args(
         max_iterations=values.pop("max_iterations", 10),
         max_execution_time=values.pop("max_execution_time", None),
         max_same_action_turns=values.pop("max_same_action_turns", 3),
+        batch_cleanup_grace=values.pop("batch_cleanup_grace", 1.0),
     )
     context_window = ContextWindowLimits(
         max_rounds=values.pop("max_context_rounds", None),
