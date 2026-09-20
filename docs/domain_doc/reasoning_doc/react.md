@@ -1,7 +1,7 @@
 # ReActStrategy 设计文档
 
 > **模块**：`app/domain/reasoning/react.py`
-> **更新日期**：2026-09-19
+> **更新日期**：2026-09-20
 > **职责**：ReAct 领域推理流程——推理 ↔ 工具调用的完整循环（含工具并行原语、错误分发、结构化最终答案、上下文预算 + 成本上限 + 循环停滞护栏）
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 > **配套**：桥接见 [executor.md](../agent_doc/executor.md)（`ReActAgent`）；工业级对标见 [react_benchmark.md](react_benchmark.md)
@@ -39,6 +39,7 @@
   - [测试状态](#测试状态)
   - [设计决策](#设计决策)
   - [问题记录](#问题记录)
+  - [工具受控执行的终止接线](#工具受控执行的终止接线)
   - [相关文档](#相关文档)
 
 ---
@@ -50,10 +51,10 @@
 3. **错误处理横切**：各终止 / 可恢复错误经 `ErrorHandlerRegistry` 按 kind 分发（CONTINUE / STOP / RAISE），默认行为 = 现有逻辑，调用方可注册覆盖
 4. **结构化最终答案**：`output_schema` 启用时注入 final_answer 工具，模型最后调用提交 schema 约束结果并终止循环（兼作终止机制，无额外 LLM 调用）
 5. **上下文预算护栏**：模型下次调用前经 `ContextBudgetPort` 裁剪（轮次 + token 双层），防上下文膨胀
-6. **统一执行护栏**：每轮付费调用前和成功归账后通过 `_common.evaluate_guard` 检查取消、绝对 deadline 与累计成本；最终请求上下文超限进入同一类型化优先级
+6. **统一执行护栏**：每轮付费调用前和成功归账后通过 `_common.evaluate_guard` 检查取消、绝对 deadline 与累计成本；最终请求上下文超限进入同一类型化优先级（两处轮询点与异常出口——硬超时、LLM 终结信号——共用 `execute` 内同一护栏求值与终态出口，优先级与成本口径不分叉）
 7. **单向依赖**：只依赖 ports + shared + 标准库，接收按语义分组的不可变执行参数值对象（非 `AgentContext`）；实例持有单次执行结果和事实，但不依赖 Agent 生命周期
 8. **运行与事实隔离**：`run_id/run_stop` 为每次 execute 的必填控制身份；每轮工具调用创建新 batch，每个合法 call 创建 operation，并在控制异常传播前接管当前事实
-9. **纯协议边界**：`_react_protocol.py` 负责 final_answer 工具定义、批内调用身份检查、结构化参数校验与动作指纹；策略继续持有预算、历史、工具执行和终态
+9. **纯协议边界**：`_react_protocol.py` 负责 final_answer 工具定义与识别、批内调用身份检查、结构化参数校验与动作指纹；策略继续持有预算、历史、工具执行和终态
 
 ---
 
@@ -70,7 +71,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 | finish_reason | 语义 | 处理 |
 | --- | --- | --- |
 | `tool_calls` | 模型请求调用工具 | final_answer 检测 → 执行工具 → 结果回喂 → 下一轮 |
-| `tool_calls` + 空 `tool_calls` / 无工具可用 | 协议信号不一致（声明调工具却没给出 / 系统未注册工具） | `_handle_tool_protocol_error` 协议异常 → `PARSE_FAILED` 分发；受独立协议修正上限约束 |
+| `tool_calls` + 空 `tool_calls` / 无工具可用 / 批内身份非法 / final_answer 与普通工具同轮 | 协议信号与数据、能力或身份不一致（声明调工具却没给出 / 系统未注册工具 / 无外键可配对 / 终止工具须独占本轮） | `_handle_tool_protocol_error` 协议异常 → `PARSE_FAILED` 分发；四类按固定优先级归因（空调用 > 无可用工具 > 身份非法 > 终止工具混用），受独立协议修正上限约束 |
 | `stop` / `length` | 正常生成完毕（length 为截断） | `_finalize_outcome` 组装正常终态 |
 | 空 + 无内容 | 模型未生成有效输出 | `_handle_empty_output` 错误分发（默认重试） |
 
@@ -91,7 +92,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 | `CANCELLED` | 用户取消（cancel_event 置位） | STOP（优雅停止，保留部分进度） |
 | `CONTEXT_EXCEEDED` | 最终请求超过模型上下文窗口 | STOP（保留部分进度） |
 | `TOOL_FAILED` | 工具执行失败 | CONTINUE（回喂） |
-| `PARSE_FAILED` | 工具参数 JSON 解析失败 / finish_reason=tool_calls 但无 tool_calls（协议异常） | CONTINUE（回喂/重试） |
+| `PARSE_FAILED` | 工具参数 JSON 解析失败 / finish_reason=tool_calls 响应无效（空调用 / 无可用工具 / 身份非法 / final_answer 混用，协议异常） | CONTINUE（回喂/重试） |
 | `STRUCTURED_INVALID` | final_answer 参数校验失败 | CONTINUE（回喂） |
 
 **handler 异常防御**：handler 是调用方扩展点，其自身异常不破坏主循环——`dispatch` 捕获 `Exception`（不含 `BaseException`，`CancelledError` 穿透）后记日志并按该 kind 默认 action 降级（= 未注册行为），扩展点缺陷可观测且不掩盖被分发的原始错误（见 [SHARED-001](../../../issues/shared/error_handling/2026-08-30-handler-exception-defense.md)）。
@@ -106,7 +107,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 ### 循环停滞检测（动作指纹 + STALLED）
 
-死循环护栏：模型「反复调用同一工具同一参数」原地打转时，靠 `max_same_action_turns`（默认 3）主动停机——连续相同工具调用（工具+参数）超过上限走 `STALLED` 分发硬终止（默认 STOP），**不执行本轮工具**（防重复副作用 / 烧钱）。动作指纹 = 本轮 tool_calls 的（名, 规范化参数）序列化：参数 `json.loads` 后 `sort_keys=True` 重 dump（key 顺序 / 空白不同指纹一致），非法 JSON 回退原始串；换工具 / 换参数重置计数；`final_answer` 不参与（终止工具）；STALLED handler 可 RAISE 上抛（对齐 COST_EXCEEDED 终结护栏）。
+死循环护栏：模型「反复调用同一工具同一参数」原地打转时，靠 `max_same_action_turns`（默认 3）主动停机——连续相同工具调用（工具+参数）超过上限走 `STALLED` 分发硬终止（默认 STOP），**不执行本轮工具**（防重复副作用 / 烧钱）。动作指纹 = 本轮 tool_calls 的（名, 规范化参数）序列化：参数 `json.loads` 后 `sort_keys=True` 重 dump（key 顺序 / 空白不同指纹一致），非法 JSON 回退原始串；换工具 / 换参数重置计数；被识别的 `final_answer` 轮在停滞检测之前就已分流或终止，因此不进停滞计数（未启用 `output_schema` 时同名调用是未知工具，仍参与指纹）；STALLED handler 可 RAISE 上抛（对齐 COST_EXCEEDED 终结护栏）。
 
 ### 模型拒答（REFUSED）
 
@@ -120,7 +121,7 @@ LLM 单轮回复的 `finish_reason` 决定下一步：
 
 `output_schema` 采用[共享本地 2020-12 契约](../../shared_doc/json_schema.md)。`execute` 在注入 final_answer 前预检定义；非法定义抛 `SchemaError`，零模型调用，不进入协议修正。合法定义的实例校验继续用 `best_match` 选择代表错误并按既有错误策略回喂；不自动收紧额外字段。版本决策见 [ADR-004](../../../adr/2026-09-14-json-schema-dialect.md)。
 
-`output_schema` 启用时，注入 `final_answer` 工具（参数 = schema）。模型完成任务后调用一次提交结构化结果，`_handle_final_answer` 解析 + jsonschema 校验：成功即终止循环并写入 `outcome.structured`；校验失败走 `STRUCTURED_INVALID` 分发（默认回喂错误文本，模型下轮自纠）。注入工具非注册工具，识别在主循环，不经过 `execute_tool_calls`。
+`output_schema` 启用时，注入 `final_answer` 工具（参数 = schema）。模型完成任务后调用一次提交结构化结果，`_handle_final_answer` 解析 + jsonschema 校验：成功即终止循环并写入 `outcome.structured`；校验失败走 `STRUCTURED_INVALID` 分发（默认回喂错误文本，模型下轮自纠）。注入工具非注册工具，识别经 `_react_protocol.has_final_answer`（一并判定 `output_schema` 是否启用——未启用时同名调用是模型臆造的未知工具，按普通工具回喂并进入停滞指纹）、分支与提取在主循环，不经过 `execute_tool_calls`。
 
 ### 上下文预算（ContextBudgetPort）
 
@@ -146,9 +147,9 @@ ReActStrategy.execute()（ReAct 主循环）
     ├── CostLimiterPort.check ────────────► 成本上限（usage 累加后折算成本，超限停机）
     ├── LLMGateway.async_generate ────────► LLM 推理（流式 reasoning/message 事件，stream_mode=True 默认）
     │    └── LLMGateway.generate ─────────► 非流式通道（stream_mode=False：一次拿 StreamResult + 合成整条事件）
-    ├── ErrorHandlerRegistry（shared）─────► 12 类 AgentErrorKind 分发（CONTINUE/STOP/RAISE）
+    ├── ErrorHandlerRegistry（shared）─────► 13 类 AgentErrorKind 分发（CONTINUE/STOP/RAISE）
     ├── execute_tool_calls() ─────────────► 工具并行执行原语
-    │    └── ToolGateway.execute ─────────► 单工具执行（gather 保序）
+    │    └── ToolBatchRunner ─────────────► 并行任务逐项接管，按输入顺序提交协议
     └── ReActOutcome ─────────────────────► 结果载体（execute() 后读取）
 ```
 
@@ -177,7 +178,7 @@ ReActStrategy.execute()（ReAct 主循环）
 | `_finalize_guard_result` | 共享护栏返回 CANCELLED / TIMEOUT / COST_EXCEEDED / CONTEXT_EXCEEDED | 统一映射各类终态文案并调用 `_finalize_terminal`；保留当前轮或上一轮可见成果与可得 usage，handler 可按错误类型决定 STOP / RAISE |
 | `_finalize_stalled` | 连续相同工具调用超过 `max_same_action_turns` | STOP 停机：组装 outcome（content 空，保留 reasoning），error 记录「连续 N 轮相同工具调用」；本轮工具不执行 |
 | `_finalize_refused` | refusal 字段 / content_filter（显式拒答） | STOP 停机：content 保留，error 记录「模型拒答: <截断文本>」；不误判为成功答案、不空转重试 |
-| `_finalize_unknown` | 主循环未捕获异常；包括 timeout scope 未到期时由 LLM/结算/日志抛出的普通 `TimeoutError` | STOP 兜底：当前轮有可见进度时优先使用，否则回退 `last_visible_result`；合并未归账 usage，error 记录「Agent 运行异常: <异常类型名>」（脱敏，完整异常进日志） |
+| `_finalize_unknown` | 主循环未捕获异常；包括 timeout scope 未到期时由 LLM/结算/日志抛出的普通 `TimeoutError` | STOP 兜底：用调用方经 `_take_over_failure` 接管后的成果与 usage 组装 outcome，error 记录「Agent 运行异常: <异常类型名>」（脱敏，完整异常进日志） |
 
 关键语义：`asyncio.timeout_at` 包业务循环，在 `max_execution_time` 到期时触发当前 task 取消（非单轮预算）。传给 LLM 的内部 deadline 提前 `min(1s, 总时长 × 10%)`，为流关闭、预留结算和日志收尾留出有界窗口。ReAct 保存 timeout scope，仅在 `expired()` 为真时把内置 `TimeoutError` 解释为总执行超时；内部组件抛出的同名异常归 UNKNOWN。领域终态分发和 done 生成在 scope 外完成且不发起新 LLM/工具副作用；同步阻塞或吞取消代码可能形成额外尾部。终止降级还会判别「真异常 vs 生成器被 finalizer 关闭」（慢消费者场景 aclose 由不同 task 驱动），后者干净停止、不 yield 降级事件。
 
@@ -185,7 +186,7 @@ ReActStrategy.execute()（ReAct 主循环）
 
 | 方法 | 触发 | 默认行为 |
 | --- | --- | --- |
-| `_handle_tool_protocol_error` | finish_reason=tool_calls 但 tool_calls 为空 / 当前无可用工具（协议信号与数据或能力不一致） | `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表）；连续超过 `max_tool_protocol_retries` 硬终止（handler 可 STOP 终止 / RAISE 上抛，CONTINUE 在硬上限处折算为终止） |
+| `_handle_tool_protocol_error` | finish_reason=tool_calls 响应无效：tool_calls 为空 / 当前无可用工具 / 批内身份非法 / final_answer 与普通工具同轮（协议信号与数据、能力或身份不一致） | `PARSE_FAILED` 分发：默认 CONTINUE 重试（不入空输出计数 / 不进停滞检测 / 不执行空工具列表）；连续超过 `max_tool_protocol_retries` 硬终止（handler 可 STOP 终止 / RAISE 上抛，CONTINUE 在硬上限处折算为终止） |
 | `_handle_empty_output` | finish_reason 空 + content 空 | CONTINUE 重试；连续超过 `max_empty_retries` 硬终止（handler 可 STOP / RAISE，CONTINUE 被忽略） |
 | `_handle_tool_calls` | finish_reason=tool_calls | 调 `execute_tool_calls` 执行 → 失败工具按 kind 聚合分发 + 仲裁 → 全 CONTINUE → 继续循环（分发顺序固定为协议类在前：协议预算耗尽即定终局，同轮业务失败不再分发；工具参数 JSON 解析失败计入 `max_tool_protocol_retries` 共享预算；预算在循环顶部统一裁剪，见上下文预算节） |
 | `_handle_final_answer` | 检测到 final_answer 工具调用 | 成功提取 → 终止写 `outcome.structured`；校验失败 → `STRUCTURED_INVALID` 分发（默认回喂自纠，连续超过 `max_tool_protocol_retries` 共享预算硬终止） |
@@ -193,13 +194,16 @@ ReActStrategy.execute()（ReAct 主循环）
 ### 支撑方法（_finalize_outcome / _finalize_terminal / _dispatch）
 
 `_react_protocol.py` 是包内纯函数组件：`build_final_answer_tool` 构造注入工具，
-`tool_call_identity_error` 在写历史和真实执行前校验批内 id，`extract_final_answer` 解析并按固定
-Draft 2020-12 校验结果，`action_fingerprint` 为停滞检测规范化参数。它不更新协议修正计数，
-不写消息历史，也不执行工具或提交 `ReActOutcome`。
+`has_final_answer(tool_calls, output_schema)` 判定当前批次是否调用了注入的结构化终止工具
+（同时判定 schema 是否启用——未启用时同名调用是未知工具；主循环的独占轮检查与 final_answer
+分支共用这一识别），`tool_call_identity_error` 在写历史和真实执行前校验批内 id，
+`extract_final_answer` 解析并按固定 Draft 2020-12 校验结果，`action_fingerprint` 为停滞检测
+规范化参数。它不更新协议修正计数，不写消息历史，也不执行工具或提交 `ReActOutcome`。
 
 - `_finalize_outcome(*, success, content, reasoning, iteration, total_usage, error, info_message, structured) -> list[str]`：统一收尾——组装 outcome + 返回收尾事件列表（可选 info + done 恰一次），供各终结 / STOP 分支复用（dispatch 由调用方负责——CONTINUE 语义各异：重试 / 回喂 / 忽略）；普通 def（无 await）
 - `_finalize_terminal(kind, message, iteration, *, success, content, reasoning, total_usage, error, info_message, structured) -> list[str]`：终结性错误统一收尾——dispatch（RAISE 上抛，CONTINUE 忽略）→ 复用 `_finalize_outcome`；供执行护栏、拒答、UNKNOWN、达到最大轮次及硬重试上限等无恢复语义的分支复用
-- `_dispatch(kind, message, iteration) -> AgentErrorAction`：错误分发唯一入口——委托共享 `_common.dispatch_error`（`RAISE` 决策抛 `AgentRunError`，否则返回 action；react 循环内 8 处 `_dispatch` 调用统一收敛）
+- `_dispatch(kind, message, iteration) -> AgentErrorAction`：错误分发唯一入口——委托共享 `_common.dispatch_error`（`RAISE` 决策抛 `AgentRunError`，否则返回 action；react 循环内 6 处 `_dispatch` 调用统一收敛）
+- `_take_over_failure(current_result, last_visible_result, total_usage, exception_usage=None) -> StreamResult | None`：异常出口统一接管——按「当前轮有可见进度优先，否则上一轮」选出成果，并把未归账 usage 并入 `total_usage`（异常自带 usage 优先，不与 result 中同一笔重复计）。三个异常出口（内置 `TimeoutError` / 三类 LLM 终结信号 / 未分类 `Exception`）在组装终态前都必须先经它，保证已发生事实不漏记（G0-4）；普通 def（无 await）
 
 契约约定：收尾/处理分支方法（`_finalize_*` / `_handle_final_answer` / `_handle_empty_output`）为普通或 async 方法，**返回 `list[str]` 收尾事件**（info/done/error，一次性）；主循环 `for e in await X(...): yield e` 转发。仅以下保持 async-generator（逐 token / 逐条实时事件流）：`execute()`（公共入口）、`execute_tool_calls()`（逐工具事件）、`_handle_tool_calls()` / `_llm_round_non_streaming()`（内部转发流式调用）。
 
@@ -208,14 +212,15 @@ Draft 2020-12 校验结果，`action_fingerprint` 为停滞检测规范化参数
 ```python
 async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict], iteration: int,
                              *, run: ReasoningRunScope,
-                             tool_execution: ToolExecutionOptions = ToolExecutionOptions(),
+                             tool_execution: ToolExecutionOptions = _DEFAULT_TOOL_EXECUTION,
                              deadline: float | None = None,
-                             cleanup_deadline: float | None = None) -> AsyncGenerator[str]:
+                             cleanup_deadline: float | None = None,
+                             assistant_message: dict | None = None) -> AsyncGenerator[str]:
 ```
 
 `run` 提供本次运行的运行身份、完成信号与取消传播链；`tool_execution` 的 `timeout` / `max_attempts` 透传给 `ToolGateway.execute`（`None` = 走执行器全局或工具自声明），默认不覆盖任何一项。
 
-当前 Piece②仍由 `asyncio.gather` 并行执行所有工具，gather 保证结果顺序 = tool_calls 输入顺序。调用前为合法 call ID 创建同批次唯一 batch/operation 上下文并预登记 NOT_STARTED；Gateway 同步发布的事实由 `ToolBatchCollector` 按 revision 接管，批次退出时复制到策略。类型化控制异常先完成该快照接管再传播。并行兄弟清理、协议历史与终态提交将在 Piece⑤由 `ToolBatchRunner` 完成；当前实现不宣称这部分已闭环。
+普通工具批次由 `ToolBatchRunner` 在启动前预登记全部合法 call ID；它逐项接管并行结局，控制异常时给兄弟有界收尾时间。Gateway 同步发布的事实由 `ToolBatchCollector` 按 revision 接管；ReAct 在异常传播前复制快照、关闭 collector，再按输入顺序组装回执。assistant.tool_calls 与全部 tool 消息在首条工具 SSE 事件前提交，消费者提前关闭不会留下半配对历史；批次尚未开始时也不提前写入 assistant.tool_calls。结构化终结工具 `final_answer` 与普通工具混用的整轮响应在写历史前拒绝，避免缺失配对。类型化工具控制异常继续向 Agent/父策略传播，不折算为普通 TOOL_FAILED 或一个正常 done；运行级终态仍由上层根据异常类型处理。
 
 ### ReActOutcome（结果载体）
 
@@ -253,7 +258,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
   ├─ 6. 模型拒答（refusal 字段 / content_filter）→ _finalize_refused（默认 STOP 停机，
   │       不误判为成功答案、不空转重试；DeepSeek stop+空 content 保持空回答语义）
   ├─ 7. 工具协议信号校验（先校验再写历史）：
-  │     finish_reason=tool_calls 但 tool_calls 为空 / 当前无可用工具 → _handle_tool_protocol_error
+  │     finish_reason=tool_calls 响应无效（空调用 / 无可用工具 / 身份非法 / final_answer 混用）→ _handle_tool_protocol_error
   │     （整条响应无效 → PARSE_FAILED 分发，受 max_tool_protocol_retries 共享预算硬终止；
   │       不入空输出计数 / 不进停滞检测 / 不执行空工具列表；防未配对 tool_calls 触发下一轮 400）
   ├─ 8. 追加有效 assistant 消息（reasoning_content 按 has_reasoning 回喂 + tool_calls 配对，防 400；纯空轮不追加）
@@ -285,7 +290,7 @@ async def execute_tool_calls(self, tool_calls: list[dict], messages: list[dict],
 | --- | --- | --- |
 | `__init__(llm, tools, context_budget=None, error_handlers=None, cost_limiter=None)` | 构造 | 注入端口依赖（LLMGateway / ToolGateway）+ 横切能力（ContextBudgetPort / ErrorHandlerRegistry / CostLimiterPort） |
 | `execute(user_input, messages, *, run, model, limits, context_window, recovery, tool_execution, output_schema=None, stream_mode=True, baseline_usage=None) -> AsyncGenerator[str]` | 异步生成器 | ReAct 主循环；六类值对象分别承载运行身份、模型、执行限制、上下文、恢复预算和工具执行限制。同实例并发 execute 明确拒绝，Planner/Reflection 子跑继承父 run 控制 |
-| `execute_tool_calls(..., *, run_id, run_stop, workflow_id=None, cancel_event=None, parent_cancel_events=(), deadline=None, cleanup_deadline=None) -> AsyncGenerator[str]` | 异步生成器 | 为当前批次创建唯一 batch/operation 身份，强制向 Gateway 传 `call/facts`；调用 ID 缺失或同批重复时零真实工具请求；控制异常先接管 facts 再原样传播。并行兄弟收尾与最终历史提交仍属 C-02 Piece ⑤ |
+| `execute_tool_calls(..., *, run, tool_execution=..., deadline=None, cleanup_deadline=None, assistant_message=None) -> AsyncGenerator[str]` | 异步生成器 | 为当前批次创建唯一 batch/operation 身份，向 Gateway 传 `call/facts`；调用 ID 非法时零真实请求；先接管批次事实并按输入顺序提交完整协议回执，再发事件或类型化上抛 |
 | `outcome` | 实例属性 | `ReActOutcome \| None`，`execute()` 结束后读取 |
 | `tool_facts` | 只读属性 | 返回本次运行已接管事实的深复制元组；不会暴露策略内部列表或可变 `ToolResult.metadata` 引用 |
 
@@ -368,6 +373,7 @@ result = strategy.outcome  # ReActOutcome
 
 - **工具循环**：stop 结束（outcome 组装）/ 空输出重试后结束 / 持续空输出 → 迭代兜底
 - **工具原语**：并行保序（延迟交错，结果顺序 = 输入顺序）/ 实际并发（总耗时 < 串行和）/ timeout/max_retries 透传 ToolGateway（默认 None 走执行器全局）
+- **工具结局还原（纯函数）**：未正常返回时按已接管事实还原四态回执（无事实 / 仅预登记 NOT_STARTED → 未执行；attempt 快照无结果 → 结果尚未确认；事实已带结果 → 原样回执）/ 权威事实优先级（在途 RUNNING 的 attempt 快照 > 带结果的操作事实 > 最后一个 attempt 快照 > 操作事实；预登记 NOT_STARTED 不盖过 attempt 快照，在途重试不得采信操作事实里的旧结果）/ 参数不可用降级为空参 / 失败记录 → kind 聚类且保持记录顺序
 - **时间上限**：首轮超时降级 / 中途超时保留部分进度 / 宽松上限不影响完成 / `None` 显式不设限 / 内部普通 `TimeoutError` 归 UNKNOWN / 外部 task cancel 与异 task `aclose()` 不被吞
 - **统一护栏**：`cancel > deadline > cost > context` 直接契约 / 基线已超成本时零 LLM 调用 / 流式与非流式调用后取消优先于成本且 usage 不丢 / 宽松上限与未配置 limiter 不触发
 - **空输出重试上限**：持续空输出达上限终止 / 恰好达上限仍重试 / 上限可配置 / 有产出后计数重置 / 达上限 handler RAISE 上抛 / 重试轮不追加空 assistant 消息
@@ -425,7 +431,7 @@ result = strategy.outcome  # ReActOutcome
 
 ## 工具受控执行的终止接线
 
-工具边界的 `ToolCancelledError`、`ToolDeadlineExceededError`、`ToolRunStoppedError` 在工具事实接管后继续类型化上抛，不进入 UNKNOWN。C-02 Piece④ 使真实等待及时响应这些信号；完整领域终态、并行兄弟任务清理和协议历史提交仍属于 Piece⑤。ReAct 外层硬 timeout 保留原有成果兜底，两条路径分别测试，不能依赖内部 deadline 与硬 timeout 的调度先后来选择预期。
+工具边界的 `ToolCancelledError`、`ToolDeadlineExceededError`、`ToolRunStoppedError` 在兄弟结果、事实和协议回执接管后继续类型化上抛，不进入 UNKNOWN。Piece⑤不把这些运行级异常伪装成一次正常完成的 `done`；Agent/父策略仍按控制类型决定状态。ReAct 外层硬 timeout 保留原有成果兜底，两条路径分别测试，不能依赖内部 deadline 与硬 timeout 的调度先后来选择预期。
 
 ---
 

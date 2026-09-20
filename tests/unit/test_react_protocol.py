@@ -9,6 +9,7 @@ from app.domain.reasoning._react_protocol import (
     action_fingerprint,
     build_final_answer_tool,
     extract_final_answer,
+    has_final_answer,
     tool_call_identity_error,
 )
 
@@ -19,6 +20,9 @@ def _tool_call(call_id, name="echo", arguments="{}") -> dict:
         "type": "function",
         "function": {"name": name, "arguments": arguments},
     }
+
+
+_OUTPUT_SCHEMA = {"type": "object"}
 
 
 def test_build_final_answer_tool_uses_schema_as_parameters():
@@ -32,6 +36,29 @@ def test_build_final_answer_tool_uses_schema_as_parameters():
 
     assert tool["function"]["name"] == _FINAL_ANSWER_TOOL
     assert tool["function"]["parameters"] is schema
+
+
+def test_has_final_answer_detects_terminating_call_in_batch():
+    other = _tool_call("1", "echo")
+
+    assert has_final_answer([other, _tool_call("2", _FINAL_ANSWER_TOOL)], _OUTPUT_SCHEMA) is True
+
+
+@pytest.mark.parametrize(
+    "tool_calls",
+    [
+        [],
+        [_tool_call("1", "echo")],
+        [{"id": "2"}],  # 结构缺失的调用按非 final_answer 处理，不抛 KeyError
+    ],
+)
+def test_has_final_answer_returns_false_for_other_batches(tool_calls):
+    assert has_final_answer(tool_calls, _OUTPUT_SCHEMA) is False
+
+
+def test_has_final_answer_ignores_same_named_unknown_tool_when_schema_disabled():
+    """未启用 output_schema 时同名调用是模型臆造的未知工具，不能当终止信号。"""
+    assert has_final_answer([_tool_call("1", _FINAL_ANSWER_TOOL)], None) is False
 
 
 @pytest.mark.parametrize(

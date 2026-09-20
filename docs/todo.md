@@ -1,6 +1,6 @@
 # 项目待办
 
-更新：2026-09-19。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
+更新：2026-09-20。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
 <a id="refactoring-plan"></a>
 
@@ -274,7 +274,7 @@ P0-A 冻结运行/批次/调用身份、独立事实入口、类型化终止、�
 
 #### P0 规格的实施 piece
 
-P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿用 P1～P5 的任务归属。字段、状态及默认值以 ADR/配置规格为唯一正文；具体文件分工沿用下方对应 P 阶段，不在此复制。Piece①～④已兑现，后续 piece 仍待实施；局部完成不代表整套生命周期闭环。
+P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿用 P1～P5 的任务归属。字段、状态及默认值以 ADR/配置规格为唯一正文；具体文件分工沿用下方对应 P 阶段，不在此复制。Piece①～⑤已兑现进程内只读交付 A，后续 piece 仍待实施；局部完成不代表整套生命周期闭环。
 
 | Piece / 当前状态 | 范围与实施归属 | 主要规格依据 | 完成条件 |
 | --- | --- | --- | --- |
@@ -282,7 +282,7 @@ P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿�
 | ② 运行身份、控制信号与独立事实 / 已完成 | P3-A＋P4-A：已实现公开上下文、事实入口和类型化终止；Application 创建 run_id，贯穿 Gateway、Agent、策略及测试替身 | S1、S3、S4、S8 | 强制 call/facts 契约、同会话多 run 取消隔离、批次事实先接管和 shared 异常依赖方向已由专项与跨层测试覆盖；真实后台句柄由 Piece④补齐 |
 | ③ 共享准入与配置迁移 / 已完成（进程内） | P3-A：已实现 ToolAdmission 的全局/单运行容量、有界排队、按运行轮转、可中断等待与撤回/关闭转换；同步配置字段、Container、settings.py 注释及配置文档 | S3、S5、配置规格 | 全局/单运行容量、队列上限、取消/deadline 竞态、撤回/关闭转换与放行同刻不泄漏、Permit 幂等释放、旧键迁移及 Executor 层准入拒绝出口已由定向测试覆盖；资源联合准入和跨进程 fencing 仍归后续 Piece⑦/⑧ |
 | ④ 真实执行与有界清理接管 / 已完成（进程内） | P3-A：实现 Supervisor、AttemptHandle 及首批只读适配器的真实完成跟踪、清理和迟回事实接管 | S2、S3、S5、S6、S8 | 真实线程未结束不退容量；迟回值有 Owner；清理与接管有界；依赖不在仍被使用时提前关闭 |
-| ⑤ 并行成果、协议历史与终态 / 待实施 | P4-A＋P5-A：在 ② 的事实接线上完善 BatchRunner/Collector、ReAct 历史及事件提交，完成只读交付 A 验收 | S1、S4、S8 | 部分完成后取消仍保留兄弟成果；协议消息正确配对；done 唯一；终态后无新业务调用 |
+| ⑤ 并行成果、协议历史与终态 / 已完成（进程内只读 A） | P4-A＋P5-A：在 ② 的事实接线上完善 BatchRunner/Collector、ReAct 历史及事件提交 | S1、S4、S8 | 部分完成后控制异常保留兄弟成果并类型化上抛；协议消息正确配对；正常终态 done 唯一，异常由上层处理；终态后无新业务调用 |
 | ⑥ 持久意图、事实账本与恢复 / 待实施 | P2：实现存储端口、数据库适配器、迁移和恢复接线；覆盖条件更新、事件幂等、意图比较及累计核验次数 | S3、S7、S8 | 必需意图写入失败时零执行；旧事实不覆盖新事实；重启不重放业务、不重置核验次数；通过真实数据库验证 |
 | ⑦ 副作用工具与资源保护 / 待实施 | P3-B＋P4-B：逐个接入文件、HTTP、code_exec 的持久记录、效果声明和资源保护，保留各适配器能力限制 | S2、S5、S6、S7、S8 | 部分/未知效果如实记录；冲突调用被阻止，无关资源可继续；未达到持久化与部署前提的工具仍禁止启用 |
 | ⑧ 启动恢复、宿主退出与整体验收 / 待实施 | P5-B，配合 P2/P3-B：完成 Windows Owner、受支持宿主及真实进程验证；同步组件、配置、部署与总验收证据 | S3、S7、S8、部署规格 | 启动先恢复保护再开放；强退与重启边界经真实验证；数据库、线程/进程及全量回归通过后，才确认 B 的支持范围 |
@@ -354,6 +354,17 @@ P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿�
 
 ### P4：领域并行事实、协议历史与终态
 
+### Piece⑤ 本轮实施拆分（2026-09-19，已授权）
+
+沿用 TOOLS-ADR-008 的 S1/S4/S8 与交付 A：
+
+- [x] `tool_batch.py`：批次预登记、逐项结果接管、控制信号下的兄弟任务协调与有界收尾；Collector 继续只保存事实。
+- [x] `react.py`：调用 Runner；在事件 yield 前提交输入顺序的 tool 回执、证据与消息历史；工具控制信号保持类型化上抛，不再启动新业务调用。
+- [x] 定向红测和真实 ToolService/Executor 回归：部分成功+取消/期限/run_stop、未执行/未知回执、硬超时、提前关闭、历史配对、正常 done 唯一；跨运行准入与取消隔离沿用 Piece②③回归。
+- [x] 同步正式组件文档、对齐表与评审结论；运行定向、全量及对齐检查。
+
+本轮不提前建设 Piece⑥～⑧ 的持久账本、资源联合准入或副作用工具安全启用。
+
 P4-A 随 P3-A 验收只读并行闭环；P4-B 随 P3-B 补持久回执、未知副作用及恢复引用。采用独立事实收集＋选择性异常传播，不把业务终止统一转换成正常回执，也不强制在异常对象中复制全部批次成果。
 
 文件工具安全放弃点、HTTP 未知写保护及 code_exec 必需意图记录随 B 验收。code_exec 限制与升级方向见 ADR D11；首期不默认实施沙箱、完整进程树隔离或任意命令资源推导，也不将这些能力标为已具备。
@@ -411,13 +422,26 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 
 ### 本轮评审记录
 
-2026-09-19 最新结论：Piece①～④已完成进程内实施。新增 Supervisor/AttemptHandle，真实线程、协程和迟回值都有 Owner；每个 attempt 独立准入，前次未结束不重试、不退容量；审批与退避可中断，异步观测严格按等待预算移交。ToolService 固定实例，loader 延后在途卸载，关闭未排空时保留依赖。跟踪条目在启动前预占，移交及未确认的完整结果继续占用有界条目；尚无自动消费或持久恢复机制，容量满则拒绝后续调度。配置、组件说明、对齐表和 Issue 已同步。
+2026-09-19 最新结论：Piece①～⑤已完成进程内只读交付 A。Piece⑤加入 ToolBatchRunner：先预登记，再逐项接管并行结果；控制异常给兄弟有界收尾机会。ReAct 将 assistant.tool_calls 与全部真实/未执行/未知回执在首个工具事件前一起提交，提前关闭不留下半配对历史；final_answer 与普通工具混用在写历史前拒绝。三类运行级工具控制异常仍类型化上抛，正常终态的 done 不重复；聊天 SSE 的异常出口继续由 Application 统一收口。Piece④ 的真实任务、线程和迟回值 Owner 与已完成验证见上文；持久消费/恢复仍未建立。
 
 验证：真实线程/取消/deadline/硬取消、迟回值、清理移交、关闭依赖、退避释放容量、未确认事实容量封顶、审批及观测边界已通过定向测试；最新三个执行/事实套件 40 项通过。最终全量 1353 项通过（47.35 秒），包含重试后准入拒绝保留实际次数回归。对齐与差异检查通过。使用 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/AppData/Local/Temp/agent-forge-piece4-tests`；Ruff 受影响核心文件通过。全改动文件 Ruff 扫描另报告存量 settings/test_react 的长注释、旧测试未使用 noqa 和未标 ClassVar 的类属性；未扩大清理范围。Starlette/httpx 弃用提示不在本次业务改动内。
 
-Piece⑤～⑧仍待实施：ReAct 保持类型化工具控制异常向上传播，完整批次终态和协议提交尚未落地；当前写工具/未知插件不能被宣称具备 B 级保护；正式执行及模型导出的启用门禁已落实（见[完成记录](history/completed-work.md)），B 完成前拒绝副作用、未知效果和强制审计能力。目录级资源联合准入、持久记录/恢复、子进程树与宿主强退均未实现。
+Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 passed；`verify_alignment` 与 `git diff --check` 通过（2026-09-20 复核并修复下方两项后的实测值；修复前为 169 / 1440）。Piece⑥～⑧仍待实施：当前写工具/未知插件不能被宣称具备 B 级保护；正式执行及模型导出的启用门禁已落实（见[完成记录](history/completed-work.md)），B 完成前拒绝副作用、未知效果和强制审计能力。目录级资源联合准入、持久记录/恢复、子进程树与宿主强退均未实现。
 
 历史背景见 [C-02 文档设计交接](history/completed-work.md#c-02-p0-design-history)，不在活动计划中重复各轮验证叙述。
+
+#### Piece⑤ 复核遗留（2026-09-19 复核，2026-09-20 部分已修）
+
+用户已确认归档；均非阻断，不影响当前只读交付 A 的结论。已修项与仍未修项分列如下，未修项不影响只读交付 A 的验收结论。
+
+- [ ] `_BATCH_CLEANUP_GRACE = 1.0`（[tool_batch.py](../app/domain/reasoning/tool_batch.py)）是第三个硬编码清理窗口，另有 `settings.tool_cleanup_timeout_seconds` 与 `react._MAX_EXECUTION_CLEANUP_GRACE`。因被 `min(..., cleanup_deadline)` 夹住所不放大总窗口，但调整配置不影响批次宽限，与[配置规格](config_doc/config.md#tool-lifecycle-p0)「取与领域剩余清理窗口的较小值，不逐层新增宽限」及 [TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md) D7「清理时间由 Container 注入、唯一维护在配置参考」不一致。触发：调整清理预算或统一领域/集成清理口径时。
+- [x] [tool_batch.md](domain_doc/reasoning_doc/tool_batch.md) 称「给在途兄弟截至 `cleanup_deadline` 的有界收尾机会」，代码实为 `min(now + 1 秒, cleanup_deadline)`；运行刚开始即取消时只给 1 秒，文档高估了保证。**已修（2026-09-20）**：改为 `min(now + 批次宽限, cleanup_deadline)`；同批新增「代码理解指南」章节记录 `run` 的四阶段、循环迭代、退出路径与收尾语义。该条原附的自述「已按代码核实调用链（调用级与每次重试级两次准入）」有误：`_admission.acquire` 全仓只在 `_request_approval`（仅审批工具）与每次 attempt 两处，`_prepare_call` 没有调用级准入；结构图与自述已更正。
+- [x] `_aborted_call_outcome`（[react.py](../app/domain/reasoning/react.py)）按「操作事实已带结果 ⇒ 已确认终局」直接采信，但执行器每次 attempt 完成都会重发操作事实（`revision=attempt+1`、`attempt_id=None`），在途重试期间它带的是**上一次尝试的旧结果**——重试中被取消的调用会被报成「已确认失败、副作用 NONE」，与 [tool_batch.md](domain_doc/reasoning_doc/tool_batch.md) 的「已启动→结果尚未确认」冲突。**已修（2026-09-20）**：仍有 attempt 停在 `RUNNING` 时优先按「结果尚未确认」回执，附失败复现与回归测试。当前只读 A 下副作用那半不可达，但执行状态口径确实报错，Piece B 启用写工具后风险放大。
+- [x] 硬取消分支无条件重设 `stop_at`，把已起算的宽限从取消时刻重新计时，收尾窗口最坏翻倍（实测 1.38s vs 宽限 1.0s），与同函数注释「硬取消时是剩余宽限」及 [tool_batch.md](domain_doc/reasoning_doc/tool_batch.md) 不变量②「`stop_at` 只被设置一次」矛盾。**已修（2026-09-20）**：加 `stop_at is None` 守卫，实测回到 1.05s。
+- [ ] `ToolBatchRunner.run` 预登记用 `call.operation_id`。S1 规定业务键命中时事实应引用原规范操作，届时同一 call 会出现两条 `attempt_id is None` 的事实。回执选取现为「在途 attempt > 带结果的操作事实 > 最后一个 attempt 事实 > 操作事实」，取操作事实仍靠 `next()` 的插入序，届时会取到先插入的那条，归属须显式规定。Piece B 启用业务键复用前处理。
+- [ ] 宽限耗尽时 `finally` 只做一次 `wait(timeout=0)` 即时轮询（`remaining` 已为 0）。实测（2026-09-20）：**合作取消**的领域包装任务会被这次轮询捕获，`asyncio.CancelledError` 写入 `outcomes`；**吞掉取消**的留在 `pending`、`outcomes` 保持 `None`。两类在 ReAct 都走事实分支生成回执（未启动→「未执行」，已启动→「结果尚未确认」），回执口径不受影响；被捕获的那个会进 `unexpected_errors`，但总被 `control_errors` 的三类控制异常优先掩盖。核验回执与异常优先级口径时一并确认。（早前记录的「`absorb` 完全空转」有误，已更正。）
+- [ ] `action_fingerprint`（[_react_protocol.py](../app/domain/reasoning/_react_protocol.py)）对缺 `function` 的调用直接下标取 `name`，`KeyError` 会逃逸到 `_bump_stall` 出口，按 UNKNOWN 收场而不是走协议类的 PARSE_FAILED 修正预算；同一批新加的 `has_final_answer` 对同形输入专门容错，加固不一致。**非本次引入**，本次复核发现。触发：网关返回结构缺失的 `tool_call`。
+- [ ] Piece⑤ 新测试的覆盖缺口（本次复核发现，非阻断）：`test_tool_lifecycle_wiring.py` 的两个工具是纯协程，未走 `handle.run_sync`，真实线程与清理层不由该套件覆盖；`test_group_failures_by_kind_returns_empty_without_failures` 的 `PARSE_FAILED not in grouped` 在断言 `grouped == {}` 之后恒真，属冗余。触发：调整真实线程收尾或失败聚类口径时。
 
 <a id="candidates"></a>
 
@@ -439,3 +463,4 @@ Piece⑤～⑧仍待实施：ReAct 保持类型化工具控制异常向上传播
 | C-11 | 其他非关键观测入口的异常与阻塞边界。 | LLM 调用日志已由 [LLM-049](../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md) 实施有界隔离；其他日志、指标和审计入口若进入终态路径，仍须逐入口核验 G0-6，不能把局部实现宣称为全仓完成。 |
 | C-13 | `ContextManager.build_messages` 的历史查询窗口与文档不一致。**已完成（2026-09-17）** | `SessionManager.get_messages` 已改为按 `created_at DESC, id DESC` 取最近窗口，再恢复为时间正序返回；`before_message_id` 和从最新窗口起算的 `offset` 语义已写入 SessionManager 文档，并有单元回归覆盖。未新增 Issue。 |
 | C-14 | `ruff check` 的零错误基线。 | 2026-09-17 引入 Ruff 时登记。0.16.8 实测默认启用 I001、F401、F841、PLR1711、UP、SIM、RET、C4、A、TRY、RUF 等规则，`extend-select = ["E501"]` 只补行宽；此时 `ruff check .` 报 100 项、分布 44 个文件（`app/` 6 个、`tests/` 38 个），51 项可由 `--fix` 自动修，其余以 RUF059（21）、E501（10）、RUF012（7）、F841（7）为主。建立前 `ruff check` 不作为提交关口，见[部署与验证](project/deployment.md#常用命令)。需先定两个口径：`tests/` 是否放宽（RUF059/RUF012/F841 在测试替身里多为惯用写法），以及 `app/integration/tools/builtin/rca/data.py:149` 的 SIM103 是否并入既有数据表豁免。 |
+| C-15 | `ExecutionLimits.max_iterations` / `AgentContext.max_iterations` 缺少下限校验。 | 2026-09-19 Piece⑤ 复核发现。[配置规格](config_doc/config.md)已把 `agent_max_iterations` 校验为 1-100，但领域侧 `ExecutionLimits`（`domain/reasoning/execution.py`）与 `AgentContext`（`domain/agent/base.py`）自身无校验，直接构造 ctx 的测试/脚本仍可传 0 或负数。此时 ReAct 主循环一次都不执行，直接落到循环之后的 `_finalize_max_turns`（`react.py` 第 10 步，位于 `for iteration` 同级缩进，不在循环体内），产出「已达到最大迭代次数(N)」的 STOP 终态并零次调用 LLM：行为有定义，但把非法配置伪装成了正常业务终态。与 C-03 同类，先核实配置、领域与调用入口的计数口径再定是否收紧，不按参数名统一 Tool/LLM 的不同计数口径。 |

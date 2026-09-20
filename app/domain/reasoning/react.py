@@ -50,7 +50,7 @@ from app.domain.ports.tool_execution import (
     ToolFact,
 )
 from app.domain.ports.tool_gateway import ErrorCode, ToolGateway, ToolResult
-from app.domain.reasoning.tool_batch import ToolBatchCollector
+from app.domain.reasoning.tool_batch import ToolBatchCollector, ToolBatchRunner
 from app.shared.error_handling import (
     AgentErrorAction,
     AgentErrorKind,
@@ -89,6 +89,7 @@ from ._react_protocol import (
     action_fingerprint,
     build_final_answer_tool,
     extract_final_answer,
+    has_final_answer,
     tool_call_identity_error,
 )
 from .execution import (
@@ -120,6 +121,25 @@ _EXECUTION_CLEANUP_GRACE_RATIO = 0.1
 _DEFAULT_TOOL_EXECUTION = ToolExecutionOptions()
 
 
+def _resolve_deadlines(max_execution_time: float | None, now: float) -> tuple[float | None, float | None]:
+    """由总执行时限派生 (内部 LLM deadline, 外层硬超时)；未设限时两者均为 None。
+
+    两个值都以同一 `now`（monotonic 秒）为基准：内部 deadline 提前一个有界收尾窗口
+    （`min(_MAX_EXECUTION_CLEANUP_GRACE, 总时长 × _EXECUTION_CLEANUP_GRACE_RATIO)`），
+    使 close / settle / 日志有机会在外层 timeout 取消 task 前完成收尾。负时限按 0 处理。
+
+    `now` 由调用方传入以保持纯函数可测；消费者分别按 `time.monotonic()`（护栏与 LLM
+    期限）和 `loop.time()`（`asyncio.timeout_at`）比较——默认事件循环两者同源，自定义
+    事件循环需保持同源，否则收尾窗口的相对关系不再成立。
+    """
+    if max_execution_time is None:
+        return None, None
+    duration = max(0.0, max_execution_time)
+    cleanup_grace = min(_MAX_EXECUTION_CLEANUP_GRACE, duration * _EXECUTION_CLEANUP_GRACE_RATIO)
+    hard_timeout_at = now + duration
+    return hard_timeout_at - cleanup_grace, hard_timeout_at
+
+
 def _terminal_result(
     current_result: StreamResult | None,
     last_visible_result: StreamResult | None,
@@ -145,6 +165,142 @@ def _truncate_with_marker(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - len(_TRUNCATED_MARKER)] + _TRUNCATED_MARKER
+
+
+def _build_assistant_message(stream_result: StreamResult) -> dict | None:
+    """组装本轮 assistant 消息（纯转换）；纯空轮返回 None（不写历史）。
+
+    - 纯空轮（content / reasoning / tool_calls / has_reasoning 全无）不组装：空 assistant
+    消息无信息量，空输出重试累积会污染上下文。
+    - has_reasoning 留在判定内——thinking 模型返回空 reasoning 也回喂该字段（防 400）；
+    - tool_calls 必须保留在与后续 tool 回执配对的 assistant 消息上（否则下一轮 400）。
+    - 是否写入 messages 由调用方决定（见 execute 第 8 步）。
+    """
+    if not (
+        stream_result.content
+        or stream_result.reasoning_content
+        or stream_result.has_reasoning
+        or stream_result.tool_calls
+    ):
+        return None
+    message: dict = {"role": "assistant", "content": stream_result.content}
+    if stream_result.reasoning_content or stream_result.has_reasoning:
+        message["reasoning_content"] = stream_result.reasoning_content
+    if stream_result.tool_calls:
+        message["tool_calls"] = stream_result.tool_calls
+    return message
+
+
+def _tool_protocol_error_detail(
+    finish_reason: str,
+    tool_calls: list[dict],
+    *,
+    has_tools: bool,
+    output_schema: dict | None,
+) -> str | None:
+    """本轮工具调用响应无效时返回协议异常原因；有效返回 None（纯判定，不改状态）。
+
+    必须在写入 assistant 历史前拦截：留下的 tool_calls 无法与 tool 回执配对（身份不可用
+    与「没有 tool_calls」等价，同样无法配对），下一轮请求会被 OpenAI 兼容网关以 400 拒绝。
+    四类异常按固定优先级取首个命中——结构缺陷（无调用 / 无可用工具 / 身份不可用）优先于
+    用法缺陷（终止工具与普通工具混用），保证归因指向更根本的一侧。
+    """
+    if finish_reason != "tool_calls":
+        return None
+    if not tool_calls:
+        return "finish_reason=tool_calls 但未返回工具调用（协议异常）"
+    if not has_tools:
+        return "模型返回 tool_calls 但当前无可用工具（协议异常）"
+    identity_error = tool_call_identity_error(tool_calls)
+    if identity_error is not None:
+        return identity_error
+    if len(tool_calls) > 1 and has_final_answer(tool_calls, output_schema):
+        return "final_answer 不能与其他工具同轮调用（协议异常）"
+    return None
+
+
+def _aborted_call_outcome(
+    tool_call: dict,
+    call_facts: list[ToolFact],
+) -> tuple[ToolResult, dict, float]:
+    """工具未正常返回（取消 / 超时 / 停跑 / 仍有任务挂起）时，由已接管事实还原可回执结局。
+
+    权威事实按「在途 attempt 事实 > 已带结果的操作事实 > 最后一个 attempt 事实 > 操作事实」
+    选取：预登记的 NOT_STARTED 不得盖过已完成的 attempt 快照（旧 / 外部 Gateway 可能只发布
+    attempt 事实）；还有 attempt 停在 RUNNING 时不得采信操作事实里的旧结果。
+    取操作事实用 `next()` 的插入序，当前每个 call 至多一条 `attempt_id is None` 事实——
+    业务键复用引入第二条非规范操作事实前，必须在此显式规定归属。
+
+    参数解析失败按空参回执且不再次调用工具（工具本就没执行，报未执行比报参数错误更准）。
+    返回 (结果, 回执参数, 耗时)。
+    """
+    # ① 先尽力解析出「模型原本想传的参数」。它只用于回执展示：工具根本没执行，
+    #    所以解析失败就到此为止，不再补一条参数错误——那会把「没执行」这个主因盖掉。
+    tool_args: dict = {}
+    try:
+        parsed_args = json.loads(tool_call["function"]["arguments"])
+        if isinstance(parsed_args, dict):
+            tool_args = parsed_args
+    except KeyError, TypeError, json.JSONDecodeError:
+        pass  # 缺 arguments 字段 / 值不是字符串 / 不是合法 JSON，一律按「参数不可用」处理
+
+    # ② 在事实里挑出权威的那一条。一个 call 最多两类事实：
+    #    操作事实（attempt_id 为空，启动前预登记）+ 每次真实尝试的 attempt 事实（attempt_id 非空）。
+    operation_fact = next((fact for fact in call_facts if fact.attempt_id is None), None)
+    attempt_facts = [fact for fact in call_facts if fact.attempt_id is not None]
+    # 还有 attempt 停在 RUNNING 时这个 call 没有终局，优先按「结果尚未确认」回执：
+    # 操作事实在每次 attempt 完成时都会被重发（revision=attempt+1），在途重试期间它带的是
+    # 上一次尝试的旧结果，直接采信会把「未确认」报成「已确认失败」。
+    in_flight = next(
+        (
+            fact
+            for fact in reversed(attempt_facts)
+            if fact.result is None and fact.execution_state == ToolExecutionState.RUNNING
+        ),
+        None,
+    )
+    if in_flight is not None:
+        fact = in_flight
+    # 没有在途 attempt 时，操作事实已经带结果 → 这是一个已确认的终局，直接采信；
+    # 启动前那条预登记的 NOT_STARTED 结果为空，因此不会误入这一支。
+    elif operation_fact is not None and operation_fact.result is not None:
+        fact = operation_fact
+    else:
+        # 否则退到最后一个 attempt 快照（列表按收集顺序追加，故最后一条 = 最近一次尝试）；
+        # 连 attempt 事实都没有时，才退回操作事实本身（可能只是那条预登记的 NOT_STARTED）。
+        fact = attempt_facts[-1] if attempt_facts else operation_fact
+
+    # ③ 由选中的事实派生回执。耗时只在事实真的带结果时才有值，否则记 0，不把 None 传下去。
+    elapsed = (fact.result.execution_time or 0.0) if fact is not None and fact.result is not None else 0.0
+    if fact is not None and fact.result is not None:
+        # 事实链里已有确认结果：原样回执（工具其实跑完了，只是返回值没交回本批次）。
+        exec_result = fact.result
+    elif fact is None or fact.execution_state == ToolExecutionState.NOT_STARTED:
+        # 一条事实都没有，或只有启动前那条 NOT_STARTED：工具从未真正开始，报「未执行」。
+        # 既然从未启动，副作用必然是 NONE，可以写死。
+        exec_result = ToolResult(False, "", error="工具调用未执行（运行已终止）", effect_state=ToolEffectState.NONE)
+    else:
+        # 有事实但确认不了结果（典型是 RUNNING）：报「结果尚未确认」。
+        # effect_state 沿用事实里的值——副作用到底发生了没有只有事实知道，这里不能假设成 NONE。
+        exec_result = ToolResult(False, "", error="工具执行结果尚未确认", effect_state=fact.effect_state)
+    return exec_result, tool_args, elapsed
+
+
+def _group_failures_by_kind(failures: list[dict]) -> dict[AgentErrorKind, list[dict]]:
+    """按错误类别聚类本轮失败的工具记录（「记录 → kind」映射的唯一出处）。
+
+    参数 JSON 解析失败属协议类（PARSE_FAILED，另受协议修正预算约束），其余业务失败归
+    TOOL_FAILED；分发方据此按固定顺序聚合原因并仲裁。
+    """
+    grouped: dict[AgentErrorKind, list[dict]] = {}
+    for record in failures:
+        kind = (
+            AgentErrorKind.PARSE_FAILED
+            if record.get("error_code") == ErrorCode.JSON_PARSE.value
+            else AgentErrorKind.TOOL_FAILED
+        )
+        grouped.setdefault(kind, []).append(record)
+    return grouped
 
 
 @dataclass
@@ -241,7 +397,8 @@ class ReActStrategy:
             11. 各类异常处理
 
         实现：主循环仅保留骨架，各终止/错误分支拆分为职责单一的方法
-        （_finalize_* / _handle_*），以 `outcome is not None` 作为终止信号。
+        （_finalize_* / _handle_*；护栏求值与出口收敛为 execute 内的 `_guard_exit`
+        闭包，轮询型与异常出口共用同一口径），以 `outcome is not None` 作为终止信号。
 
         Args:
             user_input: 用户原始输入（保留兼容，循环内部以 messages 为准）
@@ -273,6 +430,13 @@ class ReActStrategy:
         Yields:
             SSE 事件字符串（reasoning / message / tool_call / tool_result / info / done）；
             流式下 reasoning/message 逐 token，非流式下为整条一次性（协议同构）
+
+        Raises:
+            AgentRunError: 错误处理器返回 RAISE——已完成分类的领域错误，直接传播给
+                BaseAgent.run，不再被下方兜底改写为 UNKNOWN
+            ToolCancelledError / ToolDeadlineExceededError / ToolRunStoppedError: 批次已接管
+                兄弟成果与完整协议回执后，运行级控制原因继续类型化上抛，由上层选择终态；
+                不折算为可重试工具失败或一次正常 done
         """
 
         # 防 handler CONTINUE 无限重试烧钱：连续空输出 / LLM 失败 / 循环停滞计数，超过上限硬终止
@@ -282,7 +446,7 @@ class ReActStrategy:
         self._llm_fail_retries = 0
         # 工具协议修正计数：三类协议异常共享，合法工具协议轮才清零。
         self._tool_protocol_retries = 0
-        # 循环停滞检测：execute 每次独立（相同动作指纹 + 连续计数，见主循环）
+        # 循环停滞检测：execute 每次独立（相同动作指纹 + 连续计数，见 _bump_stall）
         self._last_action_fp = None
         self._stall_count = 0
         self.outcome = None
@@ -308,42 +472,64 @@ class ReActStrategy:
         # 关闭」（慢消费者场景 aclose 由不同 task 驱动，需干净停止不 yield 降级事件）。
         entered_task = asyncio.current_task()
 
-        # LLM-044：内部执行截止（monotonic 绝对）——流式/非流式 LLM 调用按同一期限
-        # 受控（集成 reserve/create/整流读取期执行控制）。内部 deadline 早于外层
-        # timeout 取消触发点一个有界窗口，使 close/settle/日志有机会先完成收尾。
-        execution_start = time.monotonic()
-        if limits.max_execution_time is None:
-            deadline = None
-            hard_timeout_at = None
-        else:
-            duration = max(0.0, limits.max_execution_time)
-            hard_timeout_at = asyncio.get_running_loop().time() + duration
-            cleanup_grace = min(
-                _MAX_EXECUTION_CLEANUP_GRACE,
-                duration * _EXECUTION_CLEANUP_GRACE_RATIO,
-            )
-            deadline = execution_start + duration - cleanup_grace
+        # LLM-044：内部执行截止与外层硬超时由同一处派生（见 _resolve_deadlines）。内部
+        # deadline 供流式 / 非流式 LLM 调用按同一期限受控（集成 reserve/create/整流读取期
+        # 执行控制），并早于外层 timeout 取消触发点一个有界窗口，使 close/settle/日志
+        # 有机会先完成收尾。
+        deadline, hard_timeout_at = _resolve_deadlines(
+            limits.max_execution_time,
+            asyncio.get_running_loop().time(),
+        )
 
         hard_timeout_scope: asyncio.Timeout | None = None
+        # 轮次由下方 for 绑定，循环开始前不存在；异常出口也要读它，
+        # 预置 0（尚无完成轮次）避免处理器 UnboundLocalError 掩盖原始异常。
+        iteration = 0
+
+        # 护栏统一出口：四处调用点（调用前 / 归账后轮询，超时与 LLM 终结信号的异常出口）
+        # 共用同一次求值——CANCELLED > TIMEOUT > COST_EXCEEDED > CONTEXT_EXCEEDED 的优先级
+        # 与成本口径（baseline + 本轮局部累计）不允许在任一出口漂移。
+        # 依赖不变量：捕获的 total_usage 只做 .update() 不重绑定，baseline_usage / deadline /
+        # run / limits 定义后不再变化；iteration 由 for 重新绑定，闭包按调用时读取当前轮。
+        # 命中护栏即写 self.outcome（与各 _finalize_* 一致），调用方据此终止。
+        async def _guard_exit(
+            *,
+            result: StreamResult | None,
+            cancelled: bool = False,
+            deadline_exceeded: bool = False,
+            context_error: ContextWindowExceededError | None = None,
+        ) -> list[str]:
+            guard = evaluate_guard(
+                cancel_event=run.cancel_event,
+                deadline=deadline,
+                cost_limiter=self._cost_limiter,
+                running_usage=merge_usage(baseline_usage, total_usage),
+                cancelled=cancelled,
+                deadline_exceeded=deadline_exceeded,
+                context_error=context_error,
+            )
+            if guard is None:
+                # 异常出口必带硬信号，evaluate_guard 对任一信号短路返回，不可能为空；
+                # 断言守住调用契约，防止将来新增出口漏传信号后静默不置终态。
+                assert not (cancelled or deadline_exceeded or context_error is not None), (
+                    "异常出口必须携带至少一个终止信号，否则不会产生终态"
+                )
+                return []
+            return await self._finalize_guard_result(
+                guard,
+                result,
+                iteration,
+                total_usage,
+                limits.max_execution_time,
+            )
+
         try:
             async with asyncio.timeout_at(hard_timeout_at) as hard_timeout_scope:
                 for iteration in range(1, limits.max_iterations + 1):
                     # ----- 1. 每次付费调用前统一执行护栏：包括用户取消、执行超时以及成本超限 -----
-                    guard = evaluate_guard(
-                        cancel_event=run.cancel_event,
-                        deadline=deadline,
-                        cost_limiter=self._cost_limiter,
-                        running_usage=merge_usage(baseline_usage, total_usage),
-                    )
-                    if guard is not None:
-                        for e in await self._finalize_guard_result(
-                            guard,
-                            last_visible_result,
-                            iteration,
-                            total_usage,
-                            limits.max_execution_time,
-                        ):
-                            yield e
+                    for e in await _guard_exit(result=last_visible_result):
+                        yield e
+                    if self.outcome is not None:
                         return
 
                     yield build_info_event(f"第 {iteration} 轮推理")
@@ -406,21 +592,9 @@ class ReActStrategy:
                     # ----- 4. 成功返回并归账后统一复查 -----
                     # 取消、期限和成本可能在 await 期间发生；先吸收本轮成果与 usage，
                     # 再按固定优先级收尾，且不允许继续工具副作用或下一次付费调用。
-                    guard = evaluate_guard(
-                        cancel_event=run.cancel_event,
-                        deadline=deadline,
-                        cost_limiter=self._cost_limiter,
-                        running_usage=merge_usage(baseline_usage, total_usage),
-                    )
-                    if guard is not None:
-                        for e in await self._finalize_guard_result(
-                            guard,
-                            last_visible_result,
-                            iteration,
-                            total_usage,
-                            limits.max_execution_time,
-                        ):
-                            yield e
+                    for e in await _guard_exit(result=last_visible_result):
+                        yield e
+                    if self.outcome is not None:
                         return
 
                     # ----- 5. LLM 失败（stream_result.error 非空）→ LLM_FAILED 分发 -----
@@ -458,24 +632,17 @@ class ReActStrategy:
                     full_content = stream_result.content
                     finish_reason = stream_result.finish_reason or ""
 
-                    # ----- 7. 工具调用协议异常：finish_reason=tool_calls 但无 tool_calls / 无工具可用 -----
-                    # 工具调用信号与数据/能力不一致时，整条 assistant 响应无效。
-                    # 必须先校验再写历史，否则无工具场景会留下无法配对的 tool_calls，
-                    # 下一轮请求可能被 OpenAI 兼容网关以 400 拒绝。
-                    # 身份异常（id 缺失 / 批内重复）同归本类：tool 消息靠 tool_call_id 与前置
-                    # assistant.tool_calls 配对，身份不可用即无法配对，与「没有 tool_calls」等价，
-                    # 同样必须先拦截、共用协议修正预算，不得写进历史。
-                    identity_error = tool_call_identity_error(stream_result.tool_calls)
-                    if finish_reason == "tool_calls" and (
-                        not stream_result.tool_calls or not has_tools or identity_error is not None
-                    ):
-                        if not stream_result.tool_calls:
-                            detail = "finish_reason=tool_calls 但未返回工具调用（协议异常）"
-                        elif not has_tools:
-                            detail = "模型返回 tool_calls 但当前无可用工具（协议异常）"
-                        else:
-                            # 外层条件已排除前两类，此处 identity_error 必非 None；`or` 只收窄类型
-                            detail = identity_error or "工具调用身份异常（协议异常）"
+                    # ----- 7. 工具调用协议异常：finish_reason=tool_calls 但响应无效 -----
+                    # 工具调用信号与数据 / 能力 / 身份不一致时，整条 assistant 响应无效；
+                    # 必须先校验再写历史，否则会留下无法配对的 tool_calls（下一轮 400）。
+                    # 四类判据与优先级见 _tool_protocol_error_detail。
+                    detail = _tool_protocol_error_detail(
+                        finish_reason,
+                        stream_result.tool_calls,
+                        has_tools=has_tools,
+                        output_schema=output_schema,
+                    )
+                    if detail is not None:
                         for e in await self._handle_tool_protocol_error(
                             detail,
                             full_reasoning,
@@ -489,37 +656,28 @@ class ReActStrategy:
                         continue
 
                     # ----- 8. 将 LLM 回复追加到消息历史 -----
-                    # 纯空轮（无 content / 无 reasoning / 无 tool_calls / 无 has_reasoning
-                    # 信号）不追加——空 assistant 消息无信息量，空输出重试累积会污染上下文
-                    # （模型下轮看不到空消息也无影响；对齐工业级不把空输出轮写进历史）。
-                    # has_reasoning 保留在条件内：thinking 模型返回空 reasoning 也追加
-                    # （防 400 回喂字段需要，见 reasoning_content 回喂节）。
-                    if full_content or full_reasoning or stream_result.has_reasoning or stream_result.tool_calls:
-                        assistant_msg: dict = {
-                            "role": "assistant",
-                            "content": full_content,
-                        }
-                        # DeepSeek V4 thinking 模式带 tools 时必须回喂 reasoning_content（否则 400）；
-                        # has_reasoning 覆盖空 reasoning 场景（空串也回喂，字段始终存在）
-                        if full_reasoning or stream_result.has_reasoning:
-                            assistant_msg["reasoning_content"] = full_reasoning
-                        # OpenAI 兼容 API 要求：tool 消息必须与前置 assistant 消息的 tool_calls 配对，
-                        # 否则下一轮请求 400（"Messages with role 'tool' must be a response to ..."）
-                        if stream_result.tool_calls:
-                            assistant_msg["tool_calls"] = stream_result.tool_calls
+                    # 字段组装规则见 _build_assistant_message（纯转换）；是否提交由本步决定。
+                    assistant_msg = _build_assistant_message(stream_result)
+                    if assistant_msg is not None and (
+                        finish_reason != "tool_calls" or has_final_answer(stream_result.tool_calls, output_schema)
+                    ):
+                        # 若本次是普通工具批次调用，则此处不提交 assistant + tool 历史。
+                        # 因为这里若先写 assistant.tool_calls，消费者在下一条 SSE 后关闭生成器，
+                        # 就会留下缺少 tool 回执的本地非法历史，即 tool_calls 和 tool_call_records 不匹配
                         messages.append(assistant_msg)
 
                     # ----- 9. 根据 finish_reason 决定下一步 -----
                     if finish_reason == "tool_calls":
-                        # ----- （1）协议正常的工具调用 → 执行或 final_answer 修正
+                        # （1）协议正常的工具调用 → 执行或 final_answer 修正
                         self._empty_retries = 0
                         yield build_info_event(f"检测到 {len(stream_result.tool_calls)} 个工具调用")
 
-                        # ----- Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续 -----
-                        # （注入工具非注册工具，识别在主循环，不进 execute_tool_calls）
-                        if output_schema is not None and any(
-                            tc["function"]["name"] == _FINAL_ANSWER_TOOL for tc in stream_result.tool_calls
-                        ):
+                        # Final Answer 工具：结构化最终答案 → 提取终止 / 回喂继续
+                        # （注入工具非注册工具，识别经 _react_protocol.has_final_answer，
+                        #   分支与提取仍在主循环，不进 execute_tool_calls）
+                        if has_final_answer(stream_result.tool_calls, output_schema):
+                            # 判定为真即已启用；断言只为收窄类型（schema 供提取校验用）
+                            assert output_schema is not None
                             for e in await self._handle_final_answer(
                                 stream_result.tool_calls,
                                 messages,
@@ -534,14 +692,8 @@ class ReActStrategy:
                                 return
                             continue  # final_answer CONTINUE：回喂后继续
 
-                        # ----- 循环停滞检测：相同工具 + 参数连续重复 → STALLED 分发硬终止 -----
-                        fp = action_fingerprint(stream_result.tool_calls)
-                        if fp and fp == self._last_action_fp:
-                            self._stall_count += 1
-                        else:
-                            self._stall_count = 1
-                            self._last_action_fp = fp
-                        if self._stall_count > limits.max_same_action_turns:
+                        # 循环停滞检测：相同工具 + 参数连续重复 → STALLED 分发硬终止
+                        if self._bump_stall(stream_result.tool_calls) > limits.max_same_action_turns:
                             for e in await self._finalize_stalled(
                                 stream_result.tool_calls,
                                 iteration,
@@ -563,13 +715,14 @@ class ReActStrategy:
                             run=run,
                             deadline=deadline,
                             cleanup_deadline=hard_timeout_at,
+                            assistant_message=assistant_msg,
                         ):
                             yield event
                         if self.outcome is not None:
                             return
                         continue
                     elif finish_reason in ("stop", "length") or full_content.strip():
-                        # ----- （2）stop / length / 有内容 → 正常结束
+                        # （2）stop / length / 有内容 → 正常结束
                         self._empty_retries = 0  # 本轮有产出（stop / length / 有内容）→ 空输出连续计数清零
                         for e in self._finalize_outcome(
                             success=bool(full_content.strip()),
@@ -581,7 +734,7 @@ class ReActStrategy:
                             yield e
                         return
                     else:
-                        # ----- （3）空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）
+                        # （3）空输出 → 错误分发（默认 CONTINUE 重试；handler 可终止/上抛）
                         self._empty_retries += 1  # 本轮空输出 → 空输出连续计数 +1
                         for e in await self._handle_empty_output(
                             full_reasoning,
@@ -605,8 +758,8 @@ class ReActStrategy:
             # 不能再被下方 Exception 兜底改写为 UNKNOWN。
             raise
         except ToolCancelledError, ToolDeadlineExceededError, ToolRunStoppedError:
-            # 工具批次已先把可得事实接管到 _tool_facts；控制异常保留类型向上层传播，
-            # 不进入普通 TOOL_FAILED/UNKNOWN 路由。领域终态提交由 Piece ⑤统一完成。
+            # 批次已接管兄弟成果及完整协议回执；运行级控制原因继续类型化上抛。
+            # 上层按自身运行契约选择终态，不把取消/期限降为可重试工具失败。
             raise
         except TimeoutError as exc:
             # TimeoutError 异常来源有两类：
@@ -621,35 +774,19 @@ class ReActStrategy:
             if cur is None or cur is not entered_task or cur.cancelling() > 0:
                 return
 
+            terminal_result = self._take_over_failure(current_result, last_visible_result, total_usage)
             # 只有本次 asyncio.timeout_at 确实到期，才能解释为 ReAct 总执行超时；仅比较当前
             # 时钟与 deadline 会把「期限已过但 timeout 回调尚未取消 task」误判为硬超时。
             if hard_timeout_scope is None or not hard_timeout_scope.expired():
-                terminal_result = _terminal_result(current_result, last_visible_result)
-                total_usage.update(merge_usage(total_usage, _unaccounted_usage(current_result)))
+                # 若硬超时范围为空或硬超时未到期则说明这个 TimeoutError 与外层 timeout无关
                 for event in await self._finalize_unknown(terminal_result, iteration, total_usage, exc):
                     yield event
                 return
-
-            # 外层 timeout 真实到期 → 保留当前轮已生成部分成果；若当前轮尚无可见进度则沿用上一轮。
-            terminal_result = _terminal_result(current_result, last_visible_result)
-            total_usage.update(merge_usage(total_usage, _unaccounted_usage(current_result)))
-            guard = evaluate_guard(
-                cancel_event=run.cancel_event,
-                deadline=deadline,
-                cost_limiter=self._cost_limiter,
-                running_usage=merge_usage(baseline_usage, total_usage),
-                deadline_exceeded=True,
-            )
-            assert guard is not None
-            for e in await self._finalize_guard_result(
-                guard,
-                terminal_result,
-                iteration,
-                total_usage,
-                limits.max_execution_time,
-            ):
-                yield e
-            return
+            else:
+                # 外层 timeout 真实到期 → 保留当前轮已生成部分成果；若当前轮尚无可见进度则沿用上一轮。
+                for event in await _guard_exit(result=terminal_result, deadline_exceeded=True):
+                    yield event
+                return
         except (
             ContextWindowExceededError,
             LLMCancelledError,
@@ -658,29 +795,12 @@ class ReActStrategy:
             # 三类异常均是 LLM 边界已经识别的终结信号：统一接管当前成果与
             # 未归账 usage，再由共享 guard 处理并发信号优先级和终态类型。
             exception_usage = getattr(exc, "usage", None)
-            terminal_result = _terminal_result(current_result, last_visible_result)
-            total_usage.update(
-                merge_usage(
-                    total_usage,
-                    _unaccounted_usage(current_result, exception_usage),
-                )
-            )
-            guard = evaluate_guard(
-                cancel_event=run.cancel_event,
-                deadline=deadline,
-                cost_limiter=self._cost_limiter,
-                running_usage=merge_usage(baseline_usage, total_usage),
+            terminal_result = self._take_over_failure(current_result, last_visible_result, total_usage, exception_usage)
+            for event in await _guard_exit(
+                result=terminal_result,
                 cancelled=isinstance(exc, LLMCancelledError),
                 deadline_exceeded=isinstance(exc, LLMDeadlineExceededError),
                 context_error=(exc if isinstance(exc, ContextWindowExceededError) else None),
-            )
-            assert guard is not None
-            for event in await self._finalize_guard_result(
-                guard,
-                terminal_result,
-                iteration,
-                total_usage,
-                limits.max_execution_time,
             ):
                 yield event
             return
@@ -697,11 +817,9 @@ class ReActStrategy:
                 return
 
             # 真异常 → UNKNOWN 分发（默认 STOP，优先保留当前轮部分进度 + 证据链）。
-            terminal_result = _terminal_result(current_result, last_visible_result)
-            total_usage.update(merge_usage(total_usage, _unaccounted_usage(current_result)))
+            terminal_result = self._take_over_failure(current_result, last_visible_result, total_usage)
             for ev in await self._finalize_unknown(terminal_result, iteration, total_usage, e):
                 yield ev
-
             return
 
     async def _llm_round_non_streaming(
@@ -773,157 +891,23 @@ class ReActStrategy:
         if result.content:
             yield build_message_event(result.content)
 
-    async def execute_tool_calls(
+    def _take_over_failure(
         self,
-        tool_calls: list[dict],
-        messages: list[dict],
-        iteration: int,
-        *,
-        run: ReasoningRunScope,
-        tool_execution: ToolExecutionOptions = _DEFAULT_TOOL_EXECUTION,
-        deadline: float | None = None,
-        cleanup_deadline: float | None = None,
-    ) -> AsyncGenerator[str]:
+        current_result: StreamResult | None,
+        last_visible_result: StreamResult | None,
+        total_usage: dict,
+        exception_usage: dict | None = None,
+    ) -> StreamResult | None:
+        """异常出口统一接管：选出可用成果并归账未计 usage（G0-4：异常不得漏记已知事实）。
+
+        三个异常出口（内置 TimeoutError / 三类 LLM 终结信号 / 未分类 Exception）都必须先
+        完成接管再组装终态：成果决定 outcome 的 content/reasoning，usage 决定 outcome.usage
+        与成本口径。异常自带 usage 时优先且不与 result 中同一笔重复计（见 `_unaccounted_usage`）。
+        普通 def（无 await）：只写传入的 total_usage 引用，不发起任何调用。
         """
-        并行执行工具调用列表，追加结果到 messages，记录到 _tool_call_records。
-
-        并发执行：asyncio.gather 并行执行所有工具（并发度由 ToolService 的
-        ToolAdmission 全局/单运行准入限制）。gather 保证结果顺序 =
-        输入顺序，因此 tool_messages / _tool_call_records 的顺序与 tool_calls
-        一致——OpenAI 兼容 API 要求 tool 消息与前置 assistant.tool_calls 的
-        tool_call_id 配对，顺序不能乱。
-
-        独立使用场景：需要直接执行已给定工具调用的策略或测试。PlannerStrategy 和
-        ReflectionStrategy 当前复用完整 execute()，不通过本原语承担子流程生命周期。
-
-        tool_execution：透传给 ToolGateway.execute（字段为 None = 走执行器全局或工具
-        自声明，见 execute() docstring）——供原语复用方按需覆盖，默认不覆盖任何一项。
-
-        SSE 事件只在主 generator 内按顺序 yield（不在并发 task 内 yield，
-        避免事件交错）。
-
-        Yields:
-            tool_call / tool_result SSE 事件
-        """
-
-        identity_error = tool_call_identity_error(tool_calls)
-        if identity_error is not None:
-            raise ValueError(identity_error)
-
-        batch_id = uuid.uuid4().hex
-        collector = ToolBatchCollector()
-        cancel_events = (
-            *run.parent_cancel_events,
-            *((run.cancel_event,) if run.cancel_event is not None else ()),
-        )
-        contexts: dict[int, ToolCallContext] = {}
-        for index, tc in enumerate(tool_calls):
-            tool_call_id = tc["id"]
-            call = ToolCallContext(
-                workflow_id=run.workflow_id,
-                run_id=run.run_id,
-                batch_id=batch_id,
-                tool_call_id=tool_call_id,
-                operation_id=uuid.uuid4().hex,
-                deadline=deadline,
-                cleanup_deadline=cleanup_deadline,
-                cancel_events=cancel_events,
-                run_stop=run.run_stop,
-            )
-            contexts[index] = call
-            collector.record(
-                ToolFact(
-                    operation_id=call.operation_id,
-                    run_id=call.run_id,
-                    batch_id=call.batch_id,
-                    tool_call_id=call.tool_call_id,
-                    revision=0,
-                    execution_state=ToolExecutionState.NOT_STARTED,
-                    effect_state=ToolEffectState.NONE,
-                    cleanup_state=ToolCleanupState.NOT_NEEDED,
-                )
-            )
-
-        async def _execute_one(index: int, tc: dict) -> tuple:
-            """并行执行单个工具（并发 task 内只做执行，不 yield 事件）。"""
-            tool_name = tc.get("function", {}).get("name", "unknown")
-            call = contexts[index]
-
-            try:
-                raw_args = tc["function"]["arguments"]
-                tool_args = json.loads(raw_args)
-            except (json.JSONDecodeError, KeyError) as e:
-                # 参数 JSON 解析失败：不静默用空参执行（会掩盖错误、可能触发副作用），
-                # 构造失败 ToolResult 走失败回喂分支——模型可见原因自纠，JSON_PARSE 进证据链。
-                raw_args = tc.get("function", {}).get("arguments", "")
-                start = time.monotonic()
-                exec_result = ToolResult(
-                    success=False,
-                    content="",
-                    error=f"参数 JSON 解析失败: {e!s}（原始参数: {raw_args[:200]}）",
-                    error_code=ErrorCode.JSON_PARSE,
-                )
-                elapsed = time.monotonic() - start
-                return exec_result, tool_name, {}, tc, elapsed
-
-            start = time.monotonic()
-            exec_result = await self._tools.execute(
-                tool_name,
-                tool_args,
-                timeout=tool_execution.timeout,
-                max_retries=tool_execution.max_attempts,
-                call=call,
-                facts=collector,
-            )
-            elapsed = time.monotonic() - start
-            return exec_result, tool_name, tool_args, tc, elapsed
-
-        # gather 保证结果顺序 = tool_calls 输入顺序
-        try:
-            results = await asyncio.gather(*[_execute_one(index, tc) for index, tc in enumerate(tool_calls)])
-        finally:
-            # 先复制到策略拥有的运行事实，再断开 collector；随后抛出的类型化终止
-            # 仍可由上层结合这些事实决策，不把事实塞进异常对象。
-            self._tool_facts.extend(collector.snapshot())
-            collector.close()
-
-        tool_messages: list[dict] = []
-        for exec_result, tool_name, tool_args, tc, elapsed in results:
-            yield build_tool_call_event(tool_name, tool_args, iteration)
-
-            # 回喂模型：成功回喂 content，失败回喂 str(result)（"错误: <error>"）——
-            # 模型需看到失败原因才能自愈（工具失败空串回喂是核心缺口）。
-            # error / error_code 同时进证据链记录（根因报告要能看到失败原因与分类）。
-            feedback = exec_result.content if exec_result.success else str(exec_result)
-
-            self._tool_call_records.append(
-                {
-                    "tool": tool_name,
-                    "params": tool_args,
-                    "result": exec_result.content,
-                    "success": exec_result.success,
-                    "error": exec_result.error,
-                    "error_code": (exec_result.error_code.value if exec_result.error_code else None),
-                    "duration": round(elapsed, 3),
-                }
-            )
-
-            yield build_tool_result_event(
-                tool_name,
-                _truncate_with_marker(feedback, 200),
-                elapsed,
-                iteration,
-            )
-
-            tool_messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": _truncate_with_marker(feedback, 2000),
-                }
-            )
-
-        messages.extend(tool_messages)
+        terminal_result = _terminal_result(current_result, last_visible_result)
+        total_usage.update(merge_usage(total_usage, _unaccounted_usage(current_result, exception_usage)))
+        return terminal_result
 
     # ==================================================================
     # execute 的拆分方法（职责单一，行为与原内联分支一致）
@@ -1195,6 +1179,21 @@ class ReActStrategy:
         )
         return [build_info_event(f"final_answer 校验失败，已回喂: {err}")]
 
+    def _bump_stall(self, tool_calls: list[dict]) -> int:
+        """更新停滞指纹并返回连续相同动作轮数（状态留在策略实例字段上）。
+
+        指纹 = 工具名 + 规范化参数（见 `action_fingerprint`，「换工具 / 换参数」即指纹变化）：
+        相同动作连续累计，其余情况重置为 1。是否越限的判定与终态分别由主循环与
+        `_finalize_stalled` 负责，本方法只维护计数，不产生副作用。
+        """
+        fp = action_fingerprint(tool_calls)
+        if fp and fp == self._last_action_fp:
+            self._stall_count += 1
+        else:
+            self._stall_count = 1
+            self._last_action_fp = fp
+        return self._stall_count
+
     async def _finalize_stalled(
         self,
         tool_calls: list[dict],
@@ -1223,6 +1222,264 @@ class ReActStrategy:
             info_message=error,
         )
 
+    async def execute_tool_calls(
+        self,
+        tool_calls: list[dict],
+        messages: list[dict],
+        iteration: int,
+        *,
+        run: ReasoningRunScope,
+        tool_execution: ToolExecutionOptions = _DEFAULT_TOOL_EXECUTION,
+        deadline: float | None = None,
+        cleanup_deadline: float | None = None,
+        assistant_message: dict | None = None,
+    ) -> AsyncGenerator[str]:
+        """
+        并行执行工具调用列表，追加结果到 messages，记录到 _tool_call_records。
+
+        **并发执行**：ToolBatchRunner 逐项接管结局（并发度由 ToolService 的
+        ToolAdmission 全局/单运行准入限制）；ReAct 按输入顺序提交
+        assistant.tool_calls 与 tool 回执，避免部分完成或取消后产生非法历史。
+
+        **独立使用场景**：需要直接执行已给定工具调用的策略或测试。PlannerStrategy 和
+        ReflectionStrategy 当前复用完整 execute()，不通过本原语承担子流程生命周期。
+
+        **tool_execution**：透传给 ToolGateway.execute（字段为 None = 走执行器全局或工具
+        自声明，见 execute() docstring）——供原语复用方按需覆盖，默认不覆盖任何一项。
+
+        SSE 事件只在主 generator 内按顺序 yield（不在并发 task 内 yield， 避免事件交错）。
+
+        Yields:
+            tool_call / tool_result SSE 事件
+
+        Raises:
+            ValueError: 批内调用身份非法（id 缺失或重复），在任何真实 Gateway 请求前抛出
+            BaseException: 批次整体失败（如硬取消）——在历史已提交、事件尚未发出的位置
+                原样重抛；事件发完后若无控制异常，则上抛首个未预期异常
+            ToolCancelledError / ToolDeadlineExceededError / ToolRunStoppedError: 三类运行级
+                控制异常按固定优先级上抛（取消 > 超时 > 停跑），终态由上层按异常类型决定
+        """
+
+        # 身份检查放在真正执行之前：批内 id 缺失或重复时，tool 回执无法与 assistant.tool_calls
+        # 配对，与其让网关在下一轮返回 400，不如在这里直接失败，定位更直接。
+        identity_error = tool_call_identity_error(tool_calls)
+        if identity_error is not None:
+            raise ValueError(identity_error)
+
+        # 整批共用一个 batch_id（便于按批次检索事实），但每个工具各有一个 operation_id：
+        # batch 表示「这一次一共调了几把工具」，operation 才是「一个业务操作」的身份。
+        batch_id = uuid.uuid4().hex
+        # 取消来源合并成一条链：父运行的取消 + 本运行的取消，任一触发都要停下手上的工具。
+        # 本运行没有 cancel_event 时不要往元组里塞 None——元组里只允许放 Event。
+        cancel_events = (
+            *run.parent_cancel_events,
+            *((run.cancel_event,) if run.cancel_event is not None else ()),
+        )
+        # 先把每个工具的调用上下文（身份 + 期限 + 取消链）全部建好，再开始并发执行。
+        # 这样并发任务只需按索引取自己那份，彼此之间不共享任何可变状态。
+        contexts: list[ToolCallContext] = []
+        for tc in tool_calls:
+            tool_call_id = tc["id"]
+            call = ToolCallContext(
+                workflow_id=run.workflow_id,
+                run_id=run.run_id,
+                batch_id=batch_id,
+                tool_call_id=tool_call_id,
+                operation_id=uuid.uuid4().hex,
+                deadline=deadline,
+                cleanup_deadline=cleanup_deadline,
+                cancel_events=cancel_events,
+                run_stop=run.run_stop,
+            )
+            contexts.append(call)
+
+        # 提前取出网关引用：闭包和后面的编排共用同一个执行入口，不再反复读 self。
+        gateway = self._tools
+
+        async def _execute_one(index: int) -> tuple:
+            """并行执行单个工具（并发 task 内只做执行，不 yield 事件）。"""
+            # 本函数跑在并发 task 里，只做「解析参数 → 调用工具」两件事：绝不在里面 yield
+            # 事件，否则多个工具的事件会互相交错。参数与上下文一律按 index 取自己的那一份，
+            # 不依赖外层循环变量（那时循环早已推进到下一轮）。
+            tc = tool_calls[index]
+            tool_name = tc.get("function", {}).get("name", "unknown")
+            call = contexts[index]
+
+            # 计时涵盖参数解析 + 工具执行，仅供 SSE 事件与证据链展示，不参与任何预算判定。
+            start = time.monotonic()
+            try:
+                raw_args = tc["function"]["arguments"]
+                tool_args = json.loads(raw_args)
+            except (json.JSONDecodeError, KeyError) as e:
+                # 参数 JSON 解析失败：不静默用空参执行（会掩盖错误、可能触发副作用），
+                # 构造失败 ToolResult 走失败回喂分支——模型可见原因自纠，JSON_PARSE 进证据链。
+                raw_args = tc.get("function", {}).get("arguments", "")
+                tool_args = {}
+                exec_result = ToolResult(
+                    success=False,
+                    content="",
+                    error=f"参数 JSON 解析失败: {e!s}（原始参数: {raw_args[:200]}）",
+                    error_code=ErrorCode.JSON_PARSE,
+                )
+                # 工具确实没启动，也要在事实链里留一条（revision=1 覆盖启动前预登记的 revision=0），
+                # 否则「因为参数错所以没执行」这件事在事后的事实里查不到。
+                collector.record(
+                    ToolFact(
+                        operation_id=call.operation_id,
+                        run_id=call.run_id,
+                        batch_id=call.batch_id,
+                        tool_call_id=call.tool_call_id,
+                        revision=1,
+                        execution_state=ToolExecutionState.NOT_STARTED,
+                        effect_state=ToolEffectState.NONE,
+                        cleanup_state=ToolCleanupState.NOT_NEEDED,
+                        result=exec_result,
+                    )
+                )
+            else:
+                # 正常路径：交给网关执行。call 传本次调用的身份与期限；collector 是事实收集器，
+                # 执行过程中的预登记 / 每次尝试 / 最终结果都由它接管。
+                # timeout / max_retries 来自 tool_execution，为 None 表示交给执行器按工具自声明或全局配置决定。
+                exec_result = await gateway.execute(
+                    tool_name,
+                    tool_args,
+                    timeout=tool_execution.timeout,
+                    max_retries=tool_execution.max_attempts,
+                    call=call,
+                    facts=collector,
+                )
+
+            # 无论走哪条分支都从同一出口返回：结果 + 回执用参数 + 耗时（调用方按索引拿工具名）。
+            return exec_result, tool_args, time.monotonic() - start
+
+        # ToolBatchRunner 负责并发调度与「逐项接管结局」：谁先完成先收谁；出现控制类异常时
+        # 给兄弟任务留一段有界收尾时间，不让它们被硬砍在半路。事实归 ToolBatchCollector。
+        collector = ToolBatchCollector()
+        runner = ToolBatchRunner(collector)
+        # 先接住异常而不是让它直接冒出去：不论成功还是失败，下面的 finally 都要先把已经拿到的
+        # 事实存下来并组装回执，不能出现「工具跑了、历史里却没有回执」这种缺口。
+        execution_error: BaseException | None = None
+        try:
+            await runner.run(contexts, _execute_one, cleanup_deadline=cleanup_deadline)
+        except BaseException as error:  # noqa: BLE001 -- 硬取消也须先提交可得批次事实和协议回执
+            execution_error = error
+        finally:
+            # 先保存独立事实；迟回只归 Integration，不再引用本批次的 Agent。
+            facts = collector.snapshot()
+            self._tool_facts.extend(facts)
+            collector.close()
+
+        # 事实按 tool_call_id 分桶，方便下面每个工具只找自己的那几条（可能有预登记、多次尝试多条）。
+        # 先分好桶再进循环，避免每个工具都全表扫一遍。
+        facts_by_call: dict[str, list[ToolFact]] = {}
+        for fact in facts:
+            facts_by_call.setdefault(fact.tool_call_id, []).append(fact)
+        # 三类产物分开攒，最后按固定顺序一次性提交（原因见方法末尾）：
+        # events = 发给消费者的 SSE 事件；tool_messages = 回喂模型的历史；
+        # control_errors / unexpected_errors = 需要上抛、由上层决定终态的异常。
+        events: list[str] = []
+        tool_messages: list[dict] = []
+        control_errors: list[BaseException] = []
+        unexpected_errors: list[BaseException] = []
+        # 按模型给出的顺序（tool_calls 的顺序）逐个组装，不按完成顺序——历史里
+        # assistant.tool_calls 与 tool 回执必须同序一一配对，否则下一轮请求非法。
+        for index, tc in enumerate(tool_calls):
+            # outcome 是 ToolBatchRunner 逐项接管的结局，有三种可能：
+            #   元组            = 正常返回（_execute_one 的返回值）
+            #   异常对象        = 这个工具抛了（取消 / 超时 / 停跑 / 其他意外）
+            #   None            = 任务还挂着没结束（被取消但吞掉了取消，真实线程未停）
+            outcome = runner.outcomes[index]
+            call = contexts[index]
+            tool_name = tc.get("function", {}).get("name", "unknown")
+            if isinstance(outcome, tuple):
+                # 正常返回：结果、回执参数、耗时都在元组里。
+                exec_result, tool_args, elapsed = outcome
+            else:
+                # 非正常返回：没有返回值可用，只能从已接管的事实快照还原出回执——
+                # 要么「未执行」，要么「结果尚未确认」。参数按模型输入尽力解析。
+                exec_result, tool_args, elapsed = _aborted_call_outcome(tc, facts_by_call.get(call.tool_call_id, []))
+                # 异常本身先记下来、留到整批回执提交完再上抛：三类控制异常由上层决定终态，
+                # 其余意外异常也不能吞掉，但优先级低于控制异常。
+                if isinstance(outcome, (ToolCancelledError, ToolDeadlineExceededError, ToolRunStoppedError)):
+                    control_errors.append(outcome)
+                elif isinstance(outcome, BaseException):
+                    unexpected_errors.append(outcome)
+
+            # 先发 tool_call（模型打算调什么），紧跟 tool_result（实际结果）：逐条按输入顺序发出，
+            # 与下面写进历史的顺序一致，前端因此不会看到"结果先于调用"。
+            events.append(build_tool_call_event(tool_name, tool_args, iteration))
+
+            # 回喂模型：成功回喂 content，失败回喂 str(result)（"错误: <error>"）——
+            # 模型需看到失败原因才能自愈（工具失败空串回喂是核心缺口）。
+            # error / error_code 同时进证据链记录（根因报告要能看到失败原因与分类）。
+            feedback = exec_result.content if exec_result.success else str(exec_result)
+
+            # 这条记录有两个用途，改动字段前两处都要看：
+            #   1) 随后由 outcome.tool_calls 交给上层做证据链（保留完整结果与错误分类）；
+            #   2) _handle_tool_calls 靠它在本批新增记录里筛出失败项做错误分发，
+            #      所以 success / error_code 的语义是分发依据，不能随手改。
+            self._tool_call_records.append(
+                {
+                    "tool": tool_name,
+                    "params": tool_args,
+                    "result": exec_result.content,
+                    "success": exec_result.success,
+                    "error": exec_result.error,
+                    "error_code": (exec_result.error_code.value if exec_result.error_code else None),
+                    "duration": round(elapsed, 3),
+                }
+            )
+
+            # 同一条回喂文本按用途截到不同长度：SSE 事件给前端看，200 字符够用；
+            # 回喂模型的消息要留更多细节（2000），否则模型看不到足够信息无法自纠。
+            events.append(
+                build_tool_result_event(
+                    tool_name,
+                    _truncate_with_marker(feedback, 200),
+                    elapsed,
+                    iteration,
+                )
+            )
+
+            # tool 消息必须带 tool_call_id，与 assistant 消息里的 tool_calls 一一配对；
+            # 少配一个，下一次请求就会被网关以 400 拒绝。
+            tool_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": _truncate_with_marker(feedback, 2000),
+                }
+            )
+
+        # 提交顺序是刻意的：先把历史整批写好（assistant.tool_calls + 全部 tool 回执），
+        # 再抛异常，最后才 yield 事件。这样消费者拿到第一条事件时，历史已经完整落盘，
+        # 它无论何时关闭生成器都不会留下「有 tool 回执却没有对应 assistant」的半截历史。
+        #
+        # assistant 消息优先用调用方传进来的那份（execute 在第 8 步已经组装好）；只有没传时
+        # 才自己补一条。补之前再查一次历史末尾：如果已经是与本批完全相同的 assistant.tool_calls
+        # （例如同一批被重复提交），就不要再写第二条，否则配对会重复。
+        if assistant_message is None and not (
+            messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls") == tool_calls
+        ):
+            assistant_message = {"role": "assistant", "content": "", "tool_calls": tool_calls}
+        if assistant_message is not None:
+            messages.append(assistant_message)
+        messages.extend(tool_messages)
+        # 批次整体失败（例如硬取消）在这里上抛：历史已经提交，工具跑出来的进展不会被丢掉。
+        if execution_error is not None:
+            raise execution_error
+        for event in events:
+            yield event
+        # 事件发完才处理异常：三类控制异常按固定优先级上抛（取消 > 超时 > 停跑），
+        # 使终态归因不随工具的完成顺序变化。
+        for error_type in (ToolCancelledError, ToolDeadlineExceededError, ToolRunStoppedError):
+            control = next((error for error in control_errors if isinstance(error, error_type)), None)
+            if control is not None:
+                raise control
+        # 没有控制异常时才抛未预期异常；有控制异常时它被掩盖是有意的——控制异常是更准确的归因。
+        if unexpected_errors:
+            raise unexpected_errors[0]
+
     async def _handle_tool_calls(
         self,
         tool_calls: list[dict],
@@ -1236,13 +1493,13 @@ class ReActStrategy:
         run: ReasoningRunScope,
         deadline: float | None,
         cleanup_deadline: float | None,
+        assistant_message: dict | None,
     ) -> AsyncGenerator[str]:
-        """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。
+        """工具执行 + 可恢复错误分发（默认 CONTINUE 继续）。"""
 
-        上下文预算不在本方法内：统一在主循环顶部（每次 LLM 调用前）裁剪，
-        所有继续路径（含非工具重试）共用，见 execute() 第 2 步。
-        """
         before = len(self._tool_call_records)
+
+        # ----- 工具执行 -----
         async for event in self.execute_tool_calls(
             tool_calls,
             messages,
@@ -1251,37 +1508,31 @@ class ReActStrategy:
             run=run,
             deadline=deadline,
             cleanup_deadline=cleanup_deadline,
+            assistant_message=assistant_message,
         ):
             yield event
 
-        # 可恢复错误分发：本轮失败工具按 kind 分组聚合后逐 kind 分发。
-        # _dispatch 遇到 RAISE 会立即抛出；其余决策再按 STOP > CONTINUE 仲裁。
-        # 终止/上报时其他失败不回喂模型（循环结束，回喂无意义），但全部失败已进证据链。
+        # ----- 可恢复错误分发 -----
         new_failures = [r for r in self._tool_call_records[before:] if not r.get("success")]
-        parse_failures = [r for r in new_failures if r.get("error_code") == ErrorCode.JSON_PARSE.value]
-        # 工具参数可被正确解析即说明工具调用协议已恢复；业务失败属于另一语义。
-        if not parse_failures:
+        grouped = _group_failures_by_kind(new_failures)
+        if AgentErrorKind.PARSE_FAILED not in grouped:
+            # 无解析错误说明工具参数可被正确解析即工具调用协议已恢复；业务失败属于另一语义。
             self._tool_protocol_retries = 0
-        if new_failures:
-            grouped: dict[AgentErrorKind, list[dict]] = {}
-            for r in new_failures:
-                kind = (
-                    AgentErrorKind.PARSE_FAILED
-                    if r.get("error_code") == ErrorCode.JSON_PARSE.value
-                    else AgentErrorKind.TOOL_FAILED
-                )
-                grouped.setdefault(kind, []).append(r)
+
+        if grouped:
+            decisions: list[tuple[AgentErrorKind, str, AgentErrorAction]] = []
             # 分发顺序固定：协议类在前。它带独立预算且可能硬终止，终局必须先定——
             # 否则同轮业务失败仍会被分发，其 RAISE 会把预算诊断顶成无关错误，STOP 归因
             # 也会被硬终止错误覆盖（grouped 的插入序还取决于工具的返回顺序）。
-            # 同 kind 的多个失败聚合为一条 message；RAISE 在分发时立即传播，
-            # 因此 decisions 只包含 STOP / CONTINUE。
-            decisions: list[tuple[AgentErrorKind, str, AgentErrorAction]] = []
             for kind in (AgentErrorKind.PARSE_FAILED, AgentErrorKind.TOOL_FAILED):
                 fails = grouped.get(kind)
                 if not fails:
                     continue
+
+                # 同 kind 的多个失败聚合为一条 message
                 fail_msg = "；".join(f"{f.get('tool', '?')}: {f.get('error', '')}" for f in fails)
+
+                # 按 kind 分发，_dispatch 遇到 RAISE 会立即抛出；其余决策再按 STOP > CONTINUE 仲裁。
                 hard_protocol_error: str | None = None
                 if kind == AgentErrorKind.PARSE_FAILED:
                     (
@@ -1295,6 +1546,7 @@ class ReActStrategy:
                     )
                 else:
                     action = await self._dispatch(kind, fail_msg, iteration)
+
                 if hard_protocol_error is not None:
                     # 预算耗尽：终局已定，同轮剩余 kind 不再分发——STOP/CONTINUE 改变不了终局，
                     # RAISE 只会用一个无关错误顶掉这条预算诊断。
@@ -1309,8 +1561,11 @@ class ReActStrategy:
                     ):
                         yield e
                     return
+
                 decisions.append((kind, fail_msg, action))
-            # RAISE 已在 _dispatch 中传播；剩余决策中任何 STOP 都终止。
+
+            # RAISE 已在 _dispatch 中传播，因此 decisions 只包含 STOP / CONTINUE，任何 STOP 都终止。
+            # 终止/上报时其他失败不回喂模型（循环结束，回喂无意义），但全部失败已进证据链。
             for kind, fail_msg, action in decisions:
                 if action == AgentErrorAction.STOP:
                     for e in self._finalize_outcome(
@@ -1323,6 +1578,7 @@ class ReActStrategy:
                     ):
                         yield e
                     return
+
             # 全 CONTINUE：工具结果已回喂，继续循环
             return
 
@@ -1433,10 +1689,10 @@ class ReActStrategy:
     ) -> list[str]:
         """未捕获异常 → 错误分发（默认 STOP；保留部分进度）。
 
-        对齐护栏终态降级：调用方先从 current_result / last_visible_result 中选择
-        terminal_result 并归账当前轮 usage，本方法据此组装 outcome（保留已执行工具
-        证据链 + 部分内容）。asyncio.CancelledError / GeneratorExit 是 BaseException，
-        不被主循环 except Exception 捕获（保持 CANCELLED / 生成器关闭语义）。
+        对齐护栏终态降级：调用方先经 `_take_over_failure` 从 current_result /
+        last_visible_result 中选择 terminal_result 并归账当前轮 usage，本方法据此组装
+        outcome（保留已执行工具证据链 + 部分内容）。asyncio.CancelledError / GeneratorExit
+        是 BaseException，不被主循环 except Exception 捕获（保持 CANCELLED / 生成器关闭语义）。
 
         error 脱敏：只保留异常类型名（分类），不拼接异常 message——异常文本可能含
         内部路径 / 参数 / 敏感值 / 堆栈提示，产品可见文本（outcome.error / SSE /

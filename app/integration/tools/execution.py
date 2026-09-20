@@ -292,11 +292,14 @@ class ToolExecutionSupervisor:
 
     async def _stop(self, handle: ToolAttemptHandle) -> None:
         handle._stopping = True
+        # 取消未完成的任务，给它一个有界清理窗口；若有 Permit，释放它。
         if handle._task is not None and not handle._task.done():
             handle._task.cancel()
+        # 计算清理窗口截止时间，取宿主配置和调用方指定的最早值。
         deadline = time.monotonic() + self.settings.cleanup_timeout_seconds
         if handle.call.cleanup_deadline is not None:
             deadline = min(deadline, handle.call.cleanup_deadline)
+        # 等待清理窗口结束或任务完成，避免在清理期间硬取消。
         waiter = asyncio.create_task(handle._done.wait())
         try:
             await asyncio.wait({waiter}, timeout=max(0.0, deadline - time.monotonic()))

@@ -20,8 +20,19 @@ import pytest
 from jsonschema import SchemaError
 
 from app.domain.ports.llm_gateway import StreamResult
+from app.domain.ports.tool_execution import ToolCleanupState, ToolEffectState, ToolExecutionState, ToolFact
+from app.domain.ports.tool_gateway import ErrorCode
 from app.domain.reasoning import ReActStrategy, ToolExecutionOptions
-from app.domain.reasoning.react import _terminal_result
+from app.domain.reasoning.react import (
+    _EXECUTION_CLEANUP_GRACE_RATIO,
+    _MAX_EXECUTION_CLEANUP_GRACE,
+    _aborted_call_outcome,
+    _build_assistant_message,
+    _group_failures_by_kind,
+    _resolve_deadlines,
+    _terminal_result,
+    _tool_protocol_error_detail,
+)
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.tool_service import ToolService
@@ -496,6 +507,15 @@ def _echo_call(text: str = "hi") -> dict:
     }
 
 
+def _final_answer_call(call_id: str = "call_final") -> dict:
+    """构造 final_answer 工具调用（注入结构化终止工具的 wire 形态）。"""
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "final_answer", "arguments": "{}"},
+    }
+
+
 _HANG_SECONDS = 5.0
 
 
@@ -906,6 +926,301 @@ async def test_react_unknown_exception_handler_raise():
 # ---------------------------------------------------------------
 
 
+# ---------------------------------------------------------------
+# assistant 历史组装（纯转换）：纯空轮不组装 / thinking 回喂 / tool_calls 配对
+# ---------------------------------------------------------------
+
+
+def test_build_assistant_message_skips_empty_round() -> None:
+    """纯空轮不组装 assistant 消息（空消息不写历史，防上下文污染）。"""
+    assert _build_assistant_message(StreamResult()) is None
+
+
+def test_build_assistant_message_keeps_empty_reasoning_on_thinking_signal() -> None:
+    """thinking 模型返回空 reasoning 也要回喂该字段（否则下一轮 400）。"""
+    result = StreamResult()
+    result.has_reasoning = True
+
+    assert _build_assistant_message(result) == {"role": "assistant", "content": "", "reasoning_content": ""}
+
+
+def test_build_assistant_message_pairs_tool_calls_for_following_receipts() -> None:
+    """tool_calls 必须留在 assistant 消息上，供后续 tool 回执配对。"""
+    call = _echo_call()
+    result = StreamResult()
+    result.tool_calls = [call]
+
+    assert _build_assistant_message(result) == {"role": "assistant", "content": "", "tool_calls": [call]}
+
+
+def test_build_assistant_message_omits_reasoning_without_signal() -> None:
+    """无 thinking 信号（chat 模型）不回喂 reasoning_content 字段。"""
+    result = StreamResult()
+    result.content = "答案"
+
+    assert _build_assistant_message(result) == {"role": "assistant", "content": "答案"}
+
+
+# ---------------------------------------------------------------
+# 工具调用协议异常判据（纯函数）：四类原因与固定优先级
+# ---------------------------------------------------------------
+
+
+def test_tool_protocol_error_detail_returns_none_for_valid_response() -> None:
+    """有工具、身份合法、未混用终止工具 → 响应有效，不做协议拦截。"""
+    calls = [_echo_call()]
+
+    assert _tool_protocol_error_detail("tool_calls", calls, has_tools=True, output_schema=None) is None
+
+
+def test_tool_protocol_error_detail_accepts_lone_final_answer() -> None:
+    """单独调用 final_answer 是正常终止路径，不属协议异常。"""
+    calls = [_final_answer_call()]
+
+    assert _tool_protocol_error_detail("tool_calls", calls, has_tools=True, output_schema=_FA_REPORT_SCHEMA) is None
+
+
+def test_tool_protocol_error_detail_skips_non_tool_calls_finish_reason() -> None:
+    """finish_reason 非 tool_calls 时不进入协议检查（正常回答 / 空输出走各自分支）。"""
+    assert _tool_protocol_error_detail("stop", [], has_tools=False, output_schema=None) is None
+
+
+def test_tool_protocol_error_detail_reports_missing_calls() -> None:
+    detail = _tool_protocol_error_detail("tool_calls", [], has_tools=True, output_schema=None)
+
+    assert "未返回工具调用" in detail
+
+
+def test_tool_protocol_error_detail_reports_no_available_tools() -> None:
+    calls = [_echo_call()]
+
+    detail = _tool_protocol_error_detail("tool_calls", calls, has_tools=False, output_schema=None)
+
+    assert "无可用工具" in detail
+
+
+def test_tool_protocol_error_detail_reports_identity_error() -> None:
+    """批内 id 重复 → 身份不可用即无法与 tool 回执配对。"""
+    calls = [_echo_call(), _echo_call()]
+
+    detail = _tool_protocol_error_detail("tool_calls", calls, has_tools=True, output_schema=None)
+
+    assert "重复" in detail
+
+
+def test_tool_protocol_error_detail_reports_final_answer_mixed_with_other_tools() -> None:
+    calls = [_echo_call(), _final_answer_call()]
+
+    detail = _tool_protocol_error_detail("tool_calls", calls, has_tools=True, output_schema=_FA_REPORT_SCHEMA)
+
+    assert "不能与其他工具同轮调用" in detail
+
+
+def test_tool_protocol_error_detail_prefers_identity_error_over_mixed_final_answer() -> None:
+    """两类违规同时成立时按固定优先级归因身份异常（结构缺陷优先于用法缺陷）。"""
+    calls = [_echo_call(), _final_answer_call("call_echo")]  # 与 echo 同 id → 批内重复
+
+    detail = _tool_protocol_error_detail("tool_calls", calls, has_tools=True, output_schema=_FA_REPORT_SCHEMA)
+
+    assert "重复" in detail
+
+
+# ---------------------------------------------------------------
+# deadline 派生（纯函数）：未设限 / 收尾窗口 / 上界 / 负值钳制
+# ---------------------------------------------------------------
+
+
+def test_resolve_deadlines_returns_none_pair_without_limit() -> None:
+    assert _resolve_deadlines(None, 1000.0) == (None, None)
+
+
+def test_resolve_deadlines_keeps_cleanup_window_before_hard_timeout() -> None:
+    """内部 deadline 必须早于外层硬超时，给 close/settle/日志留收尾窗口。"""
+    deadline, hard_timeout_at = _resolve_deadlines(30.0, 1000.0)
+
+    assert hard_timeout_at == 1030.0
+    assert deadline == hard_timeout_at - min(_MAX_EXECUTION_CLEANUP_GRACE, 30.0 * _EXECUTION_CLEANUP_GRACE_RATIO)
+
+
+def test_resolve_deadlines_caps_cleanup_window_for_long_budget() -> None:
+    """长时限下窗口取上界：按比例算出的值不再随总时长增长。"""
+    deadline, hard_timeout_at = _resolve_deadlines(600.0, 0.0)
+
+    assert hard_timeout_at - deadline == _MAX_EXECUTION_CLEANUP_GRACE
+
+
+def test_resolve_deadlines_clamps_negative_budget_to_zero() -> None:
+    """负时限按 0 处理：不产生「deadline 晚于硬超时」的倒流窗口。"""
+    assert _resolve_deadlines(-5.0, 1000.0) == (1000.0, 1000.0)
+
+
+# ---------------------------------------------------------------
+# 未正常返回的工具结局还原（纯函数）：权威事实选取 / 回执参数降级 / 耗时
+# ---------------------------------------------------------------
+
+
+def _call_fact(
+    *,
+    attempt_id: str | None,
+    revision: int,
+    execution_state: ToolExecutionState,
+    result: ToolResult | None = None,
+) -> ToolFact:
+    """构造某个 call 的事实快照（attempt_id=None 即操作事实）。"""
+    return ToolFact(
+        operation_id="operation-1",
+        attempt_id=attempt_id,
+        run_id="run-1",
+        batch_id="batch-1",
+        tool_call_id="call-1",
+        revision=revision,
+        execution_state=execution_state,
+        effect_state=ToolEffectState.UNKNOWN,
+        cleanup_state=ToolCleanupState.NOT_NEEDED,
+        result=result,
+    )
+
+
+def _aborted_call(arguments: str = "{}") -> dict:
+    return {"id": "call-1", "type": "function", "function": {"name": "echo", "arguments": arguments}}
+
+
+def test_aborted_call_outcome_reports_unexecuted_without_any_fact() -> None:
+    """任务仍挂起（无任何事实）时报未执行；回执参数仍按模型输入解析。"""
+    exec_result, tool_args, elapsed = _aborted_call_outcome(_aborted_call('{"text": "hi"}'), [])
+
+    assert exec_result.success is False
+    assert "未执行" in exec_result.error
+    assert exec_result.effect_state == ToolEffectState.NONE
+    assert tool_args == {"text": "hi"}
+    assert elapsed == 0.0
+
+
+def test_aborted_call_outcome_prefers_attempt_snapshot_over_preregistered_fact() -> None:
+    """预登记的 NOT_STARTED 不得盖过已完成的 attempt 快照（外部 Gateway 可能只发 attempt 事实）。"""
+    confirmed = ToolResult(True, "done", execution_time=1.25)
+    facts = [
+        _call_fact(attempt_id=None, revision=0, execution_state=ToolExecutionState.NOT_STARTED),
+        _call_fact(attempt_id="attempt-1", revision=1, execution_state=ToolExecutionState.SUCCEEDED, result=confirmed),
+    ]
+
+    exec_result, _, elapsed = _aborted_call_outcome(_aborted_call(), facts)
+
+    # ToolFact.__post_init__ 深拷贝 result，故按值而非身份断言。
+    assert exec_result == confirmed
+    assert elapsed == 1.25
+
+
+def test_aborted_call_outcome_prefers_operation_fact_that_has_result() -> None:
+    """操作事实已带结果时直接采用，不回退到更早的 attempt 事实。"""
+    operation = ToolResult(True, "operation", execution_time=2.0)
+    stale_attempt = ToolResult(False, "", error="旧尝试")
+    facts = [
+        _call_fact(attempt_id=None, revision=2, execution_state=ToolExecutionState.SUCCEEDED, result=operation),
+        _call_fact(attempt_id="attempt-1", revision=1, execution_state=ToolExecutionState.FAILED, result=stale_attempt),
+    ]
+
+    exec_result, _, elapsed = _aborted_call_outcome(_aborted_call(), facts)
+
+    assert exec_result == operation
+    assert exec_result.content == "operation"
+    assert elapsed == 2.0
+
+
+def test_aborted_call_outcome_takes_last_attempt_fact_when_unconfirmed() -> None:
+    """attempt 事实均无结果时取最后一个，报「结果尚未确认」而非「未执行」。"""
+    facts = [
+        _call_fact(attempt_id="attempt-1", revision=1, execution_state=ToolExecutionState.RUNNING),
+        _call_fact(attempt_id="attempt-2", revision=2, execution_state=ToolExecutionState.RUNNING),
+    ]
+
+    exec_result, _, elapsed = _aborted_call_outcome(_aborted_call(), facts)
+
+    assert exec_result.success is False
+    assert "尚未确认" in exec_result.error
+    assert elapsed == 0.0
+
+
+def test_aborted_call_outcome_keeps_in_flight_retry_unconfirmed() -> None:
+    """重试在途时不得采信上一次尝试的旧结果。
+
+    执行器每次 attempt 完成都会重发操作事实（revision=attempt+1），在途重试期间它带的是
+    上一次尝试的结果；采信它会把「副作用未确认」报成「已确认失败」。
+    """
+    first_attempt = ToolResult(False, "", error="第一次尝试失败")
+    facts = [
+        _call_fact(attempt_id=None, revision=1, execution_state=ToolExecutionState.FAILED, result=first_attempt),
+        _call_fact(
+            attempt_id="attempt-1", revision=1, execution_state=ToolExecutionState.FAILED, result=first_attempt
+        ),
+        _call_fact(attempt_id="attempt-2", revision=0, execution_state=ToolExecutionState.RUNNING),
+    ]
+
+    exec_result, _, _ = _aborted_call_outcome(_aborted_call(), facts)
+
+    assert exec_result.success is False
+    assert "尚未确认" in exec_result.error
+    assert exec_result.effect_state == ToolEffectState.UNKNOWN
+
+
+def test_aborted_call_outcome_zeroes_elapsed_without_timing() -> None:
+    """事实带结果但未记耗时 → 耗时按 0 回执，不把 None 传下去。"""
+    facts = [
+        _call_fact(
+            attempt_id=None, revision=1, execution_state=ToolExecutionState.SUCCEEDED, result=ToolResult(True, "ok")
+        )
+    ]
+
+    _, _, elapsed = _aborted_call_outcome(_aborted_call(), facts)
+
+    assert elapsed == 0.0
+
+
+@pytest.mark.parametrize("arguments", ["{", "[]", "null"])
+def test_aborted_call_outcome_degrades_unusable_arguments_to_empty(arguments: str) -> None:
+    """参数不可用（截断 JSON / 合法但非对象）按空参回执，不重复报参数错误。"""
+    _, tool_args, _ = _aborted_call_outcome(_aborted_call(arguments), [])
+
+    assert tool_args == {}
+
+
+def test_aborted_call_outcome_degrades_missing_arguments_key() -> None:
+    """结构缺失的调用（无 function.arguments）不抛 KeyError。"""
+    _, tool_args, _ = _aborted_call_outcome({"id": "call-1"}, [])
+
+    assert tool_args == {}
+
+
+# ---------------------------------------------------------------
+# 失败记录聚类（纯函数）：记录 → kind 映射单点 / 保持记录顺序
+# ---------------------------------------------------------------
+
+
+def _failure(error_code: str | None, *, tool: str = "echo") -> dict:
+    return {"tool": tool, "error": "boom", "success": False, "error_code": error_code}
+
+
+def test_group_failures_by_kind_separates_parse_and_business_failures() -> None:
+    grouped = _group_failures_by_kind([_failure(ErrorCode.JSON_PARSE.value), _failure(None)])
+
+    assert set(grouped) == {AgentErrorKind.PARSE_FAILED, AgentErrorKind.TOOL_FAILED}
+
+
+def test_group_failures_by_kind_keeps_record_order_within_kind() -> None:
+    """同 kind 的原因按记录顺序聚合（fail_msg 的文本顺序 = 工具返回顺序）。"""
+    grouped = _group_failures_by_kind([_failure(None, tool="a"), _failure(None, tool="b")])
+
+    assert [record["tool"] for record in grouped[AgentErrorKind.TOOL_FAILED]] == ["a", "b"]
+
+
+def test_group_failures_by_kind_returns_empty_without_failures() -> None:
+    """无失败 → 不含 PARSE_FAILED，协议修正计数据此清零。"""
+    grouped = _group_failures_by_kind([])
+
+    assert grouped == {}
+    assert AgentErrorKind.PARSE_FAILED not in grouped
+
+
 def test_terminal_result_ignores_unexecuted_current_tool_calls() -> None:
     """当前轮只有未执行工具调用时，终止结果应保留上一轮可见内容。"""
     previous = StreamResult()
@@ -1020,6 +1335,7 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
         with pytest.raises(ToolDeadlineExceededError):
             await consume()
         assert tool.calls == 2
+        assert len(strategy._tool_call_records) == 2
         assert any(f.result and f.result.content == "echo:first" for f in strategy.tool_facts)
         await tools.shutdown()
         return
@@ -1028,7 +1344,9 @@ async def test_tool_timeout_after_tool_calls_only_keeps_previous_visible_result(
     assert strategy.outcome.content == "上一轮阶段成果"
     assert "超时" in (strategy.outcome.error or "")
     assert tool.calls == 2
-    assert len(strategy.outcome.tool_calls) == 1, "第二轮未完成工具不能进入证据链"
+    assert len(strategy.outcome.tool_calls) == 2
+    assert strategy.outcome.tool_calls[0]["success"] is True
+    assert strategy.outcome.tool_calls[1]["success"] is False, "未完成调用只能作为未知/失败回执，不能伪造成功"
 
     await tools.shutdown()
 
@@ -2169,7 +2487,7 @@ async def test_react_short_tool_result_no_marker():
 
 @pytest.mark.asyncio
 async def test_react_reasoning_feedback_when_has_reasoning():
-    """has_reasoning=True 且 reasoning_content 空 → assistant 消息仍带 reasoning_content 字段（空串，DeepSeek V4 必须回喂）。"""
+    """has_reasoning=True 且 reasoning_content 空时，assistant 仍保留该字段。"""
     llm = _ScriptedLLM(
         [
             {
@@ -2801,10 +3119,8 @@ async def test_react_execute_tool_calls_parallel_preserves_order():
         pass
 
     # tool_messages 顺序 = 输入顺序（gather 保序）
-    assert [m["tool_call_id"] for m in messages] == ["call_1", "call_2", "call_3"]
-    assert messages[0]["content"] == "tool_a:x1"
-    assert messages[1]["content"] == "tool_b:x2"
-    assert messages[2]["content"] == "tool_c:x3"
+    assert [m["tool_call_id"] for m in messages if m["role"] == "tool"] == ["call_1", "call_2", "call_3"]
+    assert [m["content"] for m in messages if m["role"] == "tool"] == ["tool_a:x1", "tool_b:x2", "tool_c:x3"]
 
 
 @pytest.mark.asyncio

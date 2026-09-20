@@ -25,6 +25,17 @@ def build_final_answer_tool(schema: dict) -> dict:
     }
 
 
+def has_final_answer(tool_calls: list[dict], output_schema: dict | None) -> bool:
+    """当前批次是否调用了注入的结构化终止工具。
+
+    该工具只在 output_schema 启用时注入；未启用时同名调用是模型臆造的未知工具，
+    按普通工具参与失败回喂与停滞指纹，不能当终止信号处理。
+    """
+    return output_schema is not None and any(
+        tool_call.get("function", {}).get("name") == _FINAL_ANSWER_TOOL for tool_call in tool_calls
+    )
+
+
 def tool_call_identity_error(tool_calls: list[dict]) -> str | None:
     """在协议历史或真实执行前验证当前批次的工具调用身份。"""
     seen: set[str] = set()

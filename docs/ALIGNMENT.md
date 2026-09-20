@@ -56,9 +56,9 @@
 | app/domain/reasoning/planner.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 三阶段编排与语义预算接线；上下文超限保留 usage/plan/步骤事实且不进入同语义 fallback |
 | app/domain/reasoning/_planner_steps.py | ✅ | docs/domain_doc/reasoning_doc/planner.md | tests/unit/test_planner.py | Planner 步骤规范化、公开计划快照和单步审计记录纯转换；不接管 replan/usage/终态 |
 | app/domain/reasoning/reflection.py | ✅ | docs/domain_doc/reasoning_doc/reflection.md | tests/unit/test_reflection.py | Reflection 自查/修正；语义缩减只影响 prompt 视图；Guard 终止保留最近稿、原始证据、critique 与 usage |
-| app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现；运行身份与事实跨层另经 test_tool_lifecycle_wiring.py 覆盖；流式/非流式双通道 |
+| app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现；批次部分成果、完整协议回执与类型化控制传播另经 test_tool_lifecycle_wiring.py 覆盖；流式/非流式双通道 |
 | app/domain/reasoning/_react_protocol.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_protocol.py | ReAct final_answer、调用身份与动作指纹纯协议转换；不接管协议预算、历史或工具执行 |
-| app/domain/reasoning/tool_batch.py | ✅ | docs/domain_doc/reasoning_doc/tool_batch.md | tests/unit/test_tool_lifecycle_contract.py | 批次事实 revision 去重、深快照与关闭边界；跨层接管另经 test_tool_lifecycle_wiring.py 覆盖 |
+| app/domain/reasoning/tool_batch.py | ✅ | docs/domain_doc/reasoning_doc/tool_batch.md | tests/unit/test_tool_lifecycle_contract.py | Collector 负责 revision 去重、深快照与关闭；Runner 负责并行结果、控制时兄弟有界收尾；跨层接管及协议配对经 test_tool_lifecycle_wiring.py 覆盖 |
 | app/infrastructure/database.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，DB 由 container 直管 |
 | app/infrastructure/redis_client.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，Redis 由 container 直管 |
 | app/infrastructure/models/database/base.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | 共享 declarative_base |

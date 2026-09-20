@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -11,7 +12,8 @@ from app.domain.ports.tool_execution import (
     ToolFact,
 )
 from app.domain.ports.tool_gateway import ErrorCode, ToolResult
-from app.domain.reasoning.tool_batch import ToolBatchCollector
+from app.domain.reasoning.tool_batch import ToolBatchCollector, ToolBatchRunner
+from app.integration.tools.tool_service import ToolService
 from app.shared.exceptions import (
     AppErrorCode,
     NonRetryableError,
@@ -19,7 +21,6 @@ from app.shared.exceptions import (
     ToolDeadlineExceededError,
     ToolRunStoppedError,
 )
-from app.integration.tools.tool_service import ToolService
 
 
 def _context(**overrides) -> ToolCallContext:
@@ -162,3 +163,40 @@ async def test_fact_sink_programming_error_closes_run_admission():
     with pytest.raises(RuntimeError, match="sink broken"):
         await service.execute("missing", {}, call=call, facts=_BrokenSink())
     assert call.run_stop.is_set()
+
+
+@pytest.mark.asyncio
+async def test_hard_cancel_reuses_grace_started_by_control_error():
+    """控制异常已启动宽限后再遭硬取消，沿用剩余宽限，不重取一份。
+
+    重设会让收尾窗口翻倍：宽限 1.0，控制异常在 t 起算，t+0.35 硬取消。
+    沿用剩余 → 约 t+1.0 返回；重设 → 约 t+1.35 返回。
+    """
+    runner = ToolBatchRunner(ToolBatchCollector())
+    in_flight = asyncio.Event()
+    error_at: float | None = None
+
+    async def execute(index: int):
+        nonlocal error_at
+        if index == 0:
+            await asyncio.sleep(0.05)
+            error_at = time.monotonic()
+            raise ToolCancelledError("stopped", run_id="run-1", operation_id="operation-1")
+        in_flight.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            await asyncio.sleep(30)  # 吞掉取消：真实执行未停，任务留在 pending
+            raise
+
+    calls = [_context(), _context(tool_call_id="call-2", operation_id="operation-2")]
+    task = asyncio.create_task(runner.run(calls, execute))
+    await in_flight.wait()
+    while error_at is None:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.35)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert time.monotonic() - error_at < 1.25
