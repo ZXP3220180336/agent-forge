@@ -1,6 +1,6 @@
 # TokenCounter 端口：tiktoken 隔离到集成层（依赖倒置 + 单一事实源）
 
-> **状态**：🔶 已替代（独立端口结构被 LLM 能力并入 LLMGateway 替代；tiktoken 隔离核心经 LLMGateway 承载保持生效，见下方「演进」）
+> **状态**：✅ 已替代且无待实施条款（独立端口结构由 LLMGateway 承载替代，tiktoken 隔离核心保持生效；`domain/ports/token_counter.py` 已不存在，见下方「演进」）
 > **决策日期**：2026-08-24
 > **涉及模块**：`app/integration/llm/token_counter.py` · `app/application/context/context_manager.py` · `app/integration/llm/llm_service.py` · `app/domain/ports/llm_gateway.py`
 > **关联文档**：[token_counter.md](../../../docs/integration_doc/llm_doc/token_counter.md) · [context.md](../../../docs/application_doc/context_doc/context.md) · [architecture.md](../../../docs/project/architecture.md)

@@ -10,6 +10,19 @@ from app.shared.json_schema import create_schema_validator
 
 _FINAL_ANSWER_TOOL = "final_answer"
 
+UNKNOWN_TOOL_NAME = "unknown"
+
+
+def tool_call_name(tool_call: dict) -> str:
+    """读取调用的工具名；结构缺失或非字符串时归为 `UNKNOWN_TOOL_NAME`，不抛异常。
+
+    协议判据只校验调用 id（见 `tool_call_identity_error`），网关偶发返回缺 `function`
+    的调用时仍会走到停滞指纹与停机组装处。这里是读取工具名的唯一入口——直接取下标会把
+    协议问题变成 KeyError 运行异常，掩盖原本可回喂模型自纠的失败。
+    """
+    name = tool_call.get("function", {}).get("name")
+    return name if isinstance(name, str) and name.strip() else UNKNOWN_TOOL_NAME
+
 
 def build_final_answer_tool(schema: dict) -> dict:
     """构造以 output schema 为参数的 final_answer 工具定义。"""
@@ -73,7 +86,7 @@ def action_fingerprint(tool_calls: list[dict]) -> str:
     """按调用顺序序列化工具名和规范化参数，供停滞检测。"""
     signature = []
     for tool_call in tool_calls:
-        name = tool_call["function"]["name"]
+        name = tool_call_name(tool_call)
         try:
             arguments = json.loads(tool_call["function"]["arguments"])
         except json.JSONDecodeError, KeyError:

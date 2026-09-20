@@ -137,3 +137,14 @@ def test_action_fingerprint_keeps_final_answer_when_schema_mode_is_disabled():
     )
 
     assert _FINAL_ANSWER_TOOL in action_fingerprint([call])
+
+
+def test_action_fingerprint_tolerates_call_without_function_payload():
+    """结构缺失的调用不抛 KeyError。
+
+    协议判据只校验 id（`tool_call_identity_error`），缺 function 的调用能走到指纹处；
+    直接取下标会抛 KeyError 逃逸成运行异常，而非按协议问题处理。
+    """
+    fingerprint = action_fingerprint([{"id": "call-1"}])
+
+    assert "unknown" in fingerprint

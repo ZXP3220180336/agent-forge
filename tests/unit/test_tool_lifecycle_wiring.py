@@ -224,6 +224,31 @@ async def test_react_collects_fact_before_control_exception_propagates(error_typ
     assert any(fact.execution_state == ToolExecutionState.SUCCEEDED for fact in strategy.tool_facts)
 
 
+@pytest.mark.asyncio
+async def test_control_error_masks_unexpected_error_in_same_batch():
+    """同批既有控制异常又有意外异常时上抛控制异常，且两条调用都留下回执。
+
+    控制异常是更准确的归因，意外异常被有意掩盖（见 `_handle_tool_calls` 末尾的固定优先级）；
+    掩盖不等于丢弃——两条调用的 tool 回执仍按输入顺序写进历史。
+    """
+
+    class _MixedGateway(_FactGateway):
+        async def execute(self, name, parameters, *args, call, facts, **kwargs):
+            if name == "two":
+                raise ToolCancelledError("stopped", run_id=call.run_id, operation_id=call.operation_id)
+            raise RuntimeError("工具内部意外")
+
+    strategy = ReActStrategy(llm=_BlockingLLM(), tools=_MixedGateway())
+    messages = []
+    with pytest.raises(ToolCancelledError):
+        await _consume(strategy.execute_tool_calls(_calls(), messages, 1, run=reasoning_run_scope("run-1")))
+
+    assert [message["tool_call_id"] for message in messages if message["role"] == "tool"] == [
+        "call-1",
+        "call-2",
+    ]
+
+
 class _PartialBatchGateway(_FactGateway):
     def __init__(self, error_type=ToolCancelledError) -> None:
         super().__init__()
@@ -290,7 +315,10 @@ async def test_transferred_sibling_gets_unknown_receipt_without_waiting_for_late
         with pytest.raises(ToolCancelledError):
             await _consume(
                 strategy.execute_tool_calls(
-                    _calls(), messages, 1, run=reasoning_run_scope("run-1"),
+                    _calls(),
+                    messages,
+                    1,
+                    run=reasoning_run_scope("run-1"),
                     cleanup_deadline=time.monotonic() + 0.05,
                 )
             )

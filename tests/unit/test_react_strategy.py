@@ -529,6 +529,37 @@ async def _hang_until_cancelled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_react_tolerates_tool_call_without_function_payload():
+    """网关返回缺 function 的调用时按未注册工具失败回喂，不抛 KeyError 逃逸。
+
+    协议判据只校验 id，该调用能通过四类判据走到停滞指纹与停机组装处；两处都直接取
+    `["function"]["name"]`，会抛 KeyError 把协议问题变成运行异常（UNKNOWN）。
+    """
+    llm = _ScriptedLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [{"id": "call_1"}]},
+            {"finish_reason": "stop", "content": "改用其他方式完成"},
+        ]
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    async for _ in strategy.execute(
+        "hi",
+        [{"role": "user", "content": "hi"}],
+        **reasoning_execution_args("react", max_iterations=4, temperature=0.2, max_tokens=1024),
+    ):
+        pass
+
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is True
+    assert strategy.outcome.content == "改用其他方式完成"
+    assert llm.calls == 2
+    assert len(strategy.outcome.tool_calls) == 1
+    assert strategy.outcome.tool_calls[0]["success"] is False
+
+
+@pytest.mark.asyncio
 async def test_react_stall_same_action_stops():
     """同工具同参数连续 4 轮（默认 max=3）→ 第 4 轮 STALLED 终止，该轮工具不执行。"""
     llm = _ScriptedLLM([{"finish_reason": "tool_calls", "tool_calls": [_echo_call()]}] * 4)
@@ -1214,11 +1245,8 @@ def test_group_failures_by_kind_keeps_record_order_within_kind() -> None:
 
 
 def test_group_failures_by_kind_returns_empty_without_failures() -> None:
-    """无失败 → 不含 PARSE_FAILED，协议修正计数据此清零。"""
-    grouped = _group_failures_by_kind([])
-
-    assert grouped == {}
-    assert AgentErrorKind.PARSE_FAILED not in grouped
+    """无失败 → 映射为空，PARSE_FAILED 桶不存在（协议修正计数据此清零）。"""
+    assert _group_failures_by_kind([]) == {}
 
 
 def test_terminal_result_ignores_unexecuted_current_tool_calls() -> None:

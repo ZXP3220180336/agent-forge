@@ -200,6 +200,10 @@ ReActStrategy.execute()（ReAct 主循环）
 `extract_final_answer` 解析并按固定 Draft 2020-12 校验结果，`action_fingerprint` 为停滞检测
 规范化参数。它不更新协议修正计数，不写消息历史，也不执行工具或提交 `ReActOutcome`。
 
+取工具名的唯一入口是同文件的 `tool_call_name(tool_call)`：协议判据只校验调用 `id`，网关偶发
+返回缺 `function` 的调用能通过判据，直接取下标会在停滞指纹与停机组装处抛 `KeyError`；该函数把
+结构缺失或非字符串名归为 `unknown`，指纹、执行取参、final_answer 过滤与停机报错共用它。
+
 - `_finalize_outcome(*, success, content, reasoning, iteration, total_usage, error, info_message, structured) -> list[str]`：统一收尾——组装 outcome + 返回收尾事件列表（可选 info + done 恰一次），供各终结 / STOP 分支复用（dispatch 由调用方负责——CONTINUE 语义各异：重试 / 回喂 / 忽略）；普通 def（无 await）
 - `_finalize_terminal(kind, message, iteration, *, success, content, reasoning, total_usage, error, info_message, structured) -> list[str]`：终结性错误统一收尾——dispatch（RAISE 上抛，CONTINUE 忽略）→ 复用 `_finalize_outcome`；供执行护栏、拒答、UNKNOWN、达到最大轮次及硬重试上限等无恢复语义的分支复用
 - `_dispatch(kind, message, iteration) -> AgentErrorAction`：错误分发唯一入口——委托共享 `_common.dispatch_error`（`RAISE` 决策抛 `AgentRunError`，否则返回 action；react 循环内 6 处 `_dispatch` 调用统一收敛）
@@ -382,6 +386,7 @@ result = strategy.outcome  # ReActOutcome
 - **未捕获异常**：中途异常保留证据链 / UNKNOWN handler RAISE 抛 AgentRunError / CONTINUE 忽略 / error 脱敏（只留异常类型名，敏感 message 不泄漏，完整异常进日志）
 - **优雅取消**：cancel_event 置位终止 / LLM error+置位 → CANCELLED 不重试 / 未置位正常
 - **工具失败**：失败回喂 / 证据链记录 error+error_code / 无效工具名 NOT_REGISTERED / 解析失败不执行工具 + JSON_PARSE / 截断标记（带标记不超限 / 短结果无标记）
+- **畸形调用结构**：缺 `function` 的调用不抛 `KeyError`（`tool_call_name` 归 `unknown`，指纹与停机报错共用）/ 按未注册工具失败回喂后进入下一轮
 - **reasoning 回喂**：`has_reasoning` 回喂空串 / 无信号不回喂
 - **上下文预算**：注入 ContextBudgetPort 后轮次裁剪生效 / 非工具路径（空输出重试）每次 LLM 调用前也裁剪
 - **final_answer**：成功提取终止 / 校验失败回喂 / 未配置不注入

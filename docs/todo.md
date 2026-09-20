@@ -428,6 +428,8 @@ P5-A 先验收进程内场景；P5-B 验收持久/恢复及受支持副作用工
 
 Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 passed；`verify_alignment` 与 `git diff --check` 通过（2026-09-20 复核并修复下方两项后的实测值；修复前为 169 / 1440）。Piece⑥～⑧仍待实施：当前写工具/未知插件不能被宣称具备 B 级保护；正式执行及模型导出的启用门禁已落实（见[完成记录](history/completed-work.md)），B 完成前拒绝副作用、未知效果和强制审计能力。目录级资源联合准入、持久记录/恢复、子进程树与宿主强退均未实现。
 
+2026-09-20 D4 修复（畸形调用结构）：先在单元层（`action_fingerprint` 对缺 `function` 的调用）与策略层（脚本化 LLM 返回 `[{"id": "call_1"}]`）各建失败复现，堆栈确认路径为 `_bump_stall → action_fingerprint → KeyError: 'function'`，outcome 记 `Agent 运行异常: KeyError`。修复后两处转绿，畸形调用按「工具 `unknown` 未注册」失败回喂并进入下一轮。验证：定向 `test_react_protocol.py` + `test_react_strategy.py` 160 passed；全量 1477 passed（52.40 秒，1 条既有 Starlette/httpx 弃用警告）；`verify_alignment` 与 `git diff --check` 通过；Ruff 受影响文件与格式检查通过。
+
 历史背景见 [C-02 文档设计交接](history/completed-work.md#c-02-p0-design-history)，不在活动计划中重复各轮验证叙述。
 
 #### Piece⑤ 复核遗留（2026-09-19 复核，2026-09-20 部分已修）
@@ -439,9 +441,19 @@ Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 pass
 - [x] `_aborted_call_outcome`（[react.py](../app/domain/reasoning/react.py)）按「操作事实已带结果 ⇒ 已确认终局」直接采信，但执行器每次 attempt 完成都会重发操作事实（`revision=attempt+1`、`attempt_id=None`），在途重试期间它带的是**上一次尝试的旧结果**——重试中被取消的调用会被报成「已确认失败、副作用 NONE」，与 [tool_batch.md](domain_doc/reasoning_doc/tool_batch.md) 的「已启动→结果尚未确认」冲突。**已修（2026-09-20）**：仍有 attempt 停在 `RUNNING` 时优先按「结果尚未确认」回执，附失败复现与回归测试。当前只读 A 下副作用那半不可达，但执行状态口径确实报错，Piece B 启用写工具后风险放大。
 - [x] 硬取消分支无条件重设 `stop_at`，把已起算的宽限从取消时刻重新计时，收尾窗口最坏翻倍（实测 1.38s vs 宽限 1.0s），与同函数注释「硬取消时是剩余宽限」及 [tool_batch.md](domain_doc/reasoning_doc/tool_batch.md) 不变量②「`stop_at` 只被设置一次」矛盾。**已修（2026-09-20）**：加 `stop_at is None` 守卫，实测回到 1.05s。
 - [ ] `ToolBatchRunner.run` 预登记用 `call.operation_id`。S1 规定业务键命中时事实应引用原规范操作，届时同一 call 会出现两条 `attempt_id is None` 的事实。回执选取现为「在途 attempt > 带结果的操作事实 > 最后一个 attempt 事实 > 操作事实」，取操作事实仍靠 `next()` 的插入序，届时会取到先插入的那条，归属须显式规定。Piece B 启用业务键复用前处理。
-- [ ] 宽限耗尽时 `finally` 只做一次 `wait(timeout=0)` 即时轮询（`remaining` 已为 0）。实测（2026-09-20）：**合作取消**的领域包装任务会被这次轮询捕获，`asyncio.CancelledError` 写入 `outcomes`；**吞掉取消**的留在 `pending`、`outcomes` 保持 `None`。两类在 ReAct 都走事实分支生成回执（未启动→「未执行」，已启动→「结果尚未确认」），回执口径不受影响；被捕获的那个会进 `unexpected_errors`，但总被 `control_errors` 的三类控制异常优先掩盖。核验回执与异常优先级口径时一并确认。（早前记录的「`absorb` 完全空转」有误，已更正。）
-- [ ] `action_fingerprint`（[_react_protocol.py](../app/domain/reasoning/_react_protocol.py)）对缺 `function` 的调用直接下标取 `name`，`KeyError` 会逃逸到 `_bump_stall` 出口，按 UNKNOWN 收场而不是走协议类的 PARSE_FAILED 修正预算；同一批新加的 `has_final_answer` 对同形输入专门容错，加固不一致。**非本次引入**，本次复核发现。触发：网关返回结构缺失的 `tool_call`。
-- [ ] Piece⑤ 新测试的覆盖缺口（本次复核发现，非阻断）：`test_tool_lifecycle_wiring.py` 的两个工具是纯协程，未走 `handle.run_sync`，真实线程与清理层不由该套件覆盖；`test_group_failures_by_kind_returns_empty_without_failures` 的 `PARSE_FAILED not in grouped` 在断言 `grouped == {}` 之后恒真，属冗余。触发：调整真实线程收尾或失败聚类口径时。
+- [x] 宽限耗尽时 `finally` 只做一次 `wait(timeout=0)` 即时轮询（`remaining` 已为 0）。**已核验（2026-09-20）**：合作取消的任务被这次轮询捕获，`asyncio.CancelledError` 写入 `outcomes`；吞掉取消的留在 `pending`、`outcomes` 保持 `None`；被捕获的那个进 `unexpected_errors`，但被 `control_errors` 的三类控制异常按固定优先级掩盖，回执口径不受影响（两类在 ReAct 都走事实分支）。三条结论均以测试锁定：`test_grace_exhausted_poll_captures_cooperative_cancel_only`（runner 级 outcome 分野）、`test_control_error_masks_unexpected_error_in_same_batch`（策略级优先级，并断言两条回执仍按输入顺序写入历史）。（早前记录的「`absorb` 完全空转」有误，已更正。）
+- [x] `action_fingerprint`（[_react_protocol.py](../app/domain/reasoning/_react_protocol.py)）对缺 `function` 的调用直接下标取 `name`，`KeyError` 逃逸到 `_bump_stall` 出口，按 UNKNOWN 收场而不是走协议类修正预算。**已修（2026-09-20）**：新增唯一入口 `tool_call_name`（结构缺失归 `unknown`），`action_fingerprint`、`_execute_one` 取工具名、`_handle_final_answer` 与 `_finalize_stalled` 的过滤/停机组装共用它，消除同类直接下标。**原述不完整**：[react.py](../app/domain/reasoning/react.py) 的 `_finalize_stalled` 是同一处直接下标——只修指纹会把崩溃点挪到「连续 4 轮相同畸形调用」的停机组装，故一并修。保留原行为：畸形调用按「工具 `unknown` 未注册」失败回喂模型，不升级为协议类 PARSE_FAILED（后者属契约变更，另立决策）。
+- [ ] Piece⑤ 新测试的覆盖缺口：`test_tool_lifecycle_wiring.py` 的两个工具是纯协程，未走 `handle.run_sync`，真实线程与清理层不由该套件覆盖。触发：调整真实线程收尾时。
+- [x] `test_group_failures_by_kind_returns_empty_without_failures` 的 `PARSE_FAILED not in grouped` 在断言 `grouped == {}` 之后恒真，属冗余。**已修（2026-09-20）**：删除恒真断言，只保留对空映射的断言。
+
+#### ADR 全量扫描口径修正（2026-09-20，已完成）
+
+一次性核对全部 ADR 的决策状态与实现状态，发现两处状态陈述与正文矛盾，均只修状态陈述、不改写历史条款：
+
+- [x] [Agent 错误处理横切入口](../adr/domain/agent/2026-08-28-agent-error-handling.md) 头部写「对标增强项 #23（当前 ⚠️，未实现）…实现另行安排」，正文 Consequences 却记同日已实现。**已修**：头部改为「已采纳；实现已兑现」，并核对 `app/shared/error_handling.py` 的 `ErrorHandlerRegistry` 与 `AgentErrorKind` 确实存在；[react_benchmark.md](domain_doc/reasoning_doc/react_benchmark.md) 早已记 #23 落地，与修正后一致。
+- [x] [TokenCounter 端口](../adr/integration/llm/2026-08-24-token-counter-port.md) 标「🔶 已替代」，读起来像尚有未完成条款。**已修**：改为「✅ 已替代且无待实施条款」，并核对 `app/domain/ports/token_counter.py` 已不存在、ContextManager 经 LLMGateway 计数；[llm ADR 索引](../adr/integration/llm/README.md) 同步。
+
+扫描同时确认：其余 8 项未关闭 ADR 属真实待实施或有意推迟（TOOLS-ADR-004/005/006 后继条款未迁移、ADR-002 代码迁移、Trace 持久化、ADR-001 上下文摘要压缩、断点续跑预留、LLM-039 口径记录），不在本次修正范围。
 
 <a id="candidates"></a>
 

@@ -166,6 +166,41 @@ async def test_fact_sink_programming_error_closes_run_admission():
 
 
 @pytest.mark.asyncio
+async def test_grace_exhausted_poll_captures_cooperative_cancel_only():
+    """宽限耗尽后的一次即时轮询只捕获合作取消的任务。
+
+    合作取消（`CancelledError` 直接传播）会被这次 `wait(timeout=0)` 捕获，异常写入
+    `outcomes`；吞掉取消的任务留在 `pending`，`outcomes` 保持 `None`。两类在 ReAct 都走
+    事实分支生成回执，故回执口径不受此差异影响——本测试锁定的是 outcome 的分野本身。
+    """
+    runner = ToolBatchRunner(ToolBatchCollector())
+
+    async def execute(index: int):
+        if index == 0:
+            await asyncio.sleep(0.02)
+            raise ToolCancelledError("stopped", run_id="run-1", operation_id="operation-1")
+        if index == 1:
+            await asyncio.sleep(30)  # 合作取消：CancelledError 直接写入 outcomes
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)  # 吞掉取消：即时轮询捕获不到，任务留在 pending
+            raise
+
+    calls = [
+        _context(),
+        _context(tool_call_id="call-2", operation_id="operation-2"),
+        _context(tool_call_id="call-3", operation_id="operation-3"),
+    ]
+    outcomes = await runner.run(calls, execute)
+
+    assert isinstance(outcomes[0], ToolCancelledError)
+    assert isinstance(outcomes[1], asyncio.CancelledError)
+    assert outcomes[2] is None
+    await asyncio.sleep(0.1)  # 让吞掉取消的任务自然收尾，不留 pending 任务
+
+
+@pytest.mark.asyncio
 async def test_hard_cancel_reuses_grace_started_by_control_error():
     """控制异常已启动宽限后再遭硬取消，沿用剩余宽限，不重取一份。
 

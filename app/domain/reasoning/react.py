@@ -91,6 +91,7 @@ from ._react_protocol import (
     extract_final_answer,
     has_final_answer,
     tool_call_identity_error,
+    tool_call_name,
 )
 from .execution import (
     ContextWindowLimits,
@@ -1124,7 +1125,7 @@ class ReActStrategy:
         返回收尾事件列表；主循环仅在检测到 final_answer 调用时调用本方法，
         终止与否据 self.outcome 判定（成功置位；校验失败 CONTINUE 不置位继续）。
         """
-        final_tcs = [tc for tc in tool_calls if tc["function"]["name"] == _FINAL_ANSWER_TOOL]
+        final_tcs = [tc for tc in tool_calls if tool_call_name(tc) == _FINAL_ANSWER_TOOL]
         structured, err = extract_final_answer(final_tcs[0], output_schema)
         if structured is not None:
             self._tool_protocol_retries = 0
@@ -1207,7 +1208,7 @@ class ReActStrategy:
         CONTINUE 被忽略（同 TIMEOUT / COST_EXCEEDED），RAISE 由 _dispatch 抛出。
         检测点在工具执行前：本方法返回即终止，本轮工具不执行。
         """
-        names = "、".join(tc["function"]["name"] for tc in tool_calls)
+        names = "、".join(tool_call_name(tc) for tc in tool_calls)
         error = f"连续 {count} 轮相同工具调用（{names}），已终止"
         # 停机组装 outcome（本轮无工具执行，content 空，保留 reasoning）
         return await self._finalize_terminal(
@@ -1302,7 +1303,7 @@ class ReActStrategy:
             # 事件，否则多个工具的事件会互相交错。参数与上下文一律按 index 取自己的那一份，
             # 不依赖外层循环变量（那时循环早已推进到下一轮）。
             tc = tool_calls[index]
-            tool_name = tc.get("function", {}).get("name", "unknown")
+            tool_name = tool_call_name(tc)
             call = contexts[index]
 
             # 计时涵盖参数解析 + 工具执行，仅供 SSE 事件与证据链展示，不参与任何预算判定。
