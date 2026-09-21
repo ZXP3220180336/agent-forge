@@ -18,7 +18,8 @@ def _make(**kwargs) -> Settings:
 
 
 @pytest.mark.parametrize(
-    "key", ["tool_cleanup_timeout_seconds", "tool_observation_timeout_seconds", "tool_shutdown_timeout_seconds"],
+    "key",
+    ["tool_cleanup_timeout_seconds", "tool_observation_timeout_seconds", "tool_shutdown_timeout_seconds"],
 )
 @pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
 def test_tool_execution_timeouts_must_be_positive_finite(key, value):

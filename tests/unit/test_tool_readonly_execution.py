@@ -32,10 +32,19 @@ class RecordingExecution:
         return await asyncio.to_thread(fn, *args, **kwargs)
 
 
-@pytest.mark.parametrize("tool_type", [
-    SearchTool, ReadFileTool, WebBrowseTool, QueryEquipmentAlertsTool,
-    QueryDefectMapTool, QueryFdcParamsTool, SearchHistoricalRcaTool, QueryBatchYieldTool,
-])
+@pytest.mark.parametrize(
+    "tool_type",
+    [
+        SearchTool,
+        ReadFileTool,
+        WebBrowseTool,
+        QueryEquipmentAlertsTool,
+        QueryDefectMapTool,
+        QueryFdcParamsTool,
+        SearchHistoricalRcaTool,
+        QueryBatchYieldTool,
+    ],
+)
 def test_readonly_spec_is_explicit(tool_type):
     assert tool_type().describe_execution({}).effect_class == ToolEffectClass.READ_ONLY
 
@@ -47,7 +56,8 @@ def test_write_tool_explicitly_declares_write_effect():
 async def test_search_uses_tracked_worker_and_explicit_sdk_timeout(monkeypatch):
     client = Mock()
     client.search.return_value = {
-        "answer": "结果", "results": [{"url": "https://example.com/source"}],
+        "answer": "结果",
+        "results": [{"url": "https://example.com/source"}],
     }
     factory = Mock(return_value=client)
     monkeypatch.setattr("app.integration.tools.builtin.search.TavilyClient", factory)
