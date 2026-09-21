@@ -1,7 +1,7 @@
 # 领域推理策略的纯转换边界
 
 日期：2026-09-16。决定状态：已接受（用户授权执行 R4）。实现状态：已验证。
-范围：Planner 步骤转换、Reflection 阶段判定、ReAct 工具协议转换。关联：[R4 计划](../../../docs/todo.md#refactoring-plan)。
+范围：Planner 步骤转换、Reflection 阶段判定、ReAct 工具协议转换。关联：[R4 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 
 ## 背景
 
@@ -64,4 +64,4 @@ Planner、Reflection 与 ReAct 的主文件同时表达运行编排、成果与�
 
 新增纯转换测试及 Reflection 修正后同时取消的成果接管测试；Planner、Reflection、ReAct 双通道、
 Agent 桥接和工具事实测试继续保护跨组件 Owner。合并定向 250 项、全量 1230 项通过；文档对齐、
-编译、差异格式和独立复核结果见 [R4 计划](../../../docs/todo.md#refactoring-plan)。
+编译、差异格式和独立复核结果见 [R4 归档](../../../docs/history/completed-work.md#refactoring-plan)。

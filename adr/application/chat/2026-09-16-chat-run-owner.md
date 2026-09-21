@@ -1,7 +1,7 @@
 # 聊天用例与单次运行 Owner 边界
 
 日期：2026-09-16。决定状态：已接受（R6 计划已获用户授权）。实现状态：已验证。
-范围：`ChatService`、`ChatRun`、聊天路由及 Agent 流关闭链。关联：[R6 计划](../../../docs/todo.md#refactoring-plan)。
+范围：`ChatService`、`ChatRun`、聊天路由及 Agent 流关闭链。关联：[R6 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 
 ## 背景
 
@@ -50,7 +50,7 @@
 ## 实现与验证
 
 实现与测试入口见 [ChatService 组件说明](../../../docs/application_doc/chat_doc/chat.md)及
-[ALIGNMENT](../../../docs/ALIGNMENT.md)。定向与全量结果回填于 [R6 计划](../../../docs/todo.md#refactoring-plan)。
+[ALIGNMENT](../../../docs/ALIGNMENT.md)。定向与全量结果回填于 [R6 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 
 ## 关联记录
 

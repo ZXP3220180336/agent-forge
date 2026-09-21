@@ -1,7 +1,7 @@
 # LLM-ADR-017：结构化输出的数据转换与编排分离
 
 日期：2026-09-14。决定状态：已接受（用户授权执行 R1）。实现状态：已实现、已验证。
-范围：`structured.py`、`structured_codec.py` 及对应测试、说明。关联：[R1 计划](../../../docs/todo.md#refactoring-plan)。
+范围：`structured.py`、`structured_codec.py` 及对应测试、说明。关联：[R1 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 
 > 后继变更：[ADR-004](../../2026-09-14-json-schema-dialect.md) 独立替代下文“保留不同 draft”及“仅标准库/jsonschema 依赖”条款；codec 现在通过 shared 契约固定 2020-12。纯函数与编排分离决定继续有效。
 

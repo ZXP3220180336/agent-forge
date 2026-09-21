@@ -1,7 +1,7 @@
 # LLM-ADR-018：请求执行边界与 Facade 编排分离
 
 日期：2026-09-15。决定状态：已接受（用户授权执行 R2）。实现状态：已实现、已验证。
-范围：`llm_service.py`、`request_execution.py` 及对应测试、说明。关联：[R2 计划](../../../docs/todo.md#refactoring-plan)。
+范围：`llm_service.py`、`request_execution.py` 及对应测试、说明。关联：[R2 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 
 ## 背景与备选
 
@@ -49,7 +49,7 @@ Facade 可以按流式、非流式和结构化通道阅读，请求执行的副�
 - `request_execution.py` 已接入 `LLMService` 的流式与非流式真实调用链；测试 patch 路径随定义迁移。
 - 定向回归覆盖 Facade、预算与配额、整流和流消费边界，共 91 项通过。
 - 全量 1204 项通过；文档对齐、差异检查及独立审查通过，结果回填
-  [R2 计划](../../../docs/todo.md#refactoring-plan)。
+  [R2 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 - 当前代码、文档和测试映射见 [ALIGNMENT](../../../docs/ALIGNMENT.md)。
 
 ## 关联资料

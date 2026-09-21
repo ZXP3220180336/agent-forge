@@ -24,7 +24,7 @@ LLM 的 messages 中出现两次。既有测试的会话替身始终返回空历
 失败测试先观察到当前文本出现 2 次；修复后只出现 1 次。ContextManager 单元测试同时验证快照 ID
 被传至数据访问边界，ChatService 测试验证同会话兄弟运行的消息边界与无效主键失败，聊天闭环测试
 验证保存、上下文与最终回复仍按原顺序工作。实际测试结果见
-[R6 评审](../../../docs/todo.md#refactoring-plan)。
+[R6 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 
 ## 关联记录
 

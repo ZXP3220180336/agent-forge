@@ -1,7 +1,7 @@
 # LLM-ADR-019：单流消费与整流策略分离
 
 日期：2026-09-15。决定状态：已接受（用户授权执行 R3）。实现状态：已验证。
-范围：`streaming_rectifier.py`、`stream_consumption.py` 及对应测试、说明。关联：[R3 计划](../../../docs/todo.md#refactoring-plan)。
+范围：`streaming_rectifier.py`、`stream_consumption.py` 及对应测试、说明。关联：[R3 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 
 ## 背景与备选
 
@@ -47,7 +47,7 @@ Reservation 语义。流消费模块不合并 tool calls，不提交日志，不
 - 新增直接测试覆盖 chunk/终止同刻、cancel 优先级、EOF 后终止、idle、消费者 `aclose` 和
   跨 chunk 接缝；原整流、请求预算和 Facade 测试继续覆盖跨组件 Owner。
 - R3 定向回归 89 项通过；全量回归 1213 项通过，仅有一条既有 Starlette/httpx 弃用提示；
-  文档对齐、模块编译、差异检查与独立复核结果见 [R3 计划](../../../docs/todo.md#refactoring-plan)。
+  文档对齐、模块编译、差异检查与独立复核结果见 [R3 归档](../../../docs/history/completed-work.md#refactoring-plan)。
 - 当前代码、文档和测试映射见 [ALIGNMENT](../../../docs/ALIGNMENT.md)。
 
 ## 关联资料

@@ -58,7 +58,7 @@
 
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
-| 为全量测试指定临时目录 | R1 曾遗漏父目录，并将 basetemp 放入链接检查器排除的 `.pytest-tmp`，使环境失败掩盖测试目标。先核对父目录、权限及被测代码的路径过滤；仓库自检前先登记新模块，不能改断言绕过环境问题。 | 2026-09-14 [R1 验证记录](todo.md#refactoring-plan)；[部署与验证](project/deployment.md)、[项目工作流](engineering/project-workflow.md#verification)。 |
+| 为全量测试指定临时目录 | R1 曾遗漏父目录，并将 basetemp 放入链接检查器排除的 `.pytest-tmp`，使环境失败掩盖测试目标。先核对父目录、权限及被测代码的路径过滤；仓库自检前先登记新模块，不能改断言绕过环境问题。 | 2026-09-14 [R-01 归档](history/completed-work.md#refactoring-plan)；[部署与验证](project/deployment.md)、[项目工作流](engineering/project-workflow.md#verification)。 |
 | 根据语法印象或参数名定性 bug | 工具评审曾将 Python 3.14 支持的异常写法误认作 Python 2 残留；head/tail 截断的 marker 是否计入长度亦取决于组件契约。先核对实际解释器与组件约定。 | [工具六组件 ADR](../adr/integration/tools/2026-08-17-six-component-alignment.md)、[完成记录](history/completed-work.md)（细节出自原教训，无独立 Issue）；[工程规范](engineering/ai-engineering-rules.md)。 |
 | fake DB、缓存、配置或异步容器测试 | fake 的返回协议、缓存状态和查询判别曾使断言未到目标分支；真实 `.env` 还曾使工具测试意外访问网络。异步 initialize 未等待则产生假启动失败。 | [测试迁移记录](history/completed-work.md)（原交接无独立 Issue）；[项目工作流](engineering/project-workflow.md)。 |
 | 工作区行尾或提交门禁报 “would be reformatted” | 混行尾在 git 里**不可见**：git 按归一化后的内容比较，`status`/`diff`/`add` 与干净版本一致，所以每轮改完都复现、每轮都要重新排查。根因是仓库未声明行尾约定，工作区 CRLF 来自 Git for Windows 的系统级 `core.autocrlf=true`，与多数写入工具默认输出的 LF 相反；只有 `ruff format --check` 读工作区字节时才暴露。修复应把约定写进 `.gitattributes`（`eol=lf` 覆盖 `core.autocrlf`）并一次性统一工作区，而不是每轮事后跑 `ruff format`。统一后须用 `git add --renormalize .` 刷新索引 stat 缓存，否则 `git status` 会对每个文件报假改动（内容哈希实际与 HEAD 相同）。排查行尾时先隔离变量：确认是哪个写入路径产生 LF，不能笼统归因给“编辑器”。 | 2026-09-19 行尾统一；[部署说明](project/deployment.md#行尾约定lf)、[项目工作流](engineering/project-workflow.md)。 |

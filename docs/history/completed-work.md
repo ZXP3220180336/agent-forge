@@ -4,6 +4,31 @@
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
 
+<a id="refactoring-plan"></a>
+
+## 2026-09-21：R-01 代码职责与编排边界重构归档（R1～R6）
+
+2026-09-14 立项，目标是降低领域推理、LLM 调用与聊天主链路的阅读和修改成本；用户先后授权 R1～R4 与 R6，R5 因 [C-02](../todo.md#c-02-lifecycle) 未闭环被暂缓。范围依据是当时对 `app/` 131 个 Python 文件、18,353 行的静态扫描，据此排出主范围文件（`react.py`、`planner.py`、`reflection.py`、`streaming_rectifier.py`、`llm_service.py`、`structured.py`、`tools/executor.py`、`api/routes/chat.py`）。行数含空行、注释与文档字符串，是该轮快照而非验收阈值，各批完成后均已变化。R5 的结构目标已由 C-02 Piece③④⑤ 一并交付，故 R-01 整体关闭。
+
+| 批次 | 交付与现行记录 |
+| --- | --- |
+| R1 结构化纯逻辑 | 新增 `structured_codec.py`，`structured.py` 保留调用、usage、降级与错误边界；[LLM-ADR-017](../../adr/integration/llm/2026-09-14-structured-codec-boundary.md) |
+| R2 请求执行 | 新增 `request_execution.py`，Facade 保留公开通道与最终结算；[LLM-ADR-018](../../adr/integration/llm/2026-09-15-request-execution-boundary.md) · [组件说明](../integration_doc/llm_doc/request_execution.md) |
+| R3 单流消费 | 新增 `stream_consumption.py`，整流器保留预算、续接与唯一结算；[LLM-ADR-019](../../adr/integration/llm/2026-09-15-stream-consumption-boundary.md) |
+| R4 策略纯边界 | 新增 `_planner_steps.py`、`_react_protocol.py` 与 Reflection 阶段方法，未引入共享 State 或 Policy；[策略纯边界 ADR](../../adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md) |
+| R5 工具与批次 | 未单独执行，结构目标由 C-02 Piece③④⑤ 兑现（`admission.py`、`execution.py`、`executor.py` 的准备/尝试/完成分段、`tool_batch.py`）；状态见 [C-02 Piece③④⑤ 规格](../todo.md#c-02-implementation-pieces) |
+| R6 聊天用例 | 新增 `app/application/chat/chat_service.py`，路由只保留 HTTP/SSE 与断连适配；[ChatRun ADR](../../adr/application/chat/2026-09-16-chat-run-owner.md) · [CHAT-001](../../issues/application/chat/2026-09-16-current-message-duplicated.md) |
+
+各批历史验证数为 R1 定向 62／全量 1046、R2 91／1204、R3 89／1213、R4 250／1230、R6 73／1247，均为当时记录，治理收尾未重跑。
+
+当时确认必须保留的契约差异（各自已有 ADR 承载，此处只留结论）：Planner 仍按串行步骤执行、不引入 DAG 调度，Planner 与 Reflection 的报告 schema 同构但独立发布；三策略的空输出、LLM 失败、协议修复、停滞与重规划计数各有语义，不合并为统一 RetryPolicy；Reflection 自查通过后的 after-turn 取消与 strict deadline 语义不同（[ADR-003](../../adr/2026-09-12-sdk-call-guard-response-commit.md)）；协议与 SSE 提交仍由原责任层控制。
+
+范围治理另评估了两个次级候选与三项可选重构（`session_manager` 481 行、`container.py` 383 行、大型测试文件整理）以及若干「保留」「不纳入」判断，均未纳入执行，触发条件未重新确认，当前不进入候选清单；Memory 与 CoT 的进度另由 [L-01](../todo.md#l-01-domain-layer) 维护。
+
+R4 复核另列出四项既有边缘行为未纳入该轮（Planner 空描述步骤的依赖编号、`final_answer` 与普通工具混用、反向 `finish_reason` 不一致、畸形 function 载荷），当时理由是它们没有已确认的新行为契约；边界与理由见 [策略纯边界 ADR](../../adr/domain/reasoning/2026-09-16-strategy-pure-boundaries.md)。后续两项已另行关闭：畸形调用结构由 2026-09-20 D4 修复（缺 `function` 的调用按未注册工具失败回喂），`final_answer` 与普通工具混用由 C-02 Piece⑤ 在写协议历史前拒绝；其余两项至今没有独立行为契约，需要时按新任务重新确认。
+
+R-01 期间的实际纠正均归入正式位置：异步生成器逐层关闭传播见 [LLM-ADR-019](../../adr/integration/llm/2026-09-15-stream-consumption-boundary.md)，聊天历史快照边界见 [CHAT-001](../../issues/application/chat/2026-09-16-current-message-duplicated.md)，ASGI `spec_version` 2.3/2.4 双分支覆盖与 R1 临时目录经验见 [lessons](../lessons.md)。各批独立复核的细节只保留在其 ADR 的验证章节。R-01 未改变公开契约、配置、部署或模块映射，因此无需修改 ALIGNMENT。
+
 <a id="s-01-schema-dialect"></a>
 
 ## 2026-09-15：本地 JSON Schema 版本统一（S-01/S-02）
