@@ -204,5 +204,8 @@ Piece⑤ 复核列出的 9 项遗留已全部关闭，**均无独立 Issue**，�
 | R-02 Agent 基类契约与桥接整理 | [AGENT-001](../../issues/domain/agent/2026-09-16-base-contract-drift.md) · [BaseAgent 契约 ADR](../../adr/domain/agent/2026-09-16-base-agent-contract.md) |
 | R-03 Reasoning 执行参数语义分组 | [REASON-026](../../issues/domain/reasoning/2026-09-16-execute-parameter-drift.md) · [参数分组 ADR](../../adr/domain/reasoning/2026-09-16-semantic-execution-parameters.md) |
 | W-03 遗留容器导出死代码 | [TOOLS-060](../../issues/integration/tools/2026-09-19-registry-export-dead-code.md) |
+| C-13 历史查询窗口与文档一致（2026-09-17） | [SessionManager 说明](../application_doc/session_doc/session.md) |
+| C-04 无 deadline 时的流读取兜底（2026-09-21 核验已实现，未新增 Issue） | [流消费说明](../integration_doc/llm_doc/stream_consumption.md) |
+| C-05 策略层整链硬超时（2026-09-21 核验已实现，未新增 Issue） | [Planner 说明](../domain_doc/reasoning_doc/planner.md) · [Reflection 说明](../domain_doc/reasoning_doc/reflection.md) |
 
 更早 RateLimiter 审查和 reserve/settle 的完成清单只保留其现行[限流组件说明](../integration_doc/llm_doc/limiter.md)作为入口；旧 `app/services/` 路径、重复“待评审”空节和逐轮测试数不另存一份。

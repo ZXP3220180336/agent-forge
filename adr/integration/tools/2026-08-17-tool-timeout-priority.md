@@ -16,7 +16,7 @@
 
 ## Decision
 
-> **后继条款（2026-09-13）**：[TOOLS-ADR-008 D4](2026-09-13-tool-execution-lifecycle.md#d4-取消期限及公开出口)保留本记录的默认 timeout 选择优先级，并增加运行绝对 deadline 上界。“不设全局 cap”不再解释为可以突破总执行期限。后继方向已接受、实施细节待评审，尚未完成代码迁移。
+> **后继条款（2026-09-13）**：[TOOLS-ADR-008 D4](2026-09-13-tool-execution-lifecycle.md#d4-取消期限及公开出口)保留本记录的默认 timeout 选择优先级，并增加运行绝对 deadline 上界。“不设全局 cap”不再解释为可以突破总执行期限。后继方向已接受并落地（2026-09-21 核验）：`call.deadline`/`cleanup_deadline` 经 ToolGateway 贯穿到 Admission 与 Executor，排队与退避同受运行期限约束，到期抛 `ToolDeadlineExceededError`；本地 timeout 与运行期限竞速取先到者，故单次 timeout 不会突破总执行期限。
 
 **给 `BaseTool` 新增 `timeout` 属性（默认 None），作为「工具自声明的默认超时」，executor 超时解析优先级：调用方显式传入 > 工具自声明 > 全局配置。**
 

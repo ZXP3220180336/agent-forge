@@ -17,7 +17,6 @@
 | docs/ALIGNMENT.md | [对齐表](ALIGNMENT.md)，保留路径与表结构 |
 | docs/todo.md | [活动计划](todo.md)，已完成的独特交接信息归 [完成记录](history/completed-work.md) |
 | docs/lessons.md | [教训](lessons.md)，重复规则改为正式正文链接 |
-| 临时领域计划 | [历史设计记录](history/domain-layer-plan.md)，不作为当前待办 |
 | 原模块说明、ADR、Issue | 保留原有正式目录；导航见 [完整目录](catalog.md) |
 
 新增 [文档维护 Skill](../skills/documentation-maintenance/SKILL.md)负责说明、决策、问题、计划和教训；根入口按 Trigger 要求读取。三份写作规范只留各自模板，共用规则在同目录 README；记录类规则在 records.md，各索引不再抄写登记规范。

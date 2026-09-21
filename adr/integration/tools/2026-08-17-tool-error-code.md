@@ -16,7 +16,7 @@
 
 ## Decision
 
-> **后继条款（2026-09-13）**：[TOOLS-ADR-008 D2/D4](2026-09-13-tool-execution-lifecycle.md#d2-身份事实与控制分离)保留本记录的错误归因用途，增加调用终止与副作用确定性契约；不能再用单一 UNKNOWN 或 success=False 推断未执行。后继方向已接受、实施细节待评审，当前六种错误码的运行接口尚未迁移。
+> **后继条款（2026-09-13）**：[TOOLS-ADR-008 D2/D4](2026-09-13-tool-execution-lifecycle.md#d2-身份事实与控制分离)保留本记录的错误归因用途，增加调用终止与副作用确定性契约；不能再用单一 UNKNOWN 或 success=False 推断未执行。后继方向已接受并落地（2026-09-21 核验）：错误码已在运行路径使用并增至七码（另加 `CAPACITY_EXCEEDED`），`ToolResult.effect_state` 与三态 `ToolFact` 表达副作用确定性；以 `success=False` 或 `UNKNOWN` 推断「未执行」的运行路径已消除，改由事实判定（仅 `NOT_STARTED` 报未执行）。
 
 **引入 `ErrorCode`（StrEnum，系统级 6 码）+ `ToolResult.error_code` 可选字段 + executor 各失败路径带码 + 审计记录。工具业务错误默认 None（error 字符串承载 LLM 归因）。**
 

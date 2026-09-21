@@ -6,11 +6,10 @@
 
 ## R-01：代码职责与编排边界重构（R1～R4、R6 已完成；R5 随 C-02 暂缓）
 
-日期：2026-09-14。目标：降低推理、LLM 调用和聊天主链路的阅读与修改成本，让编排入口表达阶段与转换，让协议处理、资源与成果接管有明确归属，服务良率 RCA 的拆分、排查与证据报告交付。
-
+**日期**：2026-09-14。
+**目标**：降低推理、LLM 调用和聊天主链路的阅读与修改成本，让编排入口表达阶段与转换，让协议处理、资源与成果接管有明确归属，服务良率 RCA 的拆分、排查与证据报告交付。
 **授权边界**：用户已先后授权执行 R1～R4 与 R6；因 [C-02](#c-02-lifecycle) 尚未闭环，用户明确要求暂不执行 R5。本轮只实施聊天用例迁移及必要验证、文档同步，不借 R6 改动工具生命周期。现有 C-02 的决定、进度和授权边界保持独立；本计划不重开 Piece ①②，不将 Piece ③～⑧纳入本次结构重构。
-
-规范入口：[产品](project/product.md)、[工程 Gate 与最小结构变化](engineering/ai-engineering-rules.md#abstraction)、[工作流](engineering/project-workflow.md)、[编码规范文档](engineering/编码规范文档.txt)。2026-09-14 已按用户提供的目录找到并读取编码规范，来源状态统一见[来源核对记录](../issues/documentation/2026-09-12-reference-gaps.md#外部来源边界)；不复制规范正文，也不据此宣称现有代码已全部合规。
+**规范入口**：[产品](project/product.md)、[工程 Gate 与最小结构变化](engineering/ai-engineering-rules.md#abstraction)、[工作流](engineering/project-workflow.md)、[编码规范文档](engineering/编码规范文档.txt)。2026-09-14 已按用户提供的目录找到并读取编码规范，来源状态统一见[来源核对记录](../issues/documentation/2026-09-12-reference-gaps.md#外部来源边界)；不复制规范正文，也不据此宣称现有代码已全部合规。
 
 ### 范围依据与取舍
 
@@ -24,7 +23,7 @@
 | `app/integration/llm/streaming_rectifier.py` | 1,020 行；`rectified_stream` 229 行；策略与单流读取、看门狗、chunk 累积、接缝、结算混合。 | 分离单流消费；整流器继续拥有重试、续接和结算决策。 |
 | `app/integration/llm/llm_service.py` | 722 行；`_plan_request` 130 行；Facade 混入请求构造、配额选择、请求闭包与 Reservation 转移。 | 提取内部请求执行，保留公开 API、异常翻译、结果通道与成本/计数代理。 |
 | `app/integration/llm/structured.py` | 843 行；纯 schema/JSON 处理与降级、截断扩容、校验回喂混合。 | 先提取无 I/O 的解析校验函数，调用及预算继续留在原组件。 |
-| `app/integration/tools/executor.py` | 641 行；`_execute_impl` 144 行、`_execute_with_retry` 198 行；准备、许可、尝试、事实与观测收尾交织。（该两方法已在 C-02 Piece③④ 拆分为准备 / 单次尝试 / 完成阶段，当前不再存在；文件现为 875 行。） | 合并到 C-02 Piece ③④；采用已有 ADR 的准入与执行接管边界。 |
+| `app/integration/tools/executor.py` | 641 行；`_execute_impl` 144 行、`_execute_with_retry` 198 行；准备、许可、尝试、事实与观测收尾交织。（`_execute_impl` 已在 C-02 Piece③④ 拆分为 `_prepare_call` / `_run_attempt` / `_complete_call`，当前不再存在；`_execute_with_retry` 仍在，保留为尝试循环与重试次数 Owner；文件现为 875 行。） | 合并到 C-02 Piece ③④；采用已有 ADR 的准入与执行接管边界。 |
 | `app/api/routes/chat.py` | 196 行；`send_message` 139 行；HTTP/SSE 与会话校验、Agent 创建、运行登记、上下文、结果保存同处。 | 迁移聊天用例到 Application，路由保留传输适配与断连信号转换。 |
 
 以上是结构治理价值排序的候选集合，不是缺陷严重度清单。优先提取有语义的函数或现有类方法；新对象须有独立生命周期、状态所有权或真实变化原因。采用前轮已核查的 [Extract Function](https://refactoring.com/catalog/extractFunction.html) 与 [Extract Class](https://refactoring.com/catalog/extractClass.html) 手法，不新增通用框架。若实施形成新的结构性决定，按记录规范写入对应 ADR；工具结构继续引用 [TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)，不另设竞争正文。
@@ -76,12 +75,12 @@ R6 预检与流执行分阶段：当前 `chat.py::send_message` 在构造 `Strea
 
 | 候选 / 决定 | 触发与边界 |
 | --- | --- |
-| `app/application/session/session_manager.py`（484 行）/ 可选 | 先清理非执行示例与重复查询表达，再根据数据访问变化和测试成本评估 Repository/CachePort；完整持久化分层不是本期前置条件，不改查询/缓存语义。 |
-| `app/container.py`（365 行，`initialize` 255 行）/ 可选 | 可按基础设施、LLM、工具、应用提取装配方法；R5/R6 只进行必要接线，不自动开展全文件重构或引入 DI 框架。 |
+| `app/application/session/session_manager.py`（481 行，2026-09-21 实测）/ 可选 | 先清理非执行示例与重复查询表达，再根据数据访问变化和测试成本评估 Repository/CachePort；完整持久化分层不是本期前置条件，不改查询/缓存语义。 |
+| `app/container.py`（383 行，`initialize` 271 行；2026-09-21 实测）/ 可选 | 可按基础设施、LLM、工具、应用提取装配方法；R5/R6 只进行必要接线，不自动开展全文件重构或引入 DI 框架。 |
 | `settings.py`、`retry.py`、`reservation_limiter.py` / 保留 | 声明式配置或已有清晰对象职责；当前没有足够证据仅按文件体量拆分。 |
 | ToolService、Loader、Agent 桥接、提示词预算载荷、工具解析器 / 保留 | 现有职责可辨认；只做所属批次必需联动，不扩建插件平台或共享管理器。 |
 | 大型测试文件 / 可选 | 可随对应批次按行为主题整理，保留用例和 fixture 语义；不作为生产重构完成标准，不为搬家增加镜像测试。 |
-| Memory/CoT 占位、队列平台、分布式调度、全库配置整理 / 不纳入 | 没有本次主链路需求与授权；不按历史 TODO 或架构蓝图建设。 |
+| Memory/CoT 占位、队列平台、分布式调度、全库配置整理 / 不纳入本计划 | 没有本次主链路需求与授权；不按历史 TODO 或架构蓝图建设。Memory 与 CoT 的独立进度与触发条件见 [L-01](#l-01-domain-layer)。 |
 
 ### 进度与评审
 
@@ -97,19 +96,29 @@ R6 预检与流执行分阶段：当前 `chat.py::send_message` 在构造 `Strea
 - [x] R6：消息快照、首事件前失败、消费者关闭和 ASGI 发送失败回归完成。
 - [x] R6：定向与全量回归、独立生命周期复核、结构文档及对齐检查完成。
 
-R1 文件分工：`structured_codec.py` 承担无 I/O 的转换与校验，`structured.py` 保留日志/异常翻译和运行编排，`test_generate_structured.py` 保护公开调用行为；`docs/integration_doc/llm_doc/structure.md` 维护内部边界，`llm.md` 与集成层 README 更新结构导航，ALIGNMENT 登记新模块；LLM ADR 及索引记录函数模块分离的取舍，本计划追踪执行证据。校验器异常的日志责任留在原模块，codec 不引入 logger/配置/LLM 依赖。后继变更见 [ADR-004](../adr/2026-09-14-json-schema-dialect.md)：三级本地校验已统一为固定 Draft 2020-12（原「前两级 Draft7Validator 与 fallback 的 jsonschema.validate 语义分别保留」条款由该 ADR 替代）。
+**2026-09-21 计划核验**：对照代码逐项核对本节。六个新模块（`structured_codec.py`、`request_execution.py`、`stream_consumption.py`、`_planner_steps.py`、`_react_protocol.py`、`app/application/chat/chat_service.py`）与四个 ADR 均存在，且都已登记 ALIGNMENT；R6 的三条边界（路由只留 HTTP/SSE 与断连适配、`TaskService` 显式关闭子生成器、历史按 `id < current_message_id` 固定快照）经代码确认属实。据核实修正两处：**执行方法拆分范围**——`_execute_impl` 已拆为 `_prepare_call` / `_run_attempt` / `_complete_call`，但 `_execute_with_retry` 仍在，是尝试循环与重试次数 Owner；**次级候选两处行数**按当日实测更新。主范围表各行数保持不变，仍按上文声明作为 2026-09-14 的范围依据。
 
-R1 实施评审（2026-09-14）：采用 E9 的独立数据策略边界，按 E6 核对校验器异常与观测包装；没有新增运行状态、重试或所有权迁移，E3/E4/E5/E7 无新增变化。原类所有方法经引用名归一和去除文档字符串后 AST 与 HEAD 一致，独立代码审查未发现可证实行为漂移。新增源文件为 UTF-8/LF，生产改动行未超过 120 字符；未修改调用方配置或公共 Facade。
+**R1 文件分工**：
 
-实际验证：`.venv/Scripts/python.exe -m pytest tests/unit/test_generate_structured.py -q -p no:cacheprovider` 基线 60 项，补测及拆分后 62 项通过；完整运行 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r1-all-tests`，1046 项通过（40.97 秒）。存在一条 Starlette/httpx 弃用提示，不属于本次改动。文档校验使用 `.venv/Scripts/python.exe -m scripts.verify_alignment`，差异检查使用 `git diff --check`，均通过。
+- `structured_codec.py` 承担无 I/O 的转换与校验，
+- `structured.py` 保留日志/异常翻译和运行编排，
+- `test_generate_structured.py` 保护公开调用行为；
+- `docs/integration_doc/llm_doc/structure.md` 维护内部边界，
+- `llm.md` 与集成层 README 更新结构导航，ALIGNMENT 登记新模块；
+- LLM ADR 及索引记录函数模块分离的取舍，本计划追踪执行证据。校验器异常的日志责任留在原模块，codec 不引入 logger/配置/LLM 依赖。
+- 后继变更见 [ADR-004](../adr/2026-09-14-json-schema-dialect.md)：三级本地校验已统一为固定 Draft 2020-12（原「前两级 Draft7Validator 与 fallback 的 jsonschema.validate 语义分别保留」条款由该 ADR 替代）。
 
-验证环境说明：早期全量尝试受到未创建的临时目录父路径、沙箱子进程限制和当时尚未登记的新模块影响；补齐后 1045 项通过，剩余链接测试因临时路径包含检查器排除目录 `.pytest-tmp` 而未进入目标。改用任务临时目录并在允许子进程的环境完成最终全量验证，未跳过测试或修改测试断言；经验见 [lessons](lessons.md)。该说明只记录 R1 验证；R2 结果见本节后续评审。
+**R1 实施评审（2026-09-14）**：采用 E9 的独立数据策略边界，按 E6 核对校验器异常与观测包装；没有新增运行状态、重试或所有权迁移，E3/E4/E5/E7 无新增变化。原类所有方法经引用名归一和去除文档字符串后 AST 与 HEAD 一致，独立代码审查未发现可证实行为漂移。新增源文件为 UTF-8/LF，生产改动行未超过 120 字符；未修改调用方配置或公共 Facade。
 
-首次整理验证：`uv run python -m scripts.verify_alignment` 与 `git diff --check` 通过；回填后 `uv run` 遇到缓存访问拒绝，改用已有虚拟环境执行同一检查模块，通过。统计与方法跨度为静态分析证据，未运行业务测试。
+*实际验证*：`.venv/Scripts/python.exe -m pytest tests/unit/test_generate_structured.py -q -p no:cacheprovider` 基线 60 项，补测及拆分后 62 项通过；完整运行 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r1-all-tests`，1046 项通过（40.97 秒）。存在一条 Starlette/httpx 弃用提示，不属于本次改动。文档校验使用 `.venv/Scripts/python.exe -m scripts.verify_alignment`，差异检查使用 `git diff --check`，均通过。
 
-再次审核（2026-09-14）：主执行者与独立子智能体对照源码及 C-02，未发现 R2/R3 所有权或 R5 规格冲突；补齐 R6 流前预检、真实 HTTP 验证、首事件前失败及生成器关闭的回归入口。原先只在计划声明编码规范已找到，遗漏了未跟踪文件与正式来源状态：本次将用户原文件纳入提交，更新工程导航、原来源记录及其索引，并将经验补入既有 lessons 条目。未改变模块映射、配置、部署或 C-02 正文，无需更新 ALIGNMENT 或模块说明。修订后运行 `.venv/Scripts/python.exe -m scripts.verify_alignment` 与 `git diff --check` 均通过，另核对 C-02 原文、计划锚点、测试路径和扫描统计，结果一致。上述遗漏已补齐，计划可提交；本轮未运行业务测试，代码实施仍未开始。
+*验证环境说明*：早期全量尝试受到未创建的临时目录父路径、沙箱子进程限制和当时尚未登记的新模块影响；补齐后 1045 项通过，剩余链接测试因临时路径包含检查器排除目录 `.pytest-tmp` 而未进入目标。改用任务临时目录并在允许子进程的环境完成最终全量验证，未跳过测试或修改测试断言；经验见 [lessons](lessons.md)。该说明只记录 R1 验证；R2 结果见本节后续评审。
 
-R2 文档漂移修正（2026-09-15，用户已授权）：
+*首次整理验证*：`uv run python -m scripts.verify_alignment` 与 `git diff --check` 通过；回填后 `uv run` 遇到缓存访问拒绝，改用已有虚拟环境执行同一检查模块，通过。统计与方法跨度为静态分析证据，未运行业务测试。
+
+*再次审核（2026-09-14）*：主执行者与独立子智能体对照源码及 C-02，未发现 R2/R3 所有权或 R5 规格冲突；补齐 R6 流前预检、真实 HTTP 验证、首事件前失败及生成器关闭的回归入口。原先只在计划声明编码规范已找到，遗漏了未跟踪文件与正式来源状态：本次将用户原文件纳入提交，更新工程导航、原来源记录及其索引，并将经验补入既有 lessons 条目。未改变模块映射、配置、部署或 C-02 正文，无需更新 ALIGNMENT 或模块说明。修订后运行 `.venv/Scripts/python.exe -m scripts.verify_alignment` 与 `git diff --check` 均通过，另核对 C-02 原文、计划锚点、测试路径和扫描统计，结果一致。上述遗漏已补齐，计划可提交；本轮未运行业务测试，代码实施仍未开始。
+
+**R2 文档漂移修正（2026-09-15，用户已授权）**：
 
 - [x] 修正 ADR-018 的薄委托描述，明确 Facade 直接调用 `build_request_plan`。
 - [x] 同步组件说明的调用图、编排表和包内接口清单。
@@ -119,11 +128,7 @@ R2 文档漂移修正（2026-09-15，用户已授权）：
 重构前基线及 ADR 勘误中。`scripts.verify_alignment` 与 `git diff --check` 通过。
 已新增组件说明并同步层级 README、模块目录、ALIGNMENT 映射及限流交叉引用；纯文档修正未重跑业务测试。
 
-R2 实施评审（2026-09-15）：`request_execution.py` 接管请求参数、计划以及每笔 provider create
-的预算、预留、执行控制和调用阶段结算；`LLMService` 保留公开通道、响应接管、最终 usage
-结算、异常翻译与事件提交。主请求/续接使用原 `model_key`，fallback 使用独立 `"fallback"`
-键和配额池，三者共享单次调用的 `active`；create 前终止仍 `cancel()`，create 调度后未知结果
-仍 `settle(None)`，成功或迟回值仍移交通道 Owner。未改变 retry、整流或续接次数。
+**R2 实施评审（2026-09-15）**：`request_execution.py` 接管请求参数、计划以及每笔 provider create 的预算、预留、执行控制和调用阶段结算；`LLMService` 保留公开通道、响应接管、最终 usage 结算、异常翻译与事件提交。主请求/续接使用原 `model_key`，fallback 使用独立 `"fallback"` 键和配额池，三者共享单次调用的 `active`；create 前终止仍 `cancel()`，create 调度后未知结果仍 `settle(None)`，成功或迟回值仍移交通道 Owner。未改变 retry、整流或续接次数。
 
 独立复核逐段对照 HEAD，未发现代码、G0 生命周期或依赖方向问题；发现并修正整流文档两处旧
 Owner 表述。定向命令覆盖 `test_llm_service.py`、`test_llm_request_budget.py`、
@@ -135,11 +140,8 @@ Owner 表述。定向命令覆盖 `test_llm_service.py`、`test_llm_request_budg
 残余验证边界是 provider 与 Reservation 使用测试替身，未发起真实计费网络调用；R2 是结构拆分，
 不需要为验证制造外部副作用。
 
-R3 实施评审（2026-09-15）：`stream_consumption.py` 接管单个 provider response 的逐 chunk
-读取、解析后累积、SSE 构造、cancel/deadline/idle 竞争、续接接缝和提前关闭；
-`StreamingRectifier` 保留 attempt/续接循环、恢复判定、退避、tool-call 最终合并、熔断、日志、
-`active` 与 Reservation 唯一结算。消费函数显式接收结果、attempt 内 tool deltas、控制信号和
-看门狗阈值，不读取整流器私有上下文，也不依赖 retry、limiter 或请求执行组件。
+**R3 实施评审（2026-09-15）**：`stream_consumption.py` 接管单个 provider response 的逐 chunk 读取、解析后累积、SSE 构造、cancel/deadline/idle 竞争、续接接缝和提前关闭；
+`StreamingRectifier` 保留 attempt/续接循环、恢复判定、退避、tool-call 最终合并、熔断、日志、`active` 与 Reservation 唯一结算。消费函数显式接收结果、attempt 内 tool deltas、控制信号和看门狗阈值，不读取整流器私有上下文，也不依赖 retry、limiter 或请求执行组件。
 
 竞争顺序保持为已完成 chunk 事实接管 → cancel → deadline → 事件产出；EOF 后仍复查终止，
 idle 仅在 chunk 与终止均未完成时成立。非自然退出主动关闭 response，每轮读取与终止等待任务
@@ -152,60 +154,35 @@ idle 仅在 chunk 与终止均未完成时成立。非自然退出主动关闭 r
 Facade、主流与续接三条测试均验证 response close 发生在 Reservation settle 前。复核提出的新文档 EOF 空行也已删除，经验已更新到
 [lessons](lessons.md)。修复后再次检查，未发现其余行为迁移、结算、依赖或文档映射问题。
 
-实际验证：R3 定向命令覆盖 `test_stream_consumption.py`、`test_streaming_rectifier.py`、
+*实际验证*：R3 定向命令覆盖 `test_stream_consumption.py`、`test_streaming_rectifier.py`、
 `test_llm_request_budget.py`、`test_stream_rectify.py`，89 项通过；完整运行
 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r3-all-tests-facade`，
 1213 项通过（44.57 秒），仅有既有 Starlette/httpx 弃用提示。文档对齐、模块编译和已跟踪/未跟踪
 文件的差异格式检查均通过。真实 provider 与计费网络调用未执行，结构重构由本地解析、控制与
 结算测试保护。按用户要求，本批保留为未提交工作区。
 
-R4 实施评审（2026-09-16）：采用两个包内纯函数组件和 Reflection 原类内两个阶段方法，没有引入
-共享 State、Policy 或通用策略执行框架。`_planner_steps.py` 只转换步骤、计划快照与单步审计记录；
-Planner 继续拥有串行子运行、replan 预算、父子控制、usage/工具事实接管和完整/部分提交。
-`_react_protocol.py` 只处理 final_answer、批内调用身份与动作指纹；ReAct 继续拥有消息历史、协议修正
-预算、真实工具批次、Guard、usage 和终态。Reflection 在修正调用归账后先接管非空完整稿及完成
-轮数，再执行取消、期限、成本和上下文 Guard；`_critique`、`_refine` 与唯一 done 责任未移动。
+**R4 实施评审（2026-09-16）**：采用两个包内纯函数组件和 Reflection 原类内两个阶段方法，没有引入共享 State、Policy 或通用策略执行框架。`_planner_steps.py` 只转换步骤、计划快照与单步审计记录；Planner 继续拥有串行子运行、replan 预算、父子控制、usage/工具事实接管和完整/部分提交。`_react_protocol.py` 只处理 final_answer、批内调用身份与动作指纹；ReAct 继续拥有消息历史、协议修正预算、真实工具批次、Guard、usage 和终态。Reflection 在修正调用归账后先接管非空完整稿及完成轮数，再执行取消、期限、成本和上下文 Guard；`_critique`、`_refine` 与唯一 done 责任未移动。
 
-结构迁移保持 Planner replan、Reflection refine 和 ReAct 协议修正的既有 0/1/N 上界与重置点；
-子 ReAct 继续继承同一 run_id/run_stop/workflow/cancel，并按父级剩余时长与累计 baseline usage
-运行。R5 的 ToolBatchCollector、真实工具执行、批次/operation 身份、事实 revision 和协议历史
-提交均未迁移。
+结构迁移保持 Planner replan、Reflection refine 和 ReAct 协议修正的既有 0/1/N 上界与重置点；子 ReAct 继续继承同一 run_id/run_stop/workflow/cancel，并按父级剩余时长与累计 baseline usage 运行。R5 的 ToolBatchCollector、真实工具执行、批次/operation 身份、事实 revision 和协议历史提交均未迁移。
 
-实际验证：实施前六个策略/Agent 基线 196 项通过；R4 合并定向套件覆盖 Planner、Reflection、
-ReAct 双通道、Agent 桥接、父子运行事实、生成器所有权和工具事实，250 项通过。完整运行
-`.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r4-all-tests`，
+*实际验证*：实施前六个策略/Agent 基线 196 项通过；R4 合并定向套件覆盖 Planner、Reflection、ReAct 双通道、Agent 桥接、父子运行事实、生成器所有权和工具事实，250 项通过。完整运行`.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r4-all-tests`，
 1230 项通过（47.46 秒），仅有既有 Starlette/httpx 弃用提示。最终文档对齐、编译与差异格式
 检查通过。独立复核未发现生产代码、G0 生命周期、依赖方向或 R5 越界问题；复核指出并已修正
 Planner 旧符号引用、旧 ADR 历史语义改写，以及新 ADR 缺少备选、工业参照与后果的问题。
 
-未纳入的既有边缘项：Planner 空描述步骤的依赖编号、final_answer 与普通工具混用、反向
+*未纳入的既有边缘项*：Planner 空描述步骤的依赖编号、final_answer 与普通工具混用、反向
 finish_reason 不一致及畸形 function 载荷。它们没有已确认的新行为契约，不能在纯结构重构中
 静默改变；后续若处理，须独立补失败测试并确认预期。
 
-R6 实施评审（2026-09-16）：`ChatService.prepare_message` 在响应头前完成会话 404/403、user 消息
-提交、历史快照、run 登记和每请求 Agent 创建；`ChatRun` 成为本次运行、取消登记与 assistant 提交的
-幂等 Owner。路由只负责 HTTP/SSE、断连转换、error/`[DONE]` 和传输关闭；`TaskService` 显式关闭
-Agent 子生成器。不存在或越权保持零消息、零 run、零 LLM 调用，同会话自然结束只清自己的 run，
-公开 stop 与被动断连仍按 session 取消全部活动运行。
+**R6 实施评审（2026-09-16）**：`ChatService.prepare_message` 在响应头前完成会话 404/403、user 消息提交、历史快照、run 登记和每请求 Agent 创建；`ChatRun` 成为本次运行、取消登记与 assistant 提交的幂等 Owner。路由只负责 HTTP/SSE、断连转换、error/`[DONE]` 和传输关闭；`TaskService` 显式关闭 Agent 子生成器。不存在或越权保持零消息、零 run、零 LLM 调用，同会话自然结束只清自己的 run，公开 stop 与被动断连仍按 session 取消全部活动运行。
 
-基线复现发现旧链先保存当前 user 再读历史，使当前消息进入 LLM 两次；先补失败测试后，以数据库
-消息主键 `id < current_message_id` 固定持久化快照。该边界同时排除当前消息和并发期间稍后提交的
-兄弟消息，主键缺失或非正数直接失败。独立生命周期复核还发现 ASGI `send()` 失败可绕过 body
-生成器收尾；聊天专用响应改在 `__call__` 外层关闭 body iterator 与 run，并验证后续运行可重新取得
-TaskService 信号量。两轮复核完成后未发现剩余 P0～P3 问题。
+基线复现发现旧链先保存当前 user 再读历史，使当前消息进入 LLM 两次；先补失败测试后，以数据库消息主键 `id < current_message_id` 固定持久化快照。该边界同时排除当前消息和并发期间稍后提交的兄弟消息，主键缺失或非正数直接失败。独立生命周期复核还发现 ASGI `send()` 失败可绕过 body 生成器收尾；聊天专用响应改在 `__call__` 外层关闭 body iterator 与 run，并验证后续运行可重新取得 TaskService 信号量。两轮复核完成后未发现剩余 P0～P3 问题。
 
-复核后补充（2026-09-16）：ASGI 断连用例原先只覆盖 `spec_version 2.4`，而 uvicorn 声明的是
-2.3，Starlette 按 `spec_version >= (2, 4)` 分成两条互不覆盖的路径。现已参数化覆盖两条分支，
-并注明判别力差异——2.4 参数证明响应边界清理必要，2.3 参数是路径覆盖与「无悬挂运行 / 许可可
-回收」的回归保护（其取消落点取决于生成器是否在 await 中）。同轮登记候选 [C-13](#candidates)
-承接 CHAT-001 明确排除的「历史查询取最早 N 条」边界，未改动生产代码。
+*复核后补充（2026-09-16）*：ASGI 断连用例原先只覆盖 `spec_version 2.4`，而 uvicorn 声明的是2.3，Starlette 按 `spec_version >= (2, 4)` 分成两条互不覆盖的路径。现已参数化覆盖两条分支，并注明判别力差异——2.4 参数证明响应边界清理必要，2.3 参数是路径覆盖与「无悬挂运行 / 许可可回收」的回归保护（其取消落点取决于生成器是否在 await 中）。同轮登记候选 [C-13](#candidates)承接 CHAT-001 明确排除的「历史查询取最早 N 条」边界，未改动生产代码。
 
-收尾复核同步修正了 R6 触达代码的注释与 docstring：Container 不再描述由路由构造 AgentContext；
-聊天端点按当前 Application/传输职责说明流程；ContextManager、SessionManager 与 TaskService 明确
-消息快照上界、有效主键失败和子生成器先关闭再释放并发许可的契约。
+收尾复核同步修正了 R6 触达代码的注释与 docstring：Container 不再描述由路由构造 AgentContext；聊天端点按当前 Application/传输职责说明流程；ContextManager、SessionManager 与 TaskService 明确消息快照上界、有效主键失败和子生成器先关闭再释放并发许可的契约。
 
-实际验证：R6 定向套件覆盖 ChatService、TaskService、ContextManager、SessionManager、Container、
-聊天集成与真实 HTTP 端点，73 项通过；完整运行
+*实际验证*：R6 定向套件覆盖 ChatService、TaskService、ContextManager、SessionManager、Container、聊天集成与真实 HTTP 端点，73 项通过；完整运行
 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider --basetemp=C:/Users/Administrator/.codex/visualizations/2026/09/14/01a0a037-f3aa-7fc0-963c-f3fea91e5456/r6-all-final`，
 1247 项通过（43.39 秒），仅有既有 Starlette/httpx 弃用提示。最终文档对齐、模块编译与差异格式
 检查通过。R5 与 C-02 Piece ③～⑧均未修改，本批按用户要求保留为未提交工作区。
@@ -214,13 +191,20 @@ TaskService 信号量。两轮复核完成后未发现剩余 P0～P3 问题。
 
 ## C-02：工具执行生命周期（P0 规格已形成，待实施评审）
 
-目标：从 ReAct 工具编排到 Integration 执行/清理/事实接管，再到领域协议历史和唯一终态，闭合取消、期限、有限重试及未知副作用后的准入。设计唯一正文为 [TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)，不在此复制状态与恢复规则。
+**目标**：从 ReAct 工具编排到 Integration 执行/清理/事实接管，再到领域协议历史和唯一终态，闭合取消、期限、有限重试及未知副作用后的准入。设计唯一正文为 [TOOLS-ADR-008](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md)，不在此复制状态与恢复规则。
 
 **授权边界**：用户已确认六项方向并授权完成 P0 规格及实施 piece 的文档拆分；本轮只将已讨论的 piece 写入本计划，不创建运行类、不执行数据库迁移、不提交 Git。P0-A/B 规格已形成；后续按 piece 授权实施，不将计划登记视为 P1～P5 全量代码实施授权。
 
 ### 六项定案与交付依赖
 
-六项决策及具体限制统一见 [ADR-008 Decision](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#decision)：分级持久化、分批验收、code_exec 限制及演进、安全边界协作取消、独立事实收集＋选择性异常传播、单活动进程内多 Agent/多批次共享执行。
+六项决策及具体限制统一见 [ADR-008 Decision](../adr/integration/tools/2026-09-13-tool-execution-lifecycle.md#decision)：
+
+- 分级持久化
+- 分批验收
+- code_exec 限制及演进
+- 安全边界协作取消
+- 独立事实收集＋选择性异常传播
+- 单活动进程内多 Agent/多批次共享执行。
 
 保留 P0～P5 编号便于追踪；编号不是必须串行完成的顺序：
 
@@ -255,7 +239,9 @@ TaskService 信号量。两轮复核完成后未发现剩余 P0～P3 问题。
 
 本阶段先补规格，不创建占位类。对现有消费者逐一映射：
 
-P0-A 冻结运行/批次/调用身份、独立事实入口、类型化终止、父子取消与期限、共享容量和有界排队、协作检查点及只读能力验收。P0-B 冻结持久化等级、账本迁移、恢复准入、资源身份和必要的启动排他/强制退出机制；不能把全部 P0-B 作为只读交付 A 的前置条件。
+P0-A 冻结运行/批次/调用身份、独立事实入口、类型化终止、父子取消与期限、共享容量和有界排队、协作检查点及只读能力验收。
+P0-B 冻结持久化等级、账本迁移、恢复准入、资源身份和必要的启动排他/强制退出机制；
+不能把全部 P0-B 作为只读交付 A 的前置条件。
 
 | 文件/正式位置 | 工作内容 |
 | --- | --- |
@@ -266,9 +252,9 @@ P0-A 冻结运行/批次/调用身份、独立事实入口、类型化终止、�
 
 上述原待冻结细节已在 ADR S1/S6/S7、配置与部署规格逐项给出明确方案。未来平台级升级仍按 D11/D12 触发，不能混入 P0 未完成项。初值尚无负载实测，DB/进程退出保证待 B 实施验证，不能把规格完成写成运行验收完成。
 
-部署核验结论：目前只有本地启动证据，没有生产 worker/共享文件系统声明。首期支持单活动执行进程内多 Agent、多批次并发，实际共享资源统一准入，取消与事实按所属运行隔离；不把进程内锁声称为分布式保证。如目标必须多实例共享执行，先调整部署决策。Agent 收尾有界与整个应用退出有界分别验收。
+*部署核验结论*：目前只有本地启动证据，没有生产 worker/共享文件系统声明。首期支持单活动执行进程内多 Agent、多批次并发，实际共享资源统一准入，取消与事实按所属运行隔离；不把进程内锁声称为分布式保证。如目标必须多实例共享执行，先调整部署决策。Agent 收尾有界与整个应用退出有界分别验收。
 
-验收：每个公开出口有返回/抛出及事实去向；每类工具有支持/限制结论；所有等待和后台工作有上限来源；架构依赖通过审查。
+*验收*：每个公开出口有返回/抛出及事实去向；每类工具有支持/限制结论；所有等待和后台工作有上限来源；架构依赖通过审查。
 
 <a id="c-02-implementation-pieces"></a>
 
@@ -316,7 +302,7 @@ P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿�
 | P0 已定位的新路径 | `domain/ports/tool_execution_store.py`、`infrastructure/tool_execution_store.py`、`infrastructure/models/database/tool_execution.py`；方法/表结构见 ADR S3/S7 |
 | `app/infrastructure/models/database/`及专用存储适配器 | 实现操作/尝试账本与原子状态更新；不得以空 tool_log.py 已存在认定存储已实现 |
 | schema 初始化/迁移入口（P0 定位后列实际路径） | 明确建表、升级、失败恢复及部署检查；不用现有会话表修改冒充工具存储 |
-| P0 已定位的部署入口 | `scripts/migrate.py`、`scripts/init_db.py`、`migrations/tools/0001_execution_ledger.sql`、`infrastructure/tool_owner.py`、`scripts/run_tool_host.py`；此处 app 内路径省略 app/ 前缀，完整归属见 ADR S3 |
+| P0 已定位的部署入口 | `scripts/migrate.py`、`scripts/init_db.py`、`migrations/tools/0001_execution_ledger.sql`、`infrastructure/tool_owner.py`、`scripts/run_tool_host.py`；此处 app 内路径省略 app/ 前缀，完整归属见 ADR S3。其中前两个当前是 0 字节占位文件，`migrations/tools/`、`app/infrastructure/tool_owner.py`、`scripts/run_tool_host.py` 均不存在——**占位文件不等于迁移入口已实现**。 |
 | `app/container.py`、`app/integration/tools/tool_service.py` | 注入现有 session 工厂及账本；启动存储核验；接管生命周期在 DB 关闭前完成 |
 | 存储单测及 `tests/integration/` 专项 | 验证重复写、旧事件乱序、意图/执行/结果各崩溃窗口、重启扫描，不仅 mock 整个存储端口 |
 
@@ -434,24 +420,110 @@ Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 pass
 
 历史背景见 [C-02 文档设计交接](history/completed-work.md#c-02-p0-design-history)，不在活动计划中重复各轮验证叙述。
 
+<a id="l-01-domain-layer"></a>
+
+## L-01：领域层推理决策架构完整建设（Slice 0/3/4 已完成；1/2/5/6 部分）
+
+日期：2026-08-27（建设起始）。目标：在应用层多任务编排（Phase C）之前，把领域层四模块建设完整并跑通单 Agent 任务——策略库 `reasoning/`、Prompt 管理 `prompts/`、记忆模块 `memory/`、Agent 编排 `agent/`。产品锚点：`PlannerAgent.plan()` 是主 Agent 拆分原语（Phase C 主链路第一步），`ReActStrategy` 是子 Agent 排查引擎复用，Reflection 承担证据链语义自查，Memory 是历史排查经验的领域前置。
+
+**授权边界**：本节的执行依据是 2026-08-27 会话记录；原独立计划文件已删除，设计正文与进度并入本节。Slice 0/3/4 已落地；**未完成项尚未重新获得执行授权**，逐项实施前按[项目工作流](engineering/project-workflow.md#planning)重新确认范围与必要性——不因本表存在自动开工，也不因已有计划自动创建端口、空壳或存储。
+
+已完成部分的设计与验收由正式位置承载，本节不复制：组件说明见 [react.md](domain_doc/reasoning_doc/react.md) · [reflection.md](domain_doc/reasoning_doc/reflection.md) · [planner.md](domain_doc/reasoning_doc/planner.md)；决策见 [ReAct 抽离](../adr/domain/agent/2026-08-27-react-strategy-extraction.md) · [Reflection 策略](../adr/domain/reasoning/2026-08-31-reflection-strategy.md) · [Planner 两层结构](../adr/domain/reasoning/2026-09-05-planner-strategy.md) · [结构化输出](../adr/domain/reasoning/2026-08-28-structured-output.md)。
+
+### 垂直切片与状态
+
+| Slice / 状态 | 内容 | 关键文件 | 当前证据（2026-09-21 核对） |
+| --- | --- | --- | --- |
+| 0 ReAct 抽离 / 已完成 | ReActStrategy 独立成类，构造注入 llm + tools，不 import agent/ | `reasoning/react.py` | 超计划：错误分发 13 kind、各护栏全阶段、stream_mode 双通道、收尾契约化 |
+| 1 Prompts 完整化 / 部分 | 模板完整化 + 三个 builder + 默认 system 注入 | `prompts/templates/planning.py` · `templates/reflection.py` · `prompts/manager.py` · `agent/base.py` | 模板与 builder 已完成（`planning.py` 63 行、`test_prompts.py` 392 行）；`run()` system 注入未做 |
+| 2 Memory 基座 / 未开始 | 端口 + 骨架，向量检索留 Phase D | `ports/vector_store_port.py` · `memory/` 五个模块 · `test_memory.py` | 端口文件不存在；`memory/` 五个模块文件（另 `__init__.py`，共 6 个）与 `test_memory.py` 均为 0 行 |
+| 3 PlannerAgent / 已完成 | 两层结构，每步复用 `ReActStrategy.execute` | `reasoning/planner.py` · `agent/planner.py` | 超计划：replan 循环、PLAN_FAILED 分发、usage/done 口径、cancel 与成本护栏全阶段 |
+| 4 ReflectionAgent / 已完成 | 收集 → 初稿 → 自查 → 修正 | `reasoning/reflection.py` · `agent/reflection.py` | 实际落为 `agent/reflection.py`（原计划写 `agent/reasoning.py`）；超计划：cancel/超时护栏、explicit_abstention、usage/cost 全阶段 |
+| 5 装配接线 / 部分 | 记忆装配 + 标注放宽 + 重导出 | `container.py` · `api/deps.py` · `chat_service.py` · `task_service.py` · `agent/__init__.py` | 重导出已完成；容器/依赖/聊天三处均无 `MemoryService` 接线；`task_service` 标注仍为 `ReActAgent` |
+| 6 文档与 ADR / 部分 | 模块文档 + 四个 ADR + 对齐 | `ALIGNMENT` · 各模块文档 · `adr/domain/` | React/Reflection/Planner 文档与 ADR 齐；记忆分层与 CoT 的决策未留档 |
+
+### 未完成项
+
+- [ ] Slice 1：`BaseAgent.run()` 顶部在无 system 角色消息时注入 `PromptManager.build_system_prompt()`，并补对应测试。触发：先确认产品是否需要默认注入，避免改变已有系统提示词优先级。
+- [ ] Slice 2：记忆基座——新建 `ports/vector_store_port.py`，实现 `memory/` 五个模块，填空 `test_memory.py`。范围限定为端口 + 骨架，不 mock 向量库。触发：出现实际的跨会话记忆消费方。
+- [ ] Slice 5：记忆生产装配——`container.initialize` 组装三层并注入聊天路径；`api/deps.py` 提供可返回 None 的 provider；`memory_enabled` 默认 False，保持惰性零行为变化。依赖 Slice 2。
+- [ ] Slice 5 残留：`task_service` 的 `agent` 标注由 `ReActAgent` 放宽为 `BaseAgent`（无行为影响，标注比实际窄）。
+- [ ] Slice 6：记忆分层与 CoT 预留的决策留档——原计划要求 `memory-layered-contract` 与 `cot-upgrade-path` 两个 ADR，当前均不存在，决策依据只剩本节与模块文档的「预留」章节，且未写升级触发条件。
+
+### 设计要点（未完成部分）
+
+**Slice 1 · 默认 system 注入**：`BaseAgent.run()` 顶部检查 `messages` 是否已有 `system` 角色消息；无则注入 `PromptManager.build_system_prompt(tool_descriptions)`。现有调用方（ChatService）自行组装 messages，注入点必须避免重复或覆盖，这也是它至今未做的原因——先确认产品是否需要默认注入。
+
+**Slice 2 · 记忆模块**（端口 + 骨架，向量检索留 Phase D）：
+
+- `ports/vector_store_port.py`（新建）：`VectorStorePort(Protocol)`（`upsert` / `search` / `delete`）+ `VectorHit`；登记 `ports/__init__.py`。
+- `memory/base.py`：`MemoryItem` + `MemoryBackend(ABC)`（`add` / `get` / `remove` / `clear`）。
+- `memory/working.py`：`WorkingMemory`（dict 承载 + `snapshot`）。
+- `memory/short_term.py`：`ShortTermMemory`（有序 dict，`max_size` 满则逐出最旧 + `list_recent`）。
+- `memory/long_term.py`：`LongTermMemory`，构造注入 `vector_store: VectorStorePort | None` + `embedder: EmbeddingPort | None`；任一为 None → no-op（骨架而非 mock，同 `SessionManager(redis=None)` 降级范式）。
+- `memory/memory_service.py`：`MemoryService` 聚合三层（working / short_term / long_term / enabled），`enabled=False` 全惰性；签名只用原始类型，不 import `agent/`。
+- `agent/base.py`：`BaseAgent.__init__(llm, tools, memory: MemoryService | None = None)`（向后兼容）；`run()` 结束记录 `_memory.record_task(...)`，**异常吞掉不阻断任务**——记忆写入不得影响任务终态。
+
+**Slice 5 · 装配接线**：`container.initialize` 组装四件（`WorkingMemory` + `ShortTermMemory` + `LongTermMemory(vector_store=None, embedder=embedding_service)` + `MemoryService(enabled=settings.memory_enabled)`）；`api/deps.py` 提供可返回 None 的 `get_memory_service()`（不 raise）；聊天路径把 `memory_service` 传入 Agent。`memory_enabled` 默认 False ⇒ 惰性零行为变化。
+
+### 测试计划（未完成部分）
+
+- `test_memory.py`（现为空文件）：Working / ShortTerm 窗口逐出 / LongTerm 委托与 `None` no-op / MemoryService 惰性（`enabled=False` 时不触达后端）。
+- `test_prompts.py`：补默认 system 注入用例（builder 冒烟已存在）。
+- `test_container.py`：补 `memory_service` 的惰性装配断言。
+- 沿用原计划约定：**全手写假对象 + monkeypatch，不用 AsyncMock**。
+
+### 已完成项
+
+- [x] Slice 0：ReAct 抽离（含错误分发、护栏、双通道、收尾契约化等超计划部分）。
+- [x] Slice 1 的模板与 builder：`templates/planning.py` 完整化、`templates/reflection.py` 新建、`build_planning_prompt` / `build_reflection_prompt` / `build_self_check_prompt` 三个 staticmethod、`test_prompts.py`。
+- [x] Slice 3：PlannerAgent 两层结构（策略在 `reasoning/planner.py`，桥接在 `agent/planner.py`）。
+- [x] Slice 4：ReflectionAgent。
+- [x] Slice 5 的 `agent/__init__.py` 重导出 `PlannerAgent` / `ReflectionAgent`。
+- [x] Slice 6 的 React / Reflection / Planner 模块文档与 ADR；`structured-degradation-contract` 的决策由[结构化输出 ADR](../adr/domain/reasoning/2026-08-28-structured-output.md) 承接（无同名文件）。
+
+### 原计划的决策与已废弃项
+
+- **已废弃**：「`test_agent.py` 零改动依赖 `ReActAgent._execute_tool_calls` 转发方法」——该转发已在 [AGENT-001](../issues/domain/agent/2026-09-16-base-contract-drift.md) 删除（只有两项重复测试调用它），原决策不再成立。
+- **已被修正**：原计划「PlannerAgent 执行阶段复用裸 `execute_tool_calls`」由 [Planner 两层结构 ADR](../adr/domain/reasoning/2026-09-05-planner-strategy.md) 改为「每步复用 `ReActStrategy.execute`」；原计划「PlannerAgent 整体归 `agent/`」同样被该 ADR 修正为两层结构。
+- **仍然有效**：记忆模块不 mock 向量库，以 `VectorStorePort` 依赖倒置，`None` 时 no-op；`generate_structured` 返回 None 的降级链（plan None → ReAct 兜底；summarize None → 纯文本；critique None → 采用初稿）已由[结构化输出 ADR](../adr/domain/reasoning/2026-08-28-structured-output.md) 与各策略文档承载。
+
+### 边界与不采纳
+
+- **CoT 保持预留**：`reasoning/chain_of_thought.py` 为零字节预留空壳——既无实现，也未记录升级路径；本期不写实现。状态以[对齐表](ALIGNMENT.md)与 [reasoning 说明的 CoT 预留](domain_doc/reasoning_doc/reasoning.md#cot-预留)为准。
+- **记忆的向量检索留 Phase D**：不 mock 向量库，以 `VectorStorePort` 依赖倒置；`app/integration/vector_store/` 现为空壳。
+- 原计划的 `agent/reasoning.py` 未创建，Reflection 桥接实际落在 `agent/reflection.py`；以代码为准。
+- 本节的未完成项不等同于承诺排期；触发条件写在对应条目内，不另立候选副本。
+
+### 评审
+
+2026-09-21 对照原计划与当前代码逐项核对：`planning.py`（63 行）与 `test_prompts.py`（392 行）说明 Slice 1 的模板/builder/test_prompts 已完成，计划原文的「待做」已过期；`base.py` 与 `chat_service.py` 均无 `PromptManager` 引用，`run()` system 注入确未做；`app/domain/memory/` 五个文件与 `test_memory.py` 均为 0 行、`ports/vector_store_port.py` 不存在，Slice 2 确未开始；`container.py` / `deps.py` / `chat_service.py` 无 `MemoryService` 接线，而 `agent/__init__.py` 已重导出两者。原计划的四个 ADR 中 `react-strategy-extraction` 已存在、`structured-degradation-contract` 由结构化输出 ADR 承接，`memory-layered-contract` 与 `cot-upgrade-path` 缺失。同日按用户要求删除原独立计划文件并把设计正文并入本节，原候选 C-06 一并被本节接管（已从候选表移出），C-07 收窄为 checkpoint 与 trace。本次只做计划整合与状态核对，未修改产品代码。核验另修正一处边界表述：`chain_of_thought.py` 实为 0 字节空壳，原文「只记录升级路径」不成立。
+
 <a id="candidates"></a>
 
 ## 独立边界与候选建设
 
-以下均需先重新确认必要性和执行范围；目前没有在实施的代码任务。候选不是必须实现清单。
+以下均需先重新确认必要性和执行范围；目前没有在实施的代码任务。候选不是必须实现清单。本表同时收敛各 ADR 正文记录的升级路径与未决决策；已随 R-01、C-02、L-01 完成或已由它们承接的项不在此重复。
 
 | ID | 候选 / 待核验边界 | 保留理由与触发条件 |
 | --- | --- | --- |
 | C-01 | Planner `REPLAN_SCHEMA.steps` 的 `maxItems` 边界。 | 2026-09-10“三策略重试上限闭环”收尾明确未并入。检查当前 schema 与实际输出规模，确认风险后独立处理；不与协议重试预算混为同一根因。 |
 | C-03 | LLM 重试配置的非负校验。 | 同一最新收尾明确未并入。先核实配置、Manager 与调用入口；不按参数名统一 Tool/LLM 的不同计数口径。 |
-| C-04 | 未配置 deadline 时的无限流读取边界。 | 同一最新收尾明确未并入。先核实 idle/read timeout 与主动不限时的产品契约，不能仅凭没有总 deadline 判为漏洞。 |
-| C-05 | Reflection/Planner 策略层整链硬超时，以及取消/超时与结构化降级耗尽的结果区分。 | 原执行交接 F 项仍列候选，但[LLM-043](../issues/integration/llm/2026-09-08-structured-cancel-deadline.md)之后，[LLM-044](../issues/integration/llm/2026-09-08-execution-control-through-every-call.md)已推进每次请求和等待的执行控制。需先评估剩余缺口，不直接外包新 timeout 或恢复旧内置 TimeoutError 特判。 |
-| C-06 | 默认 system 提示词注入与 PromptTemplate 测试。 | [领域层说明](domain_doc/README.md)仍称 base 待补测试；旧领域计划只剩 `run()` system 注入未做，planning/reflection 模板和 builder 已完成。先确认产品是否需要默认注入，避免改变已有系统提示词优先级。 |
-| C-07 | Memory 基座与生产装配、CoT、循环 checkpoint、运行轨迹持久化。 | [记忆模块](domain_doc/memory_doc/memory.md)与[CoT 说明](domain_doc/reasoning_doc/reasoning.md)为预留；[checkpoint ADR](../adr/domain/reasoning/2026-08-30-checkpointer-resume.md)明确未实现；[trace ADR](../adr/domain/trace/2026-08-31-trace-persistence.md)为已决策待实施。出现实际消费方后分别确认范围；不因已有计划自动创建端口、空壳或存储。 |
-| C-08 | 精确 provider 计数、语义摘要、调用前成本预留与供应商共享配额映射。 | 原预算计划“可选项”与[请求准入 ADR](../adr/integration/llm/2026-09-06-request-context-budget.md)的升级路径。分别以容量利用率、证据可追溯性、严格成本或供应商真实配额需求触发，不套同一实现。 |
+| C-07 | 循环 checkpoint 与运行轨迹持久化。 | [checkpoint ADR](../adr/domain/reasoning/2026-08-30-checkpointer-resume.md)明确未实现；[trace ADR](../adr/domain/trace/2026-08-31-trace-persistence.md)为已决策待实施。出现实际消费方后分别确认范围，不因已有计划自动创建端口、空壳或存储。记忆基座、生产装配与 CoT 预留的进度与边界见 [L-01](#l-01-domain-layer)。 |
+| C-08 | LLM 精确 provider 计数、语义摘要、调用前成本预留与供应商共享配额映射。 | **部分已实现**（2026-09-21 核验）：调用前预留已做（`reservation_limiter` 的 `reserve` / `reserve_adaptive` 与 `settle(actual)`）；**未做**的三项是精确 provider 计量（`token_counter` 全用 tiktoken，`request_budget` 自述不伪装成 provider 精确计量）、上下文语义摘要（`context_manager` 实为 `_truncate_messages` 直接丢弃历史）、供应商级共享配额（`ReservationLimiterManager` 按 model_key 分桶，无 vendor 共享）。分别以容量利用率、证据可追溯性、严格成本或供应商真实配额需求触发，不套同一实现。 |
 | C-09 | 配置扩展、默认值调优、热更新与多环境配置。 | 2026-08-29 config 文档重构留下研究性 backlog；没有真实消费方、负载或运维证据的默认值建议不保留为目标值。出现明确需求后重新设计，而不是照抄旧数值。 |
 | C-10 | 工具选择器向量召回与工具加载/安全边界的后续增强。 | 旧工具重构与[TOOLS-049](../issues/integration/tools/2026-08-20-code-review-fixes.md)有明确延后项；以工具规模、性能、安全边界或真实故障为触发，已完成的审计脱敏不重开。 |
-| C-11 | 其他非关键观测入口的异常与阻塞边界。 | LLM 调用日志已由 [LLM-049](../issues/integration/llm/2026-09-12-llm-observation-overrides-terminal.md) 实施有界隔离；其他日志、指标和审计入口若进入终态路径，仍须逐入口核验 G0-6，不能把局部实现宣称为全仓完成。 |
-| C-13 | `ContextManager.build_messages` 的历史查询窗口与文档不一致。**已完成（2026-09-17）** | `SessionManager.get_messages` 已改为按 `created_at DESC, id DESC` 取最近窗口，再恢复为时间正序返回；`before_message_id` 和从最新窗口起算的 `offset` 语义已写入 SessionManager 文档，并有单元回归覆盖。未新增 Issue。 |
-| C-14 | `ruff check` 的零错误基线。 | 2026-09-17 引入 Ruff 时登记。0.16.8 实测默认启用 I001、F401、F841、PLR1711、UP、SIM、RET、C4、A、TRY、RUF 等规则，`extend-select = ["E501"]` 只补行宽；此时 `ruff check .` 报 100 项、分布 44 个文件（`app/` 6 个、`tests/` 38 个），51 项可由 `--fix` 自动修，其余以 RUF059（21）、E501（10）、RUF012（7）、F841（7）为主。建立前 `ruff check` 不作为提交关口，见[部署与验证](project/deployment.md#常用命令)。需先定两个口径：`tests/` 是否放宽（RUF059/RUF012/F841 在测试替身里多为惯用写法），以及 `app/integration/tools/builtin/rca/data.py:149` 的 SIM103 是否并入既有数据表豁免。 |
+| C-11 | 其他非关键观测入口的异常与阻塞边界。 | **部分已实现**（2026-09-21 核验）：LLM 调用日志已由有界 `wait_for` 隔离，工具审计也共用有界窗口；**未做**的是 `security.log_event_async("tool_call")` 仍直接 await、无有界等待，且 `metrics.py` 为 0 字节、指标入口不存在。其余入口若进入终态路径，仍须逐入口核验 G0-6，不能把局部实现宣称为全仓完成；对应 [ADR-002](../adr/2026-09-12-single-source-governance.md) 的「G0-6 的后续代码符合性工作」。 |
+| C-14 | `ruff check` 的零错误基线。 | 2026-09-17 引入 Ruff 时登记。ruff 0.16.8，`extend-select = ["E501"]` 只补行宽。**2026-09-21 复测**：`ruff check .` 报 95 项、分布 39 个文件（`app/` 5 个、`tests/` 34 个），48 项可由 `--fix` 自动修；规则分布 RUF059（21）、I001（17）、F401（16）、E501（8）、RUF012（7）、PLR1711（7）、F841（7）等。`app/` 侧仅 9 项：8 项 E501（`config/settings.py` ×4、`prompts/templates/planning.py`、`templates/reflection.py` ×2、`integration/llm/llm_service.py`）与 `integration/tools/builtin/rca/data.py:149` 的 SIM103。建立前 `ruff check` 不作为提交关口，见[部署与验证](project/deployment.md#常用命令)。需先定两个口径：`tests/` 是否放宽（RUF059/RUF012/F841 在测试替身里多为惯用写法），以及 `rca/data.py:149` 的 SIM103 是否并入既有数据表豁免。 |
 | C-15 | `ExecutionLimits.max_iterations` / `AgentContext.max_iterations` 缺少下限校验。 | 2026-09-19 Piece⑤ 复核发现。[配置规格](config_doc/config.md)已把 `agent_max_iterations` 校验为 1-100，但领域侧 `ExecutionLimits`（`domain/reasoning/execution.py`）与 `AgentContext`（`domain/agent/base.py`）自身无校验，直接构造 ctx 的测试/脚本仍可传 0 或负数。此时 ReAct 主循环一次都不执行，直接落到循环之后的 `_finalize_max_turns`（`react.py` 第 10 步，位于 `for iteration` 同级缩进，不在循环体内），产出「已达到最大迭代次数(N)」的 STOP 终态并零次调用 LLM：行为有定义，但把非法配置伪装成了正常业务终态。与 C-03 同类，先核实配置、领域与调用入口的计数口径再定是否收紧，不按参数名统一 Tool/LLM 的不同计数口径。 |
+| C-16 | `build_messages` 的上下文摘要压缩（[ADR-001](../adr/2026-09-02-request-build-validation.md) docstring 策略第 4 条）：当前为硬丢弃历史，正文明确按产品导向暂不实现。 | 出现「丢弃历史导致答案质量下降」的真实证据；摘要须先证明不破坏证据链。 |
+| C-17 | 结构化输出的产物链接入与兜底（[ADR](../adr/domain/reasoning/2026-08-28-structured-output.md)）：产物链接入时经 `AgentContext` 配置 `output_schema`；`final_answer` 失败叠加 `generate_structured` 兜底（当前未叠加）。 | 出现产物链消费方。 |
+| C-18 | 成本上限的估算式 pre-call 软闸（[ADR](../adr/domain/reasoning/2026-08-30-cost-limit.md)）：发出前按输入上下文与 `max_tokens` 上界估算、超预算即拒绝，调用后按实际 usage 对账；需扩展 `CostLimiterPort`（现 `check` 为纯累计、无估算入参）。 | 出现「单轮绝不允许过贵」或并行子 Agent 各自发请求的真并发；工业参照 Portkey / llm0 / LiteLLM reservation。 |
+| C-19 | 停滞检测的结果维度（[ADR](../adr/domain/reasoning/2026-08-30-stall-detection.md)）：① `result_hash` 防轮询误判（动作签名加结果 hash，须跨轮保存上轮结果）② 周期模式检测（A→B→A→B 滑动窗口，误杀风险高）。 | 出现真实的轮询或周期死循环误判；默认上限与参数规范化已降低概率。 |
+| C-20 | OpenAI 异常归一的具名子类（[ADR](../adr/integration/llm/2026-09-01-openai-error-normalization.md)）：拆 `LLMUnauthorizedError` / `LLMForbiddenError`。 | 需要区分「key 过期」与「权限不足」时；当前 `status_code` 已够差异化，不预先拆分。 |
+| C-21 | 半流续接的三类扩展（[ADR](../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）：tool_call 半成品续接、reasoning 半段续写、SSE 传输游标续传（Vercel resume 式，客户端↔服务端课题）。 | 正文明确按产品导向暂不实现；传输游标续传属独立决策。 |
+| C-22 | Application 语义预算作最终请求硬上限（[ADR](../adr/integration/llm/2026-09-06-request-context-budget.md)）：须复用 Integration 内部机制，不新增 `LLMGateway` 调用级参数。 | 确需把语义预算作为最终请求硬上限时；主/副模型共享配额合并记账见 [C-08](#candidates)。 |
+| C-23 | 外部工具热加载的扩展项（[ADR](../adr/integration/tools/2026-08-17-external-tool-hot-reload.md)）：后台轮询、原子无损（引用计数 + 版本化实例）、元数据与实现分离 + 懒加载、多版本灰度回滚、沙箱隔离（子进程 / WASM / Sidecar）、`health_check` 自动巡检。 | 分别触发：重载窗口不可接受 / 工具数达数百 / 出现不可信第三方 / 插件数量上升。 |
+| C-24 | 异常体系的两处收敛（[ADR](../adr/shared/exceptions/2026-08-28-exception-system-optimization.md)）：`classify_error` 识别 `AppError` 树（可重试判定收敛单一事实源）；`AgentRunError` 的 kind → 对外业务码映射。 | 需要对外业务码或统一可重试判定时。 |
+
+2026-09-21 逐项核验候选表：C-04（无 deadline 时的流读取兜底）与 C-05（策略层整链硬超时）**确认已在代码中实现**，已移出本表并登记到[完成记录](history/completed-work.md)；C-01、C-03、C-09、C-10、C-15 确认仍未做；C-08、C-11 为部分实现（见行内）。

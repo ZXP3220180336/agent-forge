@@ -5,7 +5,7 @@
 ## Context
 
 - 产品主链路第一步 = 主 Agent 拆分（良率异常 → 排查步骤）。需落地 Plan-then-Execute 单 Agent 编排作为 Orchestrator 拆分的语义底座：规划 → 逐「步」执行 → 证据链汇总。Phase C 子 Agent 用 `ReActStrategy` 排查，规划后每步执行应复用同一引擎。
-- 领域层已定结构范式：`reasoning/` 原子推理策略（ReActStrategy / ReflectionStrategy 各自 + Outcome + 内部 schema），`agent/` 编排桥接（ReActAgent / ReflectionAgent 继承 BaseAgent）。原始领域层计划（domain-layer-plan-tmp）曾把 PlannerAgent 整体规划在 `agent/`（planning 视为编排职责），且设计执行阶段复用裸 `execute_tool_calls` 原语——与「每步跑 agent 循环 / 护栏全套」的实际价值冲突。
+- 领域层已定结构范式：`reasoning/` 原子推理策略（ReActStrategy / ReflectionStrategy 各自 + Outcome + 内部 schema），`agent/` 编排桥接（ReActAgent / ReflectionAgent 继承 BaseAgent）。原始领域层计划（2026-08-27，现并入 [L-01](../../../docs/todo.md#l-01-domain-layer)）曾把 PlannerAgent 整体规划在 `agent/`（planning 视为编排职责），且设计执行阶段复用裸 `execute_tool_calls` 原语——与「每步跑 agent 循环 / 护栏全套」的实际价值冲突。
 - 复用 `ReActStrategy.execute` 的另一考量：每步执行需要与 chat 前台一致的 SSE 事件流（工具/消息事件逐 token 可见）+ 每步受 `max_execution_time`（全局墙钟 → 剩余预算）、cost_limiter、错误分发等护栏约束；裸 `execute_tool_calls` 无这些护栏，需本模块自造一整套执行循环（回归 Reflection 曾走过的「重造护栏」弯路）。
 
 ## 工业级参照（调研详情）
@@ -36,4 +36,4 @@
   - **串行单 Agent**：依赖并行排查价值在 Phase C Orchestrator 释放；单 Agent 层 `depends_on` 是顺序纪律断言，不承担 DAG 调度（见 benchmark 取舍表）。
   - **replan 仅失败触发**：成功路径不付出重规划检查的额外调用成本，但失败恢复能力上限 = max_replan_rounds（默认 2）——耗尽后走部分汇总 / 纯失败降级。
   - **规划失败也付费一次**：规划是结构化付费调用，失败即进入兜底；降级不抛错（best-effort），error 保留原 AppError 文本供诊断。
-- 📌 关联：本决策修正领域层计划原文「PlannerAgent 整体归 agent/ + 执行复用 execute_tool_calls」的实现路径（落地为两层结构 + 每步复用 ReActStrategy.execute），见 [domain-layer-plan-tmp](../../../docs/history/domain-layer-plan.md)（该文为计划原文，以代码为准）。
+- 📌 关联：本决策修正领域层计划原文「PlannerAgent 整体归 agent/ + 执行复用 execute_tool_calls」的实现路径（落地为两层结构 + 每步复用 ReActStrategy.execute），见 [L-01 的「原计划的决策与已废弃项」](../../../docs/todo.md#l-01-domain-layer)（以代码为准）。
