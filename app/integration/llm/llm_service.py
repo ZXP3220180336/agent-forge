@@ -243,7 +243,8 @@ class LLMService:
             )
             # 统一决策（llm/errors.py）：
             # 可恢复错误（超时/5xx/429）可靠性层已重试耗尽 → 降级 return None（业务无结果）；
-            # openai 不可恢复错误（4xx/认证）归一为 LLMAPIError（AppError 树）上抛 → 领域层 except AppError 统一兜底（REASON-010 闭环）；
+            # openai 不可恢复错误（4xx/认证）归一为 LLMAPIError（AppError 树）上抛 →
+            # 领域层 except AppError 统一兜底（REASON-010 闭环）；
             # 非 openai 异常（CircuitBreakerOpenError / 编程错误）原样 re-raise 保留 traceback。
             decision = decide_downstream_error(e)
             if decision.to_raise is None:

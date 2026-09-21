@@ -16,7 +16,8 @@ explicit_abstention / next_steps）。清单是唯一自查范围，把盲区变
 REFLECTION_SYSTEM_PROMPT = """你负责把已收集的工具证据整理为结构化报告。
 
 要求：
-1. 每条结论（conclusions[].claim）必须能回溯到已执行的工具结果——supporting_evidence 引用真实存在的工具记录（工具名 + 查询参数）
+1. 每条结论（conclusions[].claim）必须能回溯到已执行的工具结果——
+supporting_evidence 引用真实存在的工具记录（工具名 + 查询参数）
 2. 不编造工具未返回的数据；证据不足时写入 explicit_abstention，不硬编结论
 3. 置信度（confidence）分级标注：有强 / 多来源支撑才给高置信度
 4. next_steps 给出可执行的具体查询或行动，而非空话
@@ -32,7 +33,8 @@ CRITIQUE_PROMPT = """你是一名严格的审查员（critic），负责对照�
 {draft}
 
 只核对下列维度（本清单为唯一自查范围，清单外不查）：
-1. grounding（证据锚定）：每条 conclusions[].claim 的 supporting_evidence 必须引用证据链中真实存在的工具记录（工具名 + 查询参数可对上）；引用不存在记录 → critical
+1. grounding（证据锚定）：每条 conclusions[].claim 的 supporting_evidence 必须引用证据链中
+真实存在的工具记录（工具名 + 查询参数可对上）；引用不存在记录 → critical
 2. consistency_with_data（与数据一致）：初稿中所有数值 / 事实与证据链工具返回内容逐项核对；转录错误 → critical
 3. fabrication（防编造）：任何未被工具结果支持的陈述 → critical
 4. attribution（归属正确）：结论与证据配对正确（结论不能张冠李戴）；互换 / 错位 → critical

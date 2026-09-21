@@ -47,9 +47,10 @@ line-length = 120
 extend-select = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-# 声明式数据表：一行一条记录（批次良率样例），拆行反而降低可读性。
-# 依据 docs/engineering/ai-engineering-rules.md#indicators「生成代码和声明式数据按性质
-# 判断，不机械套用行数」。该文件只含字面量，行宽不构成维护成本。
+# 数据表段落（BATCHES/ALERTS/FDC 等）为声明式一行一条记录，拆行反而降低可读性；
+# 模块 docstring 亦含超长叙述行。依据 docs/engineering/ai-engineering-rules.md#indicators
+# 「生成代码和声明式数据按性质判断，不机械套用行数」。文件内的查询函数段按正常行宽书写，
+# 本豁免只为数据表段与 docstring 的超长行。
 "app/integration/tools/builtin/rca/data.py" = ["E501"]
 
 [tool.ruff.format]

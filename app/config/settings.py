@@ -124,7 +124,9 @@ class Settings(BaseSettings):
     llm_main_rpm: int = 60
     llm_reasoning_rpm: int = 30
     llm_fast_rpm: int = 100
-    llm_fallback_rpm: int = 60  # fallback 独立配额池（客户端限流）：仅备用链路兜底时使用。若供应商对备用模型与主模型共享配额，应合并记账（见 ADR 升级路径），当前按独立池。
+    # fallback 独立配额池（客户端限流）：仅备用链路兜底时使用。若供应商对备用模型与主模型
+    # 共享配额，应合并记账（见 ADR 升级路径），当前按独立池。
+    llm_fallback_rpm: int = 60
     # TPM（Tokens Per Minute）—— 与 RPM 组成双桶限流。默认参考 DeepSeek 官方限额
     llm_main_tpm: int = 2_000_000
     llm_reasoning_tpm: int = 2_000_000
@@ -145,7 +147,9 @@ class Settings(BaseSettings):
     llm_main_context_window_tokens: int = 128_000
     llm_reasoning_context_window_tokens: int = 128_000
     llm_fast_context_window_tokens: int = 128_000
-    llm_fallback_context_window_tokens: int = 128_000  # fallback 备用模型窗口：按目标（备用）模型实际窗口配置，启用llm_fallback_model_id 时须同步设置——禁止按模型名猜测窗口。
+    # fallback 备用模型窗口：按目标（备用）模型实际窗口配置，启用 llm_fallback_model_id 时
+    # 须同步设置——禁止按模型名猜测窗口。
+    llm_fallback_context_window_tokens: int = 128_000
     llm_context_safety_margin_tokens: int = 1_024
 
     # ===== 结构化输出 =====
@@ -163,12 +167,16 @@ class Settings(BaseSettings):
     agent_max_iterations: int = 10
     agent_timeout: int = 300  # 5分钟
     agent_streaming: bool = True
-    agent_max_refine_rounds: int = 2  # 修复尝试上限：Reflection 修正（初稿 1 + 修正上限 max_refine_rounds-1）与 Planner replan（步骤失败重规划预算）共用
+    # 修复尝试上限：Reflection 修正（初稿 1 + 修正上限 max_refine_rounds-1）与 Planner
+    # replan（步骤失败重规划预算）共用
+    agent_max_refine_rounds: int = 2
     agent_max_context_rounds: int = 8  # 上下文预算：Agent 循环保留最近轮数（0/None 走 AgentContext 默认）
     agent_max_empty_retries: int = (
         2  # 连续空输出重试上限：空输出最多重试 N 次，第 N+1 次仍空输出则终止（0=首次空输出即终止）
     )
-    agent_max_llm_fail_retries: int = 2  # LLM 失败重试上限：LLM 调用失败最多重试 N 次，第 N+1 次仍失败则终止（0=首次失败即终止；对齐空输出护栏，防 handler CONTINUE 无限重试烧钱）
+    # LLM 失败重试上限：LLM 调用失败最多重试 N 次，第 N+1 次仍失败则终止（0=首次失败即终止；
+    # 对齐空输出护栏，防 handler CONTINUE 无限重试烧钱）
+    agent_max_llm_fail_retries: int = 2
     agent_max_tool_protocol_retries: int = 2  # 工具调用协议修正上限：最多重试 N 次，第 N+1 次协议异常硬终止
     agent_max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）超过 N 轮，下一轮仍相同则终止
     agent_max_cost: float | None = None  # 成本上限（美元 USD）；None=不启用（0 则任何正成本即停）

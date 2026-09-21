@@ -146,9 +146,7 @@ def _in_range(timestamp: str, time_range: str | None) -> bool:
         end = timestamp[:10] + " " + end
     if start and timestamp < start:
         return False
-    if end and timestamp > end:
-        return False
-    return True
+    return not (end and timestamp > end)
 
 
 def _apply_time_range(records: list[dict], time_range: str | None) -> list[dict]:
