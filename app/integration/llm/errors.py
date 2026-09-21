@@ -40,6 +40,7 @@ from openai import (
 )
 
 from app.shared.exceptions import (
+    AppError,
     LLMAPIError,
     LLMCancelledError,
     LLMDeadlineExceededError,
@@ -123,8 +124,14 @@ def classify_error(exc: Exception) -> ErrorCategory:
     分类规则：
         - RETRYABLE    网络层故障（openai 封装或裸 httpx）、超时、5xx
         - RATE_LIMITED 429
-        - NON_RETRYABLE 4xx、响应校验错误、token 截断、内容被过滤、
-                        以及未知异常（默认兜底——避免对重试无效的错误盲目重试）
+        - NON_RETRYABLE AppError 树、4xx、响应校验错误、token 截断、
+                        内容被过滤，以及未知异常（默认兜底——避免对重试无效的
+                        错误盲目重试）
+
+    AppError 判定必须排在 status_code 判定之后：`LLMAPIError` 同属 AppError 树，
+    但它携带 status_code 并依赖状态码决定可重试性（5xx 可重试）。把异常树判定提前
+    会静默改写该语义，`test_llm_api_error_5xx_retryable_despite_app_error_tree`
+    锁定这一顺序。
     """
     # 1) 网络层：openai 封装（APITimeoutError / APIConnectionError）+ 裸 httpx 异常
     #    openai 某些路径会直接抛 httpx 异常（ConnectError/ReadError/Timeout 等），不会被封装。
@@ -146,10 +153,14 @@ def classify_error(exc: Exception) -> ErrorCategory:
             return ErrorCategory.RATE_LIMITED
         if 400 <= status_code < 500:
             return ErrorCategory.NON_RETRYABLE
-    # 4) 明确的非 HTTP 永久性异常
+    # 4) AppError 树：项目自有异常一律不可重试。显式成文而非依赖末尾兜底，
+    #    使「可重试判定」有单一事实源；位置见 docstring（LLMAPIError 靠 status_code）。
+    if isinstance(exc, AppError):
+        return ErrorCategory.NON_RETRYABLE
+    # 5) 明确的非 HTTP 永久性异常
     if isinstance(exc, _NON_RETRYABLE_EXC):
         return ErrorCategory.NON_RETRYABLE
-    # 5) 未知异常：默认不可重试（避免对无法恢复的错误盲目重试打下游）
+    # 6) 未知异常：默认不可重试（避免对无法恢复的错误盲目重试打下游）
     return ErrorCategory.NON_RETRYABLE
 
 

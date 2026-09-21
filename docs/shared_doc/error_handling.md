@@ -52,6 +52,8 @@
 | **不可恢复（当前调用不重试）** | 非可重试 4xx、认证、熔断开启、配置错误 | 下层直接抛出，Facade 按具体接口传播或翻译；调用方感知后决定换模型/修参数/告警 | `LLMAPIError`（openai 非可重试 4xx/认证归一）、`BadRequestError`（400）、`AuthenticationError`（401）、`CircuitBreakerOpenError`、`ValueError("未注册")` |
 | **业务边界（非传输错误）** | 截断、拒答、工具调用、业务取消、整体期限耗尽 | 转成**具名异常**短路，调用方差异化处理 | `StructuredTruncationError` / `StructuredRefusalError` / `StructuredToolCallError` / `LLMCancelledError` / `LLMDeadlineExceededError` |
 
+> **可重试判定的单一事实源**：`classify_error`（契约与实现同属 `app/integration/llm/errors.py`）显式识别 `AppError` 树——项目自有异常一律不可重试，不再依赖末尾的兜底分支。`LLMAPIError` 同属该树但携带 `status_code`，其可重试性由状态码决定（5xx 可重试），因此该判据必须排在状态码判定**之后**；这一顺序由 `test_classify_error.py` 的 `test_llm_api_error_5xx_retryable_despite_app_error_tree` 反例锁定。
+
 ### 关键：不可恢复错误必须能穿透到调用方
 
 如果 401/配置错误被吞成 None，调用方永远不知道 key 失效或参数错了——只能看到「模型没返回」。工业级网关（LiteLLM 等）把 provider 异常归一化为 `AuthenticationError`/`BadRequestError`/`RateLimitError` 等并**向上抛**，正是为了让调用方能精确处理。本项目经 `llm_service.generate` 边界把 openai `APIStatusError` 系列（4xx/认证/响应校验）归一为 `LLMAPIError`（AppError 树，`raise ... from e` 保留原始异常），让领域层 `except AppError` 能统一兜底集成层透出的所有不可恢复错误（REASON-010 遗留闭环）。
@@ -277,7 +279,7 @@ AppError（根，code 默认 INTERNAL）
 
 > **定义位置**：异常定义在 `app/shared/exceptions.py`（单一事实源），集成层各模块 re-export；`AgentRunError` 定义于 `app/shared/error_handling.py`（与 ErrorHandlerRegistry 内聚），继承 `AppError` 入统一树。LLM 两类终止由 Facade 翻译私有信号；工具三类终止直接是 Domain 可识别的共享类型，仅携 `run_id`、`operation_id` 与可选诊断引用，事实保存在独立 `ToolFactSink`，不复制进异常。
 > **对外边界**：`app/api/middleware/error_handler.py` 把 `AppError` 翻译为 HTTP 状态 + 统一 `{code, message, details}` 信封（业务码与 HTTP 状态解耦，映射表见该模块）——API 层不抛 `HTTPException`，全走统一树。
-> **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类，契约与实现同属 `app/integration/llm/errors.py`）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，14 类：终结性默认 STOP / 可恢复默认 CONTINUE，ErrorHandlerRegistry 消费；含 Reflection `CRITIQUE_FAILED` 与 Planner `PLAN_FAILED` 两个策略专属 kind）。
+> **四类码的边界（正交，互不替代）**：`AppErrorCode`（对外业务码，error_handler 消费）与 `ErrorCategory`（LLM 传输可重试分类，契约与实现同属 `app/integration/llm/errors.py`）、工具层 `ErrorCode`（工具执行系统码，挂在 ToolResult）、`AgentErrorKind`（Agent 编排分发键，15 类：终结性默认 STOP / 可恢复默认 CONTINUE，ErrorHandlerRegistry 消费；含 Reflection `CRITIQUE_FAILED` 与 Planner `PLAN_FAILED` 两个策略专属 kind）。
 
 ---
 

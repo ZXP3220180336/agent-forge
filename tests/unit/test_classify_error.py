@@ -23,6 +23,14 @@ from openai import (
 )
 
 from app.integration.llm.errors import ErrorCategory, classify_error
+from app.shared.exceptions import (
+    CircuitBreakerOpenError,
+    ForbiddenError,
+    LLMAPIError,
+    ParameterValidationError,
+    SSRFError,
+    UnauthorizedError,
+)
 
 
 def _http_exc(cls, status_code: int):
@@ -172,3 +180,41 @@ class _FakeUnknown(Exception):
 
 def test_custom_unknown_exception_default_non_retryable():
     assert classify_error(_FakeUnknown()) == ErrorCategory.NON_RETRYABLE
+
+
+# =====================================================================
+# NON_RETRYABLE：AppError 树（显式契约，不再依赖末尾兜底）
+# =====================================================================
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        CircuitBreakerOpenError("circuit open"),
+        ParameterValidationError("bad params"),
+        UnauthorizedError("unauthorized"),
+        SSRFError("blocked"),
+        # 用 ForbiddenError 而非同分支的 NotFoundError：openai 也导出该名，
+        # 同时导入会遮蔽本文件上半部分的 openai 版本。
+        ForbiddenError("forbidden"),
+    ],
+)
+def test_app_error_tree_non_retryable(exc):
+    """项目自有异常一律不可重试：可重试判定收敛到显式规则。
+
+    本用例在加判据前后结果相同——该改动不改变行为，只把这条契约从「走到末尾兜底」
+    升格为可断言的显式分支，使可重试判定有单一事实源。
+    """
+    assert classify_error(exc) == ErrorCategory.NON_RETRYABLE
+
+
+def test_llm_api_error_5xx_retryable_despite_app_error_tree():
+    """判别性用例：LLMAPIError 同属 AppError 树，但可重试性由 status_code 决定。
+
+    若把 AppError 判据提到 status_code 之前，本用例失败——它锁定的正是判据位置。
+    """
+    assert classify_error(LLMAPIError("server error", status_code=503)) == ErrorCategory.RETRYABLE
+
+
+def test_llm_api_error_4xx_non_retryable():
+    assert classify_error(LLMAPIError("bad request", status_code=400)) == ErrorCategory.NON_RETRYABLE

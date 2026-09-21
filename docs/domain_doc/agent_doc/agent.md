@@ -191,7 +191,7 @@ agent = ReflectionAgent(llm=llm_service, tools=tool_service)
 
 ### 对外异常契约
 
-Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy / ReflectionStrategy / PlannerStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。14 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
+Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（注入 BaseAgent / ReActStrategy / ReflectionStrategy / PlannerStrategy，见 [error_handling 文档](../../shared_doc/error_handling.md)）。15 类 `AgentErrorKind` 按策略分发（`CONTINUE` / `STOP` / `RAISE`），调用方可按 kind 注册覆盖；未注入时使用默认行为：
 
 | `AgentErrorKind` | 默认 action | 场景 → 默认处理 |
 | --- | --- | --- |
