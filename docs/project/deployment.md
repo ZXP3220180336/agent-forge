@@ -1,8 +1,8 @@
 # 部署说明文档
 
-> **更新日期**：2026-09-19
+> **更新日期**：2026-09-21
 > **文档定位**：本地开发运行、环境与基础设施验收的正式入口。
-> **核验边界**：治理文档已接入完整仓库，已核对 pyproject、命令目标与对齐脚本，并运行文档对齐校验。2026-09-17 补充 Ruff 命令登记，核对了 `pyproject.toml` 的 Ruff 配置与 `ruff --version` 的实测规则集。本轮未启动服务、未连接基础设施，也未在本文档登记任何检查结论；模块状态与验证范围见 [ALIGNMENT.md](../ALIGNMENT.md)。
+> **核验边界**：治理文档已接入完整仓库，已核对 pyproject、命令目标与对齐脚本，并运行文档对齐校验。2026-09-17 补充 Ruff 命令登记，核对了 `pyproject.toml` 的 Ruff 配置与 `ruff --version` 的实测规则集；2026-09-21 建立 `ruff check .` 零错误基线并登记为提交前关口（本轮核对命令与配置，未登记长期通过状态）。本轮未启动服务、未连接基础设施，也未在本文档登记任何检查结论；模块状态与验证范围见 [ALIGNMENT.md](../ALIGNMENT.md)。
 
 ## 环境要求
 
@@ -40,7 +40,7 @@ uv run ruff check .
 
 当前 pyproject 配置 `testpaths=tests`、`asyncio_mode = "auto"`，开发依赖包含 pytest-asyncio；异步测试无需重复添加 `@pytest.mark.asyncio`。测试范围与通过条件按 [项目工作流](../engineering/project-workflow.md#verification)执行；改文档后需检查对齐脚本结果，不能把命令清单视为已通过记录。
 
-Ruff 配置在 `[tool.ruff]`，`line-length` 取编码规范上限 120。**E501 不在 Ruff 默认规则集内，必须由 `extend-select` 显式启用**；`[tool.ruff.format]` 排除了声明式数据表与 Markdown。`uv run ruff format --check .` 是提交前必经关口：格式化不改变 AST，但会重排换行，因此不要与语义改动混在同一提交单元。`uv run ruff check .` 当前尚未建立零错误基线，只作为本地信号，不作为提交关口；已有发现的规模、待定口径与基线候选见[待办](../todo.md#candidates)。检查结论按实际运行报告，不在此登记通过状态。
+Ruff 配置在 `[tool.ruff]`，`line-length` 取编码规范上限 120。**E501 不在 Ruff 默认规则集内，必须由 `extend-select` 显式启用**；`[tool.ruff.format]` 排除了声明式数据表与 Markdown。`uv run ruff format --check .` 与 `uv run ruff check .` 同为提交前必经关口：前者格式化不改变 AST，但会重排换行，因此不要与语义改动混在同一提交单元；后者的零错误基线已于 2026-09-21 建立（见[完成记录](../history/completed-work.md)），新增发现须在提交前清零，不为历史代码保留例外。检查结论按实际运行报告，不在此登记通过状态。
 
 独立脚本采用 `uv run python -m scripts.xxx`，避免直接运行 `uv run ./scripts/xxx.py` 改变导入路径。独立脚本顶部必须初始化 UTF-8，使用 `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`；包装流或测试替身需检查能力并提供等效编码处理，不能省略 UTF-8 输出要求。此约定只负责控制台编码，不允许把密钥写入输出。
 

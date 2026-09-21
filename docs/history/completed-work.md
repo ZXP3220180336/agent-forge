@@ -234,5 +234,6 @@ Piece⑤ 复核列出的 9 项遗留已全部关闭，**均无独立 Issue**，�
 | C-05 策略层整链硬超时（2026-09-21 核验已实现，未新增 Issue） | [Planner 说明](../domain_doc/reasoning_doc/planner.md) · [Reflection 说明](../domain_doc/reasoning_doc/reflection.md) |
 | C-15 `ExecutionLimits` 下界校验（2026-09-21 实施，未新增 Issue） | [reasoning 执行参数说明](../domain_doc/reasoning_doc/reasoning.md) · [Agent 说明](../domain_doc/agent_doc/agent.md) |
 | C-24-A `classify_error` 显式识别 `AppError` 树（2026-09-21 实施；B 半场未做，未新增 Issue） | [错误处理契约](../shared_doc/error_handling.md) |
+| C-14 `ruff check` 零错误基线（2026-09-21 建立，未新增 Issue） | [部署与验证](../project/deployment.md#常用命令) |
 
 更早 RateLimiter 审查和 reserve/settle 的完成清单只保留其现行[限流组件说明](../integration_doc/llm_doc/limiter.md)作为入口；旧 `app/services/` 路径、重复“待评审”空节和逐轮测试数不另存一份。

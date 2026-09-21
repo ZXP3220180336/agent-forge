@@ -370,6 +370,34 @@ Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 pass
 
 *已知未修（范围外）*：`context_manager` 传给 `get_logger` 的名字已带 `app.` 前缀，实际 logger 名为 `app.app.application.context`；新增测试从模块取实名而非字面量，未顺带修改该命名。
 
+<a id="candidate-closeout-02"></a>
+
+## B-02：C-14 `ruff check .` 零错误基线（2026-09-21，已完成）
+
+**目标**：把 `ruff check .` 从 92 项清零，使其成为提交前必经关口（此前只作本地信号，见[部署与验证](project/deployment.md#常用命令)）。纯 lint 清理，不改业务逻辑、prompt 语义、公开契约与配置键。
+
+**授权边界**：不改 `[tool.ruff.lint]` 规则集（`extend-select` 仍只 `["E501"]`）；不引入新的 `# noqa`；不启用 `--unsafe-fixes`；不动 C-14 以外的候选。
+
+**两个口径决策**（用户定 2026-09-21）：`tests/` 侧**全改代码、零豁免**；`rca/data.py` 的 SIM103 **改代码**，不并入既有豁免。
+
+### 切片与验收
+
+| 切片 | 内容 | 验收 |
+| --- | --- | --- |
+| S1 | `app/` 生产代码 9 项：8 处 E501 拆行（settings.py 与 llm_service.py 的内联注释提为独立行、planning.py 与 reflection.py 的 prompt 规则在语义断点折行）、`rca/data.py:_in_range` 的 SIM103 折叠；`pyproject.toml` 修正该文件 E501 豁免理由 | `ruff check app/` 零错误；`test_prompts.py`、`test_rca_tools.py`、`test_tool_execution.py` 通过 |
+| S2 | `tests/` 83 项：45 项 `--fix` 自动 + 38 项手改（RUF059 加 `_` 前缀、RUF012 加 `ClassVar`、F841 按有无副作用区分删赋值与删行、C408 改字面量、TRY203 删多余 try） | `ruff check .` 零错误；全量回归 |
+| S3 | 关闭登记：C-14 移出候选表、完成索引登记、`deployment.md` 登记为提交前关口 | 对齐与链接检查通过 |
+
+### 评审（2026-09-21）
+
+三个提交单元：`style:` app/ 生产代码清理 → `style:` tests/ 清理（含此前留在工作区的 `test_reflection.py` 清理）→ `docs:` 关闭登记。实施中一处往返：C408 的字面量等价物是 `{"k": v}` 而非 `{k=v}`，首次改写为无效语法，随即修正并复跑检查。
+
+*实际验证*：`uv run ruff check .` 零错误；`uv run ruff format --check .` 229 files already formatted；全量 1513 passed（52.29 秒，与改动前基线一致）；`git ls-files --eol` 无 CRLF/mixed。
+
+*已知未修（范围外）*：`[tool.ruff.format]` 也排除了 `rca/data.py`，理由是声明式数据表；该文件另含 8 个查询函数，其格式化不受门禁覆盖。本次未改动该排除（保持既有决策），发现登记于此待独立评估。
+
+*剩余限制*：未启用 `--unsafe-fixes`（其承载的 30 项隐藏修复涉及语义改写，本批不需要）；本批只清零既有 92 项，不回溯历史代码。
+
 <a id="candidates"></a>
 
 ## 独立边界与候选建设
@@ -385,7 +413,6 @@ Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 pass
 | C-09 | 配置扩展、默认值调优、热更新与多环境配置。 | 2026-08-29 config 文档重构留下研究性 backlog；没有真实消费方、负载或运维证据的默认值建议不保留为目标值。出现明确需求后重新设计，而不是照抄旧数值。 |
 | C-10 | 工具选择器向量召回与工具加载/安全边界的后续增强。 | **表述已修正**（2026-09-21 核验）：`DefaultToolSelector.select` 是无条件全量返回的空壳接口，**没有任何选择逻辑**，所以这不是「增强现有选择器」而是从零建召回；且 `ToolSelector.select(tools)` 与 `ToolGateway.get_openai_tools()` 都不带查询入参，**现接口无处传查询向量**，实施前须先做接口与契约决策。当前 11 个注册、8 个可见（门禁过滤后），触发门槛「工具数 > 50」无证据。<br>[TOOLS-049](../issues/integration/tools/2026-08-20-code-review-fixes.md) 的 6 项性质是**已决策保持现状**（原文即「取舍项（保持现状）」），不是延后待做——两者触发判断不同，不能混为一谈。已完成的审计脱敏不重开。 |
 | C-11 | 其他非关键观测入口的异常与阻塞边界。 | **终态/请求/收尾路径已实施**（2026-09-21，见 [B-01](#candidate-closeout-01)）：新增 `app/shared/observation.py` 的 `isolate_observation`，接入 react 终态、`dispatch` 降级告警、工具审计/观测/统计、流关闭、限流截断与上下文裁剪共 8 处。<br>**候选原述的靶子不成立**：`security.log_event_async("tool_call")` 的唯一生产调用点位于 `executor._observe` 的 `supervisor.wait` 之内，有界性与后台任务 Owner 由 Supervisor 边界提供，不重复设界。<br>**仍未做**：`metrics.py` 为 0 字节、指标入口不存在（无消费方，仅登记）；`structured.py`、`loader.py`、`client.py`、`assembler.py`、`hooks.py`、`session_manager.py` 等 except 分支内的降级告警未纳入；同步路径只能证明异常隔离、不能证明有界。对应 [ADR-002](../adr/2026-09-12-single-source-governance.md) 的「G0-6 的后续代码符合性工作」。 |
-| C-14 | `ruff check` 的零错误基线。 | 2026-09-17 引入 Ruff 时登记。ruff 0.16.8，`extend-select = ["E501"]` 只补行宽。**2026-09-21 复测**：`ruff check .` 报 95 项、分布 39 个文件（`app/` 5 个、`tests/` 34 个），48 项可由 `--fix` 自动修；规则分布 RUF059（21）、I001（17）、F401（16）、E501（8）、RUF012（7）、PLR1711（7）、F841（7）等。`app/` 侧仅 9 项：8 项 E501（`config/settings.py` ×4、`prompts/templates/planning.py`、`templates/reflection.py` ×2、`integration/llm/llm_service.py`）与 `integration/tools/builtin/rca/data.py:149` 的 SIM103。建立前 `ruff check` 不作为提交关口，见[部署与验证](project/deployment.md#常用命令)。需先定两个口径：`tests/` 是否放宽（RUF059/RUF012/F841 在测试替身里多为惯用写法），以及 `rca/data.py:149` 的 SIM103 是否并入既有数据表豁免。 |
 | C-16 | `build_messages` 的上下文摘要压缩（[ADR-001](../adr/2026-09-02-request-build-validation.md) docstring 策略第 4 条）：当前为硬丢弃历史，正文明确按产品导向暂不实现。 | **与 C-08 的「上下文语义摘要」是同一函数同一出处**（`context_manager._truncate_messages`），实施时应合并为一条，否则产出两份重复设计。另注该模块 docstring 声明「支持历史摘要压缩」而实现只做丢弃，属注释与实现不一致。触发：出现「丢弃历史导致答案质量下降」的真实证据；摘要须先证明不破坏证据链。 |
 | C-17 | 结构化输出的产物链接入与兜底（[ADR](../adr/domain/reasoning/2026-08-28-structured-output.md)）：产物链接入时经 `AgentContext` 配置 `output_schema`；`final_answer` 失败叠加 `generate_structured` 兜底（当前未叠加）。 | 出现产物链消费方。 |
 | C-18 | 成本上限的估算式 pre-call 软闸（[ADR](../adr/domain/reasoning/2026-08-30-cost-limit.md)）：发出前按输入上下文与 `max_tokens` 上界估算、超预算即拒绝，调用后按实际 usage 对账；需扩展 `CostLimiterPort`（现 `check` 为纯累计、无估算入参）。 | 出现「单轮绝不允许过贵」或并行子 Agent 各自发请求的真并发；工业参照 Portkey / llm0 / LiteLLM reservation。 |
