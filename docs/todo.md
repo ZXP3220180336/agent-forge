@@ -394,7 +394,7 @@ Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 pass
 
 *实际验证*：`uv run ruff check .` 零错误；`uv run ruff format --check .` 229 files already formatted；全量 1513 passed（52.29 秒，与改动前基线一致）；`git ls-files --eol` 无 CRLF/mixed。
 
-*已知未修（范围外）*：`[tool.ruff.format]` 也排除了 `rca/data.py`，理由是声明式数据表；该文件另含 8 个查询函数，其格式化不受门禁覆盖。本次未改动该排除（保持既有决策），发现登记于此待独立评估。
+*范围外核对结论（原「已知未修」条目）*：`[tool.ruff.format]` 的 `exclude` 含 `app/integration/tools/builtin/rca/data.py`，理由是声明式数据表。把该文件复制到排除范围外实测 `ruff format --diff`，diff 为 `-32/+139`，与 pyproject 注释所称「格式化会拆成每条 6 行（32 行 → 139 行）」一致——**理由属实**，属有据可查的有意取舍（依据[工程规则](engineering/ai-engineering-rules.md#indicators)「生成代码和声明式数据按性质判断，不机械套用行数」），不是失实描述，也不是待修缺陷；原先「待独立评估」的表述撤回。残留代价如实记录：该文件除数据表外还有 8 个函数（5 个公开查询函数与 3 个私有辅助），其格式化不纳入门禁，这是同一取舍的另一面，不另立候选。
 
 *剩余限制*：未启用 `--unsafe-fixes`（其承载的 30 项隐藏修复涉及语义改写，本批不需要）；本批只清零既有 92 项，不回溯历史代码。
 
