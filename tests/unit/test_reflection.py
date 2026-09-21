@@ -797,7 +797,10 @@ async def test_reflect_critique_ok_after_strict_deadline_keeps_facts_but_times_o
     )
     strategy = _make_strategy(llm)
 
-    await _run(strategy, max_execution_time=0.1)
+    # 总预算留出余量：草稿阶段要跑真实 ReAct 与工具执行，0.1 秒在全量负载下会被挤爆，
+    # 工具自身 deadline 先命中并抛 ToolDeadlineExceededError，测不到本用例要覆盖的语义。
+    # 迟到的自查不受影响——_LateCritiqueLLM 按本次调用的 deadline 计算睡眠，必然晚于期限。
+    await _run(strategy, max_execution_time=0.5)
 
     assert strategy.outcome is not None
     assert strategy.outcome.structured == DRAFT
