@@ -109,7 +109,10 @@ Agent 生命周期上下文。
 `RecoveryBudget.max_replan_rounds` / `max_refine_rounds` 为 `None` 表示当前策略不适用，
 `0` 表示适用但不允许对应恢复动作。值对象冻结字段引用，但其中的 `asyncio.Event` 仍由
 既有 Owner 设置。运行作用域在构造时校验非空身份与 Event 控制链，恢复预算拒绝负数，
-使直接策略调用也在外部副作用前失败。Planner 子 ReAct 复用同一组对象，只通过
+执行限制拒绝 0 或负的轮次与重复动作上限、以及非有限正数的批次收尾窗口——这三者的
+配置侧口径分别是 1-100、>= 1 与有限正数，越界会让循环零执行却产出正常终态，故在
+副作用前拒绝。`ExecutionLimits.max_execution_time` 不在此列：配置侧无对应口径，领域侧
+按 `max(0.0, ...)` 处理负值。Planner 子 ReAct 复用同一组对象，只通过
 `dataclasses.replace` 更新剩余墙钟。
 
 ---

@@ -80,6 +80,40 @@ def test_recovery_budget_rejects_negative_values(field_name: str) -> None:
         RecoveryBudget(**{field_name: -1})
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("max_iterations", 0),
+        ("max_iterations", -1),
+        ("max_same_action_turns", 0),
+        ("max_same_action_turns", -1),
+        ("batch_cleanup_grace", 0),
+        ("batch_cleanup_grace", -0.5),
+        ("batch_cleanup_grace", float("inf")),
+        ("batch_cleanup_grace", float("nan")),
+    ],
+)
+def test_execution_limits_rejects_values_below_configured_bounds(field_name: str, value: float) -> None:
+    """0 或负的轮次/重复动作上限会让主循环一次都不执行，却产出正常的 MAX_TURNS 终态。"""
+    with pytest.raises(ValueError, match=field_name):
+        ExecutionLimits(**{field_name: value})
+
+
+def test_execution_limits_accepts_lower_boundary_values() -> None:
+    limits = ExecutionLimits(max_iterations=1, max_same_action_turns=1, batch_cleanup_grace=0.001)
+
+    assert limits.max_iterations == 1
+    assert limits.max_same_action_turns == 1
+    assert limits.batch_cleanup_grace == 0.001
+
+
+def test_execution_limits_keeps_negative_execution_time_defined() -> None:
+    """墙钟无配置侧口径，_resolve_deadlines 已按 max(0.0, ...) 处理负值——锁定该既有语义，不收紧。"""
+    limits = ExecutionLimits(max_execution_time=-1.0)
+
+    assert limits.max_execution_time == -1.0
+
+
 @pytest.mark.asyncio
 async def test_planner_requires_replan_budget() -> None:
     strategy = PlannerStrategy(llm=None, tools=None)

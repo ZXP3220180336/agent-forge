@@ -102,7 +102,7 @@ IDLE → THINKING → COMPLETED / FAILED
 | `run_id` / `run_stop` | `str` / `asyncio.Event`（必填） | Application 创建的独立运行身份；同运行关闭新业务准入的信号 |
 | `workflow_id` | `str \| None = None` | 可选父工作流身份；子策略原样继承 |
 | `parent_cancel_events` | `tuple[asyncio.Event, ...] = ()` | 父级取消信号；与本 run 取消信号共同下传工具调用 |
-| `max_iterations` | `int = 10` | 最大推理轮数 |
+| `max_iterations` | `int = 10` | 最大推理轮数；领域侧 `ExecutionLimits` 要求 >= 1（同配置侧 1-100 口径的下界） |
 | `temperature` | `float = 0.2` | 采样温度 |
 | `max_tokens` | `int = 4096` | 单轮最大输出 token |
 | `max_execution_time` | `float \| None = None` | 整个 ReAct 循环总时长上限（秒）；None=不设限（生产值由装配根注入 `agent_timeout`） |
