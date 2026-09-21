@@ -21,8 +21,8 @@ from app.config import settings
 from app.platform.observability.logger import (
     ConsoleFormatter,
     JsonFormatter,
-    get_logger,
     fill_llm_event_fields,
+    get_logger,
     log_event,
     log_event_async,
     setup_logging,
@@ -136,7 +136,6 @@ async def test_log_event_async_uses_to_thread(monkeypatch, tmp_path):
         calls["args"] = args
         calls["kwargs"] = kwargs
         fn(*args, **kwargs)
-        return None
 
     monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
     await log_event_async("llm_call", success=True, duration=1.0)

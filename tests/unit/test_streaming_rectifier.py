@@ -14,16 +14,16 @@ StreamingRectifier 直接单元测试
 import asyncio
 import time
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
+from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm.errors import _DeadlineExceeded, _StreamCancel
 from app.integration.llm.retry import RetryConfig, RetryHandler
 from app.integration.llm.stream_consumption import drain_stream
 from app.integration.llm.streaming_rectifier import RectifierContext, StreamingRectifier
-from app.domain.ports.llm_gateway import StreamResult
 from app.shared.exceptions import ContextWindowExceededError
-
 
 # =====================================================================
 # chunk mock（参照 test_stream_rectify 既有模式）
@@ -421,7 +421,7 @@ def test_no_rectify_when_interrupt_after_usage_chunk():
         # 若误整流，尝试 2 会执行；断言 calls==1 即证明未整流
         _FakeStream([_content_chunk("重复")]),
     ]
-    events, result, retry, reservation = _run(streams)
+    events, result, retry, _reservation = _run(streams)
 
     assert retry.calls == 1, "已产出 token（即便最后一个 chunk 是 usage-only）不应整流"
     assert result.content == "你好", "已产出部分应保留"
@@ -521,7 +521,7 @@ def test_rectify_exhausts_max_retries():
         _FakeStream([_usage_chunk(10, 0)], fail_at=1),
         _FakeStream([_usage_chunk(10, 0)], fail_at=1),
     ]
-    events, result, retry, reservation = _run(streams, stream_max_retries=2)
+    events, _result, retry, _reservation = _run(streams, stream_max_retries=2)
 
     assert retry.calls == 3, "stream_max_retries=2 → 3 次尝试后放弃"
     assert retry.circuit_breaker.failures == 1, "放弃时 RETRYABLE 中断应喂熔断器"
@@ -555,7 +555,7 @@ def test_rectify_clears_refusal_from_dead_stream():
         _FakeStream([refusal_chunk], fail_at=1, exc=TimeoutError("reset")),
         _FakeStream([_content_chunk("你好"), _usage_chunk(10, 2)]),
     ]
-    events, result, retry, reservation = _run(streams)
+    _events, result, retry, reservation = _run(streams)
 
     assert retry.calls == 2, "refusal 死流首 token 前中断应整流"
     assert result.content == "你好", "第 2 次尝试应产出完整内容"
@@ -586,7 +586,7 @@ def test_rectify_clears_usage_finish_from_dead_stream():
         _FakeStream([finish_chunk], fail_at=1, exc=TimeoutError("reset")),
         _FakeStream([_content_chunk("你好"), _usage_chunk(1, 2)]),
     ]
-    events, result, retry, reservation = _run(streams)
+    _events, result, retry, reservation = _run(streams)
 
     assert retry.calls == 2, "收尾元数据-only 死流首 token 前中断应整流"
     assert result.content == "你好"
@@ -607,7 +607,7 @@ def test_rectify_clears_usage_finish_from_dead_stream():
 def test_settle_on_success():
     """正常读完 → settle（退 TPM 差），不 cancel。"""
     streams = [_FakeStream([_content_chunk("ok"), _usage_chunk(10, 2)])]
-    events, result, retry, reservation = _run(streams)
+    _events, result, _retry, reservation = _run(streams)
 
     assert reservation.settle_calls == 1, "成功应 settle"
     assert reservation.cancel_calls == 0, "成功不应 cancel"
@@ -726,7 +726,7 @@ class _RateLimited429(Exception):
     """模拟 429 限流异常（RATE_LIMITED，可整流 + 携带 Retry-After 头）。"""
 
     status_code = 429
-    headers: dict[str, str] = {}
+    headers: ClassVar[dict[str, str]] = {}
 
 
 def _drive_rectify(streams, monkeypatch):
@@ -782,7 +782,7 @@ def test_rectify_respects_retry_after_normal(monkeypatch):
     """
 
     class _Rl(_RateLimited429):
-        headers = {"retry-after": "0.03"}  # 合理值（≤ max_delay=0.05）
+        headers: ClassVar[dict[str, str]] = {"retry-after": "0.03"}  # 合理值（≤ max_delay=0.05）
 
     streams = [
         _FakeStream([], fail_at=0, exc=_Rl()),
@@ -800,7 +800,7 @@ def test_rectify_retry_after_capped_by_max_delay(monkeypatch):
     """
 
     class _Rl(_RateLimited429):
-        headers = {"retry-after": "3600"}  # 异常大值（应被封顶忽略）
+        headers: ClassVar[dict[str, str]] = {"retry-after": "3600"}  # 异常大值（应被封顶忽略）
 
     streams = [
         _FakeStream([], fail_at=0, exc=_Rl()),
@@ -870,7 +870,7 @@ def test_first_token_timeout_rectifies_slow_first_chunk():
             _DelayedChunkStream([_content_chunk("你好")], delay_at=0, delay=0.2),
             _FakeStream([_content_chunk("好"), _usage_chunk(10, 2)]),
         ]
-        events, result, retry, reservation = _run(streams)
+        _events, result, retry, reservation = _run(streams)
         assert retry.calls == 2, "首包超时应整流重试"
         assert result.content == "好"
         assert reservation.settle_calls == 1
@@ -883,7 +883,7 @@ def test_chunk_idle_timeout_abandons_after_first_token():
     saved = _tiny_watchdog()
     try:
         streams = [_DelayedChunkStream([_content_chunk("你好"), _usage_chunk(10, 2)], delay_at=1, delay=0.2)]
-        events, result, retry, reservation = _run(streams)
+        _events, result, retry, reservation = _run(streams)
         assert retry.calls == 1, "已产出后空闲超时不应整流（防重复输出）"
         assert result.content == "你好", "部分产出保留在 result 中"
         assert result.error, "放弃应置失败信号（看门狗 TimeoutError 空串回退类型名，非空）"
@@ -1165,7 +1165,7 @@ def test_continuation_off_when_max_zero():
     """continuation_max_retries=0 → 续接不触发，维持既有放弃路径。"""
     saved = _tiny_watchdog()
     try:
-        events, result, retry, _, prefixes = _run_continue(
+        _events, result, retry, _, prefixes = _run_continue(
             streams=[_FakeStream([_content_chunk("部分")], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[],
             continuation_max_retries=0,
@@ -1182,7 +1182,7 @@ def test_no_continuation_when_reasoning_only():
     """reasoning 半段中断（content 空）→ 不续接（reasoning 续写语义未验证，保守排除）。"""
     saved = _tiny_watchdog()
     try:
-        events, result, retry, _, prefixes = _run_continue(
+        events, result, _retry, _, prefixes = _run_continue(
             streams=[_FakeStream([_reasoning_chunk("思考中")], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[_FakeStream([_content_chunk("不应被消费")])],
         )
@@ -1199,7 +1199,7 @@ def test_no_continuation_when_tool_call_partial():
     """tool_call 半成品中断 → 不续接（partial JSON 无法跨请求续接，维持放弃）。"""
     saved = _tiny_watchdog()
     try:
-        events, result, retry, _, prefixes = _run_continue(
+        _events, result, retry, _, prefixes = _run_continue(
             streams=[_FakeStream([_tool_call_chunk()], fail_at=1, exc=TimeoutError("reset"))],
             continue_streams=[_FakeStream([_content_chunk("不应被消费")])],
         )

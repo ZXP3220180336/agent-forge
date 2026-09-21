@@ -18,15 +18,13 @@ import httpx
 import pytest
 from openai import APIResponseValidationError, BadRequestError, RateLimitError
 
-from app.config import settings
+from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm.client import ClientManager
 from app.integration.llm.llm_service import LLMService
 from app.integration.llm.request_budget import RequestBudgetConfig, RequestBudgetManager
 from app.integration.llm.reservation_limiter import ReservationLimiter, ReservationLimiterManager
 from app.integration.llm.retry import RetryConfig, RetryHandlerManager
-from app.domain.ports.llm_gateway import StreamResult
 from app.shared.exceptions import ContextWindowExceededError, LLMCancelledError
-
 
 # =====================================================================
 # Mock 基础设施
@@ -407,7 +405,6 @@ async def test_create_context_window_exceeded_raises_through(monkeypatch):
 @pytest.mark.asyncio
 async def test_rectify_then_create_failure(monkeypatch):
     """整流尝试的下一轮 create 失败 → 走 create 失败路径，不再整流。"""
-    resp = httpx.Response(500, request=httpx.Request("POST", "http://x"))
     script = [
         FakeStream([], fail_at=0),  # 尝试 1：死流 → 整流
         TimeoutError("create timeout"),  # 尝试 2：create 抛超时（max_retries=0 不重试）
@@ -448,7 +445,7 @@ async def test_usage_only_interrupt_rectifies(monkeypatch):
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
-    sr, events = await run()
+    sr, _events = await run()
 
     assert completions.calls == 2, "仅 finish_reason 后中断应整流"
     assert sr.content == "ok"
@@ -486,7 +483,7 @@ async def test_non_retryable_iter_exception_no_rectify(monkeypatch):
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=3)
 
-    sr, events = await run()
+    _sr, events = await run()
 
     assert completions.calls == 1, "NON_RETRYABLE 迭代异常不得整流"
     assert any("error" in e for e in events), "应产出 error 事件"
@@ -499,7 +496,7 @@ async def test_logging_records_rectified_attempts(monkeypatch, caplog):
         FakeStream([_usage_chunk(10, 0)], fail_at=1, exc=httpx.ReadError("reset")),
         FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
     ]
-    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
+    _, _completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     with caplog.at_level(logging.INFO, logger="app.events"):
         await run()
@@ -574,7 +571,7 @@ async def test_rate_limiter_settle_refunds_overestimate(monkeypatch):
     script = [
         FakeStream([_content_chunk("ok"), _finish_chunk("stop"), _usage_chunk(10, 5)]),
     ]
-    _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=0)
+    _, _completions, run, calls = _setup(monkeypatch, script, stream_max_retries=0)
 
     await run()
 
@@ -593,7 +590,7 @@ async def test_rate_limiter_settles_unknown_usage_on_create_failure(monkeypatch)
     ]
     _, completions, run, calls = _setup(monkeypatch, script, stream_max_retries=0)
 
-    sr, events = await run()
+    _sr, events = await run()
 
     assert completions.calls == 1
     assert calls["cancel"] == 0, "没有成功响应不证明远端未执行"
@@ -659,7 +656,7 @@ async def test_rectify_exhausted_then_abandon_feeds_once(monkeypatch):
     ]
     _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
-    sr, events = await run()
+    _sr, events = await run()
 
     assert completions.calls == 2, "连续死流耗尽整流上限（2 次调用）"
     assert any("error" in e for e in events), "放弃应产出 error"
@@ -706,7 +703,7 @@ async def test_cancel_event_not_feeds_breaker(monkeypatch):
     script = [
         FakeStream([_content_chunk("ok")], fail_at=None),
     ]
-    _, completions, run, _ = _setup(monkeypatch, script, stream_max_retries=1)
+    _, _completions, _run, _ = _setup(monkeypatch, script, stream_max_retries=1)
 
     cancel_event = asyncio.Event()
     cancel_event.set()  # 置位 → 迭代内取消检查触发

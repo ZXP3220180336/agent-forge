@@ -27,13 +27,13 @@ class _FakeClient:
 
 
 def _make_service(**kwargs):
-    defaults = dict(
-        client=_FakeClient(),
-        model="text-embedding-3-small",
-        dimensions=3,
-        max_batch_size=20,
-        enable_cache=True,
-    )
+    defaults = {
+        "client": _FakeClient(),
+        "model": "text-embedding-3-small",
+        "dimensions": 3,
+        "max_batch_size": 20,
+        "enable_cache": True,
+    }
     defaults.update(kwargs)
     return EmbeddingService(**defaults)
 

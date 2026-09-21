@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -21,7 +22,7 @@ from tests.tool_lifecycle import execution_kwargs
 class _ResultTool(BaseTool):
     name = "fact_probe"
     description = "fact probe"
-    parameters = {"type": "object", "properties": {}}
+    parameters: ClassVar[dict] = {"type": "object", "properties": {}}
 
     def __init__(self, result=None, error=None):
         self.result = result

@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from tests.reasoning_execution import reasoning_execution_args
-
 from app.domain.ports.llm_gateway import StreamResult
 from app.domain.reasoning import ReActStrategy
 from app.integration.llm.client import ClientManager
@@ -26,6 +24,7 @@ from app.shared.exceptions import (
     LLMCancelledError,
     LLMDeadlineExceededError,
 )
+from tests.reasoning_execution import reasoning_execution_args
 
 
 @pytest.fixture

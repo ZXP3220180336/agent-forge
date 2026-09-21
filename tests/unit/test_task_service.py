@@ -10,9 +10,9 @@ import asyncio
 
 import pytest
 
+from app.application.task.task_service import TaskService
 from app.config import settings
 from app.domain.agent.base import AgentContext
-from app.application.task.task_service import TaskService
 
 
 def _context(run_id: str = "run-test") -> AgentContext:

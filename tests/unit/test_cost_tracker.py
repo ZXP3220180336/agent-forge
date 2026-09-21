@@ -11,10 +11,7 @@ CostTracker 单元测试
 这些行为（如引入等长前缀让前缀匹配歧义、或误改匹配顺序），测试应能拦截。
 """
 
-import pytest
-
 from app.integration.llm.cost_tracker import MODEL_PRICING, CostTracker
-
 
 # =====================================================================
 # 精确匹配

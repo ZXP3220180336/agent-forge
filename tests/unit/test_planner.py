@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from app.domain.reasoning import PlannerOutcome, PlannerStrategy
+from app.domain.reasoning import PlannerStrategy
 from app.domain.reasoning._planner_steps import (
     build_plan_payload,
     build_step_record,
@@ -91,7 +91,6 @@ class _PlannerLLM:
             for key, value in spec.items():
                 setattr(result, key, value)
         yield build_message_event(spec.get("content", ""))
-        return
 
     async def generate_structured(
         self,
@@ -280,7 +279,7 @@ async def test_plan_apperror_degrades_to_react():
     strategy = PlannerStrategy(llm=llm, tools=None)
     messages = [{"role": "user", "content": "hi"}]
 
-    events = await _run(strategy, messages)
+    await _run(strategy, messages)
 
     assert strategy.outcome is not None
     assert strategy.outcome.degraded is True
@@ -674,7 +673,7 @@ async def test_cost_limit_stops_before_plan():
     strategy = PlannerStrategy(llm=llm, tools=None, cost_limiter=_OverCostLimiter())
     messages = [{"role": "user", "content": "hi"}]
 
-    events = await _run(strategy, messages)
+    await _run(strategy, messages)
 
     assert strategy.outcome is not None
     assert strategy.outcome.degraded is True
@@ -693,7 +692,7 @@ class _CostCalcLLM:
         return CostTracker.calculate(usage, model)
 
 
-def _cost_limiter(ceiling: float) -> "object":
+def _cost_limiter(ceiling: float) -> object:
     from app.application.context.cost_limiter import CostLimiter
 
     return CostLimiter(ceiling=ceiling, llm=_CostCalcLLM(), model="gpt-4")

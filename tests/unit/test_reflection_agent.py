@@ -86,7 +86,6 @@ class _ReflectionLLM:
             for key, value in spec.items():
                 setattr(result, key, value)
         yield build_message_event(spec.get("content", ""))
-        return
 
     async def generate_structured(
         self, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None

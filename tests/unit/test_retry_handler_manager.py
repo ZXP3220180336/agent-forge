@@ -8,10 +8,7 @@ RetryHandlerManager 单元测试
     reset 后重新建实例
 """
 
-import pytest
-
 from app.integration.llm.retry import RetryHandlerManager
-
 
 # =====================================================================
 # RetryHandlerManager

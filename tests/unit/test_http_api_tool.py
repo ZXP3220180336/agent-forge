@@ -13,7 +13,6 @@ HttpApiTool 单元测试（外部工具示例）
 import httpx
 import pytest
 
-from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.external.http_api import HttpApiTool
 from app.integration.tools.security import RiskLevel
 

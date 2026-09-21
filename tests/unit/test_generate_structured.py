@@ -19,12 +19,11 @@ import time
 import httpx
 import pytest
 
-from app.integration.llm.llm_service import LLMService
 from app.domain.ports.llm_gateway import StreamResult
+from app.integration.llm.llm_service import LLMService
 from app.integration.llm.structured import (
     StructuredOutput,
     StructuredRefusalError,
-    StructuredTruncationError,
 )
 from app.integration.llm.structured_codec import enforce_no_extra_fields
 from app.shared.exceptions import LLMCancelledError, LLMDeadlineExceededError
@@ -207,7 +206,7 @@ def _sr(
 
 def _sr_none() -> None:
     """模拟 generate 返回 None（调用失败）。"""
-    return None
+    return
 
 
 # =====================================================================
@@ -1092,9 +1091,8 @@ async def test_refusal_log_truncated(caplog):
         return _sr("", refusal=long_refusal)
 
     llm.generate = fake_generate
-    with caplog.at_level(logging.WARNING):
-        with pytest.raises(StructuredRefusalError):
-            await llm.generate_structured(MESSAGES, SCHEMA)
+    with caplog.at_level(logging.WARNING), pytest.raises(StructuredRefusalError):
+        await llm.generate_structured(MESSAGES, SCHEMA)
 
     assert "已截断" in caplog.text, "超长拒答应被截断标记"
     assert long_refusal not in caplog.text, "完整拒答文本不应落盘"
@@ -1191,7 +1189,6 @@ async def test_extra_field_rejected_by_default():
 @pytest.mark.asyncio
 async def test_caller_schema_not_polluted():
     """extract 补全不污染调用方 schema（深拷贝）。"""
-    from app.integration.llm.structured import StructuredOutput
 
     schema = {
         "type": "object",
@@ -1206,7 +1203,6 @@ async def test_caller_schema_not_polluted():
 @pytest.mark.asyncio
 async def test_explicit_true_respected():
     """调用方显式写 additionalProperties:true → 尊重意图，不覆盖。"""
-    from app.integration.llm.structured import StructuredOutput
 
     schema = {
         "type": "object",
@@ -1220,7 +1216,6 @@ async def test_explicit_true_respected():
 @pytest.mark.asyncio
 async def test_nested_objects_recursively_enforced():
     """嵌套 object 也递归补全 additionalProperties:false。"""
-    from app.integration.llm.structured import StructuredOutput
 
     schema = {
         "type": "object",
@@ -1271,7 +1266,6 @@ async def test_fallback_regex_extracts_json_from_prose():
 @pytest.mark.asyncio
 async def test_enforce_nullable_object_type_array():
     """type 数组含 object（可空写法 ["object","null"]）也补全 additionalProperties:false。"""
-    from app.integration.llm.structured import StructuredOutput
 
     schema = {
         "type": ["object", "null"],  # 可空对象

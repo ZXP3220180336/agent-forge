@@ -6,8 +6,6 @@ ExecutionHooks 执行钩子单元测试
     单个钩子异常不影响后续钩子与主流程
 """
 
-import pytest
-
 from app.domain.ports.tool_gateway import ToolResult
 from app.integration.tools.hooks import ExecutionHooks
 

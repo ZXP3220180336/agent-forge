@@ -207,7 +207,7 @@ def test_chat_stop_uses_chat_service_and_cancels_session_runs(
 
 def test_create_session_endpoint(monkeypatch, agent_params):
     """POST /api/session/create 经路由与 schema 返回响应"""
-    fake_sm = _wire(monkeypatch, agent_params, session=None)
+    _wire(monkeypatch, agent_params, session=None)
     resp = client.post(
         "/api/session/create",
         json={"system_prompt": "p", "title": "t"},

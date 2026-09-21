@@ -15,6 +15,7 @@ RetryHandler / CircuitBreaker 单元测试
 
 import asyncio
 import time
+from typing import ClassVar
 
 import pytest
 
@@ -43,7 +44,7 @@ class _RateLimited(Exception):
     """模拟 429 限流异常（含 Retry-After 头）。"""
 
     status_code = 429
-    headers: dict[str, str] = {}
+    headers: ClassVar[dict[str, str]] = {}
 
 
 class _BadRequest(Exception):
@@ -746,7 +747,7 @@ async def test_retry_after_respected():
     )
 
     class _RateLimitedWithHeader(_RateLimited):
-        headers = {"retry-after": "0.05"}
+        headers: ClassVar[dict[str, str]] = {"retry-after": "0.05"}
 
     async def call_fn():
         calls[0] += 1
@@ -779,7 +780,7 @@ async def test_retry_after_capped_by_max_delay():
     )
 
     class _RateLimitedWithHeader(_RateLimited):
-        headers = {"retry-after": "3600"}  # 恶意/异常大值，远超 max_delay=0.05
+        headers: ClassVar[dict[str, str]] = {"retry-after": "3600"}  # 恶意/异常大值，远超 max_delay=0.05
 
     async def call_fn():
         calls[0] += 1

@@ -1,8 +1,8 @@
 """reasoning 共享执行护栏的类型与优先级契约。"""
 
-from dataclasses import FrozenInstanceError
 import asyncio
 import time
+from dataclasses import FrozenInstanceError
 from unittest.mock import Mock
 
 import pytest

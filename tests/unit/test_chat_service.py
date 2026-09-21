@@ -98,7 +98,7 @@ async def test_prepare_rejects_before_message_or_run_side_effects(
 @pytest.mark.asyncio
 async def test_prepare_uses_message_id_and_isolates_same_session_runs(agent_params):
     """当前消息 ID 形成历史快照上界；同会话运行独立登记和清理。"""
-    service, sessions, context, tasks = _service(
+    service, _sessions, context, tasks = _service(
         {"id": "s1", "user_id": "user_x", "system_prompt": "sys"},
         agent_params,
     )

@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts import verify_alignment  # noqa: E402
+from scripts import verify_alignment
 
 
 def _make_repo(tmp_path: Path, rows: list[str], files: dict[str, str]) -> Path:

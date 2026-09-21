@@ -5,10 +5,10 @@ import asyncio
 import pytest
 
 from app.shared.error_handling import (
-    AgentRunError,
     AgentErrorAction,
     AgentErrorContext,
     AgentErrorKind,
+    AgentRunError,
     ErrorHandlerRegistry,
 )
 from app.shared.exceptions import AppError

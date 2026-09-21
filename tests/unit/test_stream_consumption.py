@@ -47,7 +47,7 @@ class _Stream:
         self._chunks = list(chunks)
         self.close_calls = 0
 
-    def __aiter__(self) -> "_Stream":
+    def __aiter__(self) -> _Stream:
         return self
 
     async def __anext__(self) -> Any:

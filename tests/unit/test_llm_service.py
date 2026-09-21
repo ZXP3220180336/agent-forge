@@ -13,12 +13,11 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APITimeoutError, APIResponseValidationError, AuthenticationError
+from openai import APIResponseValidationError, APITimeoutError, AuthenticationError
 
 from app.integration.llm.llm_service import LLMService
 from app.integration.llm.request_budget import RequestBudgetConfig, RequestBudgetManager
 from app.shared.exceptions import ContextWindowExceededError, LLMAPIError, LLMCancelledError
-
 
 # =====================================================================
 # 假响应 / 假组件

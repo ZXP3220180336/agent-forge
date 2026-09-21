@@ -11,9 +11,7 @@ from jsonschema import Draft202012Validator, SchemaError
 
 from app.domain.reasoning.planner import PLAN_SCHEMA, PLAN_STEP_SCHEMA, REPLAN_SCHEMA, RESULT_SCHEMA
 from app.domain.reasoning.reflection import CRITIQUE_SCHEMA, REFLECTION_SCHEMA
-
 from app.shared.json_schema import JSON_SCHEMA_DIALECT, create_schema_validator
-
 
 _OLD_DIALECT = "http://json-schema.org/draft-07/schema#"
 

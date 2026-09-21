@@ -27,7 +27,6 @@ from app.integration.llm.reservation_limiter import (
 )
 from tests.observation_helpers import exploding_handler
 
-
 # =====================================================================
 # TokenBucket（自包含）refund / acquire
 # =====================================================================

@@ -9,7 +9,6 @@ llm/errors.py 单元测试：传输异常的统一理解与决策
 """
 
 import httpx
-import pytest
 from openai import (
     APITimeoutError,
     AuthenticationError,

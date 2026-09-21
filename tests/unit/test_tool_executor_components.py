@@ -108,7 +108,7 @@ class _SpyAuditor(ToolAuditor):
         super().__init__(enabled=True)
         self.records: list[dict] = []
 
-    async def record(self, **kwargs) -> None:  # noqa: A003
+    async def record(self, **kwargs) -> None:
         self.records.append(kwargs)
 
 
@@ -662,7 +662,7 @@ async def test_stats_failure_does_not_override_success_result():
 @pytest.mark.asyncio
 async def test_audit_timeout_does_not_delay_or_override_success_result():
     class _HangingAuditor(ToolAuditor):
-        async def record(self, **kwargs) -> None:  # noqa: A003
+        async def record(self, **kwargs) -> None:
             await asyncio.sleep(1)
 
     tool = _CountingSuccessTool()

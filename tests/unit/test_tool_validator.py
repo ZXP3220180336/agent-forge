@@ -22,8 +22,7 @@ from app.integration.tools.validator import (
     ParameterValidationError,
     ParameterValidator,
 )
-from app.shared.json_schema import JSON_SCHEMA_DIALECT
-from app.shared.json_schema import create_schema_validator
+from app.shared.json_schema import JSON_SCHEMA_DIALECT, create_schema_validator
 from tests.tool_lifecycle import StandaloneToolService as ToolService
 
 # 带完整约束的测试 schema

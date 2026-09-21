@@ -406,7 +406,7 @@ async def test_nonstream_empty_output_retries_then_stops():
     strategy = ReActStrategy(llm=llm, tools=None)
     messages = [{"role": "user", "content": "hi"}]
 
-    events = await _run(strategy, messages, stream_mode=False)
+    await _run(strategy, messages, stream_mode=False)
 
     assert strategy.outcome is not None
     assert strategy.outcome.success is True
@@ -485,7 +485,6 @@ class _DualLLM:
             for key, value in spec.items():
                 setattr(result, key, value)
         yield build_message_event(spec.get("content", ""))
-        return
 
     async def generate(self, **kwargs):
         self.calls += 1

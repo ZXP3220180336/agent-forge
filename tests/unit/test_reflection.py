@@ -15,9 +15,9 @@ from copy import deepcopy
 
 import pytest
 
-from app.domain.reasoning import ReflectionOutcome, ReflectionStrategy
-from app.domain.reasoning.reflection import CRITIQUE_SCHEMA, REFLECTION_SCHEMA
 from app.domain.prompts.templates.reflection import CRITIQUE_PROMPT
+from app.domain.reasoning import ReflectionStrategy
+from app.domain.reasoning.reflection import CRITIQUE_SCHEMA, REFLECTION_SCHEMA
 from app.integration.tools.base import BaseTool, ToolResult
 from app.integration.tools.execution import ToolEffectClass, ToolExecutionSpec
 from app.integration.tools.tool_service import ToolService
@@ -109,7 +109,6 @@ class _ReflectionLLM:
             for key, value in spec.items():
                 setattr(result, key, value)
         yield build_message_event(spec.get("content", ""))
-        return
 
     async def generate_structured(
         self, messages, schema, model_key="fast", max_tokens=None, usage=None, cancel_event=None, deadline=None

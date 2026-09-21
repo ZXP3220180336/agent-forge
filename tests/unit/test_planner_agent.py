@@ -9,12 +9,8 @@ generate_structured（plan/summarize）。
 """
 
 import asyncio
-import json
-
-import pytest
 
 from app.domain.agent import AgentContext, PlannerAgent
-from app.domain.ports.llm_gateway import StreamResult
 from app.shared.events import build_message_event
 
 PLAN = {
@@ -49,7 +45,6 @@ class _AgentPlannerLLM:
             result.finish_reason = "stop"
             result.content = "步骤结果"
         yield build_message_event("步骤结果")
-        return
 
     async def generate_structured(
         self,
@@ -69,15 +64,15 @@ class _AgentPlannerLLM:
 
 
 def _ctx(**kw) -> AgentContext:
-    base = dict(
-        session_id="sess_1",
-        user_id="user_1",
-        run_id="run-planner",
-        run_stop=asyncio.Event(),
-        max_iterations=5,
-        temperature=0.2,
-        max_tokens=1024,
-    )
+    base = {
+        "session_id": "sess_1",
+        "user_id": "user_1",
+        "run_id": "run-planner",
+        "run_stop": asyncio.Event(),
+        "max_iterations": 5,
+        "temperature": 0.2,
+        "max_tokens": 1024,
+    }
     base.update(kw)
     return AgentContext(**base)
 
@@ -108,7 +103,6 @@ async def test_map_outcome_none_returns_failure():
     """策略未产出 → 失败 AgentResult。"""
     llm = _AgentPlannerLLM(structured_scripts=[None])
     agent = PlannerAgent(llm=llm, tools=None)
-    ctx = _ctx()
     # plan 返回 None → 降级 ReAct 兜底（react 产出）→ 仍 success；此处构造 outcome None 场景：
     # 直接测 _map_outcome(None) 分支
     result = agent._map_outcome(None)
@@ -124,7 +118,6 @@ async def test_ctx_max_refine_rounds_as_replan_budget():
             if result is not None:
                 result.error = "模拟失败"
             yield build_message_event("")
-            return
 
     llm = _FailStepLLM(structured_scripts=[PLAN, None, SUMMARY])  # 步骤失败 → replan → replan None
     agent = PlannerAgent(llm=llm, tools=None)

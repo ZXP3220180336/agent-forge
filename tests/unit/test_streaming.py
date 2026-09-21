@@ -13,7 +13,6 @@ from types import SimpleNamespace
 
 from app.integration.llm.streaming import StreamParser, ToolCallDelta
 
-
 # =====================================================================
 # mock chunk 构造
 # =====================================================================

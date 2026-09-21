@@ -115,10 +115,8 @@ async def test_await_cooperating_cancel_reraises_deadline_signal():
 
     async def factory():
         started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            raise  # 配合：重抛取消
+        # 配合取消：await 自然传播 CancelledError，无需显式重抛
+        await asyncio.Event().wait()
 
     task = asyncio.ensure_future(await_with_execution_control(factory, deadline=time.monotonic() + 0.2))
     await asyncio.wait_for(started.wait(), timeout=1)

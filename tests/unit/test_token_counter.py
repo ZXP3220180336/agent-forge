@@ -27,7 +27,7 @@ def test_count_messages_tokens_with_name():
 
 def test_encoding_fallback_on_unknown_model():
     """未知模型名触发 KeyError → 回退 cl100k_base"""
-    counter = TiktokenTokenCounter("definitely-not-a-model")
+    TiktokenTokenCounter("definitely-not-a-model")
     assert get_encoder("definitely-not-a-model").name == "cl100k_base"
 
 
