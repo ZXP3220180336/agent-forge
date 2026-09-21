@@ -1,6 +1,6 @@
 # 研发教训
 
-更新：2026-09-19。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
+更新：2026-09-21。本文件保留已经遇到的误判及其识别条件，供同类工作检索；规范正文只维护在 `docs/engineering/`。Issue 的“已修”和旧测试数字均为历史记录，当前任务状态只见[项目待办](todo.md)，无独立 Issue 的迁移背景见[完成记录](history/completed-work.md)。
 
 ## 规则与文档维护
 
@@ -63,7 +63,7 @@
 | fake DB、缓存、配置或异步容器测试 | fake 的返回协议、缓存状态和查询判别曾使断言未到目标分支；真实 `.env` 还曾使工具测试意外访问网络。异步 initialize 未等待则产生假启动失败。 | [测试迁移记录](history/completed-work.md)（原交接无独立 Issue）；[项目工作流](engineering/project-workflow.md)。 |
 | 工作区行尾或提交门禁报 “would be reformatted” | 混行尾在 git 里**不可见**：git 按归一化后的内容比较，`status`/`diff`/`add` 与干净版本一致，所以每轮改完都复现、每轮都要重新排查。根因是仓库未声明行尾约定，工作区 CRLF 来自 Git for Windows 的系统级 `core.autocrlf=true`，与多数写入工具默认输出的 LF 相反；只有 `ruff format --check` 读工作区字节时才暴露。修复应把约定写进 `.gitattributes`（`eol=lf` 覆盖 `core.autocrlf`）并一次性统一工作区，而不是每轮事后跑 `ruff format`。统一后须用 `git add --renormalize .` 刷新索引 stat 缓存，否则 `git status` 会对每个文件报假改动（内容哈希实际与 HEAD 相同）。排查行尾时先隔离变量：确认是哪个写入路径产生 LF，不能笼统归因给“编辑器”。 | 2026-09-19 行尾统一；[部署说明](project/deployment.md#行尾约定lf)、[项目工作流](engineering/project-workflow.md)。 |
 | 配置键改名或迁移消费方 | 测试中的 `monkeypatch.setattr(settings, ...)` 在字段不再被组件读取后仍然通过，断言实际由构造参数满足，patch 只是空转；只按“测试仍绿”判断改名完成会留下这种假覆盖。改名后须逐条核对 patch 目标是否还在读取路径上，需要覆盖生产装配就改用真实 Container 入口。 | 2026-09-18 Piece③ 工具准入配置迁移评审；[项目工作流](engineering/project-workflow.md)。 |
-| 涉及时序竞态或文档格式检查 | 时间预算不足会让测试命中提前入口；无限等待会使失败挂起。中文表格列宽应按项目实际 lint 配置核验，不能把旧脚本做法提升为每次必跑的通用要求。 | [LLM-047](../issues/integration/llm/2026-09-09-deadline-usage-propagation-closed-loop.md)、[完成记录](history/completed-work.md)；[项目工作流](engineering/project-workflow.md)。 |
+| 涉及时序竞态或文档格式检查 | 时间预算不足会让测试命中提前入口；无限等待会使失败挂起。2026-09-21 补充三点。①**时限用例的预算窗口内不得包含成本随环境变化的真实工作**：某严格期限用例的窗口内落了一次外部插件目录扫描，冷扫 0.09 秒即吃光 0.1 秒总预算（实测工具调用进入时的期限余量同为 0.0897 秒，工具本体耗时接近 0），余量只够侥幸通过、随负载浮动。修法应把环境成本移出窗口，而不是放大余量——放大只是把问题推后，且余量会随外部插件数量等规模因素增长而缩水。②判断这类失败是否为自己引入**必须做对照实验**：只排除自己新增的用例不足以定性，还要排除一条既有的同量级用例；两次都通过才能认定是阈值状态而非自己的语义回归。③注意失败形态——预算耗尽时链路可能以类型化控制异常上抛结束，而**不是断言不成立**，此时用例的断言集在结构上不可达，读失败先分清是异常逃逸还是断言失败。中文表格列宽应按项目实际 lint 配置核验，不能把旧脚本做法提升为每次必跑的通用要求。 | 2026-09-21 [B-01 计划](todo.md#candidate-closeout-01)、手动观察入口 [scripts.observe_reflection_deadline](project/deployment.md)；[LLM-047](../issues/integration/llm/2026-09-09-deadline-usage-propagation-closed-loop.md)、[完成记录](history/completed-work.md)；[项目工作流](engineering/project-workflow.md)。 |
 
 ## 工具后台结果与批量卸载
 
