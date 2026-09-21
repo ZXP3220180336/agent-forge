@@ -25,6 +25,7 @@
 - **执行细节**：importlib 动态导入（模块名：合法 stem 用真实包名、非法用 sha1 哈希）；exec_module 前先插入 `sys.modules`（自引用/相对导入）；`to_thread` 包裹（防阻塞事件循环）；文件级原子性（多工具部分失败全回滚）；重载 nuke-and-repave
 - **executor 竞态修复**：`prune_tool_lock` 跳过仍在持有的锁——在飞 execute 持锁时重载，新实例复用同一把锁，串行化不破坏
 - **配置**：外部工具容器不知其存在，**自行读环境变量**；loader 不加 `config_provider` 扩展点
+  - **后继更正（2026-09-21 核验）**：本条第后半已被 [TOOLS-010](../../../issues/integration/tools/2026-08-19-external-tool-config-injection.md) 的修复推翻——loader 现在接受由 `ToolService` 注入的配置读取器（`external_config_source` → loader 的 `config_source`，外部工具经 `CONFIG_KEYS` 在 `register_config` 时取值），「loader 不加配置扩展点」不再成立。前半（容器不感知外部工具）仍然有效。
 
 **明确不做（升级路径，触发条件见下）**：后台轮询 / 原子无损（引用计数 + 版本化实例）/ 元数据与实现分离 + 懒加载 / 多版本灰度回滚 / 沙箱隔离（子进程 / WASM / Sidecar）/ health_check 自动巡检。
 

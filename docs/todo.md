@@ -343,29 +343,48 @@ Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 pass
 
 ### 进度
 
-- [ ] S1：红测 → `ExecutionLimits.__post_init__` → 定向与全量回归
-- [ ] S2：反例红测 → `classify_error` 显式识别 `AppError` → 定向与全量回归
-- [ ] S3：`observation.py` 与单测 → 8 处逐点红测与接入 → 回归门禁
-- [ ] S4：候选表与 ADR/组件文档修正、完成项归档、本批评审
+- [x] S1：红测 → `ExecutionLimits.__post_init__` → 定向与全量回归
+- [x] S2：反例红测 → `classify_error` 显式识别 `AppError` → 定向与全量回归
+- [x] S3：`observation.py` 与单测 → 8 处逐点红测与接入 → 回归门禁
+- [x] S4：候选表与 ADR/组件文档修正、完成项归档、本批评审
+
+### 评审（2026-09-21）
+
+按六个提交单元推进，顺序即依赖顺序：计划登记 → `ruff format --check .` 恢复关口 → S1 → S2 → S3 → S4。C-15 与 C-24-A 的候选行已移出活动清单并登记[完成索引](history/completed-work.md)；C-24 与 C-11 保留行内状态说明（各自只实施了半场/部分范围）。
+
+**S1 C-15**：`ExecutionLimits` 新增 `__post_init__`，校验 `max_iterations >= 1`、`max_same_action_turns >= 1`、`batch_cleanup_grace` 有限正数。8 条拒绝用例先红后绿；`max_execution_time` 保持既有语义（负值按 0 处理），以一条放行用例锁定该决定。定向 48 项通过。
+
+**S2 C-24-A**：判据插在 `status_code` 判定之后。实施中确认判据位置是唯一设计决定：`LLMAPIError` 继承 `NonRetryableError`，提到开头会让 `LLMAPIError(503)` 从 RETRYABLE 翻为 NON_RETRYABLE。本改动**无红测可言**（零行为变化），改用反例判别力验证——把判据临时提到函数开头，反例用例立即失败，还原后通过。定向 87 项通过。
+
+**S3 C-11**：新增 `app/shared/observation.py`，接入 8 处。8 条红测首轮全部以 OSError 逃逸失败，修复后通过。实施中处理了三处真实阻碍：① `observation_timeout` 被校验为有限正数，「预算耗尽」只能由运行期衰减得到，改以固定 `_record_stats` 返回值构造；② `openai` 与 `shared.exceptions` 都导出 `NotFoundError`，同时导入会遮蔽既有用例，代表用例改用同分支的 `ForbiddenError`；③ ruff 对「`except ... as e` 的绑定名进嵌套闭包」判定为未使用（F841）与未定义（F821），并连带触发 BLE001，改用 `functools.partial` 传参并对该有意盲捕获显式标注理由。
+
+**S4**：候选表 5 处事实修正（C-08 撤销「成本预留已做」、C-11 换靶子、C-10 空壳与接口缺口、C-16 与 C-08 同源、TOOLS-049 性质）+ 3 处 ADR/组件文档修订（`external.md` 的目录不可配、工具热加载 ADR 的配置扩展点已被 TOOLS-010 推翻、trace ADR 的装配点写在 `chat.py` 而实际在 `chat_service.py`）。
+
+*本批附加修正（计划外，1 处）*：`test_reflection.py::test_reflect_critique_ok_after_strict_deadline_keeps_facts_but_times_out` 的总预算由 0.1 秒放宽到 0.5 秒。本批新增测试后该用例在全量下稳定失败，定位过程：改动前的代码在同样负载下 3/3 通过，本批代码在同样负载下稳定失败 → 摘掉 C-11 的代码与其测试后通过 → 保留 C-11 代码、去掉其 8 条测试后通过 → 只排除本批新增的那条 react 用例即通过 → **对照实验**：排除既有的同量级孪生用例（保留新增用例）同样通过。结论是该用例的预算本就处于刀刃状态（0.1 秒内要跑完真实 ReAct 与工具执行，负载稍增即由工具自身 deadline 先命中并抛 `ToolDeadlineExceededError`），与新增用例是哪一条无关，也不是本批代码的语义回归。修法与[既有先例](lessons.md)一致（曾把一处依赖「首轮须在预算内完成」的预算从 0.2 秒放宽至 1 秒）；迟到语义未变——桩按本次调用的 deadline 计算睡眠，仍必然晚于期限。放宽后全量连续 3 次通过。
+
+*实际验证*：全量 `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider` 1513 passed（49.17／52.30／53.79 秒三次，1 条既有 Starlette/httpx 弃用警告）。`scripts.verify_alignment` 通过；`tests/unit/test_verify_alignment.py` 13 项通过；`ruff format --check .` 225→228 files already formatted（新增文件后仍干净）；改动文件 `ruff check` 通过，并**逐文件比对 HEAD 的新增 lint 债务为 0**（4 处首次引入的 RUF059/SIM117/I001/RUF100 已修，其余为既有债务，归 C-14）；`git diff --check` 干净。
+
+*未覆盖与剩余限制*：① C-11 的同步路径只能证明异常隔离、不能证明有界（同步阻塞不可中断，是覆盖边界而非遗漏）；② `metrics.py` 仍为 0 字节占位，本批只登记不实现；③ C-24 的 B 半场与 `ruff check` 零错误基线（C-14）不属本批；④ 未跑真实 provider、数据库或计费网络调用——本批无此类契约变化。
+
+*已知未修（范围外）*：`context_manager` 传给 `get_logger` 的名字已带 `app.` 前缀，实际 logger 名为 `app.app.application.context`；新增测试从模块取实名而非字面量，未顺带修改该命名。
 
 <a id="candidates"></a>
 
 ## 独立边界与候选建设
 
-以下均需先重新确认必要性和执行范围；目前没有在实施的代码任务。候选不是必须实现清单。本表同时收敛各 ADR 正文记录的升级路径与未决决策；已随 R-01（见[完成记录](history/completed-work.md#refactoring-plan)）、C-02、L-01 完成或已由它们承接的项不在此重复。
+以下均需先重新确认必要性和执行范围；目前没有在实施的代码任务。候选不是必须实现清单。本表同时收敛各 ADR 正文记录的升级路径与未决决策；已随 R-01（见[完成记录](history/completed-work.md#refactoring-plan)）、C-02、L-01、[B-01](#candidate-closeout-01) 完成或已由它们承接的项不在此重复。
 
 | ID | 候选 / 待核验边界 | 保留理由与触发条件 |
 | --- | --- | --- |
 | C-01 | Planner `REPLAN_SCHEMA.steps` 的 `maxItems` 边界。 | 2026-09-10“三策略重试上限闭环”收尾明确未并入。检查当前 schema 与实际输出规模，确认风险后独立处理；不与协议重试预算混为同一根因。 |
 | C-03 | LLM 重试配置的非负校验。 | 同一最新收尾明确未并入。先核实配置、Manager 与调用入口；不按参数名统一 Tool/LLM 的不同计数口径。 |
 | C-07 | 循环 checkpoint 与运行轨迹持久化。 | [checkpoint ADR](../adr/domain/reasoning/2026-08-30-checkpointer-resume.md)明确未实现；[trace ADR](../adr/domain/trace/2026-08-31-trace-persistence.md)为已决策待实施。出现实际消费方后分别确认范围，不因已有计划自动创建端口、空壳或存储。记忆基座、生产装配与 CoT 预留的进度与边界见 [L-01](#l-01-domain-layer)。 |
-| C-08 | LLM 精确 provider 计数、语义摘要、调用前成本预留与供应商共享配额映射。 | **部分已实现**（2026-09-21 核验）：调用前预留已做（`reservation_limiter` 的 `reserve` / `reserve_adaptive` 与 `settle(actual)`）；**未做**的三项是精确 provider 计量（`token_counter` 全用 tiktoken，`request_budget` 自述不伪装成 provider 精确计量）、上下文语义摘要（`context_manager` 实为 `_truncate_messages` 直接丢弃历史）、供应商级共享配额（`ReservationLimiterManager` 按 model_key 分桶，无 vendor 共享）。分别以容量利用率、证据可追溯性、严格成本或供应商真实配额需求触发，不套同一实现。 |
+| C-08 | LLM 精确 provider 计数、上下文语义摘要、调用前成本预留与供应商共享配额映射。 | **三项未做**（2026-09-21 核验）：精确 provider 计量（`token_counter` 全用 tiktoken，`llm_service` 计数恒取 `main` 的编码器而与 model_key 无关，`request_budget` 自述不伪装成 provider 精确计量）、上下文语义摘要（`context_manager._truncate_messages` 直接丢弃历史，与 C-16 是同一处）、供应商级共享配额（`ReservationLimiterManager` 按 model_key 分桶，无 vendor 共享；四个 model key 共用同一 `base_url`/`api_key`，同一账户被拆成四个桶，是否真越界取决于 provider 按账户还是按模型限速——**待核验**）。<br>**「调用前成本预留已做」的旧表述已撤销**：`reservation_limiter` 的 `reserve`/`reserve_adaptive` 预留的是 **TPM 限流配额**，与成本预留不是同一件事；成本侧至今只有调用后累计，那条缺口记在 C-18。分别以容量利用率、证据可追溯性、严格成本或供应商真实配额需求触发，不套同一实现。 |
 | C-09 | 配置扩展、默认值调优、热更新与多环境配置。 | 2026-08-29 config 文档重构留下研究性 backlog；没有真实消费方、负载或运维证据的默认值建议不保留为目标值。出现明确需求后重新设计，而不是照抄旧数值。 |
-| C-10 | 工具选择器向量召回与工具加载/安全边界的后续增强。 | 旧工具重构与[TOOLS-049](../issues/integration/tools/2026-08-20-code-review-fixes.md)有明确延后项；以工具规模、性能、安全边界或真实故障为触发，已完成的审计脱敏不重开。 |
-| C-11 | 其他非关键观测入口的异常与阻塞边界。 | **部分已实现**（2026-09-21 核验）：LLM 调用日志已由有界 `wait_for` 隔离，工具审计也共用有界窗口；**未做**的是 `security.log_event_async("tool_call")` 仍直接 await、无有界等待，且 `metrics.py` 为 0 字节、指标入口不存在。其余入口若进入终态路径，仍须逐入口核验 G0-6，不能把局部实现宣称为全仓完成；对应 [ADR-002](../adr/2026-09-12-single-source-governance.md) 的「G0-6 的后续代码符合性工作」。 |
+| C-10 | 工具选择器向量召回与工具加载/安全边界的后续增强。 | **表述已修正**（2026-09-21 核验）：`DefaultToolSelector.select` 是无条件全量返回的空壳接口，**没有任何选择逻辑**，所以这不是「增强现有选择器」而是从零建召回；且 `ToolSelector.select(tools)` 与 `ToolGateway.get_openai_tools()` 都不带查询入参，**现接口无处传查询向量**，实施前须先做接口与契约决策。当前 11 个注册、8 个可见（门禁过滤后），触发门槛「工具数 > 50」无证据。<br>[TOOLS-049](../issues/integration/tools/2026-08-20-code-review-fixes.md) 的 6 项性质是**已决策保持现状**（原文即「取舍项（保持现状）」），不是延后待做——两者触发判断不同，不能混为一谈。已完成的审计脱敏不重开。 |
+| C-11 | 其他非关键观测入口的异常与阻塞边界。 | **终态/请求/收尾路径已实施**（2026-09-21，见 [B-01](#candidate-closeout-01)）：新增 `app/shared/observation.py` 的 `isolate_observation`，接入 react 终态、`dispatch` 降级告警、工具审计/观测/统计、流关闭、限流截断与上下文裁剪共 8 处。<br>**候选原述的靶子不成立**：`security.log_event_async("tool_call")` 的唯一生产调用点位于 `executor._observe` 的 `supervisor.wait` 之内，有界性与后台任务 Owner 由 Supervisor 边界提供，不重复设界。<br>**仍未做**：`metrics.py` 为 0 字节、指标入口不存在（无消费方，仅登记）；`structured.py`、`loader.py`、`client.py`、`assembler.py`、`hooks.py`、`session_manager.py` 等 except 分支内的降级告警未纳入；同步路径只能证明异常隔离、不能证明有界。对应 [ADR-002](../adr/2026-09-12-single-source-governance.md) 的「G0-6 的后续代码符合性工作」。 |
 | C-14 | `ruff check` 的零错误基线。 | 2026-09-17 引入 Ruff 时登记。ruff 0.16.8，`extend-select = ["E501"]` 只补行宽。**2026-09-21 复测**：`ruff check .` 报 95 项、分布 39 个文件（`app/` 5 个、`tests/` 34 个），48 项可由 `--fix` 自动修；规则分布 RUF059（21）、I001（17）、F401（16）、E501（8）、RUF012（7）、PLR1711（7）、F841（7）等。`app/` 侧仅 9 项：8 项 E501（`config/settings.py` ×4、`prompts/templates/planning.py`、`templates/reflection.py` ×2、`integration/llm/llm_service.py`）与 `integration/tools/builtin/rca/data.py:149` 的 SIM103。建立前 `ruff check` 不作为提交关口，见[部署与验证](project/deployment.md#常用命令)。需先定两个口径：`tests/` 是否放宽（RUF059/RUF012/F841 在测试替身里多为惯用写法），以及 `rca/data.py:149` 的 SIM103 是否并入既有数据表豁免。 |
-| C-15 | `ExecutionLimits.max_iterations` / `AgentContext.max_iterations` 缺少下限校验。 | 2026-09-19 Piece⑤ 复核发现。[配置规格](config_doc/config.md)已把 `agent_max_iterations` 校验为 1-100，但领域侧 `ExecutionLimits`（`domain/reasoning/execution.py`）与 `AgentContext`（`domain/agent/base.py`）自身无校验，直接构造 ctx 的测试/脚本仍可传 0 或负数。此时 ReAct 主循环一次都不执行，直接落到循环之后的 `_finalize_max_turns`（`react.py` 第 10 步，位于 `for iteration` 同级缩进，不在循环体内），产出「已达到最大迭代次数(N)」的 STOP 终态并零次调用 LLM：行为有定义，但把非法配置伪装成了正常业务终态。与 C-03 同类，先核实配置、领域与调用入口的计数口径再定是否收紧，不按参数名统一 Tool/LLM 的不同计数口径。 |
-| C-16 | `build_messages` 的上下文摘要压缩（[ADR-001](../adr/2026-09-02-request-build-validation.md) docstring 策略第 4 条）：当前为硬丢弃历史，正文明确按产品导向暂不实现。 | 出现「丢弃历史导致答案质量下降」的真实证据；摘要须先证明不破坏证据链。 |
+| C-16 | `build_messages` 的上下文摘要压缩（[ADR-001](../adr/2026-09-02-request-build-validation.md) docstring 策略第 4 条）：当前为硬丢弃历史，正文明确按产品导向暂不实现。 | **与 C-08 的「上下文语义摘要」是同一函数同一出处**（`context_manager._truncate_messages`），实施时应合并为一条，否则产出两份重复设计。另注该模块 docstring 声明「支持历史摘要压缩」而实现只做丢弃，属注释与实现不一致。触发：出现「丢弃历史导致答案质量下降」的真实证据；摘要须先证明不破坏证据链。 |
 | C-17 | 结构化输出的产物链接入与兜底（[ADR](../adr/domain/reasoning/2026-08-28-structured-output.md)）：产物链接入时经 `AgentContext` 配置 `output_schema`；`final_answer` 失败叠加 `generate_structured` 兜底（当前未叠加）。 | 出现产物链消费方。 |
 | C-18 | 成本上限的估算式 pre-call 软闸（[ADR](../adr/domain/reasoning/2026-08-30-cost-limit.md)）：发出前按输入上下文与 `max_tokens` 上界估算、超预算即拒绝，调用后按实际 usage 对账；需扩展 `CostLimiterPort`（现 `check` 为纯累计、无估算入参）。 | 出现「单轮绝不允许过贵」或并行子 Agent 各自发请求的真并发；工业参照 Portkey / llm0 / LiteLLM reservation。 |
 | C-19 | 停滞检测的结果维度（[ADR](../adr/domain/reasoning/2026-08-30-stall-detection.md)）：① `result_hash` 防轮询误判（动作签名加结果 hash，须跨轮保存上轮结果）② 周期模式检测（A→B→A→B 滑动窗口，误杀风险高）。 | 出现真实的轮询或周期死循环误判；默认上限与参数规范化已降低概率。 |
@@ -373,6 +392,6 @@ Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 pass
 | C-21 | 半流续接的三类扩展（[ADR](../adr/integration/llm/2026-09-03-mid-stream-continuation.md)）：tool_call 半成品续接、reasoning 半段续写、SSE 传输游标续传（Vercel resume 式，客户端↔服务端课题）。 | 正文明确按产品导向暂不实现；传输游标续传属独立决策。 |
 | C-22 | Application 语义预算作最终请求硬上限（[ADR](../adr/integration/llm/2026-09-06-request-context-budget.md)）：须复用 Integration 内部机制，不新增 `LLMGateway` 调用级参数。 | 确需把语义预算作为最终请求硬上限时；主/副模型共享配额合并记账见 [C-08](#candidates)。 |
 | C-23 | 外部工具热加载的扩展项（[ADR](../adr/integration/tools/2026-08-17-external-tool-hot-reload.md)）：后台轮询、原子无损（引用计数 + 版本化实例）、元数据与实现分离 + 懒加载、多版本灰度回滚、沙箱隔离（子进程 / WASM / Sidecar）、`health_check` 自动巡检。 | 分别触发：重载窗口不可接受 / 工具数达数百 / 出现不可信第三方 / 插件数量上升。 |
-| C-24 | 异常体系的两处收敛（[ADR](../adr/shared/exceptions/2026-08-28-exception-system-optimization.md)）：`classify_error` 识别 `AppError` 树（可重试判定收敛单一事实源）；`AgentRunError` 的 kind → 对外业务码映射。 | 需要对外业务码或统一可重试判定时。 |
+| C-24 | 异常体系的两处收敛（[ADR](../adr/shared/exceptions/2026-08-28-exception-system-optimization.md)）：`classify_error` 识别 `AppError` 树（可重试判定收敛单一事实源）；`AgentRunError` 的 kind → 对外业务码映射。 | **A 半场已实施**（2026-09-21，见 [B-01](#candidate-closeout-01)）：`classify_error` 在 `status_code` 判定之后显式识别 `AppError` 树，零行为变化。判据不得提到函数开头——`LLMAPIError` 继承 `NonRetryableError` 但靠 `status_code` 决定可重试性，提前会让 `LLMAPIError(503)` 从 RETRYABLE 翻为 NON_RETRYABLE，该反例已有测试锁定。<br>**B 半场（kind → 对外业务码）未实施**：触发条件仍为空（无客户端按码分流、无按码告警或统计）。 |
 
 2026-09-21 逐项核验候选表：C-04（无 deadline 时的流读取兜底）与 C-05（策略层整链硬超时）**确认已在代码中实现**，已移出本表并登记到[完成记录](history/completed-work.md)；C-01、C-03、C-09、C-10、C-15 确认仍未做；C-08、C-11 为部分实现（见行内）。

@@ -82,7 +82,7 @@ loader 每次操作记录结构化日志（`app.tools.external`）：加载成�
 
 加载和注册不代表获准执行。插件默认 UNKNOWN，须按[能力启用边界](execution.md#当前启用边界)由可信适配器明确声明只读且无需强制审计，才可正式执行/导出。`describe_execution` 不得发起业务副作用；真实线程须经 `invoke` 中的 `execution.run_sync` 登记。注册/加载钩子仍属于受信 Python 代码，不是沙箱隔离。
 
-在 `app/integration/tools/external/`（或 `ToolService` 构造注入的目录）放置 `.py` 文件，每个文件可定义多个 `BaseTool` 子类：
+在 `app/integration/tools/external/` 放置 `.py` 文件，每个文件可定义多个 `BaseTool` 子类（`ExternalToolLoader` 有 `default_directory` 构造参数，但 `ToolService` 不注入它——生产路径下扫描目录固定为 external 包的物理路径，只有直接构造 loader 的测试能换目录）：
 
 ```python
 from app.integration.tools.base import BaseTool

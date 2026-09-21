@@ -251,7 +251,7 @@ CREATE TABLE trace_steps (
 ### Slice 4 —— 装配接线
 
 - [ ] `app/container.py`：装配 `trace_repository`（infra 实现）+ `trace_collector`（应用层，注入 repository）
-- [ ] `app/api/routes/chat.py`：`ReActAgent(..., trace_collector=...)`（或经 deps 提供）
+- [ ] `app/application/chat/chat_service.py`：`ReActAgent(..., trace_collector=...)`（Agent 在此构造；`app/api/routes/chat.py` 无 Agent 构造点，装配经 `app/container.py`）
 - [ ] `app/api/deps.py`：`get_trace_collector` 依赖函数
 - [ ] 测试 `tests/integration/test_chat_flow.py` 新增：Agent 运行后轨迹落库（trace + steps 行数 / 内容 / agent_type）
 - [ ] 文档 `docs/api_doc/routes_doc/routes.md` / `docs/application_doc/README.md` 同步
