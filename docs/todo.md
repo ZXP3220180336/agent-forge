@@ -314,6 +314,40 @@ Piece⑤ 验证：批次/协议/嵌套策略定向 171 passed；全量 1475 pass
 
 2026-09-21 对照原计划与当前代码逐项核对：`planning.py`（63 行）与 `test_prompts.py`（392 行）说明 Slice 1 的模板/builder/test_prompts 已完成，计划原文的「待做」已过期；`base.py` 与 `chat_service.py` 均无 `PromptManager` 引用，`run()` system 注入确未做；`app/domain/memory/` 五个文件与 `test_memory.py` 均为 0 行、`ports/vector_store_port.py` 不存在，Slice 2 确未开始；`container.py` / `deps.py` / `chat_service.py` 无 `MemoryService` 接线，而 `agent/__init__.py` 已重导出两者。原计划的四个 ADR 中 `react-strategy-extraction` 已存在、`structured-degradation-contract` 由结构化输出 ADR 承接，`memory-layered-contract` 与 `cot-upgrade-path` 缺失。同日按用户要求删除原独立计划文件并把设计正文并入本节，原候选 C-06 一并被本节接管（已从候选表移出），C-07 收窄为 checkpoint 与 trace。本次只做计划整合与状态核对，未修改产品代码。核验另修正一处边界表述：`chain_of_thought.py` 实为 0 字节空壳，原文「只记录升级路径」不成立。
 
+<a id="candidate-closeout-01"></a>
+
+## B-01：候选闭环第一批（C-15、C-24-A、C-11 与记录事实修正）
+
+**日期**：2026-09-21。**目标**：闭环三条已具备实施条件的候选——`ExecutionLimits` 下界校验、`classify_error` 显式识别 `AppError` 树、非关键观测隔离——并修正候选表与相关 ADR/组件文档中经核实的失实描述。
+
+**授权边界**：用户已批准本批四个切片。不实施 C-24 的 B 半场（kind → 对外业务码）；不动档位 B/C 的任何候选；C-11 不推广到 except 分支内的降级告警；C-15 只加下界。不改公开契约、配置键与部署方式，无需迁移。
+
+**规范入口**：[工作流](engineering/project-workflow.md)、[通用 Gate](engineering/ai-engineering-rules.md#gates)、[运行时路由](engineering/agent-runtime-rules.md#routing)、[编码规范文档](engineering/编码规范文档.txt)。
+
+### 背景与范围依据
+
+2026-09-21 对「独立边界与候选建设」18 条候选逐条取证（6 组分面只读分析加主执行者复核）。结论：只有 4 条具备「有证据、范围小、无前置阻塞」的资格，其余 8 条触发证据为空、6 条需先做口径决策；三条本次实施的候选均属前一类。取证同时核出候选表 5 处事实错误与 4 处文档/ADR 与代码不符，由 S4 一并修正。
+
+另一前置事实：`ruff format --check .` 是项目规定的提交前必经关口（[部署与验证](project/deployment.md)），而它在当前 HEAD 上已是红的（2 个文件待重排，与本批改动无关）。不先恢复该关口，本批任何提交都过不了门禁，故并列为本批第 2 个提交单元。
+
+### 切片与验收
+
+| 切片 | 内容 | 验收重点 |
+| --- | --- | --- |
+| S1 C-15 | `ExecutionLimits` 新增 `__post_init__`：`max_iterations >= 1`、`max_same_action_turns >= 1`、`batch_cleanup_grace` 有限且 > 0。`max_execution_time` 不校验（`_resolve_deadlines` 已声明负值按 0 处理，收紧属无规则依据的契约变更）；不加 `<= 100` 上界（配置策略上限，非领域不变量）；不在 `BaseAgent.run()` 重复校验（三个桥接是 `ExecutionLimits` 的唯一构造点，无绕过路径） | 四字段的拒绝与放行边界经参数化测试锁定；非法值不再伪装成 `MAX_TURNS` 正常终态，也不再经 `_finalize_max_turns` 泄漏进 `AgentResult.iterations` 与 SSE done 事件 |
+| S2 C-24-A | `classify_error` 在 `status_code` 分支**之后**增加 `isinstance(exc, AppError)` → `NON_RETRYABLE`，把「AppError 一律不可重试」从兜底分支升格为显式契约 | **零行为变化**：判据不得提到函数开头，否则继承 `NonRetryableError` 的 `LLMAPIError(503)` 会从 `RETRYABLE` 翻为 `NON_RETRYABLE`；以该反例作为判别性测试锁定 |
+| S3 C-11 | 新增 `app/shared/observation.py` 的 `isolate_observation`，接入终态/请求/收尾路径上 8 处直接 `logger.*` 调用 | 只捕 `Exception`（`asyncio.CancelledError` 继续传播）；8 处一律同步形态、**零新增 await**（终态与生成器收尾路径新增 await 会违反 ADR-003 的提交边界）；每处一条「日志失败不改写业务终态」红测；`test_logger.py` 与 `test_llm_service.py` 的既有观测契约测试零改动通过 |
+| S4 记录修正 | 候选表 5 处事实修正（C-08 口径混淆、C-11 靶子指偏、C-10 选择器为空壳、C-16 与 C-08 同源重复、TOOLS-049 性质误述）＋ 3 处 ADR/组件文档修订 ＋ C-15/C-24-A 关闭归档 | 失实描述不再误导后续触发判断；完成项按记录规范移出活动清单 |
+
+**可选项**：无。本批不引入新能力、不改公开契约、不加配置键、无需数据迁移。
+
+### 进度
+
+- [ ] S1：红测 → `ExecutionLimits.__post_init__` → 定向与全量回归
+- [ ] S2：反例红测 → `classify_error` 显式识别 `AppError` → 定向与全量回归
+- [ ] S3：`observation.py` 与单测 → 8 处逐点红测与接入 → 回归门禁
+- [ ] S4：候选表与 ADR/组件文档修正、完成项归档、本批评审
+
 <a id="candidates"></a>
 
 ## 独立边界与候选建设
