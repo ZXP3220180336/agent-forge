@@ -31,9 +31,12 @@ uv run pytest
 uv run pytest tests/unit/test_retry.py
 uv run python -m scripts.test_search_tool
 uv run python -m scripts.verify_alignment
+uv run python -m scripts.observe_reflection_deadline
 uv run ruff format --check .
 uv run ruff check .
 ```
+
+排查时序敏感的时限用例时用 `uv run python -m scripts.observe_reflection_deadline [预算...]`：按给定总预算跑一轮 Reflection，打印每一跳耗时（重点是「外部插件刷新 + 准入」与「工具本体」的拆分）与终止形态，用于评估某个预算还剩多少余量、以及预算不足时链路先在哪一跳越界。用法与定位背景见脚本 docstring。
 
 当前 pyproject 配置 `testpaths=tests`、`asyncio_mode = "auto"`，开发依赖包含 pytest-asyncio；异步测试无需重复添加 `@pytest.mark.asyncio`。测试范围与通过条件按 [项目工作流](../engineering/project-workflow.md#verification)执行；改文档后需检查对齐脚本结果，不能把命令清单视为已通过记录。
 
