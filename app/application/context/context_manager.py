@@ -9,6 +9,7 @@
 from app.application.session.session_manager import SessionManager
 from app.domain.ports.llm_gateway import LLMGateway
 from app.platform.observability.logger import get_logger
+from app.shared.observation import isolate_observation
 from app.shared.types import SessionId
 
 logger = get_logger("app.application.context")
@@ -99,12 +100,15 @@ class ContextManager:
             total_tokens = self.count_messages_tokens(messages)
             # 裁剪只丢历史消息（system/user 恒保留），差值即丢弃条数
             truncated_history = before - len(messages)
-            logger.warning(
-                "上下文超限裁剪: session=%s 丢弃 %d 条历史（预算 %d tokens，裁剪后 %d tokens）",
-                session_id,
-                truncated_history,
-                available_tokens,
-                total_tokens,
+            # 裁剪告警属非关键观测：messages 照常返回，告警失败不得中止请求（G0-6）。
+            isolate_observation(
+                lambda: logger.warning(
+                    "上下文超限裁剪: session=%s 丢弃 %d 条历史（预算 %d tokens，裁剪后 %d tokens）",
+                    session_id,
+                    truncated_history,
+                    available_tokens,
+                    total_tokens,
+                )
             )
 
         return messages, total_tokens, truncated_history

@@ -12,6 +12,7 @@ from app.shared.error_handling import (
     ErrorHandlerRegistry,
 )
 from app.shared.exceptions import AppError
+from tests.observation_helpers import exploding_handler
 
 
 @pytest.mark.asyncio
@@ -174,3 +175,26 @@ async def test_dispatch_cancelled_error_not_swallowed():
             AgentErrorKind.LLM_FAILED,
             AgentErrorContext(AgentErrorKind.LLM_FAILED, "x"),
         )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_decision_survives_logging_failure():
+    """降级告警通道抛错时 dispatch 仍返回默认 action（G0-6：观测失败不改写终态决策）。
+
+    该告警写在 except 子句内、任何 try 之外：它抛错会替换 dispatch 的返回值，
+    调用方拿到 OSError 而不是终态决策。
+    """
+
+    async def broken_handler(ctx: AgentErrorContext) -> AgentErrorAction:
+        raise RuntimeError("handler bug")
+
+    reg = ErrorHandlerRegistry()
+    reg.register(AgentErrorKind.LLM_FAILED, broken_handler)
+    with exploding_handler("app.shared.error_handling") as handler:
+        action = await reg.dispatch(
+            AgentErrorKind.LLM_FAILED,
+            AgentErrorContext(AgentErrorKind.LLM_FAILED, "x"),
+        )
+
+    assert action == AgentErrorAction.STOP
+    assert handler.calls >= 1

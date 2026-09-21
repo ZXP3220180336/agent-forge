@@ -8,8 +8,10 @@ import logging
 
 import pytest
 
+from app.application.context import context_manager as context_module
 from app.application.context.context_manager import ContextManager
 from app.integration.llm.token_counter import TiktokenTokenCounter
+from tests.observation_helpers import exploding_handler
 
 
 class _FakeSessionManager:
@@ -126,6 +128,28 @@ async def test_build_messages_truncates_when_over_budget(caplog):
     assert truncated > 0
     assert "s1" in caplog.text
     assert f"{truncated} 条历史" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_truncation_notice_failure_does_not_break_message_build():
+    """裁剪告警通道抛错时，build_messages 仍返回可用 messages（G0-6 观测隔离）。
+
+    告警走标准库 logging 同步直写：其失败会中止请求，把「成功裁剪」变成异常。
+    日志名从模块取实名而非字面量——context_manager 传给 get_logger 的已带 `app.`
+    前缀，实际 logger 名是 `app.app.application.context`（既有命名问题，非本次范围）。
+    """
+    fake = _FakeSessionManager(
+        session={"system_prompt": "sys"},
+        messages=[{"role": "user", "content": f"history {i} " + "x" * 100} for i in range(6)],
+    )
+    cm = ContextManager(fake, TiktokenTokenCounter("gpt-4"), max_context_tokens=40, max_output_tokens=4)
+    with exploding_handler(context_module.logger.name) as handler:
+        messages, _total, truncated = await cm.build_messages("s1", "hello")
+
+    assert truncated > 0
+    assert messages[0]["role"] == "system"
+    assert messages[-1]["role"] == "user"
+    assert handler.calls >= 1
 
 
 def test_truncate_messages_keeps_system_and_user():

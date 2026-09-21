@@ -49,6 +49,7 @@ from app.shared.exceptions import (
     ToolDeadlineExceededError,
     ToolRunStoppedError,
 )
+from app.shared.observation import isolate_observation
 
 logger = get_logger("tools.executor")
 
@@ -484,7 +485,9 @@ class ToolExecutor:
         audit_params = parameters if isinstance(parameters, dict) else {"raw": str(parameters)[:500]}
         timeout = self._observation_timeout if observation_timeout is None else observation_timeout
         if timeout <= 0:
-            logger.warning("工具审计跳过：观察预算已耗尽")
+            # 该告警在 _observe 之前 return：它抛错会逃出工具执行，把跳过审计
+            # 变成一次工具调用失败（G0-6 观测隔离）。
+            isolate_observation(lambda: logger.warning("工具审计跳过：观察预算已耗尽"))
             return
         await self._observe(
             lambda: self._auditor.record(
@@ -525,7 +528,11 @@ class ToolExecutor:
             if handle is not None:
                 await self._supervisor.wait(handle, timeout=max(0.0, end - time.monotonic()))
         except Exception as error:  # noqa: BLE001 — 非关键观测不覆盖业务事实。
-            logger.warning("工具观测失败或超过预算（结果保持）: %s", error)
+            # 本条告警在 except 子句内，处于 supervisor.wait 的保护区间之外：
+            # 它抛错会逃出工具执行，把成功结果变成异常（G0-6 观测隔离）。
+            # 先取出异常再交给隔离边界：except 绑定名在块结束时被删除，不能进闭包。
+            reason = error
+            isolate_observation(lambda: logger.warning("工具观测失败或超过预算（结果保持）: %s", reason))
 
     async def _execute_with_retry(
         self,
@@ -844,7 +851,10 @@ class ToolExecutor:
         try:
             self._stats.record(name, success=success, elapsed=elapsed)
         except Exception as error:  # noqa: BLE001
-            logger.warning("工具统计记录失败（不影响执行）: %s", error)
+            # 统计属非关键观测：告警失败不得改写真实工具结果（G0-6 观测隔离）。
+            # 先取出异常再交给隔离边界：except 绑定名在块结束时被删除，不能进闭包。
+            reason = error
+            isolate_observation(lambda: logger.warning("工具统计记录失败（不影响执行）: %s", reason))
         return max(
             0.0,
             observation_remaining - (time.monotonic() - observation_started_at),

@@ -22,6 +22,7 @@ from app.integration.tools.registry import ToolRegistry
 from app.integration.tools.result_processor import ResultProcessor
 from app.integration.tools.security import RiskLevel, ToolAuditor
 from app.integration.tools.stats import ToolStatsCollector
+from tests.observation_helpers import exploding_handler
 from tests.tool_lifecycle import StandaloneToolExecutor as ToolExecutor
 from tests.tool_lifecycle import StandaloneToolService as ToolService
 from tests.tool_lifecycle import execution_kwargs
@@ -678,6 +679,75 @@ async def test_audit_timeout_does_not_delay_or_override_success_result():
 
     assert tool.calls == 1
     assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_audit_skip_notice_failure_does_not_override_tool_result():
+    """审计因观察预算耗尽被跳过时，其告警抛错不得改写工具结果（G0-6）。
+
+    预算耗尽只能由运行期衰减得到（observation_timeout 被校验为有限正数），
+    故此处固定 _record_stats 的返回值为 0 来构造该状态。
+    """
+    tool = _CountingSuccessTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    executor = ToolExecutor(registry, ToolStatsCollector(), ExecutionHooks())
+    executor._record_stats = lambda *args, **kwargs: 0.0
+
+    with exploding_handler("app.tools.executor") as handler:
+        result = await executor.execute("param_tool", {"count": 1})
+
+    assert tool.calls == 1
+    assert result.success is True
+    assert result.content == "accepted"
+    assert handler.calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_observation_notice_failure_does_not_override_success_result():
+    """观测超预算告警抛错时成功结果必须保留。
+
+    该告警写在 _observe 的 except 子句内，处在 supervisor.wait 的保护区间之外。
+    """
+
+    class _HangingAuditor(ToolAuditor):
+        async def record(self, **kwargs) -> None:
+            await asyncio.sleep(1)
+
+    tool = _CountingSuccessTool()
+    service = ToolService(
+        auditor=_HangingAuditor(),
+        tool_observation_timeout=0.01,
+    )
+    service.register(tool)
+
+    with exploding_handler("app.tools.executor") as handler:
+        result = await asyncio.wait_for(service.execute("param_tool", {"count": 1}), timeout=0.5)
+
+    assert tool.calls == 1
+    assert result.success is True
+    assert handler.calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_stats_notice_failure_does_not_override_success_result():
+    """统计降级告警抛错时成功结果必须保留（告警同在工具结果返回路径上）。"""
+
+    class _ExplodingStats(ToolStatsCollector):
+        def record(self, name: str, success: bool, elapsed: float) -> None:
+            raise RuntimeError("stats failed")
+
+    tool = _CountingSuccessTool()
+    registry = ToolRegistry()
+    registry.register(tool)
+    executor = ToolExecutor(registry, _ExplodingStats(), ExecutionHooks())
+
+    with exploding_handler("app.tools.executor") as handler:
+        result = await executor.execute("param_tool", {"count": 1})
+
+    assert tool.calls == 1
+    assert result.success is True
+    assert handler.calls >= 1
 
 
 @pytest.mark.asyncio

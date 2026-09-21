@@ -14,8 +14,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 
 from app.shared.exceptions import AppError
+from app.shared.observation import isolate_observation
 
 # 共享内核无依赖约束：不用 platform 的 get_logger（shared 被所有层引用、自身无依赖），
 # 直接用标准库 logging，logger 名对齐 app.* 命名空间（可被 setup_logging 的 handler 捕获）。
@@ -168,11 +170,17 @@ class ErrorHandlerRegistry:
         if handler is not None:
             try:
                 return await handler(ctx)
-            except Exception as e:
-                _logger.warning(
-                    "错误处理 handler 异常（%s），按默认 action 处理: %s",
-                    kind.value,
-                    e,
-                    exc_info=True,
+            except Exception as e:  # noqa: BLE001 — 扩展点缺陷不破坏主循环，降级为默认 action。
+                # 降级告警属非关键观测：它自身失败不得替换本行的 action 决策（G0-6）。
+                # 用 partial 而非 lambda：except 绑定名不能进嵌套函数闭包（ruff 的
+                # F841/F821 会把闭包内的引用判为未使用/未定义，Python 也会在块结束时删除它）。
+                isolate_observation(
+                    partial(
+                        _logger.warning,
+                        "错误处理 handler 异常（%s），按默认 action 处理: %s",
+                        kind.value,
+                        e,
+                        exc_info=True,
+                    )
                 )
         return _DEFAULT_ACTIONS[kind]

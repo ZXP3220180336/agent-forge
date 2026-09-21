@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from app.platform.observability.logger import get_logger
+from app.shared.observation import isolate_observation
 
 logger = get_logger("llm.reservation_limiter")
 
@@ -295,10 +296,15 @@ class ReservationLimiter:
         # res.add 记录的实际预留值与扣减一致（settle 退差基础正确），并暴露配置问题。
         tpm_capacity = self._token_bucket.capacity
         if est > tpm_capacity:
-            logger.warning(
-                "TPM 预留 %s 超过桶容量 %s，已截断到容量——请检查 llm_*_tpm 配置是否过小，或单次请求 token 预估是否异常",
-                est,
-                tpm_capacity,
+            # 该告警发生在任何桶扣减之前：它失败会逃出 reserve()，调用方拿不到
+            # Reservation，一次限流决策变成崩溃（G0-6 观测隔离）。
+            isolate_observation(
+                lambda: logger.warning(
+                    "TPM 预留 %s 超过桶容量 %s，已截断到容量——请检查 llm_*_tpm 配置是否过小，"
+                    "或单次请求 token 预估是否异常",
+                    est,
+                    tpm_capacity,
+                )
             )
             est = tpm_capacity
 

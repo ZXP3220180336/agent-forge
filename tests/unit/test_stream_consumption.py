@@ -10,6 +10,7 @@ import pytest
 from app.domain.ports.llm_gateway import StreamResult
 from app.integration.llm.errors import _DeadlineExceeded, _StreamCancel
 from app.integration.llm.stream_consumption import drain_stream
+from tests.observation_helpers import exploding_handler
 
 
 def _content_chunk(text: str) -> SimpleNamespace:
@@ -63,6 +64,14 @@ class _HangingStream(_Stream):
         await asyncio.Future()
 
 
+class _FailingCloseStream(_Stream):
+    """close 抛错，触发 _close_stream 的失败告警路径。"""
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        raise RuntimeError("close failed")
+
+
 async def _collect(
     stream: Any,
     result: StreamResult,
@@ -97,6 +106,25 @@ async def test_completed_chunk_is_absorbed_before_deadline_and_stream_is_closed(
         "total_tokens": 10,
     }
     assert stream.close_calls == 1
+
+
+async def test_close_failure_notice_does_not_replace_original_error():
+    """关闭失败告警自身抛错时，原始终止信号与已接管事实必须保留。
+
+    该告警写在 except 块内、无任何保护：它抛错会替换正在展开的 _StreamCancel，
+    破坏取消优先级，并把「已接管内容」变成未接管（G0-4）。
+    """
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    stream = _FailingCloseStream([_content_chunk("已接管")])
+    result = StreamResult()
+
+    with exploding_handler("app.llm.stream_consumption") as handler, pytest.raises(_StreamCancel):
+        await _collect(stream, result, cancel_event=cancel_event)
+
+    assert stream.close_calls == 1
+    assert result.content == "已接管"
+    assert handler.calls >= 1
 
 
 async def test_cancel_wins_over_deadline_after_completed_chunk():

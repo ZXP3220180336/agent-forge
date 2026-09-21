@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.platform.observability.logger import get_logger
 from app.shared.events import build_message_event, build_reasoning_event
+from app.shared.observation import isolate_observation
 
 from .errors import _DeadlineExceeded, _StreamCancel
 from .execution_control import _abort_trigger, _raise_if_aborted
@@ -73,7 +74,10 @@ async def _close_stream(response: Any) -> None:
         if inspect.isawaitable(result):
             await result
     except Exception as exc:  # noqa: BLE001 — 清理失败不得覆盖原始终止或传输异常
-        logger.warning("关闭 LLM 流失败: %s", type(exc).__name__)
+        # 该告警在 except 块内、无保护：它抛错会替换正在展开的原始终止信号（G0-4）。
+        # 先取出异常名再交给隔离边界：except 绑定名在块结束时被删除，不能进闭包。
+        reason = type(exc).__name__
+        isolate_observation(lambda: logger.warning("关闭 LLM 流失败: %s", reason))
 
 
 def _apply_chunk(

@@ -76,6 +76,7 @@ from app.shared.exceptions import (
     ToolRunStoppedError,
 )
 from app.shared.json_schema import create_schema_validator
+from app.shared.observation import isolate_observation
 
 from ._common import (
     GuardResult,
@@ -1719,7 +1720,9 @@ class ReActStrategy:
         内部路径 / 参数 / 敏感值 / 堆栈提示，产品可见文本（outcome.error / SSE /
         根因报告）与运维诊断分离：完整异常（含 traceback）进日志，不落产品侧。
         """
-        _logger.error("Agent 运行异常: %s", exc, exc_info=exc)
+        # 属非关键观测：本行紧随终态组装，其失败不得让 UNKNOWN 终态与已接管进度丢失
+        # （G0-6）；此处刻意不走 await，避免在终态判定与提交之间新增可取消点。
+        isolate_observation(lambda: _logger.error("Agent 运行异常: %s", exc, exc_info=exc))
         error = f"Agent 运行异常: {type(exc).__name__}"
         return await self._finalize_terminal(
             AgentErrorKind.UNKNOWN,

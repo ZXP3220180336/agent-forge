@@ -45,6 +45,7 @@ from app.shared.error_handling import (
 )
 from app.shared.events import build_error_event, build_message_event
 from app.shared.exceptions import ContextWindowExceededError, LLMDeadlineExceededError, ToolDeadlineExceededError
+from tests.observation_helpers import exploding_handler
 from tests.reasoning_execution import reasoning_execution_args, reasoning_run_scope
 
 
@@ -923,6 +924,40 @@ async def test_react_unknown_exception_keeps_partial_progress():
     assert strategy.outcome.success is False
     assert "Agent 运行异常" in (strategy.outcome.error or "")
     # 第 1 轮工具已执行，证据链保留（修复前异常路径全部丢失）
+    assert len(strategy.outcome.tool_calls) == 1
+    assert any('"type": "done"' in e for e in events)
+
+
+@pytest.mark.asyncio
+async def test_react_unknown_terminal_survives_logging_failure():
+    """UNKNOWN 终态日志抛错时，终态与部分进度必须保留（G0-6 观测隔离）。
+
+    该日志写在 _finalize_unknown 内：它抛错会从异常出口逃出，strategy.outcome 保持
+    None、done 事件不产出——观测失败改写业务终态。
+    """
+    llm = _RaisingLLM(
+        [
+            {"finish_reason": "tool_calls", "tool_calls": [_echo_call()]},
+            {"finish_reason": "stop", "content": "不会到达"},
+        ],
+        raise_on_call=2,
+    )
+    tools = _make_registry(tools=[_EchoTool()])
+    strategy = ReActStrategy(llm=llm, tools=tools)
+
+    with exploding_handler("app.domain.reasoning.react") as handler:
+        events = []
+        async for ev in strategy.execute(
+            "hi",
+            [{"role": "user", "content": "hi"}],
+            **reasoning_execution_args("react", max_iterations=3, temperature=0.2, max_tokens=1024),
+        ):
+            events.append(ev)
+
+    assert handler.calls >= 1
+    assert strategy.outcome is not None
+    assert strategy.outcome.success is False
+    assert "Agent 运行异常" in (strategy.outcome.error or "")
     assert len(strategy.outcome.tool_calls) == 1
     assert any('"type": "done"' in e for e in events)
 

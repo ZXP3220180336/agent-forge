@@ -25,6 +25,7 @@ from app.integration.llm.reservation_limiter import (
     ReservationLimiterManager,
     TokenBucket,
 )
+from tests.observation_helpers import exploding_handler
 
 
 # =====================================================================
@@ -242,6 +243,22 @@ async def test_reservation_limiter_reserve_oversized_clamps():
     res = await asyncio.wait_for(limiter.reserve(estimated_tokens=200), timeout=1)
     # 预留条目应记录截断后的容量（100），而非 200——settle 退差基础一致
     assert res._entries[-1][1] == 100, f"超容量预留应截断到桶容量 100，实际 {res._entries[-1][1]}"
+    await res.cancel()
+
+
+@pytest.mark.asyncio
+async def test_oversized_reserve_notice_failure_keeps_reservation():
+    """TPM 超桶告警通道抛错时，reserve 仍返回可用 Reservation（G0-6 观测隔离）。
+
+    该告警发生在任何桶扣减之前：其失败会逃出 reserve()，把一次限流决策变成崩溃，
+    调用方拿不到 Reservation 也无法续退。
+    """
+    limiter = ReservationLimiter(rpm=1000, tpm=100)
+    with exploding_handler("app.llm.reservation_limiter") as handler:
+        res = await asyncio.wait_for(limiter.reserve(estimated_tokens=200), timeout=1)
+
+    assert res._entries[-1][1] == 100, f"超容量预留应截断到桶容量 100，实际 {res._entries[-1][1]}"
+    assert handler.calls >= 1
     await res.cancel()
 
 

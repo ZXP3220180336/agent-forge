@@ -115,5 +115,6 @@
 | app/shared/exceptions.py | ✅ | docs/shared_doc/error_handling.md | tests/unit/test_exceptions.py | 统一异常树 + AppErrorCode；工具控制类型另经 test_tool_lifecycle_contract.py 覆盖 |
 | app/shared/types.py | ✅ | docs/shared_doc/types.md | tests/unit/test_types.py | 通用类型/标识（SessionId/UserId/Messages） |
 | app/shared/encoding.py | ✅ | docs/shared_doc/encoding.md | tests/integration/test_tool_execution.py | 双编码解码（UTF-8 优先 + locale 回退），code_exec/readFile 复用 |
+| app/shared/observation.py | ✅ | docs/shared_doc/observation.md | tests/unit/test_observation.py | 非关键观测异常隔离（G0-6）：终态、请求与收尾路径 8 处复用；只隔离不限时 |
 | app/platform/observability/logger.py | ✅ | docs/platform_doc/observability/logging.md | tests/unit/test_logger.py | 全局日志框架；LLM 调用事件填充与有界 best-effort 记录，日志失败不覆盖业务终态 |
 | app/platform/observability/metrics.py | ⬜ | (无) | (无) | 空文件；指标规划见 architecture Phase D |
