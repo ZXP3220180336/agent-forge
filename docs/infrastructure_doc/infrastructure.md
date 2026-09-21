@@ -114,7 +114,7 @@ await self.redis.ping()
 
 ### asyncpg 驱动未安装 → DB 恒降级
 
-这是一个**已确认的现状缺陷**：
+这是一个**2026-09-22 再次实测确认的现状缺陷**：
 
 - `pyproject.toml` 依赖中**没有** `asyncpg`（也没有 `psycopg` / `aiosqlite`），只有 `sqlalchemy>=2.0.51`
 - `settings.database_url` 默认值为 `postgresql+asyncpg://user:pass@localhost/db`
@@ -122,6 +122,8 @@ await self.redis.ping()
 - 该异常被 `Container.initialize()` 的 except 捕获 → `self._engine = None`、`self.db_session_factory = None`
 
 因此当前**数据库连接恒降级**：即使本机有 PostgreSQL 服务，DB 持久化路径也实际不可用（`SessionManager` 等所有依赖 `db_session_factory` 的调用在运行时都会失败）。
+
+本次核验还确认：Container 当前没有执行真实连接或最小事务，`/api/health` 也不读取基础设施状态；即使未来仅补上驱动，“引擎创建成功”与健康端点返回 `ok` 仍不能作为数据库就绪证据。工具生命周期 Piece⑥必须增加独立的版本、连接、schema 与最小读写能力检查，并用真实 PostgreSQL 测试迁移和事务语义。
 
 对比：`redis>=8.0.1` 已安装，Redis 连接可用性只取决于服务是否可达。
 

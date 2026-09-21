@@ -207,6 +207,20 @@ Piece⑤ 复核列出的 9 项遗留已全部关闭，**均无独立 Issue**，�
 
 可复用经验：**新增 `AgentContext` 字段必须同时更新测试替身形状**（`tests/conftest.py` 的共享 `agent_params` 与 `test_container.py` 的完整装配断言）。只跑定向测试会漏掉，首轮全量才暴露 17 项。
 
+<a id="candidate-closeout-01"></a>
+
+### 2026-09-21：候选闭环 B-01 与 Ruff 基线 B-02
+
+B-01 完成三项有证据的小范围收敛：`ExecutionLimits` 拒绝非法下界；`classify_error` 在 HTTP
+状态判断之后显式识别 `AppError`，保持 `LLMAPIError(503)` 可重试；`isolate_observation`
+接入终态、请求和收尾路径的八处非关键同步观测。C-11 只覆盖这些已接入口，同步阻塞有界性、
+空的 metrics 入口及其他降级告警仍按触发证据管理；C-24 的 kind 到对外业务码映射没有消费方，
+未实施。相关当前边界见[候选表](../todo.md#candidates)和[错误处理契约](../shared_doc/error_handling.md)。
+
+B-02 清零当时全仓 92 项 Ruff 发现，并把 `ruff check .` 与 `ruff format --check .` 登记为提交前
+关口；声明式 RCA 数据文件的格式化排除经实测符合注释，不再作为待修项。两批完成时的测试和
+验证证据已记入对应提交；这里保留结论，不复制已关闭计划的逐步实施日志。
+
 ## 已有 Issue / ADR 的完成索引
 
 下表只导航，不重复展开已经有正式归属的规则和修复过程。

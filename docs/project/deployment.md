@@ -147,7 +147,7 @@ Pydantic Settings 读取 `.env` 不等于写入进程 `os.environ`，业务模�
 
 A 允许同一活动进程内多 Agent、多批次共享 ToolService，以普通只读能力验证进程内取消、事实和有界接管，不宣称崩溃恢复。B 的副作用/未知/强制审计工具在驱动、schema、单机 Owner、未决保护恢复完成前不开放。注册工具可存在但不得在 schema 导出时误报为可执行；Gateway 还需最终检查，不能只靠模型可见清单。
 
-P0 核实 pyproject.toml/uv.lock 未声明 asyncpg，scripts/init_db.py、scripts/migrate.py 为空。B 在依赖及锁文件中接入 asyncpg；复用 Container 的 SQLAlchemy engine/sessionmaker 和 ORM Base，不因工厂构造成功就跳过真实连接与权限检查。此次未安装驱动或连接 DB。
+2026-09-22 再次核实 `pyproject.toml` / `uv.lock` 未声明 asyncpg，当前环境 `find_spec("asyncpg")` 为 `None`，按默认 URL 构造 engine 实测抛出 `ModuleNotFoundError`；`scripts/init_db.py`、`scripts/migrate.py` 仍为空。本轮未安装驱动或连接 DB。B 实施时在依赖及锁文件中接入 asyncpg；复用 Container 的 SQLAlchemy engine/sessionmaker 和 ORM Base，不因工厂构造成功就跳过真实连接、最小事务、schema 与权限检查。
 
 ### 工具 schema 迁移
 

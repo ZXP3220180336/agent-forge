@@ -214,7 +214,8 @@ Agent 模块错误处理经共享内核 `ErrorHandlerRegistry` 横切分发（�
 `RAISE` 时上抛 `AgentRunError`。工具生命周期的 `ToolCancelledError`、
 `ToolDeadlineExceededError`、`ToolRunStoppedError` 是另一组选择性传播出口：Integration 与
 ReAct 已先接管可得 `ToolFact`，BaseAgent 保留其类型交给 Application/后续终态编排，避免误归类
-为可继续的 `TOOL_FAILED`。Piece ⑤将补齐对应的最终 SSE/历史提交规则。
+为可继续的 `TOOL_FAILED`。Piece⑤已补齐并行兄弟成果、工具协议历史和最终事件的提交规则；
+运行级工具控制异常在事实及回执接管后继续类型化上抛，由上层选择终态。
 
 ### 最小调用示例
 

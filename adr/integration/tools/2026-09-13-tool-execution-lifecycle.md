@@ -245,9 +245,9 @@ Executor 内重试、上层模型再次调用、重启恢复是三个入口，�
 
 <a id="tool-lifecycle-p0-spec"></a>
 
-## P0 实施规格（2026-09-13；Piece ①、②已实现）
+## P0 实施规格（2026-09-13；Piece①～⑤已实现）
 
-本节冻结实施方案。Piece ①、②已创建调用边界、运行身份与事实接线；后续 Piece 的类名/路径仍是计划目标，不冒充现有组件。配置唯一见[配置规格](../../../docs/config_doc/config.md#tool-lifecycle-p0)，部署机制唯一见[部署规格](../../../docs/project/deployment.md#tool-lifecycle-p0)。已实现状态和验证映射以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 与 [todo](../../../docs/todo.md#c-02-implementation-pieces) 为准。
+本节冻结实施方案。Piece①～⑤已完成调用边界、运行身份、事实接线、进程内准入、真实执行接管和只读批次协议提交；Piece⑥～⑧中的持久存储、资源联合准入与宿主恢复仍是计划目标，不冒充现有组件。配置唯一见[配置规格](../../../docs/config_doc/config.md#tool-lifecycle-p0)，部署机制唯一见[部署规格](../../../docs/project/deployment.md#tool-lifecycle-p0)。已实现状态和验证映射以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 与 [todo](../../../docs/todo.md#c-02-implementation-pieces) 为准。
 
 ### S1 公开接口及事实所有权
 
@@ -401,16 +401,16 @@ P0-A/B 的接口和文件已定位；配置/部署初始值是实施规格选择
 
 ## 实现与验证证据
 
-Piece①已分离真实调用与后处理异常范围，并把工具重试改为适配器显式安全声明准入；详见
-[TOOLS-050](../../../issues/integration/tools/2026-09-14-executor-postprocessing-retry.md)。Piece②已落地
-`ToolCallContext`、`ToolFact`/`ToolFactSink`、`ToolBatchCollector` 与三类共享控制异常；Application
-创建 run 身份并贯穿 Agent、三种策略、Gateway 与 Integration，现有直接调用者及测试替身已迁移。
-同会话多 run 取消隔离、实例并发拒绝、控制优先级、事实先接管再传播和无效 call ID 零执行由
-专项及跨层测试验证，当前映射见 [ALIGNMENT](../../../docs/ALIGNMENT.md)。
+Piece①已分离真实调用与后处理异常范围，并把工具重试改为适配器显式安全声明准入，详见
+[TOOLS-050](../../../issues/integration/tools/2026-09-14-executor-postprocessing-retry.md)。Piece②建立运行身份、
+独立事实和共享控制异常。Piece③加入全局/单运行共享准入、有界排队和按运行轮转。Piece④落实
+真实线程句柄、迟回值 Owner、有限清理及卸载保护，并以只读门禁隔离尚无 B 级保护的工具。
+Piece⑤完成并行兄弟成果、合法工具协议历史和选择性异常传播。当前代码、文档和测试映射见
+[ALIGNMENT](../../../docs/ALIGNMENT.md)，复核结论见[完成记录](../../../docs/history/completed-work.md)。
 
-以上只证明 Piece①、②的进程内接口和纵向接线。共享公平准入、真实线程/进程句柄、迟到事实
-监管与释放、并行兄弟有界收尾、最终协议历史和持久恢复仍分别属于 Piece③～⑧；在对应真实
-资源和存储测试闭合前，不宣称交付 A/B 或整份 ADR 已全部实施。后续进度与验收命令见
+以上证明进程内只读交付 A 已完成，不证明持久交付 B。Piece⑥～⑧所需的账本、CAS/事件幂等、
+资源联合准入、启动恢复和受支持宿主仍未实现；在真实 PostgreSQL、资源冲突和进程重启测试闭合前，
+不得开放副作用、未知效果或强制审计工具。后续进度与验收命令见
 [todo](../../../docs/todo.md#c-02-implementation-pieces)。
 
 2026-09-19 补充实施：WriteFileTool 完整同步工作进入受控线程并声明 MAY_WRITE；当前正式网关落实 A/B 启用门禁，只导出/执行明确只读且不要求强制审计的工具。写适配器修复不代表 B 已完成；不新增绕过配置。原因和验证见 [TOOLS-057](../../../issues/integration/tools/2026-09-19-write-thread-ownership.md) 与 [TOOLS-058](../../../issues/integration/tools/2026-09-19-unprotected-tool-enablement.md)。
