@@ -791,16 +791,18 @@ async def test_reflect_critique_ok_after_strict_deadline_keeps_facts_but_times_o
             return await super().generate_structured(*args, **kwargs)
 
     llm = _LateCritiqueLLM(
-        react_scripts=_react_scripts_with_draft(DRAFT),
+        # 草稿阶段刻意不发工具调用：本用例验的是「自查迟到」，预算窗口内不应包含成本随
+        # 环境变化的真实工具执行（每次调用都会先刷新外部插件目录，扫描耗时随插件数量与
+        # 机器负载浮动，会把预算吃光并让工具自身 deadline 先命中，测不到目标语义）。
+        react_scripts=[{"finish_reason": "tool_calls", "tool_calls": [_tool_call("final_answer", DRAFT)]}],
         structured_scripts=[{"ok": True, "issues": []}],
         usage={"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
     )
     strategy = _make_strategy(llm)
 
-    # 总预算留出余量：草稿阶段要跑真实 ReAct 与工具执行，0.1 秒在全量负载下会被挤爆，
-    # 工具自身 deadline 先命中并抛 ToolDeadlineExceededError，测不到本用例要覆盖的语义。
-    # 迟到的自查不受影响——_LateCritiqueLLM 按本次调用的 deadline 计算睡眠，必然晚于期限。
-    await _run(strategy, max_execution_time=0.5)
+    # 迟到由构造保证：_LateCritiqueLLM 按本次调用收到的 deadline 计算睡眠，必然晚于期限。
+    # 预算内只剩纯内存的桩调用，故 0.1 秒有充足余量、结论不随负载变化。
+    await _run(strategy, max_execution_time=0.1)
 
     assert strategy.outcome is not None
     assert strategy.outcome.structured == DRAFT
