@@ -87,7 +87,7 @@ curl http://localhost:8000/api/health
 ### PostgreSQL 与异步驱动
 
 - 用途：SessionModel/MessageModel 持久化。核验连接字符串、所需驱动、建表/迁移、读写权限及连接关闭。
-- 使用 `postgresql+asyncpg` 时，检查实际环境和依赖是否包含 asyncpg；资料曾报告驱动缺失，但本轮不能断言现仓仍缺失，也不能不经检查重复增加依赖。
+- PostgreSQL 异步驱动 asyncpg 已纳入 pyproject/uv.lock；使用 `uv sync --locked` 安装锁定依赖。驱动检查见 `tests/unit/test_database.py`，不以导入/引擎构造测试代替真实 PostgreSQL 验收。
 - 驱动导入成功、引擎对象构造成功和数据库实际连通是不同检查点。应通过真实连接与最小事务确认持久化能力。
 - 若初始化允许置空降级，依赖该资源的会话接口必须有明确不可用语义；禁止以“整体启动成功”掩盖运行时失败。没有已确认的替代存储契约时，不自动增加 SQLite 等兼容后端。
 
@@ -147,7 +147,7 @@ Pydantic Settings 读取 `.env` 不等于写入进程 `os.environ`，业务模�
 
 A 允许同一活动进程内多 Agent、多批次共享 ToolService，以普通只读能力验证进程内取消、事实和有界接管，不宣称崩溃恢复。B 的副作用/未知/强制审计工具在驱动、schema、单机 Owner、未决保护恢复完成前不开放。注册工具可存在但不得在 schema 导出时误报为可执行；Gateway 还需最终检查，不能只靠模型可见清单。
 
-2026-09-22 再次核实 `pyproject.toml` / `uv.lock` 未声明 asyncpg，当前环境 `find_spec("asyncpg")` 为 `None`，按默认 URL 构造 engine 实测抛出 `ModuleNotFoundError`；`scripts/init_db.py`、`scripts/migrate.py` 仍为空。本轮未安装驱动或连接 DB。共享 DB-F 实施时在依赖及锁文件中接入 asyncpg；后续 B 复用数据库运行时的 SQLAlchemy engine/sessionmaker 和 ORM Base，不因工厂构造成功就跳过真实连接、最小事务、schema 与权限检查。
+DB-F01 已接入 asyncpg 依赖及锁文件；迁移脚本与共享运行时仍未实现，当前状态与测试边界见 [ALIGNMENT](../ALIGNMENT.md)及[独立计划](../todo.md#db-foundation)。后续 B 复用共享运行时和 ORM Base，驱动安装不能替代真实连接、最小事务、schema 与权限检查。
 
 ### 工具 schema 迁移
 

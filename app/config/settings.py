@@ -32,8 +32,10 @@ from pathlib import Path
 from typing import Literal, Self
 
 import httpx
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 
 class Settings(BaseSettings):
@@ -56,12 +58,18 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="allow",
+        hide_input_in_errors=True,
     )
 
     # ===== 应用配置 =====
     app_name: str = "AI Agent System"
     app_version: str = "1.0.0"
     debug: bool = False
+
+    @property
+    def is_production(self) -> bool:
+        """是否为生产环境"""
+        return not self.debug
 
     # ===== API 配置 =====
     api_prefix: str = "/api"
@@ -74,6 +82,20 @@ class Settings(BaseSettings):
     llm_model_id: str = "gpt-4"
     llm_temperature: float = 0.2
     llm_max_tokens: int = 4096
+
+    # 推理模型（用于深度思考，如 DeepSeek-R1）
+    llm_reasoning_model_id: str = ""  # 空则使用主模型
+    llm_reasoning_temperature: float = 0.7
+    llm_reasoning_max_tokens: int = 8192
+
+    # 快速模型（用于简单任务，如分类、提取）
+    llm_fast_model_id: str = ""  # 空则使用主模型
+    llm_fast_temperature: float = 0.0
+    llm_fast_max_tokens: int = 2048
+
+    # 嵌入模型（用于向量化）
+    llm_embedding_model_id: str = "text-embedding-3-small"
+    llm_embedding_dimensions: int = 1536
 
     # LLM 分级超时（httpx.Timeout 四档，见 LLM-ADR-014 连接期决策）：
     #   connect — TCP+TLS 握手上限（连接悬挂防护）
@@ -91,21 +113,72 @@ class Settings(BaseSettings):
     llm_pool_max_connections: int = 100
     llm_pool_max_keepalive_connections: int = 20
 
-    # 推理模型（用于深度思考，如 DeepSeek-R1）
-    llm_reasoning_model_id: str = ""  # 空则使用主模型
-    llm_reasoning_temperature: float = 0.7
-    llm_reasoning_max_tokens: int = 8192
+    @property
+    def llm_client_timeout(self) -> httpx.Timeout:
+        """LLM 客户端分级超时（httpx.Timeout：connect/read/write/pool）。
 
-    # 快速模型（用于简单任务，如分类、提取）
-    llm_fast_model_id: str = ""  # 空则使用主模型
-    llm_fast_temperature: float = 0.0
-    llm_fast_max_tokens: int = 2048
+        装配根直接注入 ClientManager（register_config timeout=...）→ openai
+        AsyncOpenAI 接受该实例构建分级超时（LLM-ADR-014：连接期防悬挂 /
+        池等待 / 流空闲读兜底）。返回 Timeout 实例而非 dict——httpx.TimeoutTypes
+        不接受 dict，dict 会在 httpx.AsyncClient 构造期抛 TypeError。
+        """
+        return httpx.Timeout(
+            connect=self.llm_timeout_connect,
+            read=self.llm_timeout_read,
+            write=self.llm_timeout_write,
+            pool=self.llm_timeout_pool,
+        )
 
-    # 嵌入模型（用于向量化）
-    llm_embedding_model_id: str = "text-embedding-3-small"
-    llm_embedding_dimensions: int = 1536
+    @property
+    def llm_config(self) -> dict:
+        """获取主模型配置字典"""
+        return {
+            "api_key": self.llm_api_key,
+            "base_url": self.llm_base_url,
+            "model": self.llm_model_id,
+            "temperature": self.llm_temperature,
+            "max_tokens": self.llm_max_tokens,
+            "timeout": self.llm_client_timeout,
+        }
 
-    # LLM 高级配置（重试、熔断、限流）
+    @property
+    def llm_reasoning_config(self) -> dict:
+        """获取推理模型配置字典"""
+        model_id = self.llm_reasoning_model_id or self.llm_model_id
+        return {
+            "api_key": self.llm_api_key,
+            "base_url": self.llm_base_url,
+            "model": model_id,
+            "temperature": self.llm_reasoning_temperature,
+            "max_tokens": self.llm_reasoning_max_tokens,
+            "timeout": self.llm_client_timeout,
+        }
+
+    @property
+    def llm_fast_config(self) -> dict:
+        """获取快速模型配置字典"""
+        model_id = self.llm_fast_model_id or self.llm_model_id
+        return {
+            "api_key": self.llm_api_key,
+            "base_url": self.llm_base_url,
+            "model": model_id,
+            "temperature": self.llm_fast_temperature,
+            "max_tokens": self.llm_fast_max_tokens,
+            "timeout": self.llm_client_timeout,
+        }
+
+    @property
+    def llm_embedding_config(self) -> dict:
+        """获取嵌入模型配置字典"""
+        return {
+            "api_key": self.llm_api_key,
+            "base_url": self.llm_base_url,
+            "model": self.llm_embedding_model_id,
+            "dimensions": self.llm_embedding_dimensions,
+        }
+
+    # LLM 高级配置（重试、熔断、限流、请求预算闸）
+    # 重试：建立连接重试、流式整流重试、半流续接上限
     llm_max_retries: int = 2
     llm_stream_max_retries: int = 1  # 流式整流重试次数（首 token 前中断才整流；0=禁用）
     llm_stream_max_continuations: int = 1  # 半流续接轮次上限（已产出 content 中断续写；0=禁用，LLM-ADR-015）
@@ -121,6 +194,7 @@ class Settings(BaseSettings):
     llm_circuit_half_open_max_requests: int = 3
     llm_fallback_model_id: str = ""  # 主模型降级备用
     llm_proxy_url: str = ""
+    # 限流：RPM + TPM 双桶
     llm_main_rpm: int = 60
     llm_reasoning_rpm: int = 30
     llm_fast_rpm: int = 100
@@ -132,7 +206,7 @@ class Settings(BaseSettings):
     llm_reasoning_tpm: int = 2_000_000
     llm_fast_tpm: int = 2_000_000
     llm_fallback_tpm: int = 2_000_000
-    # ===== LLM 自适应预留（Fenic式 OutputTokenEstimator，默认关闭） =====
+    # LLM 自适应预留（Fenic式 OutputTokenEstimator，默认关闭）
     # 开启后用「历史实际输出的高分位 × 安全系数」替代固定 max_tokens 预留，
     # 减少预留期间占桶（并发空耗）。详见 limiter.md「对比 3.2」。
     llm_adaptive_reserve: bool = False
@@ -141,7 +215,6 @@ class Settings(BaseSettings):
     llm_reserve_safety_margin: float = 1.15  # 安全系数（1.0~4.0）
     llm_reserve_min_samples: int = 30  # 冷启动阈值：样本不足用静态上限
     llm_reserve_window: int = 256  # 滚动样本窗口（deque 上限）
-
     # 请求上下文窗口：按 model_key 注入 Integration 请求预算闸。默认 128K
     # 适配默认 gpt-4；DeepSeek 等 1M 模型可经环境变量显式提高，禁止按模型名猜测。
     llm_main_context_window_tokens: int = 128_000
@@ -180,7 +253,6 @@ class Settings(BaseSettings):
     agent_max_tool_protocol_retries: int = 2  # 工具调用协议修正上限：最多重试 N 次，第 N+1 次协议异常硬终止
     agent_max_same_action_turns: int = 3  # 循环停滞检测：连续相同工具调用（工具+参数）超过 N 轮，下一轮仍相同则终止
     agent_max_cost: float | None = None  # 成本上限（美元 USD）；None=不启用（0 则任何正成本即停）
-
     # 任务优先级配置
     agent_priority_levels: list[Literal["low", "normal", "high", "urgent"]] = [
         "low",
@@ -193,7 +265,21 @@ class Settings(BaseSettings):
     agent_low_priority_timeout: int = 180  # 低优先级任务超时时间（3分钟）
     agent_priority_queue_size: int = 100  # 优先级队列大小
 
-    # 并发控制配置
+    @property
+    def agent_config(self) -> dict:
+        """获取 Agent 配置字典"""
+        return {
+            "max_iterations": self.agent_max_iterations,
+            "timeout": self.agent_timeout,
+            "streaming": self.agent_streaming,
+            "priority_levels": self.agent_priority_levels,
+            "default_priority": self.agent_default_priority,
+            "high_priority_timeout": self.agent_high_priority_timeout,
+            "low_priority_timeout": self.agent_low_priority_timeout,
+            "priority_queue_size": self.agent_priority_queue_size,
+        }
+
+    # ===== 并发控制配置 =====
     agent_max_concurrent_tasks: int = 10  # 最大并发任务数
     tool_max_concurrent_executions_per_run: int = 3  # 单运行最大在途工具数
     tool_max_concurrent_executions: int = 3  # 所有运行共享的全局在途工具数
@@ -208,21 +294,19 @@ class Settings(BaseSettings):
     agent_task_queue_size: int = 50  # 任务队列大小
     agent_worker_pool_size: int = 5  # 工作线程池大小
 
-    # ===== 记忆配置 =====
-    memory_enabled: bool = False
-    memory_max_short_term: int = 10  # 短期记忆条数
-    memory_vector_db: Literal["milvus", "qdrant", "pinecone"] = "milvus"
-    memory_collection: str = "agent_memory"
-
-    # ===== 数据库配置 =====
-    database_url: str = "postgresql+asyncpg://user:pass@localhost/db"
-    database_pool_size: int = 20
-    database_max_overflow: int = 10
-    database_echo: bool = False
-
-    # ===== Redis 配置 =====
-    redis_url: str = "redis://localhost:6379/0"
-    redis_session_ttl: int = 604800  # 7天
+    @property
+    def concurrency_config(self) -> dict:
+        """获取并发控制配置字典"""
+        return {
+            "max_concurrent_tasks": self.agent_max_concurrent_tasks,
+            "max_concurrent_tools_per_run": self.tool_max_concurrent_executions_per_run,
+            "max_concurrent_tools": self.tool_max_concurrent_executions,
+            "max_pending_tool_calls": self.tool_max_pending_calls,
+            "max_pending_tool_calls_per_run": self.tool_max_pending_calls_per_run,
+            "tool_admission_timeout_seconds": self.tool_admission_timeout_seconds,
+            "task_queue_size": self.agent_task_queue_size,
+            "worker_pool_size": self.agent_worker_pool_size,
+        }
 
     # ===== 工具配置 =====
     tool_timeout: int = 30  # 工具执行超时（秒）
@@ -231,6 +315,110 @@ class Settings(BaseSettings):
     tool_max_content_length: int = 50_000  # 网页抓取最大字符数（web_browse）
     tool_allowed_dirs: tuple[str, ...] = (str(Path(__file__).resolve().parents[2]),)  # 文件工具允许目录（默认项目根）
     tool_http_timeout: float = 15.0  # external http_api 示例工具请求超时（秒）
+
+    @property
+    def tool_config(self) -> dict:
+        """获取工具配置字典"""
+        return {
+            "timeout": self.tool_timeout,
+            "max_retries": self.tool_max_retries,
+            "max_output_length": self.tool_max_output_length,
+            "max_content_length": self.tool_max_content_length,
+        }
+
+    # ===== 记忆配置 =====
+    memory_enabled: bool = False
+    memory_max_short_term: int = 10  # 短期记忆条数
+    memory_vector_db: Literal["milvus", "qdrant", "pinecone"] = "milvus"
+    memory_collection: str = "agent_memory"
+
+    @property
+    def memory_config(self) -> dict:
+        """获取记忆系统配置字典"""
+        return {
+            "enabled": self.memory_enabled,
+            "max_short_term": self.memory_max_short_term,
+            "vector_db": self.memory_vector_db,
+            "collection": self.memory_collection,
+        }
+
+    # ===== 数据库配置 =====
+    database_url: str = Field(default="postgresql+asyncpg://user:pass@localhost/db", repr=False)
+    database_pool_size: int = Field(default=20, ge=1)
+    database_max_overflow: int = Field(default=10, ge=0)
+    database_echo: bool = False
+    # 预算在配置层冻结，DB-F02/F03/F05 接线后执行；总预算包含清理，不逐阶段重置。
+    database_connect_timeout_seconds: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+    database_pool_timeout_seconds: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+    database_operation_timeout_seconds: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    database_probe_timeout_seconds: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    database_migration_timeout_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+    database_migration_total_timeout_seconds: float = Field(default=300.0, gt=0, allow_inf_nan=False)
+    database_cleanup_timeout_seconds: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+    database_shutdown_timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+
+    @property
+    def database_config(self) -> dict:
+        """获取数据库配置；包含凭证，仅供装配使用，禁止写入日志。"""
+        return {
+            "url": self.database_url,
+            "pool_size": self.database_pool_size,
+            "max_overflow": self.database_max_overflow,
+            "echo": self.database_echo,
+            "connect_timeout_seconds": self.database_connect_timeout_seconds,
+            "pool_timeout_seconds": self.database_pool_timeout_seconds,
+            "operation_timeout_seconds": self.database_operation_timeout_seconds,
+            "probe_timeout_seconds": self.database_probe_timeout_seconds,
+            "migration_timeout_seconds": self.database_migration_timeout_seconds,
+            "migration_total_timeout_seconds": self.database_migration_total_timeout_seconds,
+            "cleanup_timeout_seconds": self.database_cleanup_timeout_seconds,
+            "shutdown_timeout_seconds": self.database_shutdown_timeout_seconds,
+        }
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, value: str) -> str:
+        """限定 PostgreSQL/asyncpg 方言，解析失败时不回显连接串。"""
+        try:
+            url = make_url(value)
+        except ArgumentError, ValueError:
+            raise ValueError("数据库连接字符串格式非法") from None
+        if url.drivername != "postgresql+asyncpg":
+            raise ValueError("数据库仅支持 postgresql+asyncpg 驱动")
+        return value
+
+    @field_validator(
+        "database_pool_size",
+        "database_max_overflow",
+        "database_connect_timeout_seconds",
+        "database_pool_timeout_seconds",
+        "database_operation_timeout_seconds",
+        "database_probe_timeout_seconds",
+        "database_migration_timeout_seconds",
+        "database_migration_total_timeout_seconds",
+        "database_cleanup_timeout_seconds",
+        "database_shutdown_timeout_seconds",
+        mode="before",
+    )
+    @classmethod
+    def reject_database_boolean_number(cls, value: object) -> object:
+        """防止 Python bool 被隐式转换为连接容量或等待秒数。"""
+        if isinstance(value, bool):
+            # Pydantic 将 ValueError 转为配置校验错误；TypeError 会直接逃逸。
+            raise ValueError("数据库容量和等待预算不能为布尔值")  # noqa: TRY004
+        return value
+
+    # ===== Redis 配置 =====
+    redis_url: str = "redis://localhost:6379/0"
+    redis_session_ttl: int = 604800  # 7天
+
+    @property
+    def redis_config(self) -> dict:
+        """获取 Redis 配置字典"""
+        return {
+            "url": self.redis_url,
+            "session_ttl": self.redis_session_ttl,
+        }
 
     # ===== Tavily 配置 =====
     tavily_api_key: str = ""
@@ -415,141 +603,6 @@ class Settings(BaseSettings):
         if v < 1:
             raise ValueError(f"自适应预留参数必须 ≥ 1，当前值: {v}")
         return v
-
-    @property
-    def is_production(self) -> bool:
-        """是否为生产环境"""
-        return not self.debug
-
-    @property
-    def llm_client_timeout(self) -> httpx.Timeout:
-        """LLM 客户端分级超时（httpx.Timeout：connect/read/write/pool）。
-
-        装配根直接注入 ClientManager（register_config timeout=...）→ openai
-        AsyncOpenAI 接受该实例构建分级超时（LLM-ADR-014：连接期防悬挂 /
-        池等待 / 流空闲读兜底）。返回 Timeout 实例而非 dict——httpx.TimeoutTypes
-        不接受 dict，dict 会在 httpx.AsyncClient 构造期抛 TypeError。
-        """
-        return httpx.Timeout(
-            connect=self.llm_timeout_connect,
-            read=self.llm_timeout_read,
-            write=self.llm_timeout_write,
-            pool=self.llm_timeout_pool,
-        )
-
-    @property
-    def llm_config(self) -> dict:
-        """获取主模型配置字典"""
-        return {
-            "api_key": self.llm_api_key,
-            "base_url": self.llm_base_url,
-            "model": self.llm_model_id,
-            "temperature": self.llm_temperature,
-            "max_tokens": self.llm_max_tokens,
-            "timeout": self.llm_client_timeout,
-        }
-
-    @property
-    def llm_reasoning_config(self) -> dict:
-        """获取推理模型配置字典"""
-        model_id = self.llm_reasoning_model_id or self.llm_model_id
-        return {
-            "api_key": self.llm_api_key,
-            "base_url": self.llm_base_url,
-            "model": model_id,
-            "temperature": self.llm_reasoning_temperature,
-            "max_tokens": self.llm_reasoning_max_tokens,
-            "timeout": self.llm_client_timeout,
-        }
-
-    @property
-    def llm_fast_config(self) -> dict:
-        """获取快速模型配置字典"""
-        model_id = self.llm_fast_model_id or self.llm_model_id
-        return {
-            "api_key": self.llm_api_key,
-            "base_url": self.llm_base_url,
-            "model": model_id,
-            "temperature": self.llm_fast_temperature,
-            "max_tokens": self.llm_fast_max_tokens,
-            "timeout": self.llm_client_timeout,
-        }
-
-    @property
-    def llm_embedding_config(self) -> dict:
-        """获取嵌入模型配置字典"""
-        return {
-            "api_key": self.llm_api_key,
-            "base_url": self.llm_base_url,
-            "model": self.llm_embedding_model_id,
-            "dimensions": self.llm_embedding_dimensions,
-        }
-
-    @property
-    def agent_config(self) -> dict:
-        """获取 Agent 配置字典"""
-        return {
-            "max_iterations": self.agent_max_iterations,
-            "timeout": self.agent_timeout,
-            "streaming": self.agent_streaming,
-            "priority_levels": self.agent_priority_levels,
-            "default_priority": self.agent_default_priority,
-            "high_priority_timeout": self.agent_high_priority_timeout,
-            "low_priority_timeout": self.agent_low_priority_timeout,
-            "priority_queue_size": self.agent_priority_queue_size,
-        }
-
-    @property
-    def concurrency_config(self) -> dict:
-        """获取并发控制配置字典"""
-        return {
-            "max_concurrent_tasks": self.agent_max_concurrent_tasks,
-            "max_concurrent_tools_per_run": self.tool_max_concurrent_executions_per_run,
-            "max_concurrent_tools": self.tool_max_concurrent_executions,
-            "max_pending_tool_calls": self.tool_max_pending_calls,
-            "max_pending_tool_calls_per_run": self.tool_max_pending_calls_per_run,
-            "tool_admission_timeout_seconds": self.tool_admission_timeout_seconds,
-            "task_queue_size": self.agent_task_queue_size,
-            "worker_pool_size": self.agent_worker_pool_size,
-        }
-
-    @property
-    def database_config(self) -> dict:
-        """获取数据库配置字典"""
-        return {
-            "url": self.database_url,
-            "pool_size": self.database_pool_size,
-            "max_overflow": self.database_max_overflow,
-            "echo": self.database_echo,
-        }
-
-    @property
-    def redis_config(self) -> dict:
-        """获取 Redis 配置字典"""
-        return {
-            "url": self.redis_url,
-            "session_ttl": self.redis_session_ttl,
-        }
-
-    @property
-    def memory_config(self) -> dict:
-        """获取记忆系统配置字典"""
-        return {
-            "enabled": self.memory_enabled,
-            "max_short_term": self.memory_max_short_term,
-            "vector_db": self.memory_vector_db,
-            "collection": self.memory_collection,
-        }
-
-    @property
-    def tool_config(self) -> dict:
-        """获取工具配置字典"""
-        return {
-            "timeout": self.tool_timeout,
-            "max_retries": self.tool_max_retries,
-            "max_output_length": self.tool_max_output_length,
-            "max_content_length": self.tool_max_content_length,
-        }
 
 
 @lru_cache

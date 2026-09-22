@@ -4,6 +4,6 @@
 
 | ID | 决策 | 决策状态 | 日期 |
 | --- | --- | --- | --- |
-| [DB-ADR-001](2026-09-22-shared-database-foundation.md) | 共享 PostgreSQL 运行时、统一迁移与持久化可用性边界 | 已批准；未实施 | 2026-09-22 |
+| [DB-ADR-001](2026-09-22-shared-database-foundation.md) | 共享 PostgreSQL 运行时、统一迁移与持久化可用性边界 | 已批准；分片实施证据见 ADR 与活动计划 | 2026-09-22 |
 
 [根 ADR 导航](../../README.md) · [活动计划](../../../docs/todo.md#db-foundation)

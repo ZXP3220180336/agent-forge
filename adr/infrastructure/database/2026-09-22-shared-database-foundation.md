@@ -2,10 +2,10 @@
 
 > **ID**：DB-ADR-001
 > **日期**：2026-09-22
-> **决策状态**：已批准。用户已审批本 ADR 及相关计划；D7 所列 TOOLS-ADR-008 条款替代生效，代码尚未实施。
-> **实现状态**：未实施；当前源码与测试状态仍以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 为准。
+> **决策状态**：已批准。用户已审批本 ADR 及相关计划；D7 所列 TOOLS-ADR-008 条款替代生效。
+> **实现状态**：分片实施中；DB-F01 依赖与配置证据见下文，共享运行时和迁移尚未实施，当前状态以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 为准。
 > **范围**：共享数据库运行时、统一迁移、已有 Session/Message 接入、可用性与资源关闭。
-> **计划与授权**：[独立 DB-F01～DB-F06](../../../docs/todo.md#db-foundation)。设计与计划已批准；本轮按用户要求仅提交文档，实施按计划后续推进。
+> **计划与授权**：[独立 DB-F01～DB-F06](../../../docs/todo.md#db-foundation)。设计文档已提交，用户随后授权实施 DB-F01；后续分片按计划推进。
 
 ## Context
 
@@ -162,7 +162,11 @@ ChatService 最小新增准入状态与运行/finalizer 跟踪，并复用既有
 
 ## 实施与验证证据
 
-本轮仅有上述只读源码核验、两项命令级失败复现与环境探测；尚无 pytest 红测、数据库连接成功、迁移或真实 PostgreSQL 验收证据。1513 passed 是附件给出的历史基线，本轮不据此宣称回归通过。
+设计阶段仅有上述只读核验、命令级复现与环境探测，1513 passed 是当时附件提供的历史基线。
+
+DB-F01 已补自动化红测、正式 asyncpg 依赖与锁文件，并在 Settings 定义有限数据库预算、连接池容量约束与 URL 方言校验。参数与默认值只在[配置参考](../../../docs/config_doc/config.md#7-数据库配置)维护；常规配置诊断不回显 URL，配置字典仍含凭证，不允许日志化。驱动修复的官方发行参照及红绿证据见 [DB-001](../../../issues/infrastructure/database/2026-09-22-missing-asyncpg-dependency.md)。
+
+新增预算尚未接入当前 Container，不声称运行等待已受这些配置控制。未修复的启动检查、空工厂错误与迁移 CLI 以严格 xfail 标记具体后续片；实际测试和工程检查结果见 [DB-F01 评审](../../../docs/todo.md#db-f01-review)。尚无真实 PostgreSQL 连接、迁移或权限验收成功证据。
 
 已批准的验证矩阵及文件分工见[独立计划](../../../docs/todo.md#db-foundation)。真实 PostgreSQL 门槛不能用 fake/SQLite 或跳过测试替代；环境缺失时 DB-F06 必须保持未完成。驱动依赖进入 DB-F01 的首个实现切片，避免 runtime 实现阶段仍不可加载。
 

@@ -1,6 +1,6 @@
 # 基础设施层说明文档
 
-> 数据库规划已按用户确认的文档对照结论收敛；当前实现状态见 [ALIGNMENT](../ALIGNMENT.md)。设计取舍及确认范围见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)，不表示代码已经实施。
+> 数据库规划已按用户确认的文档对照结论收敛；当前实现状态见 [ALIGNMENT](../ALIGNMENT.md)。设计取舍及确认范围见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)，依赖与配置的接入不表示共享运行时及迁移已实施。
 
 ## 目录
 
@@ -13,7 +13,7 @@
   - [现状说明](#现状说明)
     - [DB / Redis 由 container 直接管理](#db--redis-由-container-直接管理)
     - [降级策略](#降级策略)
-    - [asyncpg 驱动未安装 → DB 恒降级](#asyncpg-驱动未安装--db-恒降级)
+    - [驱动与数据库就绪边界](#驱动与数据库就绪边界)
   - [规划说明](#规划说明)
     - [database.py](#databasepy)
     - [redis\_client.py](#redis_clientpy)
@@ -118,20 +118,13 @@ await self.redis.ping()
 
 以上描述当前行为，不是数据库目标契约。已确认的数据库目标是：初始化失败时独立 A-only 能力可继续装配，持久化消费者不装配，相关 API 明确返回 503；首次启动失败后，即使数据库恢复，也需重启应用完成装配。成功装配后的临时断连与首次启动失败分开处理，详见 [DB-ADR-001 D5](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#d5公共-api-与能力契约)。
 
-### asyncpg 驱动未安装 → DB 恒降级
+### 驱动与数据库就绪边界
 
-这是一个**2026-09-22 再次实测确认的现状缺陷**：
+DB-F01 已将 asyncpg 纳入正式依赖与锁文件，驱动缺失问题的复现与修复见 [DB-001](../../issues/infrastructure/database/2026-09-22-missing-asyncpg-dependency.md)。不能继续将驱动缺失描述为当前必然降级原因；实际模块与验证状态见 [ALIGNMENT](../ALIGNMENT.md)。
 
-- `pyproject.toml` 依赖中**没有** `asyncpg`（也没有 `psycopg` / `aiosqlite`），只有 `sqlalchemy>=2.0.51`
-- `settings.database_url` 默认值为 `postgresql+asyncpg://user:pass@localhost/db`
-- `create_async_engine()` 在**创建阶段**就会解析 `asyncpg` 方言并 import 驱动，驱动缺失时抛出 `ModuleNotFoundError`
-- 该异常被 `Container.initialize()` 的 except 捕获 → `self._engine = None`、`self.db_session_factory = None`
+Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权限检查；`/api/health` 仍不能证明数据库就绪。空工厂消费者、虚假可用性和空迁移 CLI 已有严格预期失败测试，分别由 DB-F02/03/05 继续闭合，不因安装驱动就宣称持久化可用。
 
-因此当前**数据库连接恒降级**：即使本机有 PostgreSQL 服务，DB 持久化路径也实际不可用（`SessionManager` 等所有依赖 `db_session_factory` 的调用在运行时都会失败）。
-
-本次核验还确认：Container 当前没有执行真实连接或最小事务，`/api/health` 也不读取基础设施状态；即使未来仅补上驱动，“引擎创建成功”与健康端点返回 `ok` 仍不能作为数据库就绪证据。共享的版本、连接、schema 与读写权限检查以及真实 PostgreSQL 迁移/事务验证，改由独立 [DB-F 任务](../todo.md#db-foundation)建设；Piece⑥消费该底座，再实现工具账本及恢复业务。
-
-对比：`redis>=8.0.1` 已安装，Redis 连接可用性只取决于服务是否可达。
+数据库预算字段与校验由[配置参考](../config_doc/config.md#7-数据库配置)统一定义，运行时尚未消费新增时限。真实检查、统一迁移及 PostgreSQL 验收归独立 [DB-F 任务](../todo.md#db-foundation)；Piece⑥消费底座，再实现工具账本与恢复业务。
 
 ---
 

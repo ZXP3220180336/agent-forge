@@ -4,11 +4,15 @@
 
 <a id="db-foundation"></a>
 
-## DB-F：共享数据库基础设施（设计已批准，待实施）
+## DB-F：共享数据库基础设施（DB-F01 已完成，后续待实施）
 
 **目标**：为已有 Session/Message、未来工具账本与长期记忆元数据提供同一 PostgreSQL 运行时和迁移底座。独立于 C-02 Piece⑥；完成 DB-F 不等于工具持久恢复完成。数据库决策唯一正文为 [DB-ADR-001](../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)。
 
-**授权边界**：2026-09-22 用户要求先调研并提交独立计划和 ADR，后续已确认文档对照取舍并批准相关文档。本轮按明确指令提交文档；不执行代码实现、依赖安装或数据库迁移。DB-F01～06 保持待实施，按已批准计划后续推进。原有 7 份文档修改已由先前提交保留。
+**授权历史**：用户先审批设计及对照取舍，文档已由 `2bb9c92` 提交；随后明确授权实施 DB-F01。原有 7 份文档修改由先前提交保留，本片基于干净工作区实施。
+
+**DB-F01 当前授权**：用户已明确要求实施 DB-F01，范围为自动化失败复现、asyncpg 依赖/锁文件与配置；不提前实现 F02 运行时、F03 迁移或 F05 装配/API。先执行红测，再接入依赖及配置，最后跑相关/全量测试和工程检查。
+
+本片细分：① 子智能体负责 Container/SessionManager/驱动/CLI 失败复现；② 主执行者负责 `tests/unit/test_database_settings.py` 与 `settings.py` 配置红绿测试、`pyproject.toml`/`uv.lock` 依赖；③ 同步配置参考、基础设施/部署现状、ALIGNMENT、ADR 和本计划。后续片未修复缺陷先用 `--runxfail` 留下红测，再以限定异常类型的 strict xfail 保留，不能计为本片已修复。配置值及完整约束以配置参考为唯一正文。
 
 ### 进度与实施顺序
 
@@ -17,7 +21,7 @@
 - [x] 形成独立分片、文件边界、readiness 契约与 TOOLS-ADR-008 具体拟替代条款。
 - [x] 完整对照 infrastructure.md 并获用户确认：沿用 init/dispose、区分 ping/probe、采用 Store Port 边界、排除 SQLite、明确失败/关闭行为及独立 DB-F 归属；首次启动数据库失败后需重启恢复。已统一修订说明与 ADR，此次仅授权文档收敛。
 - [x] 用户已批准 DB-ADR-001 和本计划，并要求提交相关文档；实现尚未开始。
-- [ ] DB-F01：先补自动化失败复现，再接入驱动/锁文件和配置。
+- [x] DB-F01：先补自动化失败复现，再接入驱动/锁文件和配置；结果见[本片评审](#db-f01-review)。
 - [ ] DB-F02：DatabaseRuntime 与独立资源生命周期。
 - [ ] DB-F03：唯一版本化 SQL 迁移执行器和 CLI。
 - [ ] DB-F04：Session/Message 首迁移、基线接管及 ORM 一致性。
@@ -55,7 +59,7 @@
 
 ### 文档同步切片
 
-本轮仅提交已批准设计，不把目标行为写成当前已实现。后续实施时按事实分别更新：
+文档按分片事实同步，不把目标行为写成当前已实现。DB-F01 已同步依赖/配置与复现边界，其余随后续分片更新：
 
 1. `docs/infrastructure_doc/infrastructure.md`、`docs/infrastructure_doc/model_doc/model.md`：运行时/迁移与 ORM 契约；不新建重复数据库说明。
 2. `docs/application_doc/session_doc/session.md`、应用层导航，以及现有 chat 说明：Store 依赖和收尾责任；具体路径实施前按导航核对。
@@ -91,6 +95,32 @@
 - 用户复核：初稿未完整对照 infrastructure.md 的规划部分，现已补全并记录[确认范围](../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)。后续已收到相关文档整体审批；已确认项不重复请求定夺，实施进度单独记录。运行时测试追加“ping 成功但版本/权限失败仍不可开放持久化”。
 - 工作区变化：本轮期间外部提交 `93c73c3` 收录原有 7 份文档修改；已核对提交只改这些文档，源码未变化。该提交由外部完成；本轮按用户要求另行提交数据库设计与计划。
 - 审批结果：统一 SQL 序列、严格基线接管、readiness API 与 chat 排空切片均随相关文档获批；后续直接按本计划推进，不将文档提交视为实现或真实 PostgreSQL 验收完成。
+
+<a id="db-f01-review"></a>
+
+### DB-F01 实施评审
+
+**完成范围**：真实驱动导入/引擎构造的红绿测试；Container 未探测和空工厂、SessionManager 空依赖、两个空 CLI 的自动化失败复现；asyncpg 正式依赖及锁文件；数据库配置的有限时限、有限池容量、方言校验、环境注入和常规诊断凭证保护。未实现 Runtime、CLI 或 readiness API，不连接/迁移真实数据库，不实施 Piece⑥。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 安装前驱动及缺陷复现，`pytest ... --runxfail -q --tb=short` | 7 failed：2 个真实驱动缺失；2 个 CLI 无帮助参数；2 个 Container 伪装配；1 个空工厂 TypeError |
+| 配置红测，`pytest tests/unit/test_database_settings.py -q --tb=no` | 68 failed、2 passed；确认时限缺失、无界池未拒绝、URL/诊断缺少保护 |
+| 配置修复，`pytest tests/unit/test_database_settings.py tests/unit/test_settings.py -q --tb=short` | 149 passed |
+| 安装后相关复现集，`pytest tests/unit/test_database.py tests/unit/test_database_cli.py tests/unit/test_container.py tests/unit/test_session_manager.py -q --tb=short` | 33 passed、5 xfailed；2 个真实驱动用例转绿 |
+| `uv add "asyncpg>=0.31.0"` 与实际 import | Python 3.14.6 / asyncpg 0.31.0；锁文件仅新增 asyncpg，无原有包升级或删除 |
+| `uv run --no-sync pytest -q --tb=short` | 1584 passed、5 xfailed；1 条既有 Starlette/httpx 弃用警告 |
+| `uv run ruff check .` / `uv run ruff format --check .` | 通过；232 个文件格式通过 |
+| `uv lock --check` / `git diff --check` | 通过 |
+| `uv run python -m scripts.verify_alignment` | 通过，含相对文档链接检查 |
+
+上表 pytest 简写命令实际均经 `uv run --no-sync` 执行。
+
+**未修复项去向**：5 个 strict xfail 仅匹配明确异常类型，意外通过会使测试失败；CLI 两项归 F03，Container 两项归 F02/F05，SessionManager 一项归 F05。原先把空工厂消费者视为正常降级的测试已改为目标契约，不保留错误成功断言。后续修复必须移除相应 xfail，不将其计为验收通过。
+
+**Gate 与结构**：E6/E8 覆盖配置拒绝、诊断保护和先红后绿；配置直接使用现有 Settings/聚合属性，无新运行时类或兼容后端。URL 解析复用 SQLAlchemy，保留 str 配置类型与既有 Container 消费方式。没有新增数据库重试或事务行为；E3/E5 的实际运行时改造留待后续片。子智能体只读复核配置未发现阻断问题。
+
+**边缘与限制**：覆盖池容量 0/-1/小数/布尔值、秒数 0/负数/NaN/无穷、环境字符串转换、合法转义凭证、非法驱动。配置导出及结构化 ValidationError 仍可能含原始输入，正式文档明确安全诊断方式；当前 Container 原始异常日志与新增预算执行尚待 F02/F05。真实 PostgreSQL 验收未运行，DB-F06 保持未完成。驱动根因及闭环见 [DB-001](../issues/infrastructure/database/2026-09-22-missing-asyncpg-dependency.md)。
 
 <a id="c-02-lifecycle"></a>
 

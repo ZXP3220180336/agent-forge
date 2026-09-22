@@ -17,6 +17,16 @@ from sqlalchemy import Delete, Insert, Select, Update
 
 from app.application.session.session_manager import SessionManager
 from app.infrastructure.models.database import MessageModel, SessionModel
+from app.shared.exceptions import AppError
+
+
+@pytest.mark.xfail(strict=True, raises=TypeError, reason="DB-F05a/DB-F05b：空持久化依赖须返回明确不可用错误")
+async def test_missing_persistence_reports_unavailable() -> None:
+    """没有持久化依赖时应给出业务错误码，而不是调用空工厂。"""
+    with pytest.raises(AppError) as exc_info:
+        manager = SessionManager(redis_client=None, db_session_factory=None)
+        await manager.create_session(user_id="database-unavailable-test")
+    assert exc_info.value.code == "PERSISTENCE_UNAVAILABLE"
 
 
 class _FakeRedis:

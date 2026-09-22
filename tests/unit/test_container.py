@@ -5,12 +5,15 @@ initialize() 只 stub 掉外部基础设施（Redis 连接、asyncpg 引擎、se
 均为离线安全，真实执行。测试后会恢复被 initialize() 污染的全局注册表。
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
 
 import app.container as container_module
 from app.config import settings
+from app.config.settings import Settings
 from app.container import Container
 from app.integration.llm.client import ClientManager
 from app.integration.llm.llm_service import LLMService
@@ -203,8 +206,9 @@ async def test_initialize_redis_failure_degrades(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_initialize_engine_failure_degrades(monkeypatch):
-    """数据库引擎失败（asyncpg 缺失）：db_session_factory 降级为 None"""
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="DB-F05b：数据库失败时禁止装配持久化消费者")
+async def test_initialize_engine_failure_blocks_persistence_consumers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """引擎创建失败时，不应装配持有空工厂的持久化消费者。"""
 
     def _boom(*a, **k):
         raise RuntimeError("no db driver")
@@ -212,17 +216,63 @@ async def test_initialize_engine_failure_degrades(monkeypatch):
     monkeypatch.setattr(container_module, "setup_logging", lambda *a, **k: None)
     monkeypatch.setattr(container_module, "Redis", _FakeRedisClass)
     monkeypatch.setattr(container_module, "create_async_engine", _boom)
+    monkeypatch.setattr(
+        container_module,
+        "settings",
+        Settings(_env_file=None, database_url="postgresql+asyncpg://localhost/database_dependency_test"),
+    )
+    monkeypatch.setattr(ClientManager, "get_client", lambda *a, **k: AsyncMock())
 
     c = Container()
-    await c.initialize()
+    try:
+        await c.initialize()
+        assert c._engine is None
+        assert c.db_session_factory is None
+        assert c.session_manager is None
+        assert c.context_manager is None
+        assert c.chat_service is None
+        assert c.tool_service is not None
+        assert c._errors and "数据库初始化失败" in c._errors[0]
+        assert c.initialized is True
+    finally:
+        await c.shutdown()
 
-    assert c._engine is None
-    assert c.db_session_factory is None
-    assert c.session_manager is not None
-    assert c.session_manager.db_session is None
-    assert c.chat_service is not None
-    assert c._errors and "数据库初始化失败" in c._errors[0]
-    assert c.initialized is True
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="DB-F02/DB-F05b：启动须真实探测再装配消费者")
+async def test_initialize_connection_refused_blocks_persistence_consumers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """构造引擎成功并不代表可连接；拒绝连接的引擎不能开放持久化。"""
+
+    class _ConnectionRefusedEngine(_FakeEngine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.connection_attempts = 0
+
+        @asynccontextmanager
+        async def connect(self) -> AsyncIterator[None]:
+            self.connection_attempts += 1
+            raise ConnectionRefusedError("test database connection refused")
+            yield  # pragma: no cover
+
+        begin = connect
+
+    engine = _ConnectionRefusedEngine()
+    _stub_infra(monkeypatch, fake_engine=engine)
+    monkeypatch.setattr(
+        container_module,
+        "settings",
+        Settings(_env_file=None, database_url="postgresql+asyncpg://localhost/database_dependency_test"),
+    )
+    monkeypatch.setattr(ClientManager, "get_client", lambda *a, **k: AsyncMock())
+    c = Container()
+    try:
+        await c.initialize()
+        assert c.session_manager is None, f"未真实验证连接：connection_attempts={engine.connection_attempts}"
+        assert c.context_manager is None
+        assert c.chat_service is None
+        assert engine.connection_attempts > 0
+        assert c.tool_service is not None
+    finally:
+        await c.shutdown()
 
 
 @pytest.mark.asyncio

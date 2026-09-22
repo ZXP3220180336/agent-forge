@@ -272,8 +272,22 @@ def test_concurrency_config():
 
 
 def test_database_config():
-    s = _make(database_url="u", database_pool_size=1, database_max_overflow=2, database_echo=True)
-    assert s.database_config == {"url": "u", "pool_size": 1, "max_overflow": 2, "echo": True}
+    url = "postgresql+asyncpg://localhost/test"
+    s = _make(database_url=url, database_pool_size=1, database_max_overflow=2, database_echo=True)
+    assert s.database_config == {
+        "url": url,
+        "pool_size": 1,
+        "max_overflow": 2,
+        "echo": True,
+        "connect_timeout_seconds": 5.0,
+        "pool_timeout_seconds": 5.0,
+        "operation_timeout_seconds": 10.0,
+        "probe_timeout_seconds": 10.0,
+        "migration_timeout_seconds": 60.0,
+        "migration_total_timeout_seconds": 300.0,
+        "cleanup_timeout_seconds": 5.0,
+        "shutdown_timeout_seconds": 30.0,
+    }
 
 
 def test_redis_config():
