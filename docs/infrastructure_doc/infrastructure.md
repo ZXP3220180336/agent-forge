@@ -1,5 +1,7 @@
 # 基础设施层说明文档
 
+> 数据库规划已按用户确认的文档对照结论收敛；当前实现状态见 [ALIGNMENT](../ALIGNMENT.md)。设计取舍及确认范围见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)，不表示代码已经实施。
+
 ## 目录
 
 - [基础设施层说明文档](#基础设施层说明文档)
@@ -26,14 +28,14 @@
 
 ### 核心定位
 
-- **抽象封装**：屏蔽具体技术细节（驱动、连接池、协议），上层只依赖本层暴露的接口
+- **抽象封装**：屏蔽具体技术细节（驱动、连接池、协议）；业务用例依赖 Domain 定义的 Store Port，Infrastructure 提供适配器，Container 负责装配注入
 - **生命周期管理**：统一负责资源的创建、初始化、健康检查与释放
 - **可替换性**：通过接口隔离实现可替换（如缓存后端在 Redis / Memcached 之间切换）
 - **解耦**：让服务层不再直接持有具体客户端对象
 
 ### 模块结构
 
-```
+```text
 app/infrastructure/
 ├── __init__.py             ← 包入口，规划导出统一封装接口
 ├── database.py             ← 数据库封装（规划：engine / session factory）
@@ -100,7 +102,9 @@ self.redis = Redis.from_url(
 await self.redis.ping()
 ```
 
-**调用链**：`Container` 将 `redis` / `db_session_factory` 直接注入各服务（如 `SessionManager`），服务层拿到的是裸客户端对象，而非经过封装的统一接口。`shutdown()` 时通过 `redis.close()`、`engine.dispose()` 与 `ClientManager.close_all()`（关闭 AsyncOpenAI 底层 httpx 连接池，2026-08-09）显式释放，三者并入 `asyncio.gather(return_exceptions=True)`——单个清理失败不影响整体优雅退出。
+**调用链现状**：`Container` 将 `redis` / `db_session_factory` 直接注入各服务（如 `SessionManager`），服务层拿到的是裸客户端对象。`shutdown()` 先等待 ToolService 关闭，再将 `redis.close()`、`engine.dispose()` 与 `ClientManager.close_all()` 并入 `asyncio.gather(return_exceptions=True)`。收集清理异常不等于资源均已释放，也不能证明整体优雅退出；当前缺少聊天运行及最终消息落库的完整排空边界。
+
+**已确认的目标边界（待实施）**：先停止新业务准入，等待使用方收尾，再释放数据库；仍有使用方未结束时保留其依赖并报告关闭未完成。具体责任与验证见 [DB-ADR-001 D6](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#d6生命周期接线)。
 
 ### 降级策略
 
@@ -111,6 +115,8 @@ await self.redis.ping()
 3. 将对应属性置为 `None`
 
 各服务需自行感知降级。例如 `SessionManager` 在 `redis is None` 时打印「Redis 不可用，缓存降级」（`session_manager.py` L42-43）。
+
+以上描述当前行为，不是数据库目标契约。已确认的数据库目标是：初始化失败时独立 A-only 能力可继续装配，持久化消费者不装配，相关 API 明确返回 503；首次启动失败后，即使数据库恢复，也需重启应用完成装配。成功装配后的临时断连与首次启动失败分开处理，详见 [DB-ADR-001 D5](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#d5公共-api-与能力契约)。
 
 ### asyncpg 驱动未安装 → DB 恒降级
 
@@ -123,7 +129,7 @@ await self.redis.ping()
 
 因此当前**数据库连接恒降级**：即使本机有 PostgreSQL 服务，DB 持久化路径也实际不可用（`SessionManager` 等所有依赖 `db_session_factory` 的调用在运行时都会失败）。
 
-本次核验还确认：Container 当前没有执行真实连接或最小事务，`/api/health` 也不读取基础设施状态；即使未来仅补上驱动，“引擎创建成功”与健康端点返回 `ok` 仍不能作为数据库就绪证据。工具生命周期 Piece⑥必须增加独立的版本、连接、schema 与最小读写能力检查，并用真实 PostgreSQL 测试迁移和事务语义。
+本次核验还确认：Container 当前没有执行真实连接或最小事务，`/api/health` 也不读取基础设施状态；即使未来仅补上驱动，“引擎创建成功”与健康端点返回 `ok` 仍不能作为数据库就绪证据。共享的版本、连接、schema 与读写权限检查以及真实 PostgreSQL 迁移/事务验证，改由独立 [DB-F 任务](../todo.md#db-foundation)建设；Piece⑥消费该底座，再实现工具账本及恢复业务。
 
 对比：`redis>=8.0.1` 已安装，Redis 连接可用性只取决于服务是否可达。
 
@@ -138,9 +144,11 @@ await self.redis.ping()
 **定位**：数据库访问的统一封装，替代 `container` 中的裸 `create_async_engine` 调用。
 
 - 封装 `create_async_engine` + `async_sessionmaker` 的创建逻辑与配置（URL / 池大小 / `pool_pre_ping`）
-- 提供 `engine` / `session_factory` 属性与 `init()` / `dispose()` 生命周期方法
-- 提供健康检查（`ping` 能力），供 `Container` 与监控复用
-- **可选**：增加本地降级后端（如 `aiosqlite`），解除「asyncpg 未装 → 恒降级」的现状
+- 沿用 `init()` / `dispose()` 生命周期命名；engine 由运行时持有，受控 `session_factory` 仅供基础设施适配器使用，Application 不接收数据库对象
+- 保留轻量 `ping()` 检查真实连接与最小事务；完整 `probe()` 额外检查 schema 版本、结构和权限。两者共用检查逻辑，ping 成功不能开放持久化能力；应用存活另由 `/api/health` 表达
+- 本轮只支持 PostgreSQL，不引入原蓝图候选的 SQLite/aiosqlite 降级后端
+
+数据库运行时、统一迁移执行器和会话 Store 的职责划分见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)；该 ADR 保存决策正文，本文维护基础设施定位与协作说明。配置继续在[配置参考](../config_doc/config.md)维护，使用命令继续在[部署说明](../project/deployment.md)维护。Redis/MQ 下述规划不纳入本次数据库任务。
 
 ### redis_client.py
 

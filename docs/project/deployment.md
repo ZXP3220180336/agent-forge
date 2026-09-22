@@ -147,13 +147,15 @@ Pydantic Settings 读取 `.env` 不等于写入进程 `os.environ`，业务模�
 
 A 允许同一活动进程内多 Agent、多批次共享 ToolService，以普通只读能力验证进程内取消、事实和有界接管，不宣称崩溃恢复。B 的副作用/未知/强制审计工具在驱动、schema、单机 Owner、未决保护恢复完成前不开放。注册工具可存在但不得在 schema 导出时误报为可执行；Gateway 还需最终检查，不能只靠模型可见清单。
 
-2026-09-22 再次核实 `pyproject.toml` / `uv.lock` 未声明 asyncpg，当前环境 `find_spec("asyncpg")` 为 `None`，按默认 URL 构造 engine 实测抛出 `ModuleNotFoundError`；`scripts/init_db.py`、`scripts/migrate.py` 仍为空。本轮未安装驱动或连接 DB。B 实施时在依赖及锁文件中接入 asyncpg；复用 Container 的 SQLAlchemy engine/sessionmaker 和 ORM Base，不因工厂构造成功就跳过真实连接、最小事务、schema 与权限检查。
+2026-09-22 再次核实 `pyproject.toml` / `uv.lock` 未声明 asyncpg，当前环境 `find_spec("asyncpg")` 为 `None`，按默认 URL 构造 engine 实测抛出 `ModuleNotFoundError`；`scripts/init_db.py`、`scripts/migrate.py` 仍为空。本轮未安装驱动或连接 DB。共享 DB-F 实施时在依赖及锁文件中接入 asyncpg；后续 B 复用数据库运行时的 SQLAlchemy engine/sessionmaker 和 ORM Base，不因工厂构造成功就跳过真实连接、最小事务、schema 与权限检查。
 
 ### 工具 schema 迁移
 
-采用工具专属版本化 SQL 文件 `migrations/tools/0001_execution_ledger.sql`，`scripts/migrate.py` 实现有序升级、校验和及事务回滚；`scripts/init_db.py` 只委托同一迁移入口，不建立第二份 create_all 逻辑。使用现有连接配置，脚本不打印连接凭证。
+> 2026-09-22：[共享数据库 ADR](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#database-supersession) 已批准，替代原工具专属目录及 `--tools` 入口。以下为已批准但尚未实现的部署规格，不能作为当前可执行步骤。
 
-目标命令（尚未实现）：`uv run python -m scripts.migrate --tools`；应用 startup 只检查版本/读写能力，不自动改 schema。每个迁移先验证 PostgreSQL 支持事务的语句；失败回滚并阻止 B，不能部分升级后宣称就绪。降级通过旧代码兼容性检查及备份恢复单独执行，不自动 DROP 未决账本。测试包括干净库升级、重复执行、校验和不符、事务中断与存量未决记录。
+采用共享版本化 SQL 序列，首迁移为 `migrations/0001_sessions_and_messages.sql`；工具账本由 Piece⑥增加后续全局版本，`scripts/migrate.py` 实现有序升级、校验和及事务回滚；`scripts/init_db.py` 只委托同一迁移入口，不建立第二份 create_all 逻辑。使用现有连接配置，脚本不打印连接凭证。
+
+目标命令（尚未实现）：`uv run python -m scripts.migrate`；已有兼容表需显式使用 `--baseline-existing`，严格核验后才登记基线；应用 startup 只检查版本/读写能力，不自动改 schema。每个迁移先验证 PostgreSQL 支持事务的语句；失败回滚并阻止 B，不能部分升级后宣称就绪。降级通过旧代码兼容性检查及备份恢复单独执行，不自动 DROP 未决账本。测试包括干净库升级、重复执行、校验和不符、事务中断与存量未决记录。
 
 ### 单主机单活动执行进程
 

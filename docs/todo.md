@@ -2,6 +2,96 @@
 
 更新：2026-09-22。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
+<a id="db-foundation"></a>
+
+## DB-F：共享数据库基础设施（设计已批准，待实施）
+
+**目标**：为已有 Session/Message、未来工具账本与长期记忆元数据提供同一 PostgreSQL 运行时和迁移底座。独立于 C-02 Piece⑥；完成 DB-F 不等于工具持久恢复完成。数据库决策唯一正文为 [DB-ADR-001](../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)。
+
+**授权边界**：2026-09-22 用户要求先调研并提交独立计划和 ADR，后续已确认文档对照取舍并批准相关文档。本轮按明确指令提交文档；不执行代码实现、依赖安装或数据库迁移。DB-F01～06 保持待实施，按已批准计划后续推进。原有 7 份文档修改已由先前提交保留。
+
+### 进度与实施顺序
+
+- [x] 核验工作区、规范与当前代码；两项命令级失败复现；初查 PostgreSQL 环境。
+- [x] 分别委托只读核查持久化链路和官方迁移方案；整合到 ADR，不建立第二份调研文档。
+- [x] 形成独立分片、文件边界、readiness 契约与 TOOLS-ADR-008 具体拟替代条款。
+- [x] 完整对照 infrastructure.md 并获用户确认：沿用 init/dispose、区分 ping/probe、采用 Store Port 边界、排除 SQLite、明确失败/关闭行为及独立 DB-F 归属；首次启动数据库失败后需重启恢复。已统一修订说明与 ADR，此次仅授权文档收敛。
+- [x] 用户已批准 DB-ADR-001 和本计划，并要求提交相关文档；实现尚未开始。
+- [ ] DB-F01：先补自动化失败复现，再接入驱动/锁文件和配置。
+- [ ] DB-F02：DatabaseRuntime 与独立资源生命周期。
+- [ ] DB-F03：唯一版本化 SQL 迁移执行器和 CLI。
+- [ ] DB-F04：Session/Message 首迁移、基线接管及 ORM 一致性。
+- [ ] DB-F05a：会话专用 Store Port / PostgreSQL 适配器，迁出应用层 SQL。
+- [ ] DB-F05b：Container、readiness 与 503 错误边界；保持 A/B 能力分道。
+- [ ] DB-F05c：聊天消费者停止准入、运行/finalizer 排空与数据库关闭顺序。
+- [ ] DB-F06：真实 PostgreSQL 验收、全量回归与正式文档同步。
+
+顺序为 F01 → F02 → F03/F04 → F05a/b/c → F06；F03/F04 配套形成可运行迁移切片，F02 在此之前只能验证资源契约，不宣称 schema 就绪。真实 PostgreSQL 环境优先准备，专项测试随 piece 运行，不留到最后才发现验收条件缺失。每个 piece 的源码修改前先给失败复现/行为保护，再实现；大于三个文件继续按下表小切片推进。
+
+### 文件边界与验收
+
+下列新增路径是待实施目标，用代码标记避免伪造现有链接；既有文件基于最新工作区增量修改。
+
+| 切片 | 文件与职责 | 验收重点 |
+| --- | --- | --- |
+| F01a 失败复现 | `tests/unit/test_container.py`、`tests/unit/test_session_manager.py`；新增 `tests/unit/test_database.py` | 缺驱动、空工厂、连接失败仍声称就绪的当前失败证据；无迁移入口先通过 CLI/功能测试复现，不只断言文件大小 |
+| F01b 依赖 | `pyproject.toml`、`uv.lock` | asyncpg 正式依赖、Python 3.14 兼容安装与真实导入；不顺便升级无关依赖 |
+| F01c 配置 | `app/config/settings.py`、对应配置测试、`docs/config_doc/config.md` | 使用现有 DATABASE_* 入口，连接/池等待/操作/迁移/关闭时限有限且非法值拒绝；冻结初值并只维护一份配置表 |
+| F02 运行时 | `app/infrastructure/database.py`、`tests/unit/test_database.py` | 创建、真实探测、工厂保护、状态、超时/取消/失败清理、重复关闭；engine 与工厂唯一 Owner |
+| F03a 迁移核心 | 新 `app/infrastructure/database_migrations.py`、新 `tests/unit/test_database_migrations.py` | 文件顺序/名称/校验和、完整历史拒绝、只读版本校验；整批 SQL 不按分号切割 |
+| F03b CLI | `scripts/migrate.py`、`scripts/init_db.py`、新 `tests/unit/test_database_cli.py` | 同一个入口、UTF-8 输出、有限退出、失败非零退出码、无 create_all/--tools 双机制；不泄露凭证 |
+| F04a 首迁移 | 新 `migrations/0001_sessions_and_messages.sql`、`app/infrastructure/database_migrations.py`、新 `tests/integration/test_database_migrations.py` | 干净库、重复迁移、基线显式接管、结构不兼容拒绝、失败回滚；唯一版本表 |
+| F04b ORM | `app/infrastructure/models/database/session.py`、`messages.py`、新 `tests/integration/test_database_models.py` | 先复现 import 时固定时间；改 callable defaults；字段/索引/FK/JSON/时区/自增及 server default 与 SQL 一致 |
+| F05a-1 数据访问边界 | 新 `app/domain/ports/session_store.py`、新 `app/infrastructure/session_store.py`、新 `tests/integration/test_session_store.py` | 普通数据进出；实际 CRUD、消息最新窗口及 ID 排他上界、统计、增强列表、硬删两表原子性 |
+| F05a-2 应用迁移 | `app/application/session/session_manager.py`、`tests/unit/test_session_manager.py` | 无 SQLAlchemy/asyncpg/ORM import；业务参数、排序、消息 ID 与缓存边界不漂移；无 DB 时不以缓存冒充持久化可用 |
+| F05b-1 错误边界 | `app/shared/exceptions.py`、`app/api/middleware/error_handler.py`、`tests/unit/test_error_handler.py` | PERSISTENCE_UNAVAILABLE → 503 及既有信封；底层错误脱敏；程序错误与取消不吞成可重试故障 |
+| F05b-2 装配 | `app/container.py`、`app/api/deps.py`、`tests/unit/test_container.py` | Container 不创建引擎；未就绪不构造伪可用 manager/context/chat；独立 A 工具保持可用，B 仍关闭 |
+| F05b-3 API | `app/main.py`、新 `tests/unit/test_database_readiness.py`、`tests/integration/test_chat_flow.py` | health 只管存活；ready 实际探测与 200/503；启动失败恢复需重启；流前 503 与流后错误语义分别测试 |
+| F05c-1 消费者生命周期 | `app/application/chat/chat_service.py`、`tests/unit/test_chat_service.py` | 新 prepare 准入关闭，活动 run/finalizer 有 Owner；同刻准备/关闭、未消费流、重复关闭、写入挂起/失败 |
+| F05c-2 关闭接线 | `app/container.py`、`tests/unit/test_container.py`、新 `tests/integration/test_database_lifecycle.py` | chat/tool 未完成时不 dispose；最终落库先于连接关闭；所有等待有界；不把返回超时当实际释放 |
+| F06 真实环境 | `tests/integration/test_database_runtime.py`（新增）及上述 PostgreSQL 测试；按需测试 fixture | 显式测试数据库、隔离受管表/账号、拒绝使用未声明的业务库；无 PostgreSQL 则记录阻塞，不能用 fake/SQLite 或 skip 算完成 |
+
+测试 fixture 使用现有配置入口向测试注入专用数据库 URL；凭证通过环境安全提供，不写入计划/日志。环境准备不能对未经确认用途的数据库执行建表、改权限或清理。
+
+### 文档同步切片
+
+本轮仅提交已批准设计，不把目标行为写成当前已实现。后续实施时按事实分别更新：
+
+1. `docs/infrastructure_doc/infrastructure.md`、`docs/infrastructure_doc/model_doc/model.md`：运行时/迁移与 ORM 契约；不新建重复数据库说明。
+2. `docs/application_doc/session_doc/session.md`、应用层导航，以及现有 chat 说明：Store 依赖和收尾责任；具体路径实施前按导航核对。
+3. `docs/api_doc/README.md`、现有 API 契约文档、`docs/shared_doc/error_handling.md`：readiness 和基础设施不可用出口。
+4. `docs/project/deployment.md`、`docs/config_doc/config.md`、`docs/project/architecture.md`：唯一使用命令、配置及本任务结构选择；以互链替代重复正文。
+5. `docs/ALIGNMENT.md`：新增模块映射与实际状态；`DB-ADR-001`、数据库索引及 TOOLS-ADR-008：批准/兑现证据和具体替代生效。
+6. `docs/todo.md`：逐项进度与评审；有红测闭环后按独立根因登记 Issue 及所属索引。仅发生真实纠正才更新 `docs/lessons.md`，不机械新增教训。
+
+### 真实 PostgreSQL 与回归门槛
+
+- 驱动导入、新库迁移、重复运行、名称/校验和变更、缺号/未知/过旧版本、迁移第二条语句失败时 DDL 与登记同时回滚。
+- 已有兼容空表/有数据表严格接管、部分表/不兼容类型/缺索引/错误 FK/序列默认或归属差异拒绝；数据保留，消息新 ID 不与存量冲突。
+- 首建竞争及已有版本表锁冲突有界失败；SQL 注释/字符串内分号；事务提交响应不明无自动重放。
+- 真实创建/读取会话、保存消息、最近消息窗口/同时间 ID 排序/快照上界；软删、硬删原子性、统计与分页回归。
+- 数据库不可达、认证失败、只读账号真实写入失败、序列权限不足、运行中断连/权限撤销；探针不是未来写入保证。
+- engine dispose、取池超时、取消/回滚、关闭挂起、重复关闭、chat 最终落库顺序；日志、异常、CLI 输出不含凭证或完整 URL。
+- health/ready/capability、503 信封、A-only 可调用、B 真实执行仍为零；Domain/Application 无 SQLAlchemy/asyncpg 引用。
+- 按[部署与验证](project/deployment.md)依次运行相关测试、真实 PostgreSQL 专项、全量 pytest、Ruff check/format、ALIGNMENT 与 diff check；逐次记录真实输出，不引用历史通过数代替。
+
+### 可选项与未授权范围
+
+可选验收环境：已有专用远端 PostgreSQL，或本机 PostgreSQL/容器环境，依据用户可提供条件选择；没有可用环境时先明确阻塞。可选后续能力：启动失败后的热恢复、复杂迁移分支、额外 schema；本轮不实现。
+
+禁止扩展为 Piece⑥账本、工具恢复/资源冲突、长期记忆业务表、向量库、通用 Repository/UnitOfWork、SQLite 降级或多实例执行锁；不同时引入 Alembic 与 SQL 执行器。
+
+### 本轮设计评审
+
+- 结论：单个 runtime 文件加独立迁移执行器足够；专用 SessionStore 是消除现存应用层数据库耦合的必要边界，chat 排空是满足关闭顺序的必要切片。命中 E1/E2/E3/E5/E6/E7/E8/E9；不新增事务自动重试，E4 无此新增触发。
+- 证据：HEAD 与 7 个修改文件核对一致；asyncpg 缺失/引擎构造失败、空工厂调用失败已实际复现；三个入口占位为 0 字节。未运行全量测试或连接真实 PostgreSQL。
+- 环境缺口：PATH 无 docker/psql/pg_isready，本机默认 PostgreSQL TCP 不可达，尚无远端测试库证据；DB-F06 保持未完成。
+- 文档检查：`uv run --no-sync python -m scripts.verify_alignment` 通过（含相对链接检查）；`git diff --check` 通过。仅变更文档，未运行 pytest/Ruff，不宣称代码或真实 DB 验收通过。
+- 设计复核：已补明确 runtime 要求版本等于当前迁移 head；基线必须停旧写入并只读验证序列下一值，禁止 nextval/setval 探针或自动修复。相关边界纳入真实 PostgreSQL 验收。
+- 用户复核：初稿未完整对照 infrastructure.md 的规划部分，现已补全并记录[确认范围](../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)。后续已收到相关文档整体审批；已确认项不重复请求定夺，实施进度单独记录。运行时测试追加“ping 成功但版本/权限失败仍不可开放持久化”。
+- 工作区变化：本轮期间外部提交 `93c73c3` 收录原有 7 份文档修改；已核对提交只改这些文档，源码未变化。该提交由外部完成；本轮按用户要求另行提交数据库设计与计划。
+- 审批结果：统一 SQL 序列、严格基线接管、readiness API 与 chat 排空切片均随相关文档获批；后续直接按本计划推进，不将文档提交视为实现或真实 PostgreSQL 验收完成。
+
 <a id="c-02-lifecycle"></a>
 
 ## C-02：工具执行生命周期（交付 A 已完成，交付 B 待实施）
@@ -112,6 +202,8 @@ P0 S1～S8 是设计职责划分；下列 piece 是实施与验收单元，沿�
 属于交付 B，依赖 P0-B；不是普通只读交付 A 的前置条件。按 D8 分级接入，既有证据保存要求独立核验，不以无需意图落库推导结果可丢弃。
 
 #### Piece⑥实施前数据库基础设施核验（2026-09-22）
+
+> **后继独立任务**：用户已要求将共享数据库建设从 Piece⑥分离，现由已批准的 [DB-F 计划](#db-foundation)承接。下文保留当时核验结论；其中“不顺带重构 database.py”仅约束当时工具任务，工具专属迁移路径已由 [DB-ADR-001](../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#database-supersession) 部分替代，底座代码仍待实施。
 
 本轮只核验现状并收敛实施边界，没有安装驱动、连接数据库或创建账本文件。
 

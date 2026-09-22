@@ -17,6 +17,7 @@
 
 ## 目录导航
 
+- [infrastructure/database/README.md](infrastructure/database/README.md)
 - [integration/llm/README.md](integration/llm/README.md)
 - [integration/tools/README.md](integration/tools/README.md)
 - [2026-09-02-request-build-validation.md](2026-09-02-request-build-validation.md)

@@ -10,6 +10,8 @@
 
 ## Context
 
+> **数据库条款部分替代（2026-09-22，已批准）**：[DB-ADR-001 D7](../../infrastructure/database/2026-09-22-shared-database-foundation.md#database-supersession) 已接管 S3 的工具专属迁移入口、S7 的 `tool_schema_version` 及 asyncpg/迁移底座的交付归属，统一为共享数据库前置能力。下文保留原决策语境；上述条款按 DB-ADR-001 执行，共享底座仍待实现。工具账本业务、CAS、事件幂等及恢复仍属 Piece⑥，不能因数据库基础设施完成而标记完成。
+
 ### 产品问题与约束
 
 C-02 原为“工具退避对业务取消信号的响应”。核验发现问题同时涉及排队、真实 attempt、线程/进程清理、并行结果接管及未知副作用后的再次准入。只替换退避 sleep 不能兑现完整取消契约。

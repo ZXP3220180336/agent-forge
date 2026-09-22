@@ -6,6 +6,7 @@
 
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
+| 已有模块说明基础上起草新 ADR | 读取说明前部、或把说明列入后续同步清单，不等于完成契约对照。共享数据库初稿遗漏规划部分的生命周期命名和降级候选；经用户指出后完整核对，区分现状描述、已有规划与新增决定，讨论确认后统一修订。 | [DB-ADR-001 对照结论](../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)；[文档事实与契约规则](engineering/documentation/README.md)。 |
 | 将离线治理资料接入完整仓库或补齐来源 | 资料缺失说明需按当前目标重新核对；2026-09-14 曾只在计划声明规范已找到，遗漏正式来源状态与 Git 跟踪，提交前须核对链接目标也被纳入提交并同步唯一状态记录。治理搭建与代码符合性分别验收，不据此扩大代码范围。 | 2026-09-12 用户明确范围、2026-09-14 计划复核；[迁移引用核对](../issues/documentation/2026-09-12-reference-gaps.md)；[文档证据规则](engineering/documentation/README.md)。 |
 | 整合治理规范、移动说明文件或建立来源映射 | 本次用户纠正了并行保留新版规范、旧规范及 sources 快照的方案：同一规则只有一个正式位置，追溯使用现行 ADR/Issue；旧 todo 的历史过程不等于新待办。来源映射不能变成第二份规范正文。 | 本次 2026-09-12 用户纠正；[单一来源 ADR](../adr/2026-09-12-single-source-governance.md)；[项目工作流](engineering/project-workflow.md)。 |
 | 同一缺陷出现不同触发条件 | REASON-004/006 的能力侧与数据侧最终合并到一个协议问题；按表现重复建档曾造成同一机制的状态漂移。 | [协议错误 Issue](../issues/domain/reasoning/2026-08-30-protocol-error-empty-tool-calls.md)；[工程规范](engineering/ai-engineering-rules.md)。 |
