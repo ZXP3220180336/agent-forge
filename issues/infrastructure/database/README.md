@@ -11,5 +11,6 @@
 | [DB-007](2026-09-23-half-built-engine-admission.md) | 半构建引擎会开放准入且丢失跟踪与脱敏 | 已修复；DB-F02 提交前审查发现 | 2026-09-23 |
 | [DB-008](2026-09-23-connect-during-close-assertion.md) | 关闭期连接拦截缺少直接断言 | 已修复；DB-F02 后续发现登记 | 2026-09-23 |
 | [DB-009](2026-09-23-pool-logger-name-hardcode.md) | 池实例 logger 名硬编码，换池实现会静默失效 | 已修复；DB-F02 后续发现登记 | 2026-09-23 |
+| [DB-010](2026-09-23-stale-probe-cancellation.md) | 旧探测调用取消时误取消后继 worker | 已修复；DB-F02 工作区审查发现 | 2026-09-23 |
 
 [问题导航](../../README.md) · [数据库决策](../../../adr/infrastructure/database/README.md)

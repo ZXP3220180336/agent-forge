@@ -334,7 +334,7 @@ class DatabaseRuntime:
             if not task.done():
                 # 探测没做完 → 判定超时，记录失败原因，执行停止流程
                 result = (self._probe_failure or "timeout"), None
-                await self._stop_probe(deadline)
+                await self._stop_probe(task, deadline)
             elif task.cancelled():
                 # 探测被取消 → 返回「正在关闭」
                 return "closing", None
@@ -349,9 +349,9 @@ class DatabaseRuntime:
 
             return result
         except asyncio.CancelledError:
-            if full and self._status.state not in {"closing", "closed"}:
+            if full and self._probe_task is task and self._status.state not in {"closing", "closed"}:
                 self._status = DatabaseStatus("unavailable", "starting")
-            await self._stop_probe(deadline)
+            await self._stop_probe(task, deadline)
             raise
         finally:
             # 强制取消清理信号、回收任务、清空探测任务标记，保证不管成功失败，任务状态都能复位。
@@ -407,18 +407,18 @@ class DatabaseRuntime:
             self._cleanup_started.set()
             if not started:
                 # 连接根本没启动成功 → 直接强制终止所有探测相关连接
-                self._terminate_probe_drivers()
+                self._terminate_probe_drivers(asyncio.current_task())
             elif connection is not None:
                 try:
                     # 不用 AsyncConnection.__aexit__：它创建 shield 后台 close 任务。
                     await connection.close()
                 except asyncio.CancelledError:
                     self._cleanup_failed = True
-                    self._terminate_probe_drivers()
+                    self._terminate_probe_drivers(asyncio.current_task())
                     raise
                 except Exception:  # noqa: BLE001 — 清理失败不能覆盖主错误，保留 Owner 并关闭准入。
                     self._cleanup_failed = True
-                    self._terminate_probe_drivers()
+                    self._terminate_probe_drivers(asyncio.current_task())
         return reason or ("close_incomplete" if self._cleanup_failed else None), version
 
     def _guard_probe(self, deadline: float) -> None:
@@ -428,9 +428,12 @@ class DatabaseRuntime:
         if self._probe_stopped or asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError
 
-    def _terminate_probe_drivers(self) -> None:
+    def _terminate_probe_drivers(self, task: asyncio.Task | None) -> None:
+        """只终止指定 worker 的驱动；None 不代表空闲驱动的清理授权。"""
+        if task is None:
+            return
         for driver, owner in self._drivers.items():
-            if owner is self._probe_task and not driver.is_closed():
+            if owner is task and not driver.is_closed():
                 try:
                     # asyncpg 原生 terminate 是同步 abort；适配器 terminate 可能等待。
                     driver.terminate()
@@ -441,28 +444,34 @@ class DatabaseRuntime:
         done, _ = await asyncio.wait({task}, timeout=max(0, deadline - asyncio.get_running_loop().time()))
         return bool(done)
 
-    async def _stop_probe(self, deadline: float) -> bool:
-        task = self._probe_task
+    async def _stop_probe(self, task: asyncio.Task | None, deadline: float) -> bool:
+        """
+        有界停止指定探测任务；旧调用不得停止后继任务或改写其停止标记。
+        """
         if task is None:
             return True
-        self._probe_stopped = True
+        if self._probe_task is task:
+            self._probe_stopped = True
         if not task.done():
-            task.cancel()
+            task.cancel()  # 任务没跑完就取消它
             try:
                 cleanup_deadline = min(
                     deadline, asyncio.get_running_loop().time() + self._timeouts.cleanup_timeout_seconds
                 )
-                if self._cleanup_started.is_set():
+                if self._probe_task is task and self._cleanup_started.is_set():
                     cleanup_deadline = min(cleanup_deadline, self._cleanup_deadline)
+                # 给一个清理截止时间，等任务收尾
                 await self._wait(task, cleanup_deadline)
             finally:
-                self._terminate_probe_drivers()
+                self._terminate_probe_drivers(task)
         if task.done():
+            # 任务正常结束就清空标记，返回成功；
             if not task.cancelled():
                 task.result()  # worker 只返回脱敏结果；取走完成结果。
             if self._probe_task is task:
                 self._probe_task = None
             return True
+        # 没结束就返回失败
         return False
 
     async def dispose(self, *, deadline: float | None = None) -> DatabaseStatus:
@@ -474,7 +483,7 @@ class DatabaseRuntime:
         deadline = own_deadline if deadline is None else min(deadline, own_deadline)
         try:
             if (
-                not await self._stop_probe(deadline)
+                not await self._stop_probe(self._probe_task, deadline)
                 or self._sessions
                 or self._borrowed
                 or any(owner is not None and not driver.is_closed() for driver, owner in self._drivers.items())

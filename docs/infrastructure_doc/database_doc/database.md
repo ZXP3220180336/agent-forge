@@ -188,7 +188,9 @@ init() / probe() / ping()
 
 执行侧的步骤，每步之前都过一次 `_guard_probe`：建连并 `start()` → `begin()` → 声明只读 → 连通性查询 → 版本观测 → 版本合法性与 `schema_check`（后两步仅 `full=True`）。语句序列与只读保证见[探测的只读约束与预算](#探测的只读约束与预算)，清理分支（`started` 标志决定是否调用 `close()`）见[关键实现说明](#关键实现说明)。
 
-`_stop_probe(deadline)` 是唯一的停止流程：置 `_probe_stopped` → 未完成则取消任务 → 按 `min(传入期限, 现在 + cleanup_timeout)` 有界等待（清理已开始时再与清理截止时间取小）→ `finally` 中终止 Owner 为本次探测任务的驱动 → 任务已完成则取走结果并清空 `_probe_task`，返回收尾是否完成。
+`_stop_probe(task, deadline)` 是唯一的停止流程：显式接收本次 worker → 仅当它仍是当前探针时置 `_probe_stopped` → 未完成则取消指定任务 → 按 `min(传入期限, 现在 + cleanup_timeout)` 有界等待（仍为当前探针且清理已开始时，再与清理截止时间取小）→ `finally` 中只终止 Owner 为指定 worker 的驱动 → 任务完成则取走结果，仅在共享引用仍指向它时清空 `_probe_task`，返回收尾是否完成。
+
+调用级取消和超时传入 `_run_probe` 捕获的局部 `task`；`dispose()` 则传入关闭开始时的当前探针。旧调用取消时，仅在它仍持有当前探针身份的情况下写回 `unavailable/starting`。worker 完成不等于外层调用已返回：后继调用可能已替换共享引用，因此取消、停止标记与物理清理均不能重新通过共享引用寻找目标。完整 A/B/W1/W2 复现图示、可执行代码和修复前后结果见 [DB-010](../../../issues/infrastructure/database/2026-09-23-stale-probe-cancellation.md)。
 
 ### 释放流程
 
@@ -228,7 +230,7 @@ dispose(deadline=None)
 - **显式 `start()` / `close()`**：探测不使用 `AsyncConnection.__aexit__`，因为它会创建 shield 的后台 close 任务，把连接 Owner 移交出当前作用域。
 - **未启动即不关闭**：包装对象存在不等于已取得连接；`start()` 失败路径只终止已登记的驱动，不对未启动的连接调用 `close()`（见 [DB-002](../../../issues/infrastructure/database/2026-09-22-unstarted-connection-cleanup.md)）。
 - **构建完成才发布引擎**：`_build_engine` 在局部变量里构造引擎、监听器与工厂，全部就绪后才连续赋值发布，因此「`_engine` 非空」等价于「构建完成」；构建中途失败只置 `unavailable`，不留下半个引擎，下一次显式 `init()` 从零重建（见 [DB-007](../../../issues/infrastructure/database/2026-09-23-half-built-engine-admission.md)）。
-- **只终止自己有权处理的驱动**：`_terminate_probe_drivers` 只覆盖 Owner 为当前探测任务的驱动，`_terminate_idle_drivers` 只覆盖 Owner 为 `None` 的空闲驱动——两处都在代码内限定范围，不依赖调用方守纪律；业务借出的连接由使用方负责，`dispose()` 在仍有 Owner 时保留资源并报告未完成（见 [DB-003](../../../issues/infrastructure/database/2026-09-22-runtime-resource-ownership.md)、[DB-006](../../../issues/infrastructure/database/2026-09-23-idle-driver-termination-guard.md)）。
+- **只终止自己有权处理的驱动**：`_terminate_probe_drivers(task)` 只覆盖 Owner 为指定 worker 的驱动，参数为 `None` 时不处理任何驱动；worker 自身清理传入 `asyncio.current_task()`，停止流程传入其局部任务。`_terminate_idle_drivers` 只覆盖 Owner 为 `None` 的空闲驱动——两处都在代码内限定范围，不依赖调用方守纪律；业务借出的连接由使用方负责，`dispose()` 在仍有 Owner 时保留资源并报告未完成（见 [DB-003](../../../issues/infrastructure/database/2026-09-22-runtime-resource-ownership.md)、[DB-006](../../../issues/infrastructure/database/2026-09-23-idle-driver-termination-guard.md)、[DB-010](../../../issues/infrastructure/database/2026-09-23-stale-probe-cancellation.md)）。
 - **释放需要物理核验**：`engine.dispose()` 正常返回不作为释放成功证据，另核验驱动 `is_closed()`，因为池可能吞掉关闭异常并自行写日志；该调用只关闭池中连接，借出的连接不在其范围内，所以必须先通过 Owner 守卫。
 - **日志与凭证**：实例日志过滤器把池与 echo 事件压为固定文本和原级别，连同 `hide_parameters` 保证不输出 SQL、参数、凭证或异常链。
 - **工厂每次复查准入**：`session_factory` 属性访问与生成的工厂调用都检查准入，避免缓存工厂在关闭后继续放行。
@@ -241,7 +243,8 @@ dispose(deadline=None)
 | 场景 | 行为 | 约束或验证入口 |
 | --- | --- | --- |
 | 探测期间再次探测 | 直接返回 `starting` / `False`，不排队、不重连 | 并发探针只建立一个连接任务 |
-| 取消 `init()` / `probe()` | 有界清理后向上抛 `CancelledError`，不留下 open 准入 | 状态不再是 `ready` |
+| 取消当前 `init()` / `probe()` | 有界清理后向上抛 `CancelledError`，关闭本次探测准入；后继探测状态不由旧取消覆盖 | 无后继探测时状态不再是 `ready` |
+| 旧 worker 完成后，旧调用取消与后继探测交错 | 旧调用只清理自己的 worker，取消继续上抛；后继探测可正常完成 | 新 worker 不被误取消，新借出驱动不被旧清理终止 |
 | 取消或重启 `dispose()` | 保留关闭任务引用，返回 `closing` + `close_incomplete` | 显式再次 dispose 可继续收尾 |
 | 探测任务吞取消 | 保留任务与资源，报告 `close_incomplete`，不把 timeout 当物理释放 | 迟到的探测结果不得重新开放准入 |
 | 仍有业务 Owner 时 dispose | 不 dispose engine、不强制关闭连接 | 使用方排空后再次 dispose 才可能到 `closed` |
@@ -299,6 +302,7 @@ dispose(deadline=None)
 | [DB-007](../../../issues/infrastructure/database/2026-09-23-half-built-engine-admission.md) | 半构建引擎会开放准入且丢失跟踪与脱敏 |
 | [DB-008](../../../issues/infrastructure/database/2026-09-23-connect-during-close-assertion.md) | 关闭期连接拦截缺少直接断言 |
 | [DB-009](../../../issues/infrastructure/database/2026-09-23-pool-logger-name-hardcode.md) | 池实例 logger 名硬编码，换池实现会静默失效 |
+| [DB-010](../../../issues/infrastructure/database/2026-09-23-stale-probe-cancellation.md) | 旧探测取消误伤后继任务：完整时序图、代码与回归证据 |
 
 ---
 

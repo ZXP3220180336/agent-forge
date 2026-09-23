@@ -676,6 +676,95 @@ async def test_timed_out_ping_with_live_owner_blocks_new_session(backend: Simple
         await runtime.dispose()
 
 
+@pytest.mark.parametrize("first_method", ["probe", "ping"])
+async def test_cancelled_old_probe_does_not_cancel_successor(backend: SimpleNamespace, first_method: str) -> None:
+    """旧 worker 完成后取消其外层调用，新 probe 仍须完成检查并保持准入。"""
+    runtime = make_runtime(schema_check=AsyncMock())
+    await runtime.init()
+    first_closed = asyncio.Event()
+
+    async def close() -> None:
+        backend.handlers["checkin"](backend.dbapi, backend.record)
+        first_closed.set()
+
+    backend.connection.close.side_effect = close
+    first = asyncio.create_task(getattr(runtime, first_method)())
+    try:
+        await asyncio.wait_for(first_closed.wait(), timeout=1)
+        # close 设置事件后没有再挂起：W1 已完成，而 A 仍等待 asyncio.wait 恢复。
+        assert runtime._probe_task.done()
+        assert not first.done()
+        first.cancel()
+        second = await runtime.probe()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert second.ready
+        assert runtime.status.ready
+        assert backend.connection.start.await_count == 3  # init、A、B 各一次。
+        assert backend.driver.terminations == 0
+    finally:
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        await runtime.dispose()
+
+
+async def test_old_probe_cleanup_does_not_terminate_successor_driver(
+    backend: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧取消清理等待期间新探测已借出连接，旧 finally 不得终止它的驱动。"""
+    runtime = make_runtime(schema_check=AsyncMock())
+    await runtime.init()
+    first_entered = asyncio.Event()
+    old_wait_finished = asyncio.Event()
+    release_old_wait = asyncio.Event()
+    second_entered = asyncio.Event()
+    release_second = asyncio.Event()
+    original_wait = runtime._wait
+
+    async def first_execute(statement: Any) -> None:
+        first_entered.set()
+        await asyncio.Event().wait()
+
+    async def delayed_wait(task: asyncio.Task, deadline: float) -> bool:
+        complete = await original_wait(task, deadline)
+        old_wait_finished.set()
+        await release_old_wait.wait()
+        return complete
+
+    async def second_execute(statement: Any) -> None:
+        second_entered.set()
+        await release_second.wait()
+
+    backend.connection.execute.side_effect = first_execute
+    monkeypatch.setattr(runtime, "_wait", delayed_wait)
+    first = asyncio.create_task(runtime.probe())
+    second = None
+    try:
+        await asyncio.wait_for(first_entered.wait(), timeout=1)
+        first.cancel()
+        await asyncio.wait_for(old_wait_finished.wait(), timeout=1)
+        backend.connection.execute.side_effect = second_execute
+        second = asyncio.create_task(runtime.probe())
+        await asyncio.wait_for(second_entered.wait(), timeout=1)
+        # W1 已收尾，W2 已 checkout；此时才让旧停止流程执行 finally。
+        release_old_wait.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert not backend.driver.is_closed()
+        assert backend.driver.terminations == 0
+        release_second.set()
+        assert (await second).ready
+        assert runtime.status.ready
+    finally:
+        release_old_wait.set()
+        release_second.set()
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        if second is not None:
+            await asyncio.gather(second, return_exceptions=True)
+        await runtime.dispose()
+
+
 async def test_cleanup_timeout_does_not_replace_authentication_failure(backend: SimpleNamespace) -> None:
     error = RuntimeError("SECRET")
     error.sqlstate = "28P01"

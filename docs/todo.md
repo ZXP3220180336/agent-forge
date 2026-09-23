@@ -1,5 +1,19 @@
 # 项目待办
 
+## DB-010：旧探测取消误伤后继任务（已完成）
+
+授权：用户已确认任务归属修复方向，并要求完整复现图示与代码。范围限数据库探测生命周期；不改应用接线或引入新的状态对象。
+
+- [x] `tests/unit/test_database.py`：用 Event 固定 W1 完成、A 未返回的窗口，probe/ping 两项先红后绿；另验证旧清理等待后不能终止新驱动，旧版进程内复核失败、修复版通过。
+- [x] `app/infrastructure/database.py`：取消与超时清理显式绑定 worker，停止标记、状态写回和驱动终止按任务身份限定。
+- [x] [DB-010 Issue](../issues/infrastructure/database/2026-09-23-stale-probe-cancellation.md) 与问题索引：记录完整时序图、可执行复现、旧代码路径、修复及官方 asyncio 参照。
+- [x] 数据库组件说明与 `docs/lessons.md`：同步当前契约、验证入口及可复用经验。
+- [x] 相关与全量测试、Ruff、文档对齐和差异检查；独立复核后记录评审。
+
+可选项：无；真实 PostgreSQL 验收仍归 DB-F06，不在本次取消竞态修复中扩展。
+
+评审：命中 E3/E5/E6/E7/E8，采用局部任务身份及现有方法，不新增抽象。相关测试 128 passed；全量 1640 passed、5 xfailed、1 条既有 Starlette 警告；全库 Ruff check/format、ALIGNMENT、链接目标及 diff 检查通过，独立代码复核未发现本次修复的新问题。文档示例分别运行旧版与修复版，输出与记录一致。已核对层入口、catalog 和 ALIGNMENT：公共接口、路径、接线与测试映射均未变化，无需重复改写。问题完整证据归 DB-010；本轮未提交。
+
 更新：2026-09-22。本文件只维护尚未关闭的工作记录；已完成工作的独特交接信息见[完成记录](history/completed-work.md)，具体缺陷与决策以当前 `issues/`、`adr/` 为准。执行流程只引用[项目工作流](engineering/project-workflow.md)，运行时判断只引用[运行时规范](engineering/agent-runtime-rules.md)。
 
 <a id="db-foundation"></a>

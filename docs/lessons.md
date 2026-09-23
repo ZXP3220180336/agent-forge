@@ -59,6 +59,8 @@
 
 数据库异步生命周期不能只看包装对象或 checkout 记录：start 失败时不能关闭未启动包装器，Session 建连前和 shielded close 期间仍需保留 Owner。DB-F02 已以真实 SQLAlchemy 回归纠正初版误判，见 [DB-002](../issues/infrastructure/database/2026-09-22-unstarted-connection-cleanup.md)、[DB-003](../issues/infrastructure/database/2026-09-22-runtime-resource-ownership.md)；正式规则仍归 [G0](engineering/ai-engineering-rules.md#g0)。
 
+共享任务引用可被后继调用替换时，worker 完成不等于外层调用已退出。旧调用的取消、停止标记和驱动清理必须绑定自己捕获的任务身份；只在 finally 清空引用时判断 identity 不够。用 Event 固定“旧 worker 完成、旧调用待恢复、新 worker 已创建/借出驱动”的窗口，观察新调用结果与驱动物理状态。来源：[DB-010](../issues/infrastructure/database/2026-09-23-stale-probe-cancellation.md)；正式规则：[G0-3](engineering/ai-engineering-rules.md#g0)、[资源所有权](engineering/agent-runtime-rules.md#ownership)。
+
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
 | 为全量测试指定临时目录 | R1 曾遗漏父目录，并将 basetemp 放入链接检查器排除的 `.pytest-tmp`，使环境失败掩盖测试目标。先核对父目录、权限及被测代码的路径过滤；仓库自检前先登记新模块，不能改断言绕过环境问题。 | 2026-09-14 [R-01 归档](history/completed-work.md#refactoring-plan)；[部署与验证](project/deployment.md)、[项目工作流](engineering/project-workflow.md#verification)。 |
