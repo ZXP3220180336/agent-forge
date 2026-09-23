@@ -60,6 +60,7 @@
 | app/domain/reasoning/_react_protocol.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_protocol.py | ReAct final_answer、调用身份与动作指纹纯协议转换；不接管协议预算、历史或工具执行 |
 | app/domain/reasoning/tool_batch.py | ✅ | docs/domain_doc/reasoning_doc/tool_batch.md | tests/unit/test_tool_lifecycle_contract.py | Collector 负责 revision 去重、深快照与关闭；Runner 负责并行结果、控制时兄弟有界收尾；跨层接管及协议配对经 test_tool_lifecycle_wiring.py 覆盖 |
 | app/infrastructure/database.py | ✅ | docs/infrastructure_doc/database_doc/database.md | tests/unit/test_database.py | DB-F02 独立生命周期、受控工厂、只读探测、有界清理与日志脱敏；tests/unit/test_database_lifecycle_review.py 覆盖真实 Session Owner；schema 校验、Container 接线和真实 PostgreSQL 验收未完成 |
+| app/infrastructure/database_migrations.py | ✅ | docs/infrastructure_doc/database_doc/migrations.md | tests/unit/test_database_migrations.py | DB-F03a 文件/全历史校验、只读版本检查及调用方事务内整批执行/登记；非完整迁移命令，CLI Owner、版本表结构/首迁移/基线及真实原子性验收待后续片 |
 | app/infrastructure/redis_client.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，Redis 由 container 直管 |
 | app/infrastructure/models/database/base.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | 共享 declarative_base |
 | app/infrastructure/models/database/messages.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | Message ORM |

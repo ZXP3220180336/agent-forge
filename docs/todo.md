@@ -18,7 +18,11 @@
 
 <a id="db-foundation"></a>
 
-## DB-F：共享数据库基础设施（DB-F01/02 已完成，后续待实施）
+## DB-F：共享数据库基础设施（DB-F01/02/03a 已完成，后续待实施）
+
+**DB-F03a 当前授权与拆分（2026-09-23）**：用户授权继续迁移核心。① 新增 `tests/unit/test_database_migrations.py`，先复现非法文件/历史不能拒绝与整批执行缺失；② 新增 `app/infrastructure/database_migrations.py`，实现不可变文件快照、全历史校验、只读版本检查和调用方已持有事务内的下一文件执行/登记；③ 新增对应组件文档，同步基础设施入口、catalog、ALIGNMENT、ADR 与本计划。按 code-change / agent-lifecycle-review / documentation-maintenance 执行，子智能体只读核对官方事务语义并审查实现。
+
+本片核心不新建池、连接或后台任务，不 commit/rollback/close 调用方资源。已有版本表的事务内 NOWAIT 锁后重读全部历史；只读核验要求精确 head，升级允许合法前缀；原始 UTF-8/LF 字节计算 SHA-256，整份 SQL 通过同一 asyncpg driver 执行并在同一事务登记。F03b 管命令总预算、逐文件事务提交/回滚、提交结果未知与 CLI；F04 建首迁移、版本表结构与基线门禁，未具备前置检查不得接为可用升级入口。无真实 PostgreSQL 时不将 fake 的事务模拟计为真实原子性验收。
 
 **DB-F02 参数整理**：按用户建议将六项运行时超时参数聚合为同文件的不可变 `DatabaseTimeouts`，保留字段名及秒单位，要求关键字构造且不定义第二套默认值/校验。① `database.py` 接收并持有该对象；② 两个运行时测试文件迁移构造方式，复用既有行为保护；③ 同步数据库组件说明、层入口与本记录。Settings、截止时间算法、资源生命周期和 DB-F03/05 范围不变；保留工作区已有文档整理。
 
@@ -45,7 +49,8 @@ F02 接口沿用 init/ping/probe/dispose。完整 schema 验证通过受控异�
 - [x] 用户已批准 DB-ADR-001 和本计划，并要求提交相关文档；实现尚未开始。
 - [x] DB-F01：先补自动化失败复现，再接入驱动/锁文件和配置；结果见[本片评审](#db-f01-review)。
 - [x] DB-F02：DatabaseRuntime 与独立资源生命周期；结果见[本片评审](#db-f02-review)。
-- [ ] DB-F03：唯一版本化 SQL 迁移执行器和 CLI。
+- [x] DB-F03a：迁移核心的文件/历史/只读版本校验与事务内整批执行；见[本片评审](#db-f03a-review)。
+- [ ] DB-F03b：唯一迁移命令 Owner 与 CLI；DB-F03 整体验收仍需真实多语句回滚证据。
 - [ ] DB-F04：Session/Message 首迁移、基线接管及 ORM 一致性。
 - [ ] DB-F05a：会话专用 Store Port / PostgreSQL 适配器，迁出应用层 SQL。
 - [ ] DB-F05b：Container、readiness 与 503 错误边界；保持 A/B 能力分道。
@@ -201,6 +206,30 @@ pytest 简写均经 `uv run --no-sync` 执行。全量回归按最后一次实�
 | --- | --- | --- | --- | --- |
 | P3 | `_connect` 的关闭期拦截（行为已登记在组件文档的行为边界） | 关闭已开始时连接池新建连接 | 该连接被 `terminate()` 并抛 `DatabaseRuntimeError("closing")`，此路径无直接断言；现有用例只覆盖“初始化期外部连接使 dispose 报 close_incomplete”，两者不是同一时序 | 用真实引擎并发关闭观察池在关闭期新建连接；fake 边界只能直接调用事件处理器，证明不了这个时序。已改为 fake 边界的直接断言（`closing` / `closed` 两态），并用“移除拦截分支”确认判别力；真实时序留 DB-F06，见 [DB-008](../issues/infrastructure/database/2026-09-23-connect-during-close-assertion.md) |
 | P3 | `_build_engine` 的脱敏过滤器名 | `_engine_options` 出现 `poolclass`，或方言默认池变化 | 过滤器只挂在 `sqlalchemy.pool.impl.AsyncAdaptedQueuePool.<name>`：池实现一变，池事件日志不再脱敏，且不会有任何测试失败（echo 仍由 engine 实例 logger 覆盖） | 从 engine 实例读实际池 logger 名（`sync_engine.pool.logger.name`）而不是拼字符串，并补一条断言该名字已被过滤器覆盖的用例。已按此修复，见 [DB-009](../issues/infrastructure/database/2026-09-23-pool-logger-name-hardcode.md) |
+
+<a id="db-f03a-review"></a>
+
+### DB-F03a 实施评审（2026-09-23）
+
+**完成范围**：唯一平铺序列发现、UTF-8/LF 原始字节 SHA-256、不可变文件快照、完整历史前缀/精确 head 校验、只读版本检查、调用方已有事务内 NOWAIT 锁后重读、同一 asyncpg driver 整批执行和参数化登记。返回仅表示事务内执行，不表示提交；每次调用须独立事务。
+
+**Gate 与边界**：E1/E3/E5/E6/E8/E9。两个不可变值对象分别表达文件事实和数据库登记事实；函数承载可独立测试的完整性策略，不增加 Manager、池或后台任务。未改 DB-F02 运行时、Settings、Container、CLI、ORM 或业务表；未接入完整 schema_check。前置结构/基线验证归 F04，命令提交/回滚、提交不确定性与关闭 Owner 归 F03b。单调 deadline 由上层裁剪后传入，不把 timeout_at 当作不合作驱动的物理关闭证明。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 新文件测试首次执行 | 1 failed：缺少迁移核心模块，缺号拒绝无法执行 |
+| 末次期限复核红测 | 2 failed、64 passed：同步历史核验后成功返回漏检期限；补最终 Guard 后转绿，见 DB-011 |
+| 迁移核心专项 | 66 passed：含文件/历史非法、不可变快照、整批 SQL、逻辑/物理事务、锁后重读、逐阶段取消/超时、吞取消、登记失败及脱敏 |
+| 迁移核心 + runtime + Session 生命周期 + Settings 专项 | 194 passed |
+| `uv run --no-sync pytest -q --tb=short` | 1706 passed、5 xfailed、1 条既有 Starlette/httpx 警告；54.31 秒 |
+| 全库 Ruff check / format --check | 通过；235 个文件格式通过 |
+| ALIGNMENT / 相对文档链接 / `git diff --check` | 通过 |
+
+独立官方语义核对与代码审查未发现本片边界内的阻断问题；补充了原始 asyncpg 错误、INSERT 失败、外部取消被吞、非法 deadline 等建议用例。同步基础设施父入口、组件文档、catalog、ALIGNMENT、ADR；开发阶段期限缺陷归 DB-011。上述 pytest 均经 `uv run --no-sync` 执行，未提交。本片仅消费上层传入的 deadline，未直接接入 Settings 或增加命令，配置/部署文档核对后无需修改。
+
+**真实验收与交接**：本轮 PATH 仍未发现 psql/docker/pg_isready，未对任何数据库建表或迁移，未运行真实 PostgreSQL 原子性测试。fake 不能证明 DDL 与版本行的实际回滚；DB-F03 整体及 F06 不计完成。F03b/F04 必须先补齐命令 Owner、版本表结构/首建与基线门禁，再做真实多语句失败、登记失败、并发与提交响应不明验收，不能直接把事务内核心作为独立升级入口。当前 5 个严格 xfail 仍归 CLI/应用后续片。
+
+**评审后续**：IDE 类型诊断发现两处可选属性未判空（`sync_connection`、`driver_connection`），已按 fail closed 修复并补两种形态用例，见 [DB-012](../issues/infrastructure/database/2026-09-23-migration-optional-attribute-guard.md)；迁移核心 68 passed，全量 1708 passed。上表首次评审的 66/1706 保留为当时记录，不追改。
 
 <a id="c-02-lifecycle"></a>
 

@@ -53,6 +53,7 @@ SessionManager 是 Application 中现存 SQLAlchemy 引用点，直接操作 ORM
 | [Alembic tutorial](https://alembic.sqlalchemy.org/en/latest/tutorial.html) | 真实备选：成熟 revision/升级机制；本需求还需额外构建文件校验和、严格基线接管和运行核验 |
 | [Python asyncio wait_for](https://docs.python.org/3/library/asyncio-task.html#asyncio.wait_for) | 取消后的等待可能超出 timeout，单独套 wait_for 不能证明物理关闭有界 |
 | [SQLAlchemy pool events](https://docs.sqlalchemy.org/en/20/core/events.html#connection-pool-events) 与 [asyncpg terminate](https://magicstack.github.io/asyncpg/current/api/index.html#asyncpg.connection.Connection.terminate) | DB-F02 用 connect/checkout/checkin 跟踪物理资源，Session 从创建到 close 完成独立登记；只对自身探针或已无业务 Owner 的驱动执行同步 abort，不把 dispose 返回当所有资源已释放 |
+| [SQLAlchemy DBAPI 事务与 AUTOCOMMIT](https://docs.sqlalchemy.org/en/20/core/connections.html#understanding-the-dbapi-level-autocommit-isolation-level) 与 [原始异步连接](https://docs.sqlalchemy.org/en/20/faq/connections.html#how-do-i-get-at-the-raw-dbapi-connection-when-using-an-engine) | DB-F03a 先由方言执行版本表锁以实际开启事务，再借用同一 asyncpg driver；验证物理事务后整批执行，不另开事务/连接，不将逻辑 begin 当物理 BEGIN 证据 |
 
 建议延续已有“版本化 SQL”方向，将执行器提升为共享基础设施。代价是本项目拥有发现、完整性校验和基线验证的测试责任。选择 Alembic 并非错误，但会改变已有决定，且仍需补充本需求约束；本轮不同时建设两套机制。
 
@@ -174,6 +175,8 @@ DB-F01 已补自动化红测、正式 asyncpg 依赖与锁文件，并在 Settin
 DB-F02 已实现只读探测、版本观察、受控工厂、Session/连接 Owner、有界等待与驱动终止、关闭结果和实例日志脱敏。schema_check 为后续唯一迁移校验实现预留的只读异步入口；缺失时即使 SELECT 1 成功也保持 schema_mismatch，不宣称 schema 就绪。没有 Container/Store/API/CLI 接线，也没有迁移或真实 PostgreSQL 成功证据。
 
 本片采用显式 AsyncConnection.start/close，避免上下文退出隐式 shielded close 丢失 Owner；引擎关闭任务及不合作的探针任务保留引用，Session 包装从创建即登记并禁止关闭后复用。池关闭可能吞异常并输出日志，因此另外核验驱动 is_closed，实例 logger 仅输出固定脱敏事件。这些实现细节兑现 D4/D6，不新增业务重试或修改 approved 范围。红绿验证与独立审查见 [DB-F02 评审](../../../docs/todo.md#db-f02-review)。
+
+DB-F03a 已交付文件发现/原始字节 SHA-256、完整历史与精确 head 校验、只读版本检查及已有事务内下一文件的整批执行/登记。name 列固定保存完整文件名。该核心返回只表示事务内执行，提交/回滚与未知提交结果由后续命令 Owner 负责；版本表建立/结构、首迁移与基线仍归 DB-F04。未完成完整迁移命令、未运行真实 PostgreSQL，不改变 D2 的原子性验收门槛。核心契约见 [migrations.md](../../../docs/infrastructure_doc/database_doc/migrations.md)，验证见 [DB-F03a 评审](../../../docs/todo.md#db-f03a-review)。
 
 ## 关联记录
 

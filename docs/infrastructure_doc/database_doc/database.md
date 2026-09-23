@@ -258,6 +258,8 @@ dispose(deadline=None)
 
 ## 配置关联
 
+迁移组件已提供[只读版本核验](migrations.md)，但它不检查业务表结构和权限，不可单独替代本组件的完整 `schema_check`；组合检查及异常原因映射由 DB-F04/05 接入。
+
 构造参数全部来自 Settings 已校验的字段，其中六项超时经不可变 `DatabaseTimeouts` 聚合传入；键、类型、默认值与约束只在[配置参考](../../config_doc/config.md#7-数据库配置)维护。映射关系：
 
 六项秒数由同文件的 `DatabaseTimeouts` 聚合，使用 `@dataclass(frozen=True, kw_only=True)`，作为 `DatabaseRuntime(timeouts=...)` 的必填参数。运行时持有同一不可变对象，不另存探测、清理和关闭秒数副本。该对象只表达配置数据，不设默认值或重复校验；装配期从 Settings 显式取值构造，不让 Settings 依赖基础设施类型。

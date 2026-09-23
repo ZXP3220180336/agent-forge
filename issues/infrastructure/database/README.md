@@ -12,5 +12,7 @@
 | [DB-008](2026-09-23-connect-during-close-assertion.md) | 关闭期连接拦截缺少直接断言 | 已修复；DB-F02 后续发现登记 | 2026-09-23 |
 | [DB-009](2026-09-23-pool-logger-name-hardcode.md) | 池实例 logger 名硬编码，换池实现会静默失效 | 已修复；DB-F02 后续发现登记 | 2026-09-23 |
 | [DB-010](2026-09-23-stale-probe-cancellation.md) | 旧探测调用取消时误取消后继 worker | 已修复；DB-F02 工作区审查发现 | 2026-09-23 |
+| [DB-011](2026-09-23-migration-final-deadline-guard.md) | 同步历史校验后遗漏最终期限检查 | 已修复；DB-F03a 开发阶段发现 | 2026-09-23 |
+| [DB-012](2026-09-23-migration-optional-attribute-guard.md) | 事务前置条件读不到可选属性时落入 AttributeError | 已修复；DB-F03a 后续发现登记 | 2026-09-23 |
 
 [问题导航](../../README.md) · [数据库决策](../../../adr/infrastructure/database/README.md)

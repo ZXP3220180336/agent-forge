@@ -57,6 +57,8 @@
 
 ## 测试与维护环境
 
+同步校验也消耗 deadline：timeout_at 要等事件循环调度才能注入取消，校验后立即成功返回的分支仍需最终 Guard。DB-F03a 以推进单调时钟的确定性测试复现并修复两个出口，见 [DB-011](../issues/infrastructure/database/2026-09-23-migration-final-deadline-guard.md)；正式约束归 [G0-1/G0-2](engineering/ai-engineering-rules.md#g0)。
+
 数据库异步生命周期不能只看包装对象或 checkout 记录：start 失败时不能关闭未启动包装器，Session 建连前和 shielded close 期间仍需保留 Owner。DB-F02 已以真实 SQLAlchemy 回归纠正初版误判，见 [DB-002](../issues/infrastructure/database/2026-09-22-unstarted-connection-cleanup.md)、[DB-003](../issues/infrastructure/database/2026-09-22-runtime-resource-ownership.md)；正式规则仍归 [G0](engineering/ai-engineering-rules.md#g0)。
 
 共享任务引用可被后继调用替换时，worker 完成不等于外层调用已退出。旧调用的取消、停止标记和驱动清理必须绑定自己捕获的任务身份；只在 finally 清空引用时判断 identity 不够。用 Event 固定“旧 worker 完成、旧调用待恢复、新 worker 已创建/借出驱动”的窗口，观察新调用结果与驱动物理状态。来源：[DB-010](../issues/infrastructure/database/2026-09-23-stale-probe-cancellation.md)；正式规则：[G0-3](engineering/ai-engineering-rules.md#g0)、[资源所有权](engineering/agent-runtime-rules.md#ownership)。
