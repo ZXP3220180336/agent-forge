@@ -3,7 +3,7 @@
 > **ID**：DB-ADR-001
 > **日期**：2026-09-22
 > **决策状态**：已批准。用户已审批本 ADR 及相关计划；D7 所列 TOOLS-ADR-008 条款替代生效。
-> **实现状态**：分片实施中；DB-F01 依赖与配置证据见下文，共享运行时和迁移尚未实施，当前状态以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 为准。
+> **实现状态**：分片实施中；DB-F01 依赖配置与 DB-F02 独立运行时已实现，迁移、完整 schema 校验和应用接线待实施，当前状态以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 为准。
 > **范围**：共享数据库运行时、统一迁移、已有 Session/Message 接入、可用性与资源关闭。
 > **计划与授权**：[独立 DB-F01～DB-F06](../../../docs/todo.md#db-foundation)。设计文档已提交，用户随后授权实施 DB-F01；后续分片按计划推进。
 
@@ -52,6 +52,7 @@ SessionManager 是 Application 中现存 SQLAlchemy 引用点，直接操作 ORM
 | [PostgreSQL explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html) | 版本表事务锁只用于拒绝迁移误并发，不冒充工具执行 Owner |
 | [Alembic tutorial](https://alembic.sqlalchemy.org/en/latest/tutorial.html) | 真实备选：成熟 revision/升级机制；本需求还需额外构建文件校验和、严格基线接管和运行核验 |
 | [Python asyncio wait_for](https://docs.python.org/3/library/asyncio-task.html#asyncio.wait_for) | 取消后的等待可能超出 timeout，单独套 wait_for 不能证明物理关闭有界 |
+| [SQLAlchemy pool events](https://docs.sqlalchemy.org/en/20/core/events.html#connection-pool-events) 与 [asyncpg terminate](https://magicstack.github.io/asyncpg/current/api/index.html#asyncpg.connection.Connection.terminate) | DB-F02 用 connect/checkout/checkin 跟踪物理资源，Session 从创建到 close 完成独立登记；只对自身探针或已无业务 Owner 的驱动执行同步 abort，不把 dispose 返回当所有资源已释放 |
 
 建议延续已有“版本化 SQL”方向，将执行器提升为共享基础设施。代价是本项目拥有发现、完整性校验和基线验证的测试责任。选择 Alembic 并非错误，但会改变已有决定，且仍需补充本需求约束；本轮不同时建设两套机制。
 
@@ -101,7 +102,7 @@ SQL 文件仅允许事务内迁移，不含 BEGIN/COMMIT/ROLLBACK、psql 命令�
 
 ### D4：运行时与故障语义
 
-DatabaseRuntime 提供 `init()`、轻量 `ping()`、完整 `probe()`、受控 `session_factory` 和幂等 `dispose()`（目标接口，尚未实施）；工厂只供基础设施适配器使用。`ping()` 只检查真实连接和最小事务，不改变能力准入状态；`probe()` 复用这一检查并核对版本、结构及权限。生命周期状态为 new → ready/unavailable → closing → closed；关闭失败保留 close_incomplete 结果与资源责任，不伪报 closed。探针健康不是业务启用状态，两者分别记录。
+DatabaseRuntime 提供 `init()`、轻量 `ping()`、完整 `probe()`、受控 `session_factory` 和幂等 `dispose()`；DB-F02 已实现资源接口，完整 schema 检查器及应用接线仍待后续片。工厂只供基础设施适配器使用。`ping()` 只检查真实连接和最小事务，不改变能力准入状态；`probe()` 复用这一检查并核对版本、结构及权限。生命周期状态为 new → ready/unavailable → closing → closed；关闭失败保留 close_incomplete 结果与资源责任，不伪报 closed。探针健康不是业务启用状态，两者分别记录。
 
 init 顺序：构造 engine → 真实连接与最小事务 SELECT 1 → 版本前缀/名称/校验和 → 所需表结构 → schema/table/sequence 权限及只读事务设置 → 允许装配 Store。权限包含实际 CRUD 操作和自增序列需要的权限，不要求应用账号拥有 DDL。迁移账号通过同一个 DATABASE_URL 配置入口单独运行 CLI，不建设第二套配置系统。
 
@@ -169,6 +170,10 @@ DB-F01 已补自动化红测、正式 asyncpg 依赖与锁文件，并在 Settin
 新增预算尚未接入当前 Container，不声称运行等待已受这些配置控制。未修复的启动检查、空工厂错误与迁移 CLI 以严格 xfail 标记具体后续片；实际测试和工程检查结果见 [DB-F01 评审](../../../docs/todo.md#db-f01-review)。尚无真实 PostgreSQL 连接、迁移或权限验收成功证据。
 
 已批准的验证矩阵及文件分工见[独立计划](../../../docs/todo.md#db-foundation)。真实 PostgreSQL 门槛不能用 fake/SQLite 或跳过测试替代；环境缺失时 DB-F06 必须保持未完成。驱动依赖进入 DB-F01 的首个实现切片，避免 runtime 实现阶段仍不可加载。
+
+DB-F02 已实现只读探测、版本观察、受控工厂、Session/连接 Owner、有界等待与驱动终止、关闭结果和实例日志脱敏。schema_check 为后续唯一迁移校验实现预留的只读异步入口；缺失时即使 SELECT 1 成功也保持 schema_mismatch，不宣称 schema 就绪。没有 Container/Store/API/CLI 接线，也没有迁移或真实 PostgreSQL 成功证据。
+
+本片采用显式 AsyncConnection.start/close，避免上下文退出隐式 shielded close 丢失 Owner；引擎关闭任务及不合作的探针任务保留引用，Session 包装从创建即登记并禁止关闭后复用。池关闭可能吞异常并输出日志，因此另外核验驱动 is_closed，实例 logger 仅输出固定脱敏事件。这些实现细节兑现 D4/D6，不新增业务重试或修改 approved 范围。红绿验证与独立审查见 [DB-F02 评审](../../../docs/todo.md#db-f02-review)。
 
 ## 关联记录
 

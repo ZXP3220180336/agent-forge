@@ -1,6 +1,6 @@
 # 基础设施层说明文档
 
-> 数据库规划已按用户确认的文档对照结论收敛；当前实现状态见 [ALIGNMENT](../ALIGNMENT.md)。设计取舍及确认范围见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)，依赖与配置的接入不表示共享运行时及迁移已实施。
+> 数据库规划已按用户确认的文档对照结论收敛；当前实现状态见 [ALIGNMENT](../ALIGNMENT.md)。设计取舍及确认范围见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)。DB-F02 已实现独立运行时，完整 schema 校验、迁移与应用装配仍待后续分片。
 
 ## 目录
 
@@ -38,7 +38,7 @@
 ```text
 app/infrastructure/
 ├── __init__.py             ← 包入口，规划导出统一封装接口
-├── database.py             ← 数据库封装（规划：engine / session factory）
+├── database.py             ← DatabaseRuntime（已实现，尚未接入 Container）
 ├── redis_client.py         ← Redis 封装（规划：连接池 / 编解码 / 重连）
 ├── message_queue/          ← 消息队列子包
 │   └── __init__.py         ← 子包入口
@@ -51,7 +51,7 @@ app/infrastructure/
         └── tool_log.py     ← ⏳ 预留：工具调用日志表
 ```
 
-> **当前状态**：`models/database/` 的 ORM 模型（SessionModel / MessageModel）已实现并被 `SessionManager` 使用；`database.py` / `redis_client.py` / `message_queue/` 为空占位。DB / Redis 连接实际由 `app/container.py` 直接管理（见 [现状说明](#现状说明)）。
+> **当前状态**：ORM 模型已被 `SessionManager` 使用；`database.py` 已实现独立资源生命周期，尚未替换 Container 的直接管理；`redis_client.py` / `message_queue/` 仍为空占位。应用当前连接管理见[现状说明](#现状说明)。
 
 ---
 
@@ -60,7 +60,7 @@ app/infrastructure/
 | 文件 | 状态 | 定位 |
 | --- | --- | --- |
 | `app/infrastructure/__init__.py` | 空（0 行） | 基础设施层包入口，规划统一导出封装接口 |
-| `app/infrastructure/database.py` | 空（0 行） | 数据库引擎与会话封装（engine / session factory / 生命周期 / 健康检查） |
+| `app/infrastructure/database.py` | [见对齐表](../ALIGNMENT.md) | 独立 engine / session factory / 探测 / 有界关闭，见 [database.md](database_doc/database.md)；schema 校验与业务装配待接入 |
 | `app/infrastructure/redis_client.py` | 空（0 行） | Redis 客户端封装（连接池 / 编解码 / 超时 / 重连 / 命名空间） |
 | `app/infrastructure/message_queue/__init__.py` | 空（0 行） | 消息队列子包入口，规划抽象统一消息发布 / 消费接口 |
 | `app/infrastructure/models/database/base.py` | [见对齐表](../ALIGNMENT.md) | 共享 `Base`（唯一 declarative_base 实例），见 [model.md](model_doc/model.md) |
@@ -124,24 +124,26 @@ DB-F01 已将 asyncpg 纳入正式依赖与锁文件，驱动缺失问题的复�
 
 Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权限检查；`/api/health` 仍不能证明数据库就绪。空工厂消费者、虚假可用性和空迁移 CLI 已有严格预期失败测试，分别由 DB-F02/03/05 继续闭合，不因安装驱动就宣称持久化可用。
 
-数据库预算字段与校验由[配置参考](../config_doc/config.md#7-数据库配置)统一定义，运行时尚未消费新增时限。真实检查、统一迁移及 PostgreSQL 验收归独立 [DB-F 任务](../todo.md#db-foundation)；Piece⑥消费底座，再实现工具账本与恢复业务。
+数据库预算字段与消费阶段由[配置参考](../config_doc/config.md#7-数据库配置)统一定义，DB-F02 独立运行时已消费连接、取池、探测、清理和关闭预算，现有 Container 尚未改造。统一迁移及 PostgreSQL 验收归独立 [DB-F 任务](../todo.md#db-foundation)；Piece⑥消费底座，再实现工具账本与恢复业务。
 
 ---
 
 ## 规划说明
 
-以下为各空模块的预期功能与定位（设计蓝图，未实施）。
+数据库运行时的接口与内部协作契约移至组件文档，本节只保留进入本层维护的边界与待接线范围；Redis/MQ 部分仍为设计蓝图。
 
 ### database.py
 
-**定位**：数据库访问的统一封装，替代 `container` 中的裸 `create_async_engine` 调用。
+**定位**：数据库资源唯一 Owner，替代 Container 的直接创建（归 DB-F05），不在应用启动时自动迁移。DB-F02 已实现独立运行时；生产 schema 检查器、迁移与应用装配仍待后续分片。
 
-- 封装 `create_async_engine` + `async_sessionmaker` 的创建逻辑与配置（URL / 池大小 / `pool_pre_ping`）
-- 沿用 `init()` / `dispose()` 生命周期命名；engine 由运行时持有，受控 `session_factory` 仅供基础设施适配器使用，Application 不接收数据库对象
-- 保留轻量 `ping()` 检查真实连接与最小事务；完整 `probe()` 额外检查 schema 版本、结构和权限。两者共用检查逻辑，ping 成功不能开放持久化能力；应用存活另由 `/api/health` 表达
-- 本轮只支持 PostgreSQL，不引入原蓝图候选的 SQLite/aiosqlite 降级后端
+准入状态机、探测与关闭流程、资源责任、并发/取消边界与原因码分类见组件文档 [database.md](database_doc/database.md)。进入本层维护的边界：
 
-数据库运行时、统一迁移执行器和会话 Store 的职责划分见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)；该 ADR 保存决策正文，本文维护基础设施定位与协作说明。配置继续在[配置参考](../config_doc/config.md)维护，使用命令继续在[部署说明](../project/deployment.md)维护。Redis/MQ 下述规划不纳入本次数据库任务。
+- 输入为 Settings 已校验的连接/池参数与不可变 `DatabaseTimeouts`；六项超时通过 `timeouts` 聚合传入，不接受 migration 两项预算。`database_config` 含迁移参数与凭证，不能整体展开或日志化，完整键表见[配置参考](../config_doc/config.md#7-数据库配置)。
+- 完整 schema 校验经受信只读异步回调接入，缺失时即使 `SELECT 1` 成功也不开放工厂；当前生产装配不存在该检查器。
+- 仍有 Session 或业务连接 Owner 时不 dispose、不强关；消费方 drain 与「首次启动失败需重启」的装配语义归 DB-F05。
+- PostgreSQL / asyncpg 是唯一后端，不引入降级后端。
+
+数据库运行时、统一迁移执行器和会话 Store 的职责划分见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)；该 ADR 保存决策正文，本文维护基础设施定位与协作说明。配置继续在[配置参考](../config_doc/config.md)维护，使用命令继续在[部署说明](../project/deployment.md)维护。
 
 ### redis_client.py
 
@@ -164,6 +166,8 @@ Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权�
 
 ## 相关文档链接
 
+- [数据库运行时（database.py）](database_doc/database.md) — 组件级内部协作契约与维护说明
+- [数据模型层说明](model_doc/model.md) — ORM 模型、会话与消息表契约
 - [配置参考](../config_doc/config.md) — `DATABASE_URL` / `REDIS_URL` 等基础设施相关配置
 - [系统架构](../project/architecture.md) — 整体架构中基础设施层的定位
 - [LLM 层说明文档](../integration_doc/llm_doc/llm.md) — 同风格的分层文档参考

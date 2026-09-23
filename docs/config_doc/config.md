@@ -378,7 +378,7 @@ llm_service = LLMService(**settings.llm_config)
 | `DATABASE_URL` | str | `postgresql+asyncpg://user:pass@localhost/db` | 仅接受 PostgreSQL/asyncpg 方言及可解析 URL；保留转义凭证原值，不作连接/权限验证 |
 | `DATABASE_POOL_SIZE` | int | 20 | ≥1，拒绝布尔值；不启用 pool_size=0 的无界模式 |
 | `DATABASE_MAX_OVERFLOW` | int | 10 | ≥0，拒绝布尔值；0 表示无额外连接，拒绝 -1 无界溢出 |
-| `DATABASE_ECHO` | bool | false | 是否打印 SQL |
+| `DATABASE_ECHO` | bool | false | 启用数据库事件日志；DB-F02 runtime 仅输出固定脱敏事件，不回显 SQL/参数 |
 | `DATABASE_CONNECT_TIMEOUT_SECONDS` | float | 5.0 | 单次驱动连接等待上限 |
 | `DATABASE_POOL_TIMEOUT_SECONDS` | float | 5.0 | 从连接池获取连接的等待上限 |
 | `DATABASE_OPERATION_TIMEOUT_SECONDS` | float | 10.0 | 单个 Store 操作总预算，含取池、事务及清理 |
@@ -388,11 +388,11 @@ llm_service = LLMService(**settings.llm_config)
 | `DATABASE_CLEANUP_TIMEOUT_SECONDS` | float | 5.0 | 失败回滚及连接清理阶段上限，受所属操作剩余预算约束 |
 | `DATABASE_SHUTDOWN_TIMEOUT_SECONDS` | float | 30.0 | 数据库使用方 drain 与 runtime dispose 共用的关闭总预算 |
 
-所有秒数字段必须是有限正数，拒绝 0、负数、NaN、正负无穷及布尔值，允许正小数；环境变量按同一模型解析和校验。上述预算是首期初值，尚无负载实测依据。DB-F01 只定义并验证配置，**没有将这些时限接入当前 Container**；实际执行归 DB-F02/03/05，不据字段存在宣称调用已有界。
+所有秒数字段必须是有限正数，拒绝 0、负数、NaN、正负无穷及布尔值，允许正小数；环境变量按同一模型解析和校验。上述预算是首期初值，尚无负载实测依据。DB-F02 独立 runtime 已消费 connect/pool/probe/cleanup/shutdown 参数；operation 参数先作为驱动单命令上限，Store 操作总预算仍归 DB-F05。迁移两项预算归 DB-F03。**当前 Container 尚未接入这些新时限**，不能据独立模块测试宣称应用等待已有界。
 
-后续运行时使用单调时钟总 deadline，子阶段取自身上限与父预算剩余时间的较小值，嵌套操作不得重置总预算；需要清理的操作预留有界清理窗口，预算不足则不启动新业务动作。每个字段可独立设置，超过外层预算的阶段上限实际受外层裁剪。迁移命令的总上限不能用单条 statement timeout 代替。
+运行时使用单调时钟总 deadline，子阶段取自身上限与父预算剩余时间的较小值，嵌套操作不得重置总预算；探针从总预算中预留不超过 cleanup 配置和总预算一半的清理窗口，实际 close 也受 cleanup 上限约束。预算不足则不启动新业务动作。dispose 支持父级绝对 deadline，供 DB-F05 将 drain 与释放限制在同一关闭预算内。每个字段可独立设置，超过外层预算的阶段上限实际受外层裁剪。迁移命令的总上限不能用单条 statement timeout 代替。
 
-`DATABASE_URL` 从 Settings 的 repr/str 隐藏，Settings 校验异常的常规文本不回显输入。该保护不等于配置字典或 `model_dump()` 已脱敏：`database_config` / 导出数据含连接凭证，禁止记录；需要结构化校验诊断时使用 `errors(include_input=False, include_context=False)`。SQL/驱动异常与 echo 的脱敏由后续数据库运行时负责；本片不保证尚未改造的 Container 原始异常日志已经安全。
+`DATABASE_URL` 从 Settings 的 repr/str 隐藏，Settings 校验异常的常规文本不回显输入。该保护不等于配置字典或 `model_dump()` 已脱敏：`database_config` / 导出数据含连接凭证，禁止记录；需要结构化校验诊断时使用 `errors(include_input=False, include_context=False)`。DB-F02 runtime 已脱敏 SQLAlchemy/驱动异常与 echo；尚未改造的 Container 原始异常日志不在此保证内。
 
 ### 8. Redis 配置
 

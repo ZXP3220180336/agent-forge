@@ -9,7 +9,7 @@
 | --- | --- | --- | --- | --- |
 | app/main.py | ✅ | docs/project/deployment.md | tests/e2e/test_api.py | 入口；e2e 覆盖 HTTP 层 |
 | app/container.py | ✅ | docs/project/architecture.md | tests/unit/test_container.py | 装配根 |
-| app/config/settings.py | ✅ | docs/config_doc/config.md | tests/unit/test_settings.py | DB-F01 增加有限数据库预算、池容量与方言校验；专项 tests/unit/test_database_settings.py 覆盖环境注入/脱敏；新增预算尚未接入运行时 |
+| app/config/settings.py | ✅ | docs/config_doc/config.md | tests/unit/test_settings.py | DB-F01 有限数据库预算、池容量与方言校验；专项 tests/unit/test_database_settings.py 覆盖环境注入/脱敏；DB-F02 独立运行时消费部分预算，Container/Store/迁移待后续接线 |
 | app/api/deps.py | 🔶 | docs/api_doc/routes_doc/routes.md | tests/e2e/test_api.py | DI 薄解析；聊天路由只获取已装配 ChatService |
 | app/api/middleware/auth.py | ⬜ | docs/api_doc/middleware_doc/middleware.md | (无) | 空文件，鉴权 mock 待实现 |
 | app/api/middleware/error_handler.py | ✅ | docs/api_doc/middleware_doc/middleware.md | tests/unit/test_error_handler.py | AppError → HTTP 状态 + 统一信封（Phase D error_handler） |
@@ -59,7 +59,7 @@
 | app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现；批次部分成果、完整协议回执、类型化控制传播与真实线程路径（经 handle.run_sync 的完整批次）另经 test_tool_lifecycle_wiring.py 覆盖；流式/非流式双通道 |
 | app/domain/reasoning/_react_protocol.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_protocol.py | ReAct final_answer、调用身份与动作指纹纯协议转换；不接管协议预算、历史或工具执行 |
 | app/domain/reasoning/tool_batch.py | ✅ | docs/domain_doc/reasoning_doc/tool_batch.md | tests/unit/test_tool_lifecycle_contract.py | Collector 负责 revision 去重、深快照与关闭；Runner 负责并行结果、控制时兄弟有界收尾；跨层接管及协议配对经 test_tool_lifecycle_wiring.py 覆盖 |
-| app/infrastructure/database.py | ⬜ | docs/infrastructure_doc/infrastructure.md | tests/unit/test_database.py | 仍为空文件，DB 由 Container 直管；测试仅证明 asyncpg 导入与真实引擎构造/释放，不证明运行时或 PostgreSQL 就绪 |
+| app/infrastructure/database.py | ✅ | docs/infrastructure_doc/database_doc/database.md | tests/unit/test_database.py | DB-F02 独立生命周期、受控工厂、只读探测、有界清理与日志脱敏；tests/unit/test_database_lifecycle_review.py 覆盖真实 Session Owner；schema 校验、Container 接线和真实 PostgreSQL 验收未完成 |
 | app/infrastructure/redis_client.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，Redis 由 container 直管 |
 | app/infrastructure/models/database/base.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | 共享 declarative_base |
 | app/infrastructure/models/database/messages.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | Message ORM |

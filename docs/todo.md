@@ -4,7 +4,15 @@
 
 <a id="db-foundation"></a>
 
-## DB-F：共享数据库基础设施（DB-F01 已完成，后续待实施）
+## DB-F：共享数据库基础设施（DB-F01/02 已完成，后续待实施）
+
+**DB-F02 参数整理**：按用户建议将六项运行时超时参数聚合为同文件的不可变 `DatabaseTimeouts`，保留字段名及秒单位，要求关键字构造且不定义第二套默认值/校验。① `database.py` 接收并持有该对象；② 两个运行时测试文件迁移构造方式，复用既有行为保护；③ 同步数据库组件说明、层入口与本记录。Settings、截止时间算法、资源生命周期和 DB-F03/05 范围不变；保留工作区已有文档整理。
+
+参数整理已完成：`frozen=True, kw_only=True` 的配置值对象合并六个同属超时配置的构造参数，runtime 直接读取同一对象，未增加兼容分支或业务抽象。相关测试 115 passed；本次全量回归 1627 passed、5 xfailed、1 条既有警告（58.03 秒）；Ruff check/format、ALIGNMENT 与 diff 检查通过。组件正文已同步，未提交。
+
+**DB-F02 当前授权与拆分**：用户已要求继续实施本片。先扩充 `tests/unit/test_database.py` 跑红测，再实现 `app/infrastructure/database.py` 的独立资源 Owner，最后同步基础设施说明、配置消费边界、ALIGNMENT、ADR 与本计划。使用 code-change / agent-lifecycle-review / documentation-maintenance；子智能体核对官方取消/释放语义、只读审查生产实现，并独立新增 `tests/unit/test_database_lifecycle_review.py` 三项真实 Session 回归。审查发现的开发阶段缺陷分别归 DB-002/003，索引与 lessons 同步。本片不改 Container、业务 Store、API 或迁移脚本，F01 中归属于后续装配/迁移的 strict xfail 保留。
+
+F02 接口沿用 init/ping/probe/dispose。完整 schema 验证通过受控异步回调接入后续 F03/F04 的唯一检查实现；缺少该检查时不得开放工厂。版本读取只作观测，不以 MAX(version) 代替完整历史校验。探针与 dispose 各自最多持有一个资源工作任务，另有一个不执行 I/O 的清理阶段通知等待者；等待使用绝对期限和清理预留，取消不合作时保留 Owner、阻止新工作并报告 close_incomplete，不把 timeout 当物理资源释放。会话工厂重复调用复查准入，Session 从创建登记到 close 成功，池事件补充驱动/借出记录，外部 Owner 不强关，消费方 drain 归 F05。
 
 **目标**：为已有 Session/Message、未来工具账本与长期记忆元数据提供同一 PostgreSQL 运行时和迁移底座。独立于 C-02 Piece⑥；完成 DB-F 不等于工具持久恢复完成。数据库决策唯一正文为 [DB-ADR-001](../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)。
 
@@ -22,7 +30,7 @@
 - [x] 完整对照 infrastructure.md 并获用户确认：沿用 init/dispose、区分 ping/probe、采用 Store Port 边界、排除 SQLite、明确失败/关闭行为及独立 DB-F 归属；首次启动数据库失败后需重启恢复。已统一修订说明与 ADR，此次仅授权文档收敛。
 - [x] 用户已批准 DB-ADR-001 和本计划，并要求提交相关文档；实现尚未开始。
 - [x] DB-F01：先补自动化失败复现，再接入驱动/锁文件和配置；结果见[本片评审](#db-f01-review)。
-- [ ] DB-F02：DatabaseRuntime 与独立资源生命周期。
+- [x] DB-F02：DatabaseRuntime 与独立资源生命周期；结果见[本片评审](#db-f02-review)。
 - [ ] DB-F03：唯一版本化 SQL 迁移执行器和 CLI。
 - [ ] DB-F04：Session/Message 首迁移、基线接管及 ORM 一致性。
 - [ ] DB-F05a：会话专用 Store Port / PostgreSQL 适配器，迁出应用层 SQL。
@@ -41,7 +49,7 @@
 | F01a 失败复现 | `tests/unit/test_container.py`、`tests/unit/test_session_manager.py`；新增 `tests/unit/test_database.py` | 缺驱动、空工厂、连接失败仍声称就绪的当前失败证据；无迁移入口先通过 CLI/功能测试复现，不只断言文件大小 |
 | F01b 依赖 | `pyproject.toml`、`uv.lock` | asyncpg 正式依赖、Python 3.14 兼容安装与真实导入；不顺便升级无关依赖 |
 | F01c 配置 | `app/config/settings.py`、对应配置测试、`docs/config_doc/config.md` | 使用现有 DATABASE_* 入口，连接/池等待/操作/迁移/关闭时限有限且非法值拒绝；冻结初值并只维护一份配置表 |
-| F02 运行时 | `app/infrastructure/database.py`、`tests/unit/test_database.py` | 创建、真实探测、工厂保护、状态、超时/取消/失败清理、重复关闭；engine 与工厂唯一 Owner |
+| F02 运行时 | `app/infrastructure/database.py`、`tests/unit/test_database.py`、`tests/unit/test_database_lifecycle_review.py` | 创建、真实探测、工厂保护、状态、超时/取消/失败清理、重复关闭；engine 与工厂唯一 Owner |
 | F03a 迁移核心 | 新 `app/infrastructure/database_migrations.py`、新 `tests/unit/test_database_migrations.py` | 文件顺序/名称/校验和、完整历史拒绝、只读版本校验；整批 SQL 不按分号切割 |
 | F03b CLI | `scripts/migrate.py`、`scripts/init_db.py`、新 `tests/unit/test_database_cli.py` | 同一个入口、UTF-8 输出、有限退出、失败非零退出码、无 create_all/--tools 双机制；不泄露凭证 |
 | F04a 首迁移 | 新 `migrations/0001_sessions_and_messages.sql`、`app/infrastructure/database_migrations.py`、新 `tests/integration/test_database_migrations.py` | 干净库、重复迁移、基线显式接管、结构不兼容拒绝、失败回滚；唯一版本表 |
@@ -61,7 +69,7 @@
 
 文档按分片事实同步，不把目标行为写成当前已实现。DB-F01 已同步依赖/配置与复现边界，其余随后续分片更新：
 
-1. `docs/infrastructure_doc/infrastructure.md`、`docs/infrastructure_doc/model_doc/model.md`：运行时/迁移与 ORM 契约；不新建重复数据库说明。
+1. `docs/infrastructure_doc/database_doc/database.md`、`docs/infrastructure_doc/infrastructure.md`、`docs/infrastructure_doc/model_doc/model.md`：组件内部契约、层次定位与 ORM 契约；ADR 仍是数据库决策正文，组件文档不复制决策取舍，层文档不复制组件接口表。
 2. `docs/application_doc/session_doc/session.md`、应用层导航，以及现有 chat 说明：Store 依赖和收尾责任；具体路径实施前按导航核对。
 3. `docs/api_doc/README.md`、现有 API 契约文档、`docs/shared_doc/error_handling.md`：readiness 和基础设施不可用出口。
 4. `docs/project/deployment.md`、`docs/config_doc/config.md`、`docs/project/architecture.md`：唯一使用命令、配置及本任务结构选择；以互链替代重复正文。
@@ -121,6 +129,64 @@
 **Gate 与结构**：E6/E8 覆盖配置拒绝、诊断保护和先红后绿；配置直接使用现有 Settings/聚合属性，无新运行时类或兼容后端。URL 解析复用 SQLAlchemy，保留 str 配置类型与既有 Container 消费方式。没有新增数据库重试或事务行为；E3/E5 的实际运行时改造留待后续片。子智能体只读复核配置未发现阻断问题。
 
 **边缘与限制**：覆盖池容量 0/-1/小数/布尔值、秒数 0/负数/NaN/无穷、环境字符串转换、合法转义凭证、非法驱动。配置导出及结构化 ValidationError 仍可能含原始输入，正式文档明确安全诊断方式；当前 Container 原始异常日志与新增预算执行尚待 F02/F05。真实 PostgreSQL 验收未运行，DB-F06 保持未完成。驱动根因及闭环见 [DB-001](../issues/infrastructure/database/2026-09-22-missing-asyncpg-dependency.md)。
+
+<a id="db-f02-review"></a>
+
+### DB-F02 实施评审
+
+**完成范围**：独立 DatabaseRuntime 的唯一 engine/sessionmaker、init/ping/probe/dispose、只读连接探测、版本观察、受控工厂、Session/驱动 Owner、有限等待、取消与迟到处理、物理关闭核验及日志脱敏。没有修改 Container、Store、API 或迁移入口；未提供完整 schema 检查器时工厂保持关闭。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 实现前 `pytest tests/unit/test_database.py -q --tb=short` | 1 failed、2 passed；缺少 DatabaseRuntime 的自动化红测 |
+| 独立审查后的回归红测 | 连续连接拒绝、并发 dispose 失败、外部驱动初始化中关闭三项失败；新增 Session 建连前关闭保护单项失败，修复后转绿，详见 DB-002/003 |
+| 末次边界复核红测 | ping 超时且工作任务仍在清理时，缓存工厂仍能创建 Session；修复为阻止工厂调用和新 checkout。另复现清理超时覆盖认证失败，改为保留先发生的稳定原因码；均已转绿 |
+| `pytest tests/unit/test_database.py tests/unit/test_database_lifecycle_review.py tests/unit/test_database_settings.py -q --tb=short` | 115 passed；其中运行时与 Session 生命周期 45 项、配置 70 项 |
+| `uv run --no-sync pytest -q --tb=short`（最终代码） | 1627 passed、5 xfailed、1 条既有 Starlette/httpx 弃用警告；54.45 秒 |
+| `uv run --no-sync ruff check .` / `ruff format --check .` | 通过；233 个文件格式通过 |
+| `uv run --no-sync python -m scripts.verify_alignment` / `git diff --check` | 通过，含最终记录与相对链接 |
+
+pytest 简写均经 `uv run --no-sync` 执行。全量回归按最后一次实现修复重跑，上表记录最终结果。
+
+**Gate / 结构**：E3/E5/E6/E8/E9 覆盖资源、异步竞态、诊断与测试。单文件负责数据库资源生命周期；不可变状态用于公开快照，私有 Session 子类填补建连前和 shielded close 期间的真实 Owner 缺口，实例日志过滤器解决池内部吞异常并日志化的凭证风险。没有通用资源框架、后台重连或业务事务重试。官方参照归 ADR，实际消费/接口归配置及基础设施正文。
+
+**边缘与限制**：测试覆盖未启动 close、缺驱动、真实驱动连接拒绝、认证/权限/schema 分类、非法版本、未知错误、有限探针/清理/关闭、取消不合作、并发探针/关闭、父级预算、不释放外部 Owner、重复关闭、缓存工厂及迟到结果。真实 Session 测试不连接数据库，fake 只证明控制流；没有真实 PostgreSQL/schema/CRUD 成功证据，DB-F06 保持未完成。现有 5 个 strict xfail 仍由 F03/F05 闭合。
+
+**交接**：F03/04 提供受信只读 schema_check，必须核对完整历史/head/结构/权限，并区分探针主动设置的只读事务与账号默认只读。F05 从 Settings 选择 runtime 参数（不全量展开含迁移预算的 database_config），先 drain 后以同一绝对 deadline dispose；首次启动未装配消费者仍要求重启。DB-F02 不改变现有应用可用性状态。
+
+**文档拆分**：DB-F02 的组件内部契约（准入状态机、探测与关闭流程、资源责任、并发与取消边界、原因码分类）移至 `docs/infrastructure_doc/database_doc/database.md`；层文档 infrastructure.md 只保留定位、模块地图、容器直管现状与待接线边界。ALIGNMENT 的 database.py 条目与 docs/catalog.md 同步指向新文档。
+
+**提交前审查**：审查级校验另发现三项未修复缺陷，见下节；本片暂不修复也不提交。
+
+<a id="db-f02-open-findings"></a>
+
+### DB-F02 提交前审查发现（2026-09-22，三项已全部修复）
+
+结论：实现与文档声明基本自洽，todo 已记录的验证数字经逐条复跑全部对上（定向 115 passed、全量 1627 passed + 5 xfailed、ruff 与 verify_alignment 通过、除测试外无 `DatabaseRuntime` 引用）。下列三项为审查新发现，前两项代码缺陷均有复现证据（临时脚本仅在外部边界注入异常或吞取消，其余走真实代码路径，脚本未落盘）。未发现 G0-3 双重结算或迟到结果重新开放准入的路径。
+
+- [x] P2：半构建引擎会开放准入并丢失池事件跟踪与日志脱敏 —— 已修复，见 [DB-007](../issues/infrastructure/database/2026-09-23-half-built-engine-admission.md)
+- [x] P3：运行时自身的原因码被 `_reason` 归类为 internal_error —— 已修复，见 [DB-005](../issues/infrastructure/database/2026-09-23-runtime-reason-classification.md)
+- [x] P3：`ping()` 在内部缺陷时会写入准入状态，与文档表述冲突 —— 已修复，见 [DB-004](../issues/infrastructure/database/2026-09-23-ping-admission-write.md)
+
+| 严重度 | 位置 | 触发条件 | 后果 | 修复方向 |
+| --- | --- | --- | --- | --- |
+| P2 | [database.py:184](../app/infrastructure/database.py#L184) 先发布 `_engine`，监听器与 maker 到 187-192 才赋值 | `_build_engine` 中 184 行之后、192 行之前发生任何异常（三次 `event.listen`、logger filter 循环或 `async_sessionmaker` 构造） | 首次 `init()` 抛 internal_error 但 engine 已保留；再次 `init()`/`probe()` 置 ready 并放行工厂，而 `_maker` 仍为 None → 工厂调用抛 `TypeError: 'NoneType' object is not callable`。该次运行的 `_drivers`/`_borrowed` 永不登记（dispose 无法感知借出连接），实例日志过滤器也不存在，config.md 新写的「runtime 已脱敏 SQLAlchemy/驱动异常与 echo」在此路径不成立 | 用局部变量构造、成功后一次性赋值三成员，或失败时复位 `_engine`，使「engine 存在」等价于「构建完成」；补一条半构建回归测试。已按前者修复，见 [DB-007](../issues/infrastructure/database/2026-09-23-half-built-engine-admission.md) |
+| P3 | [database.py:60](../app/infrastructure/database.py#L60) 的 `safe_reasons` 仅 3 码；[147-148](../app/infrastructure/database.py#L147-L148) 与 [162-164](../app/infrastructure/database.py#L162-L164) 抛自身原因码 | 探针任务在 `_probe_stopped` 置位后仍继续并再次 checkout（吞取消的驱动操作） | ADR D5 白名单内的 `closing`/`close_incomplete` 被判为未知程序缺陷，`probe()`/`init()` 抛 `DatabaseRuntimeError("internal_error")` 而非返回状态；终态仍 fail-closed，不改变准入结果 | 把运行期自身抛出的稳定码加入安全集，或按码值直接分类，避免白名单往返。已按前者修复，见 [DB-005](../issues/infrastructure/database/2026-09-23-runtime-reason-classification.md) |
+| P3 | [database.py:209-212](../app/infrastructure/database.py#L209-L212) 与 [347-349](../app/infrastructure/database.py#L347-L349) | `ping()`（`_run_probe(full=False)`）命中 internal_error | 状态由 ready 变为 unavailable/internal_error；方向保守（不放开准入），但与 [DB-ADR-001 D4](../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#d4运行时与故障语义)「`ping()` 只检查真实连接和最小事务，不改变能力准入状态」及 DB-003「ping 不更新健康快照」的表述冲突 | 非 full 探针只返回原因码，或把文档措辞改为「内部缺陷会关闭准入」。已按前者修复，见 [DB-004](../issues/infrastructure/database/2026-09-23-ping-admission-write.md) |
+
+<a id="db-f02-followups"></a>
+
+### DB-F02 后续发现（2026-09-23，两项已修复）
+
+本轮实现核对（DB-004～DB-007）新登记两项，均为非阻断，不改变当前验收结论：
+
+- [x] P3：`connect` 期的关闭拦截没有直接断言 —— 已修复，见 [DB-008](../issues/infrastructure/database/2026-09-23-connect-during-close-assertion.md)
+- [x] P3：池实例 logger 名硬编码，换池实现会静默失效 —— 已修复，见 [DB-009](../issues/infrastructure/database/2026-09-23-pool-logger-name-hardcode.md)
+
+| 严重度 | 位置 | 触发条件 | 后果 | 修复方向 |
+| --- | --- | --- | --- | --- |
+| P3 | `_connect` 的关闭期拦截（行为已登记在组件文档的行为边界） | 关闭已开始时连接池新建连接 | 该连接被 `terminate()` 并抛 `DatabaseRuntimeError("closing")`，此路径无直接断言；现有用例只覆盖“初始化期外部连接使 dispose 报 close_incomplete”，两者不是同一时序 | 用真实引擎并发关闭观察池在关闭期新建连接；fake 边界只能直接调用事件处理器，证明不了这个时序。已改为 fake 边界的直接断言（`closing` / `closed` 两态），并用“移除拦截分支”确认判别力；真实时序留 DB-F06，见 [DB-008](../issues/infrastructure/database/2026-09-23-connect-during-close-assertion.md) |
+| P3 | `_build_engine` 的脱敏过滤器名 | `_engine_options` 出现 `poolclass`，或方言默认池变化 | 过滤器只挂在 `sqlalchemy.pool.impl.AsyncAdaptedQueuePool.<name>`：池实现一变，池事件日志不再脱敏，且不会有任何测试失败（echo 仍由 engine 实例 logger 覆盖） | 从 engine 实例读实际池 logger 名（`sync_engine.pool.logger.name`）而不是拼字符串，并补一条断言该名字已被过滤器覆盖的用例。已按此修复，见 [DB-009](../issues/infrastructure/database/2026-09-23-pool-logger-name-hardcode.md) |
 
 <a id="c-02-lifecycle"></a>
 
