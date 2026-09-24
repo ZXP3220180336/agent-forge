@@ -1,21 +1,23 @@
-"""唯一迁移序列的文件/历史校验和事务内执行核心。
+"""唯一迁移序列的文件/历史校验、事务内执行与离线命令 Owner。
 
-调用方持有连接与逐文件事务，负责最终提交、回滚、关闭及有界收尾。
-本模块不创建资源或后台任务，不提供完整 schema readiness 证明。
+核心函数借用连接与事务；MigrationCommand 负责逐文件提交、回滚与资源收尾。
+CLI 父进程监督物理退出期限；本模块不提供完整 schema readiness 证明。
 """
 
 import asyncio
 import hashlib
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from multiprocessing.connection import Connection
 from pathlib import Path
+from typing import Any
 
 from asyncpg import PostgresError
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 _FILENAME = re.compile(r"([0-9]{4})_([a-z][a-z0-9]*(?:_[a-z0-9]+)*)\.sql")
 _HISTORY_SQL = "SELECT version, name, checksum FROM public.schema_versions ORDER BY version"
@@ -273,3 +275,253 @@ async def _read_history(connection: AsyncConnection, deadline: float) -> tuple[A
         AppliedMigration(version=row["version"], name=row["name"], checksum=row["checksum"])
         for row in result.mappings().all()
     )
+
+
+# F04 将提供唯一受信检查器；CLI 不提供跳过结构/基线门禁的选项。
+SchemaPreparer = Callable[..., Awaitable[int | None]]
+SCHEMA_PREPARER: SchemaPreparer | None = None
+
+MIGRATION_REASONS = frozenset(
+    {
+        "ok",
+        "starting",
+        "schema_gate_unavailable",
+        "configuration_invalid",
+        "internal_error",
+        "migration_files_unavailable",
+        "migration_files_missing",
+        "migration_filename_invalid",
+        "migration_sequence_invalid",
+        "migration_encoding_invalid",
+        "migration_checksum_invalid",
+        "schema_missing",
+        "schema_mismatch",
+        "permission_denied",
+        "migration_locked",
+        "transaction_required",
+        "transaction_lost",
+        "deadline_invalid",
+        "timeout",
+        "migration_database_error",
+        "commit_unknown",
+        "cleanup_incomplete",
+        "cancelled",
+        "worker_failed",
+        "worker_protocol_error",
+    }
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MigrationTimeouts:
+    """命令预算由 Settings 注入；数据库连接及命令超时在引擎构造时注入。"""
+
+    file_timeout_seconds: float
+    total_timeout_seconds: float
+    cleanup_timeout_seconds: float
+
+
+@dataclass
+class MigrationProgress:
+    """进度跟踪与跨进程播报：保留已确认版本和未确认提交；进程消息只传白名单事实。"""
+
+    confirmed: list[int] = field(default_factory=list)
+    uncertain_version: int | None = None
+    reason: str = "starting"
+    cleanup_complete: bool = False
+    forced_termination: bool = False
+    channel: Connection | None = field(default=None, repr=False)  # 跨进程通信管道
+
+    def commit_started(self, version: int) -> None:
+        """发送成功后才允许调用 commit；断连不能解释为尚未写入。"""
+        # 准备提交事务前调用，标记这个版本进入「不确定」状态，同时给父进程发消息
+        self.uncertain_version = version
+        self._send(f"commit_started|{version}")
+
+    def commit_confirmed(self, version: int) -> None:
+        """提交成功、收到数据库确认后调用：先保存本地成功响应事实，再向监督进程报告。"""
+        self.confirmed.append(version)
+        self.uncertain_version = None
+        self._send(f"committed|{version}")
+
+    def finish(self) -> None:
+        """报告资源关闭结果；父进程还必须确认 worker 已正常退出。"""
+        self._send(f"finished|{self.reason}|{int(self.cleanup_complete)}")
+
+    def _send(self, message: str) -> None:
+        if self.channel is not None:
+            self.channel.send_bytes(message.encode("ascii"))
+
+
+class MigrationCommand:
+    """离线命令的唯一资源 Owner；物理退出上限由 CLI 父进程监督。"""
+
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        migrations: Sequence[Migration],
+        *,
+        timeouts: MigrationTimeouts,
+        prepare_schema: SchemaPreparer | None,
+        baseline_existing: bool = False,
+        progress: MigrationProgress | None = None,
+    ) -> None:
+        self._engine = engine
+        self._migrations = tuple(migrations)
+        self._timeouts = timeouts
+        self._prepare_schema = prepare_schema
+        self._baseline_existing = baseline_existing
+        self.progress = progress if progress is not None else MigrationProgress()
+        self._connection: AsyncConnection | None = None
+        self._started = False
+        self._transaction = None
+        self._drivers: list[Any] = []
+        self._used = False
+        event.listen(engine.sync_engine, "connect", self._track_driver, insert=True)
+
+    def _track_driver(self, dbapi_connection: Any, record: Any) -> None:
+        # 每创建一个底层驱动连接就记下来
+        self._drivers.append(dbapi_connection.driver_connection)
+
+    async def run(self, *, deadline: float) -> MigrationProgress:
+        """逐文件提交；失败保留确认前缀，取消收尾后继续传播，不自动重试。"""
+        if self._used:
+            # 一次性 Owner 被复用是调用方缺陷，按未知程序错误上报，不伪装成可恢复的数据库原因码。
+            raise MigrationError("internal_error")
+        self._used = True
+        loop = asyncio.get_running_loop()
+        end = min(deadline, loop.time() + self._timeouts.total_timeout_seconds)
+        cleanup_end = end
+        work_end = end - min(self._timeouts.cleanup_timeout_seconds, max(0, end - loop.time()) / 2)
+
+        try:
+            if self._prepare_schema is None:
+                raise MigrationError("schema_gate_unavailable")
+            _validate_migrations(self._migrations)
+            _guard(work_end)
+            async with asyncio.timeout_at(work_end):
+                self._connection = self._engine.connect()
+                await self._connection.start()
+                self._started = True
+                _guard(work_end)
+                # 每次至少确认一个新版本，另留一次无待执行文件的核验；无无限循环。
+                for _ in range(len(self._migrations) + 1):
+                    _guard(work_end)
+
+                    file_end = min(work_end, loop.time() + self._timeouts.file_timeout_seconds)
+                    cleanup_end = file_end
+                    operation_end = file_end - min(
+                        self._timeouts.cleanup_timeout_seconds, max(0, file_end - loop.time()) / 2
+                    )
+
+                    async with asyncio.timeout_at(operation_end):
+                        self._transaction = await self._connection.begin()
+                        _guard(operation_end)
+
+                        # 调用门禁函数检查数据库状态，处理基线接管
+                        baseline = await self._prepare_schema(
+                            self._connection,
+                            self._migrations,
+                            baseline_existing=self._baseline_existing,
+                            deadline=operation_end,
+                        )
+                        _guard(operation_end)
+                        if baseline is not None:
+                            if not self._baseline_existing or type(baseline) is not int or baseline != 1:
+                                raise MigrationError("internal_error")
+                            # 基线模式：直接把当前数据库状态登记为基线版本，不用真的执行 SQL。
+                            version = baseline
+                        else:
+                            # 正常模式：调用底层函数执行下一个迁移文件。
+                            version = await apply_next_migration(
+                                self._connection,
+                                self._migrations,
+                                deadline=operation_end,
+                            )
+                        _guard(operation_end)
+
+                        # 到头判断与重复校验
+                        if version is None:
+                            # 返回 `None` 说明已经到最新版本了，没有迁移要跑了，回滚这个只读校验事务，正常结束。
+                            await self._transaction.rollback()
+                            self._transaction = None
+                            _guard(operation_end)
+                            self.progress.reason = "ok"
+                            break
+                        if version in self.progress.confirmed:
+                            # 如果返回的版本已经在「已确认」列表里，说明出现了重复迁移，直接报结构不匹配。
+                            raise MigrationError("schema_mismatch")
+
+                        # 提交
+                        _guard(operation_end)
+                        # 先发 commit 再登记未确认版本：此前超时属"未发出提交"，不得记成提交结果未知。
+                        self.progress.commit_started(version)
+                        await self._transaction.commit()  # 真正提交
+                        self._transaction = None
+                        self.progress.commit_confirmed(version)  # 确认成功
+                        _guard(operation_end)
+
+                    cleanup_end = end
+                else:
+                    raise MigrationError("schema_mismatch")
+        except asyncio.CancelledError:
+            self.progress.reason = "commit_unknown" if self.progress.uncertain_version else "cancelled"
+            raise
+        except Exception as error:  # noqa: BLE001 — 命令错误出口脱敏；未知缺陷报告 internal_error。
+            if self.progress.uncertain_version is not None:
+                self.progress.reason = "commit_unknown"
+            elif isinstance(error, MigrationError) and str(error) in MIGRATION_REASONS:
+                # 是已知迁移错误 → 直接用原因码
+                self.progress.reason = str(error)
+            elif isinstance(error, TimeoutError):
+                self.progress.reason = "timeout"
+            elif isinstance(error, (SQLAlchemyError, PostgresError, OSError)):
+                # 数据库错误 → 转成对应原因码
+                self.progress.reason = str(_database_failure(error))
+            else:
+                self.progress.reason = "internal_error"
+        finally:
+            await self._cleanup(min(cleanup_end, end, loop.time() + self._timeouts.cleanup_timeout_seconds))
+        return self.progress
+
+    async def _cleanup(self, deadline: float) -> None:
+        def check_deadline() -> None:
+            # 已收到的业务取消不禁止必要回滚；重复取消仍由 await 正常传播。
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError
+
+        complete = True
+        try:
+            async with asyncio.timeout_at(deadline):
+                check_deadline()
+                if self._transaction is not None:
+                    # 优先回滚未提交的事务
+                    await self._transaction.rollback()
+                    self._transaction = None
+                check_deadline()
+                if self._started:
+                    # 正常关闭数据库连接
+                    assert self._connection is not None
+                    await self._connection.close()
+                check_deadline()
+                # 正常关闭引擎
+                await self._engine.dispose()
+                check_deadline()
+                # 检查所有驱动连接都已关闭
+                complete = all(driver.is_closed() for driver in self._drivers)
+        except asyncio.CancelledError:
+            complete = False
+            raise
+        except Exception:  # noqa: BLE001 — 收尾失败不覆盖已确认版本、提交未知或主失败。
+            complete = False
+        finally:
+            if not complete:
+                for driver in self._drivers:
+                    if not driver.is_closed():
+                        try:
+                            driver.terminate()  # 失败则暴力 terminate 所有驱动
+                        except Exception:  # noqa: BLE001 — 不回显驱动异常，关闭仍报告未完成。
+                            complete = False
+            self.progress.cleanup_complete = complete
+            if not complete and self.progress.reason == "ok":
+                self.progress.reason = "cleanup_incomplete"

@@ -18,6 +18,7 @@
 
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
+| 业务取消后进入必要清理，或父进程排空迟到消息 | 业务取消 Guard 不能直接复用于回滚入口；清理只受剩余期限与重复取消约束。已选定的主失败要与迟到提交事实、清理状态分别保存，接管事实不能改写失败。 | [DB-013](../issues/infrastructure/database/2026-09-23-migration-cancel-cleanup.md)、[DB-014](../issues/infrastructure/database/2026-09-23-migration-terminal-preservation.md)；[G0](engineering/ai-engineering-rules.md#g0)。 |
 | 一次循环可因多个协议错误再次付费 | 只有总循环上限，或按错误分支分别清零，都会漏掉跨分支恢复消耗；合法工具协议才是该预算的恢复信号。空输出与 LLM 失败不是协议恢复。 | [REASON-017](../issues/domain/reasoning/2026-09-10-tool-protocol-retry-limit.md)；[重试规范](engineering/agent-runtime-rules.md#retry)。 |
 | 把平铺参数收敛为不可变参数对象 | 只冻结字段不能保证对象有效；本次复核发现负恢复预算形成 `None/0` 之外的第三种状态，非法运行作用域还可能让直接策略调用先发起外部请求。参数对象应在构造边界保护其声明的不变量，使非法输入在副作用前失败。 | [REASON-026](../issues/domain/reasoning/2026-09-16-execute-parameter-drift.md)；[参数分组 ADR](../adr/domain/reasoning/2026-09-16-semantic-execution-parameters.md)。 |
 | 增加 terminal 工具或停滞指纹 | 全局按 `final_answer` 名字过滤参数曾把不同参数误判为相同行为；只有结构化输出模式下该名字才有终止工具语义。 | [REASON-017](../issues/domain/reasoning/2026-09-10-tool-protocol-retry-limit.md)；[终止工具规范](engineering/agent-runtime-rules.md#terminal)。 |

@@ -178,6 +178,10 @@ DB-F02 已实现只读探测、版本观察、受控工厂、Session/连接 Owne
 
 DB-F03a 已交付文件发现/原始字节 SHA-256、完整历史与精确 head 校验、只读版本检查及已有事务内下一文件的整批执行/登记。name 列固定保存完整文件名。该核心返回只表示事务内执行，提交/回滚与未知提交结果由后续命令 Owner 负责；版本表建立/结构、首迁移与基线仍归 DB-F04。未完成完整迁移命令、未运行真实 PostgreSQL，不改变 D2 的原子性验收门槛。核心契约见 [migrations.md](../../../docs/infrastructure_doc/database_doc/migrations.md)，验证见 [DB-F03a 评审](../../../docs/todo.md#db-f03a-review)。
 
+DB-F03b 已交付唯一 CLI、命令资源 Owner、逐文件事务提交/回滚、提交未知与确认事实保留；两个入口共用同一路径。生产 preparer 未接入时，在引擎创建前以 `schema_gate_unavailable` 拒绝，F04 的版本表/基线责任不提前实现。命令预算从 Settings 注入 `MigrationTimeouts`，引擎复用运行时实例日志脱敏。
+
+为兑现有限退出，离线命令采用一个 spawn worker 独占数据库资源、父进程监督期限；范围仅本 CLI。备选的单进程 `asyncio.run` 在协程吞取消时仍可能无限等待退出，不能满足 D6；参照 [Python asyncio Runner](https://docs.python.org/3/library/asyncio-runner.html) 与 [multiprocessing 进程终止](https://docs.python.org/3/library/multiprocessing.html#multiprocessing.Process.terminate)。代价是进程启动与小型事实传递协议；强退不保证远端未提交，也不保证运行 finally，因此保留确认版本并明确输出未知结果与释放状态，不自动重试。真实 spawn 验证不能替代 PostgreSQL 原子性验收；结果见 [DB-F03b 评审](../../../docs/todo.md#db-f03b-review)。
+
 ## 关联记录
 
 [基础设施说明](../../../docs/infrastructure_doc/infrastructure.md)是既有职责与当前说明入口，本 ADR 是数据库决策正文。

@@ -63,7 +63,7 @@ app/infrastructure/
 | --- | --- | --- |
 | `app/infrastructure/__init__.py` | 空（0 行） | 基础设施层包入口，规划统一导出封装接口 |
 | `app/infrastructure/database.py` | [见对齐表](../ALIGNMENT.md) | 独立 engine / session factory / 探测 / 有界关闭，见 [database.md](database_doc/database.md)；schema 校验与业务装配待接入 |
-| `app/infrastructure/database_migrations.py` | [见对齐表](../ALIGNMENT.md) | 唯一迁移序列核心，见 [migrations.md](database_doc/migrations.md)；完整命令、首迁移与基线待后续片 |
+| `app/infrastructure/database_migrations.py` | [见对齐表](../ALIGNMENT.md) | 唯一迁移序列核心及离线命令 Owner，见 [migrations.md](database_doc/migrations.md)；首迁移与结构/基线门禁待 F04 |
 | `app/infrastructure/redis_client.py` | 空（0 行） | Redis 客户端封装（连接池 / 编解码 / 超时 / 重连 / 命名空间） |
 | `app/infrastructure/message_queue/__init__.py` | 空（0 行） | 消息队列子包入口，规划抽象统一消息发布 / 消费接口 |
 | `app/infrastructure/models/database/base.py` | [见对齐表](../ALIGNMENT.md) | 共享 `Base`（唯一 declarative_base 实例），见 [model.md](model_doc/model.md) |
@@ -150,7 +150,7 @@ Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权�
 
 ### database_migrations.py
 
-**定位**：统一迁移序列的文件与全历史校验、只读版本核验和单文件事务内执行。内部调用顺序、期限及结算责任见 [migrations.md](database_doc/migrations.md)。核心借用调用方连接，不另建池；完整命令 Owner 归 DB-F03b，版本表结构、首迁移与基线归 DB-F04。不能把本核心单独接为完整 readiness 检查器或可用迁移命令。
+**定位**：统一迁移序列的文件与全历史校验、只读版本核验、单文件事务内执行及离线命令 Owner。内部调用顺序、期限及结算责任见 [migrations.md](database_doc/migrations.md)。核心借用连接，`MigrationCommand` 持有命令资源；CLI 用单个 worker 和父进程期限监督处理不合作取消。版本表结构、首迁移与基线归 DB-F04，当前 gate 缺失时零连接拒绝升级，不能把本核心单独接为完整 readiness 检查器。
 
 ### redis_client.py
 

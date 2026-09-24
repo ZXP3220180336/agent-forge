@@ -68,8 +68,9 @@
 | `session_factory` | 无 | `Callable[[], AsyncSession]`；未准入时抛 `DatabaseRuntimeError` | 每次操作取独立 Session 并负责 `close()`；缓存工厂前须知道它每次调用都会复查准入 |
 | `status` | 无 | 不可变 `DatabaseStatus(state, reason, schema_version)` | 快照不含 URL、SQL 或驱动异常；`ready` 只表示检查器接受的时点观察 |
 | `dispose(deadline=None)` | 可选父级单调时钟绝对期限 | `DatabaseStatus` | 先停止新准入；未完成返回 closing + `close_incomplete`，调用方可显式重试 |
+| `configure_database_logging(engine)` | 任意 `AsyncEngine` | 无；在该引擎实例的 engine/pool logger 上装脱敏过滤器 | 供运行时与离线迁移命令共用（DB-F03b）；引擎由调用方持有与释放，本函数不关闭它 |
 
-`DatabaseRuntimeError` 只携带稳定原因码，不保留驱动异常文本或异常链；错误分类见[核心概念与机制](#核心概念与机制)。
+`DatabaseRuntimeError` 只携带稳定原因码，不保留驱动异常文本或异常链；错误分类见[核心概念与机制](#核心概念与机制)。`configure_database_logging` 是唯一不绑定 `DatabaseRuntime` 的公开符号：迁移命令自建引擎时复用同一脱敏实现，因此两处日志出口的脱敏行为不会分叉；日志目标与凭证边界见[关键实现说明](#关键实现说明)。
 
 ---
 

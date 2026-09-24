@@ -54,6 +54,13 @@ class _SafeDatabaseLog(logging.Filter):
         return True
 
 
+def configure_database_logging(engine: AsyncEngine) -> None:
+    """为本引擎和池的实际 logger 安装脱敏，供运行时与离线迁移共用。"""
+    for target in (engine.sync_engine.logger, engine.sync_engine.pool.logger):
+        inner = target if isinstance(target, logging.Logger) else target.logger
+        inner.addFilter(_SafeDatabaseLog())
+
+
 class _RuntimeSession(AsyncSession):
     """从创建到 close 完成均登记 Owner，覆盖驱动建连前及 pre_ping 阶段。"""
 
@@ -203,9 +210,7 @@ class DatabaseRuntime:
         engine = create_async_engine(**self._engine_options, logging_name=name, pool_logging_name=name)
         # 池会吞掉关闭异常并自行记日志，echo 也走同一出口，两者都必须在写入日志前脱敏。
         # 目标 logger 从实例取：池实现与 echo 开关都会改变实例 logger 的类型，不能拼类名。
-        for target in (engine.sync_engine.logger, engine.sync_engine.pool.logger):
-            inner = target if isinstance(target, logging.Logger) else target.logger
-            inner.addFilter(_SafeDatabaseLog())
+        configure_database_logging(engine)
 
         # 监听「连接创建」事件
         # insert=True 排到其他监听器之前：方言初始化 SQL 尚未执行就已登记驱动 Owner，

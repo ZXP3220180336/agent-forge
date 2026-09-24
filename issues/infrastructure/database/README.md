@@ -14,5 +14,8 @@
 | [DB-010](2026-09-23-stale-probe-cancellation.md) | 旧探测调用取消时误取消后继 worker | 已修复；DB-F02 工作区审查发现 | 2026-09-23 |
 | [DB-011](2026-09-23-migration-final-deadline-guard.md) | 同步历史校验后遗漏最终期限检查 | 已修复；DB-F03a 开发阶段发现 | 2026-09-23 |
 | [DB-012](2026-09-23-migration-optional-attribute-guard.md) | 事务前置条件读不到可选属性时落入 AttributeError | 已修复；DB-F03a 后续发现登记 | 2026-09-23 |
+| [DB-013](2026-09-23-migration-cancel-cleanup.md) | 业务取消 Guard 阻止迁移必要回滚 | 已修复；DB-F03b 开发阶段发现 | 2026-09-23 |
+| [DB-014](2026-09-23-migration-terminal-preservation.md) | 迁移迟到消息或收尾取消覆盖主失败 | 已修复；DB-F03b 开发阶段独立复审发现 | 2026-09-23 |
+| [DB-015](2026-09-24-migration-verification-followups.md) | 命令原因码语义与行为边界表述不符，且收尾/终态分支缺断言 | 已修复；DB-F03b 工作区验证发现 | 2026-09-24 |
 
 [问题导航](../../README.md) · [数据库决策](../../../adr/infrastructure/database/README.md)

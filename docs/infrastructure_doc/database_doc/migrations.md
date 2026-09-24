@@ -20,6 +20,7 @@
   - [状态与执行流程](#状态与执行流程)
   - [关键实现说明](#关键实现说明)
   - [行为边界](#行为边界)
+  - [离线命令生命周期](#离线命令生命周期)
   - [配置关联](#配置关联)
   - [验证入口](#验证入口)
   - [设计决策与问题记录](#设计决策与问题记录)
@@ -35,18 +36,18 @@
 
 ## 设计目标与边界
 
-本组件是唯一迁移序列的文件与历史事实来源，供离线迁移命令及完整 schema 检查器复用，负责文件快照、完整历史比对和事务内单文件执行。DB-F03a 交付这些核心函数；它不能直接当成可运行的迁移命令或完整 readiness 检查器。
+本组件是唯一迁移序列的文件与历史事实来源，负责文件快照、完整历史比对和事务内单文件执行。DB-F03a 交付这些核心函数，DB-F03b 增加同文件的 `MigrationCommand` 管理离线资源与逐文件事务。它仍不提供完整 schema/readiness 检查；生产门禁缺失时 CLI 拒绝升级。
 
 连接和逐文件事务的 Owner 在上层：
 
 | 责任 | 归属 |
 | --- | --- |
-| 命令生命周期、逐文件事务的提交/回滚、提交结果未知、有界关闭与 CLI | DB-F03b |
+| 命令生命周期、逐文件事务的提交/回滚、提交结果未知、有界关闭与 CLI | DB-F03b 已实现；生产使用等待 F04 |
 | 版本表自身结构、首迁移、旧表接管与受管结构/权限核验 | DB-F04 |
 | 应用装配、readiness API 与运行入口 | DB-F05 |
 | 真实 PostgreSQL 原子性与多语句回滚验收 | DB-F03 整体及 DB-F06 |
 
-本核心不创建版本表或池，不执行 commit/rollback/close，不做事务重试，不启动后台任务，也不解析 SQL 语句。CLI 和 runtime 只在上述门禁完备后接入。
+核心函数不创建版本表或池，不执行 commit/rollback/close；这些资源操作归独立的命令 Owner。两者均不做事务重试或解析 SQL。CLI 已提供入口，但只有上述门禁完备后才允许连接；runtime 应用接线归 F05。
 
 ---
 
@@ -139,7 +140,8 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 | 场景 | 行为 | 约束或验证入口 |
 | --- | --- | --- |
 | 已到 head | 返回 `None`，不执行 SQL，不写版本行 | 只读检查与执行入口共用同一历史比对 |
-| 无真实事务、AUTOCOMMIT 或无法核验事务（读不到执行选项 / 拿不到驱动连接） | 报 `transaction_required`，不发出任何语句 | 逻辑事务、AUTOCOMMIT、仅逻辑事务、无同步连接、无驱动连接五种形态 |
+| 无真实事务、AUTOCOMMIT 或读不到执行选项 | 报 `transaction_required`，不发出任何语句 | 逻辑事务、AUTOCOMMIT、无同步连接三种形态 |
+| 仅逻辑事务或拿不到驱动连接 | 报 `transaction_required`；在锁与历史读取之后、整批 SQL 之前拒绝 | 仅逻辑事务、无驱动连接两种形态；`calls == ["lock","history","raw"]` |
 | 两个执行器并发 | 后者拿不到 `NOWAIT` 锁，报 `migration_locked`，不排队等待 | 仅覆盖 55P03 到 `migration_locked` 的映射，无真实锁竞争断言 |
 | 历史非法、超前或逐行不一致 | 报 `schema_mismatch`，不执行 SQL | 缺号/重复/未知版本/错名/错校验和/布尔版本/乱序 |
 | 目录缺失或为空 | 报 `migration_files_unavailable` / `migration_files_missing` | fail closed，不当作“无迁移可做” |
@@ -153,6 +155,20 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 
 ---
 
+## 离线命令生命周期
+
+`scripts.migrate` 解析参数后读取 Settings，`scripts.init_db` 只调用同一个 `main`。`--help` 不加载配置。正式命令、输出字段与命令层原因码清单统一见[部署文档](../../project/deployment.md#工具-schema-迁移)（`MIGRATION_REASONS` 是同一清单的代码载体，不在此重复枚举）。
+
+`SCHEMA_PREPARER` 是 F04 的内部接线点，当前为 `None`；CLI 在创建引擎和连接之前返回 `schema_gate_unavailable`，没有跳过检查参数。测试注入仅证明命令控制流。受信 preparer 接收当前事务连接、完整快照、`baseline_existing` 和裁剪期限，验证/准备结构；通常返回 `None`，严格基线登记后仅返回版本 `1`。基线单独提交后下一事务才执行后续 SQL，preparer 本身不得提交、关闭或另开连接。门禁返回值不符合该契约时报 `internal_error`。
+
+`MigrationCommand` 是一次性 Owner：持有一个引擎/连接，为每个文件建立独立事务，调用核心后提交，到 head 的只读核验事务回滚退出。失败只回滚当前事务，保留已经收到 commit 成功响应的版本；提交请求发出后才登记未确认版本（此前耗尽预算属未发出提交，报 `timeout`），响应丢失、取消或失败均不自动重试，也不声称回滚已证明远端未提交。复用同一命令对象是调用方缺陷，报 `internal_error`，不借用事务原因码。收尾依次回滚、关闭已启动连接、dispose；进入收尾时预算已过则不执行回滚、直接保守报告未完成，超过清理期限时尝试终止已登记驱动。
+
+`MigrationTimeouts` 是不可变、关键字构造的预算集合，数值由 Settings 校验，模块不维护第二套默认值；`scripts.migrate` 由配置键直接构造它，键名漂移会在启动时失败。命令总期限覆盖 worker 启动、文件发现、连接、全部事务和退出；参数/配置解析属于前置检查。每个文件另裁剪事务期限并预留清理，失败清理不延长该文件期限。业务取消不能阻止必要回滚，重复取消仍传播；成功响应先保存，再检查期限，避免丢失已经发生的事实。
+
+单靠 `asyncio.timeout_at` 不能终止吞取消的协程，`asyncio.run` 的退出也会等待残留任务。CLI 因而由父进程监督一个 spawn worker，worker 独占数据库资源，父进程仅接管最多 128 字节的白名单管道消息。总预算预留 terminate/join/kill 时间，迟到消息不能覆盖父进程已选定的失败。强退标记提交结果未知并保留已确认版本；没有强退且没有未确认提交时，父进程终态标签才改写原因码，避免用 `cancelled` 之类标签盖掉“提交结果未知”。若操作系统仍未确认子进程退出，输出 PID 后直接结束父进程，不宣称物理释放成功。这是进程调度条件下的有界等待机制，不是操作系统故障时的硬实时保证。
+
+开发阶段的取消/收尾问题见 [DB-013](../../../issues/infrastructure/database/2026-09-23-migration-cancel-cleanup.md)，主终态覆盖问题见 [DB-014](../../../issues/infrastructure/database/2026-09-23-migration-terminal-preservation.md)，本轮验证发现的原因码语义与文档校正见 [DB-015](../../../issues/infrastructure/database/2026-09-24-migration-verification-followups.md)。
+
 ## 配置关联
 
 迁移两项预算由命令 Owner 消费，本核心只接收已裁剪的 `deadline`，不读配置、不重置预算：
@@ -162,7 +178,7 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 | `DATABASE_MIGRATION_TIMEOUT_SECONDS` | 单个迁移文件或基线事务总预算，含登记与清理 | 上层据此裁剪出单次调用的 `deadline` |
 | `DATABASE_MIGRATION_TOTAL_TIMEOUT_SECONDS` | 一次迁移命令总预算，含连接、全部文件及最终释放 | 命令 Owner 扣减后向下传递 |
 
-键、类型、默认值与约束只在[配置参考](../../config_doc/config.md#7-数据库配置)维护。`Settings.database_config` 同时包含迁移预算与连接凭证，不能整体展开为构造参数或写入日志（装配归 DB-F05）。期限只保证核心在期限内作出判定，不证明不合作的驱动已被物理关闭：持有连接与任务的调用方负责有界等待和必要终止。
+键、类型、默认值与约束只在[配置参考](../../config_doc/config.md#7-数据库配置)维护。`Settings.database_config` 同时包含迁移预算与连接凭证，不能整体展开为构造参数或写入日志；CLI 显式选择参数构造独立引擎，并复用 runtime 的实例日志脱敏。应用装配归 DB-F05。核心期限不证明不合作驱动已物理关闭，离线命令由上述进程监督接管退出。
 
 ---
 
@@ -170,9 +186,12 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 
 | 测试文件 | 覆盖的可观察行为 |
 | --- | --- |
+| `tests/unit/test_database_command.py` | 逐文件独立事务、基线独立提交、后续失败保留确认版本、提交未知不重试、取消/文件超时回滚、未启动连接、收尾挂死与主失败保留 |
+| `tests/unit/test_database_cli.py` | 双入口、UTF-8、帮助不加载配置、路径独立于 cwd、配置/参数脱敏、缺失 schema gate 零引擎/零连接 |
+| `tests/unit/test_database_cli_supervision.py` | 真实 spawn 的正常退出、挂死、崩溃、坏消息；确认/未确认版本保留及晚到结果不覆盖主失败 |
 | `tests/unit/test_database_migrations.py` | 文件名/序列/编码在执行前拒绝、不可变字节快照与文件名保留、历史前缀与损坏历史拒绝、非法待执行文件阻断全部数据库工作、只读版本检查无写入且要求精确 head、锁后重读而非缓存、整批 SQL 与登记共用同一事务、无真实事务与 AUTOCOMMIT 与执行选项不可读与驱动连接缺失的拒绝、逐阶段取消与超时、吞掉超时或外部取消后不得登记、数据库错误脱敏、未知程序错误不可恢复、`transaction_lost` 不登记、批次或登记失败不提交、缺表不建表、同步历史校验后不得越过期限返回成功 |
 
-测试用 fake 只证明控制流，不能证明 PostgreSQL DDL 与版本行实际提交/回滚；连续 fake 调用也不授权在同一真实事务运行多份迁移。本片没有迁移脚本或真实 PostgreSQL 成功证据，多语句中途失败与版本行的真实原子性仍是 DB-F03 整体及后续真实验收门槛，不能因 F03a 核心单测完成而关闭。当前实现与接线状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准，运行结果与评审记录见 [DB-F03a 评审](../../todo.md#db-f03a-review)。
+测试用 fake 只证明控制流，不能证明 PostgreSQL DDL 与版本行实际提交/回滚；连续 fake 调用也不授权在同一真实事务运行多份迁移。当前没有首个 SQL 迁移文件或真实 PostgreSQL 成功证据，多语句中途失败与版本行的真实原子性仍是 DB-F03 整体及后续真实验收门槛，不能因核心单测或真实 spawn 测试通过而关闭。当前实现与接线状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准，运行结果见 [DB-F03a 评审](../../todo.md#db-f03a-review)与 [DB-F03b 评审](../../todo.md#db-f03b-review)。
 
 ---
 

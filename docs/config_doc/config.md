@@ -388,7 +388,7 @@ llm_service = LLMService(**settings.llm_config)
 | `DATABASE_CLEANUP_TIMEOUT_SECONDS` | float | 5.0 | 失败回滚及连接清理阶段上限，受所属操作剩余预算约束 |
 | `DATABASE_SHUTDOWN_TIMEOUT_SECONDS` | float | 30.0 | 数据库使用方 drain 与 runtime dispose 共用的关闭总预算 |
 
-所有秒数字段必须是有限正数，拒绝 0、负数、NaN、正负无穷及布尔值，允许正小数；环境变量按同一模型解析和校验。上述预算是首期初值，尚无负载实测依据。DB-F02 独立 runtime 已消费 connect/pool/probe/cleanup/shutdown 参数；operation 参数先作为驱动单命令上限，Store 操作总预算仍归 DB-F05。迁移两项预算归 DB-F03。**当前 Container 尚未接入这些新时限**，不能据独立模块测试宣称应用等待已有界。
+所有秒数字段必须是有限正数，拒绝 0、负数、NaN、正负无穷及布尔值，允许正小数；环境变量按同一模型解析和校验。上述预算是首期初值，尚无负载实测依据。DB-F02 独立 runtime 已消费 connect/pool/probe/cleanup/shutdown 参数；operation 参数先作为驱动单命令上限，Store 操作总预算仍归 DB-F05。DB-F03b 命令已消费迁移两项预算，通过不可变 `MigrationTimeouts` 聚合；总预算包含 worker 启动、文件发现、连接、全部事务及清理/强退预留，参数与 Settings 解析为前置检查；单文件预算含必要回滚清理，均向下裁剪，不重置上层期限。生产 schema gate 缺失时仍不创建引擎。**当前 Container 尚未接入这些新时限**，不能据独立模块测试宣称应用等待已有界。
 
 运行时使用单调时钟总 deadline，子阶段取自身上限与父预算剩余时间的较小值，嵌套操作不得重置总预算；探针从总预算中预留不超过 cleanup 配置和总预算一半的清理窗口，实际 close 也受 cleanup 上限约束。预算不足则不启动新业务动作。dispose 支持父级绝对 deadline，供 DB-F05 将 drain 与释放限制在同一关闭预算内。每个字段可独立设置，超过外层预算的阶段上限实际受外层裁剪。迁移命令的总上限不能用单条 statement timeout 代替。
 

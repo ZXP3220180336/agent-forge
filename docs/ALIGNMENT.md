@@ -59,8 +59,10 @@
 | app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现；批次部分成果、完整协议回执、类型化控制传播与真实线程路径（经 handle.run_sync 的完整批次）另经 test_tool_lifecycle_wiring.py 覆盖；流式/非流式双通道 |
 | app/domain/reasoning/_react_protocol.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_protocol.py | ReAct final_answer、调用身份与动作指纹纯协议转换；不接管协议预算、历史或工具执行 |
 | app/domain/reasoning/tool_batch.py | ✅ | docs/domain_doc/reasoning_doc/tool_batch.md | tests/unit/test_tool_lifecycle_contract.py | Collector 负责 revision 去重、深快照与关闭；Runner 负责并行结果、控制时兄弟有界收尾；跨层接管及协议配对经 test_tool_lifecycle_wiring.py 覆盖 |
-| app/infrastructure/database.py | ✅ | docs/infrastructure_doc/database_doc/database.md | tests/unit/test_database.py | DB-F02 独立生命周期、受控工厂、只读探测、有界清理与日志脱敏；tests/unit/test_database_lifecycle_review.py 覆盖真实 Session Owner；schema 校验、Container 接线和真实 PostgreSQL 验收未完成 |
-| app/infrastructure/database_migrations.py | ✅ | docs/infrastructure_doc/database_doc/migrations.md | tests/unit/test_database_migrations.py | DB-F03a 文件/全历史校验、只读版本检查及调用方事务内整批执行/登记；非完整迁移命令，CLI Owner、版本表结构/首迁移/基线及真实原子性验收待后续片 |
+| app/infrastructure/database.py | ✅ | docs/infrastructure_doc/database_doc/database.md | tests/unit/test_database.py | DB-F02 独立生命周期、受控工厂、只读探测、有界清理与日志脱敏；实例日志脱敏入口 `configure_database_logging` 供迁移命令复用；tests/unit/test_database_lifecycle_review.py 覆盖真实 Session Owner；schema 校验、Container 接线和真实 PostgreSQL 验收未完成 |
+| app/infrastructure/database_migrations.py | ✅ | docs/infrastructure_doc/database_doc/migrations.md | tests/unit/test_database_migrations.py | DB-F03a/b 文件/全历史校验与整批执行、离线命令 Owner；事务/取消/提交未知另见 test_database_command.py；版本表结构/首迁移/基线及真实原子性验收待后续片 |
+| scripts/migrate.py | 🔶 | docs/project/deployment.md | tests/unit/test_database_cli.py | DB-F03b 唯一 CLI，UTF-8/脱敏/配置消费与预算映射；真实 spawn 监督见 test_database_cli_supervision.py；F04 gate 缺失时零连接拒绝升级 |
+| scripts/init_db.py | ✅ | docs/project/deployment.md | tests/unit/test_database_cli.py | 仅委托 scripts.migrate.main，无第二套建表机制 |
 | app/infrastructure/redis_client.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，Redis 由 container 直管 |
 | app/infrastructure/models/database/base.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | 共享 declarative_base |
 | app/infrastructure/models/database/messages.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | Message ORM |

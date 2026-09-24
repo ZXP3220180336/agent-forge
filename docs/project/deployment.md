@@ -147,15 +147,30 @@ Pydantic Settings 读取 `.env` 不等于写入进程 `os.environ`，业务模�
 
 A 允许同一活动进程内多 Agent、多批次共享 ToolService，以普通只读能力验证进程内取消、事实和有界接管，不宣称崩溃恢复。B 的副作用/未知/强制审计工具在驱动、schema、单机 Owner、未决保护恢复完成前不开放。注册工具可存在但不得在 schema 导出时误报为可执行；Gateway 还需最终检查，不能只靠模型可见清单。
 
-DB-F01 已接入 asyncpg 依赖及锁文件；迁移脚本与共享运行时仍未实现，当前状态与测试边界见 [ALIGNMENT](../ALIGNMENT.md)及[独立计划](../todo.md#db-foundation)。后续 B 复用共享运行时和 ORM Base，驱动安装不能替代真实连接、最小事务、schema 与权限检查。
+DB-F01 已接入 asyncpg 依赖及锁文件，DB-F02 已实现独立运行时，DB-F03a/b 已实现迁移核心与命令资源管理；应用接线和 schema 门禁仍待后续片，当前状态与测试边界见 [ALIGNMENT](../ALIGNMENT.md)及[独立计划](../todo.md#db-foundation)。后续 B 复用共享运行时和 ORM Base，驱动安装不能替代真实连接、最小事务、schema 与权限检查。
 
 ### 工具 schema 迁移
 
-> 2026-09-22：[共享数据库 ADR](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#database-supersession) 已批准，替代原工具专属目录及 `--tools` 入口。以下为已批准但尚未实现的部署规格，不能作为当前可执行步骤。
+> 2026-09-22：[共享数据库 ADR](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#database-supersession) 已批准，替代原工具专属目录及 `--tools` 入口。以下为已批准的部署规格。
+> 2026-09-24 更正：原注记写“尚未实现”，现命令入口已实现（见下）；DB-F04 的版本表、首迁移与结构/基线门禁仍未交付，因此**实际升级仍不可执行**。
 
 采用共享版本化 SQL 序列，首迁移为 `migrations/0001_sessions_and_messages.sql`；工具账本由 Piece⑥增加后续全局版本，`scripts/migrate.py` 实现有序升级、校验和及事务回滚；`scripts/init_db.py` 只委托同一迁移入口，不建立第二份 create_all 逻辑。使用现有连接配置，脚本不打印连接凭证。
 
-目标命令（尚未实现）：`uv run python -m scripts.migrate`；已有兼容表需显式使用 `--baseline-existing`，严格核验后才登记基线；应用 startup 只检查版本/读写能力，不自动改 schema。每个迁移先验证 PostgreSQL 支持事务的语句；失败回滚并阻止 B，不能部分升级后宣称就绪。降级通过旧代码兼容性检查及备份恢复单独执行，不自动 DROP 未决账本。测试包括干净库升级、重复执行、校验和不符、事务中断与存量未决记录。
+命令入口已实现：`uv run python -m scripts.migrate --help`；`uv run python -m scripts.init_db --help` 委托同一入口，帮助不要求业务配置有效。正式升级使用 `uv run python -m scripts.migrate`，默认迁移目录按项目根定位，也可显式传 `--migrations-dir`；已有兼容表使用 `--baseline-existing`，不支持 `--tools`。**当前 DB-F04 的版本表、首迁移和结构/基线检查器尚未交付；配置有效时升级命令返回 `schema_gate_unavailable`、退出码 1，零引擎/零连接，不能用于实际升级。**
+
+输出为 UTF-8 JSON：`reason` 是固定原因码，`confirmed_versions` 保留本次已确认提交，`uncertain_version` 表示尚未收到提交确认的版本；`cleanup_complete`、`forced_termination` 和 `commit_outcome_unknown` 分别表示收尾、强退与提交结果是否未知。OS 尚未确认 worker 退出时另返回 `worker_pid`。只有成功且收尾完整返回 0，执行失败返回 1，参数/配置加载错误返回 2；错误不回显 SQL、URL 或原始异常。强退或提交未知后不得自动重试，应先核对数据库实际历史与结构。生命周期及预算边界见[迁移说明](../infrastructure_doc/database_doc/migrations.md#离线命令生命周期)。
+
+`reason` 的取值集合是本文件的唯一清单（代码载体为 `MIGRATION_REASONS`）；核心层的分类依据见[迁移说明的原因码表](../infrastructure_doc/database_doc/migrations.md#期限取消与结算)：
+
+| 分组 | 取值 |
+| --- | --- |
+| 入口与结果 | `ok` / `starting` / `schema_gate_unavailable` / `configuration_invalid` / `internal_error` |
+| 文件与序列 | `migration_files_unavailable` / `migration_files_missing` / `migration_filename_invalid` / `migration_sequence_invalid` / `migration_encoding_invalid` / `migration_checksum_invalid` |
+| 库结构、权限、锁 | `schema_missing` / `schema_mismatch` / `permission_denied` / `migration_locked` |
+| 事务、期限 | `transaction_required` / `transaction_lost` / `deadline_invalid` / `timeout` / `migration_database_error` |
+| 命令与监督 | `commit_unknown` / `cleanup_incomplete` / `cancelled` / `worker_failed` / `worker_protocol_error` |
+
+后续完整迁移仍须先严格核验基线，再登记版本；应用 startup 只检查版本/读写能力，不自动改 schema。每个迁移先验证 PostgreSQL 支持事务的语句；失败回滚当前事务并阻止 B，不能部分升级后宣称就绪。降级通过旧代码兼容性检查及备份恢复单独执行，不自动 DROP 未决账本。真实验收包括干净库升级、重复执行、校验和不符、事务中断与存量未决记录。
 
 ### 单主机单活动执行进程
 
