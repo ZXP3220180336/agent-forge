@@ -18,7 +18,7 @@
 
 ## 验证
 
-安装前两项驱动测试红测；安装后两项通过，构造的真实 SQLAlchemy 引擎显式 dispose，测试不连接数据库。相关及全量结果见 [DB-F01 评审](../../../docs/todo.md#db-f01-review)，当前映射见 [ALIGNMENT](../../../docs/ALIGNMENT.md)。
+安装前两项驱动测试红测；安装后两项通过，构造的真实 SQLAlchemy 引擎显式 dispose，测试不连接数据库。相关及全量结果见 [DB-F01 评审](../../../docs/history/completed-work.md#db-f01-review)，当前映射见 [ALIGNMENT](../../../docs/ALIGNMENT.md)。
 
 驱动安装不证明 PostgreSQL 可达、权限正确或 schema 就绪。真实 PostgreSQL 验收仍属于后续 DB-F06，空工厂、启动未探测和空 CLI 的严格 xfail 不能视为本问题修复后的业务验收成功。
 

@@ -7,4 +7,4 @@
 
 增加按 confrelid 查询入向外键的校验，只允许唯一的 public.messages(session_id) → public.sessions(id)，其动作与有效性继续由 messages 出向校验负责。版本表和 messages 不接受入向 FK。参照 [PostgreSQL pg_constraint](https://www.postgresql.org/docs/current/catalog-pg-constraint.html) 的 conrelid/confrelid 区别；不删除约束或改动外部业务表。
 
-新增六项策略单测及上述真实复现转绿，catalog 合计 50 单测加真实回归共 51 passed。当前契约见[迁移说明](../../../docs/infrastructure_doc/database_doc/migrations.md#首迁移与严格基线)，汇总见 [F04 评审](../../../docs/todo.md#db-f04-review)。
+新增六项策略单测及上述真实复现转绿，catalog 合计 50 单测加真实回归共 51 passed。当前契约见[迁移说明](../../../docs/infrastructure_doc/database_doc/migrations.md#首迁移与严格基线)，汇总见 [F04 评审](../../../docs/history/completed-work.md#db-f04-review)。

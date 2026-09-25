@@ -286,7 +286,7 @@ dispose(deadline=None)
 | `tests/unit/test_database_lifecycle_review.py` | 真实 SQLAlchemy Session 的 Owner 责任：close 被取消、上下文 shielded close 未完成、关闭后禁止复用 |
 | `tests/unit/test_database_settings.py` | 配置注入与校验（属配置契约，见[配置参考](../../config_doc/config.md#7-数据库配置)） |
 
-测试用 fake 只证明控制流；真实连接、schema 与 CRUD 的成功路径尚无证据，见 [DB-F06](../../todo.md#db-foundation)。当前实现与接线状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准，运行结果与评审记录见 [DB-F02 评审](../../todo.md#db-f02-review)。
+测试用 fake 只证明控制流；真实连接、schema 与 CRUD 的成功路径尚无证据，见 [DB-F06](../../todo.md#db-foundation)。当前实现与接线状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准，运行结果与评审记录见 [DB-F02 评审](../../history/completed-work.md#db-f02-review)。
 
 ---
 

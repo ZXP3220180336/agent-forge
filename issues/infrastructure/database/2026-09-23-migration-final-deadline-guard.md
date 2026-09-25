@@ -15,6 +15,6 @@
 
 ## 实施与验证
 
-两个入口在 validate_history 后重新执行 `_guard(deadline)`，再判定返回。`test_history_validation_cannot_return_success_past_deadline` 的两个参数场景转绿；迁移核心合计 66 项通过，相关数据库测试 194 项通过。全量结果归 [DB-F03a 评审](../../../docs/todo.md#db-f03a-review)。
+两个入口在 validate_history 后重新执行 `_guard(deadline)`，再判定返回。`test_history_validation_cannot_return_success_past_deadline` 的两个参数场景转绿；迁移核心合计 66 项通过，相关数据库测试 194 项通过。全量结果归 [DB-F03a 评审](../../../docs/history/completed-work.md#db-f03a-review)。
 
 此问题没有引发已知数据库写入；它影响期限内完成的判定。正式规则见 [G0-1/G0-2](../../../docs/engineering/ai-engineering-rules.md#g0)；当前协作契约见[迁移核心](../../../docs/infrastructure_doc/database_doc/migrations.md)。

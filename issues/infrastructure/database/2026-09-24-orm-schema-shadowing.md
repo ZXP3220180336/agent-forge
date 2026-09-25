@@ -7,4 +7,4 @@
 
 两个模型明确 `schema=public`，外键目标改为 `public.sessions.id`，不改变全连接 search_path。参照 [SQLAlchemy 显式 schema](https://docs.sqlalchemy.org/en/20/core/metadata.html#specifying-the-schema-name)；最小修复限定到已批准 public 契约，不扩展连接策略。六项默认值单测与真实 shadow 用例合计 7 passed，完整 ORM/catalog 集成矩阵继续覆盖。
 
-不迁移或删除其他 schema 的同名数据。当前契约见[模型说明](../../../docs/infrastructure_doc/model_doc/model.md)，本轮证据见 [F04 评审](../../../docs/todo.md#db-f04-review)。
+不迁移或删除其他 schema 的同名数据。当前契约见[模型说明](../../../docs/infrastructure_doc/model_doc/model.md)，本轮证据见 [F04 评审](../../../docs/history/completed-work.md#db-f04-review)。

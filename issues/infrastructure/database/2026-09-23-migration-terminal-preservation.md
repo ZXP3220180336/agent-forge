@@ -15,4 +15,4 @@
 
 ## 验证与边界
 
-两项复现均转绿，真实 spawn 另覆盖确认后挂死、待确认提交挂死、崩溃和坏消息；无真实数据库原子性证明。全量证据见 [F03b 评审](../../../docs/todo.md#db-f03b-review)，当前契约见[迁移说明](../../../docs/infrastructure_doc/database_doc/migrations.md#离线命令生命周期)。
+两项复现均转绿，真实 spawn 另覆盖确认后挂死、待确认提交挂死、崩溃和坏消息；无真实数据库原子性证明。全量证据见 [F03b 评审](../../../docs/history/completed-work.md#db-f03b-review)，当前契约见[迁移说明](../../../docs/infrastructure_doc/database_doc/migrations.md#离线命令生命周期)。

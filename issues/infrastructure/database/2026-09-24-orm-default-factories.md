@@ -7,4 +7,4 @@
 
 按照 [SQLAlchemy Python 默认函数](https://docs.sqlalchemy.org/en/20/core/defaults.html#python-executed-functions)，改为时间 callable 和 dict 工厂，保持客户端语义，不增加 server_default、updated_at 插入默认或数据库触发器。时间、JSON 独立性及直接 SQL 默认边界由 `tests/integration/test_database_models.py` 验证。
 
-这是已存在实现问题，不是实际生产数据损坏证据；已写入数据不自动修复。当前契约见[模型说明](../../../docs/infrastructure_doc/model_doc/model.md)，本轮结果见 [F04 评审](../../../docs/todo.md#db-f04-review)。
+这是已存在实现问题，不是实际生产数据损坏证据；已写入数据不自动修复。当前契约见[模型说明](../../../docs/infrastructure_doc/model_doc/model.md)，本轮结果见 [F04 评审](../../../docs/history/completed-work.md#db-f04-review)。

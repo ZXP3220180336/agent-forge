@@ -168,27 +168,27 @@ ChatService 最小新增准入状态与运行/finalizer 跟踪，并复用既有
 
 DB-F01 已补自动化红测、正式 asyncpg 依赖与锁文件，并在 Settings 定义有限数据库预算、连接池容量约束与 URL 方言校验。参数与默认值只在[配置参考](../../../docs/config_doc/config.md#7-数据库配置)维护；常规配置诊断不回显 URL，配置字典仍含凭证，不允许日志化。驱动修复的官方发行参照及红绿证据见 [DB-001](../../../issues/infrastructure/database/2026-09-22-missing-asyncpg-dependency.md)。
 
-新增预算尚未接入当前 Container，不声称运行等待已受这些配置控制。未修复的启动检查、空工厂错误与迁移 CLI 以严格 xfail 标记具体后续片；实际测试和工程检查结果见 [DB-F01 评审](../../../docs/todo.md#db-f01-review)。尚无真实 PostgreSQL 连接、迁移或权限验收成功证据。
+新增预算尚未接入当前 Container，不声称运行等待已受这些配置控制。未修复的启动检查、空工厂错误与迁移 CLI 以严格 xfail 标记具体后续片；实际测试和工程检查结果见 [DB-F01 评审](../../../docs/history/completed-work.md#db-f01-review)。尚无真实 PostgreSQL 连接、迁移或权限验收成功证据。
 
 已批准的验证矩阵及文件分工见[独立计划](../../../docs/todo.md#db-foundation)。真实 PostgreSQL 门槛不能用 fake/SQLite 或跳过测试替代；环境缺失时 DB-F06 必须保持未完成。驱动依赖进入 DB-F01 的首个实现切片，避免 runtime 实现阶段仍不可加载。
 
 DB-F02 已实现只读探测、版本观察、受控工厂、Session/连接 Owner、有界等待与驱动终止、关闭结果和实例日志脱敏。schema_check 为后续唯一迁移校验实现预留的只读异步入口；缺失时即使 SELECT 1 成功也保持 schema_mismatch，不宣称 schema 就绪。没有 Container/Store/API/CLI 接线，也没有迁移或真实 PostgreSQL 成功证据。
 
-本片采用显式 AsyncConnection.start/close，避免上下文退出隐式 shielded close 丢失 Owner；引擎关闭任务及不合作的探针任务保留引用，Session 包装从创建即登记并禁止关闭后复用。池关闭可能吞异常并输出日志，因此另外核验驱动 is_closed，实例 logger 仅输出固定脱敏事件。这些实现细节兑现 D4/D6，不新增业务重试或修改 approved 范围。红绿验证与独立审查见 [DB-F02 评审](../../../docs/todo.md#db-f02-review)。
+本片采用显式 AsyncConnection.start/close，避免上下文退出隐式 shielded close 丢失 Owner；引擎关闭任务及不合作的探针任务保留引用，Session 包装从创建即登记并禁止关闭后复用。池关闭可能吞异常并输出日志，因此另外核验驱动 is_closed，实例 logger 仅输出固定脱敏事件。这些实现细节兑现 D4/D6，不新增业务重试或修改 approved 范围。红绿验证与独立审查见 [DB-F02 评审](../../../docs/history/completed-work.md#db-f02-review)。
 
-DB-F03a 已交付文件发现/原始字节 SHA-256、完整历史与精确 head 校验、只读版本检查及已有事务内下一文件的整批执行/登记。name 列固定保存完整文件名。该核心返回只表示事务内执行，提交/回滚与未知提交结果由后续命令 Owner 负责；版本表建立/结构、首迁移与基线仍归 DB-F04。未完成完整迁移命令、未运行真实 PostgreSQL，不改变 D2 的原子性验收门槛。核心契约见 [migrations.md](../../../docs/infrastructure_doc/database_doc/migrations.md)，验证见 [DB-F03a 评审](../../../docs/todo.md#db-f03a-review)。
+DB-F03a 已交付文件发现/原始字节 SHA-256、完整历史与精确 head 校验、只读版本检查及已有事务内下一文件的整批执行/登记。name 列固定保存完整文件名。该核心返回只表示事务内执行，提交/回滚与未知提交结果由后续命令 Owner 负责；版本表建立/结构、首迁移与基线仍归 DB-F04。未完成完整迁移命令、未运行真实 PostgreSQL，不改变 D2 的原子性验收门槛。核心契约见 [migrations.md](../../../docs/infrastructure_doc/database_doc/migrations.md)，验证见 [DB-F03a 评审](../../../docs/history/completed-work.md#db-f03a-review)。
 
 DB-F03b 已交付唯一 CLI、命令资源 Owner、逐文件事务提交/回滚、提交未知与确认事实保留；两个入口共用同一路径。生产 preparer 未接入时，在引擎创建前以 `schema_gate_unavailable` 拒绝，F04 的版本表/基线责任不提前实现。命令预算从 Settings 注入 `MigrationTimeouts`，引擎复用运行时实例日志脱敏。
 
-为兑现有限退出，离线命令采用一个 spawn worker 独占数据库资源、父进程监督期限；范围仅本 CLI。备选的单进程 `asyncio.run` 在协程吞取消时仍可能无限等待退出，不能满足 D6；参照 [Python asyncio Runner](https://docs.python.org/3/library/asyncio-runner.html) 与 [multiprocessing 进程终止](https://docs.python.org/3/library/multiprocessing.html#multiprocessing.Process.terminate)。代价是进程启动与小型事实传递协议；强退不保证远端未提交，也不保证运行 finally，因此保留确认版本并明确输出未知结果与释放状态，不自动重试。真实 spawn 验证不能替代 PostgreSQL 原子性验收；结果见 [DB-F03b 评审](../../../docs/todo.md#db-f03b-review)。
+为兑现有限退出，离线命令采用一个 spawn worker 独占数据库资源、父进程监督期限；范围仅本 CLI。备选的单进程 `asyncio.run` 在协程吞取消时仍可能无限等待退出，不能满足 D6；参照 [Python asyncio Runner](https://docs.python.org/3/library/asyncio-runner.html) 与 [multiprocessing 进程终止](https://docs.python.org/3/library/multiprocessing.html#multiprocessing.Process.terminate)。代价是进程启动与小型事实传递协议；强退不保证远端未提交，也不保证运行 finally，因此保留确认版本并明确输出未知结果与释放状态，不自动重试。真实 spawn 验证不能替代 PostgreSQL 原子性验收；结果见 [DB-F03b 评审](../../../docs/history/completed-work.md#db-f03b-review)。
 
 DB-F04 已交付首 SQL、版本表准备、严格基线和只读 check_schema。目录策略提取为 `database_schema.py`：迁移和只读检查是两个真实调用方，目录查询/比较与事务编排有独立变化原因，符合 E9；没有增加资源 Owner 或第二迁移机制。依照 [PostgreSQL pg_constraint](https://www.postgresql.org/docs/current/catalog-pg-constraint.html)、[pg_index](https://www.postgresql.org/docs/current/catalog-pg-index.html) 和 [pg_sequence](https://www.postgresql.org/docs/current/catalog-pg-sequence.html) 验证目录事实，不将 IF NOT EXISTS 或同名表当兼容证明。未知差异保守拒绝，未来迁移须同步扩展目录契约。
 
-两 ORM 明确映射 public，默认值改为客户端 callable，未添加服务端时间/JSON 默认。用户已提供专用 PostgreSQL 18.6，真实验证首迁移、重复、基线及数据/序列保留、DDL/登记失败原子回滚、前缀保留和提交响应丢失；提交未知试验中真实版本行已提交而命令仍报告未知，未自动重放。F03 的真实事务门槛已兑现，本片不能代替 F05/F06 的应用、受限账号与关闭验收。详见 [DB-F04 评审](../../../docs/todo.md#db-f04-review)及 DB-016～019 问题记录。
+两 ORM 明确映射 public，默认值改为客户端 callable，未添加服务端时间/JSON 默认。用户已提供专用 PostgreSQL 18.6，真实验证首迁移、重复、基线及数据/序列保留、DDL/登记失败原子回滚、前缀保留和提交响应丢失；提交未知试验中真实版本行已提交而命令仍报告未知，未自动重放。F03 的真实事务门槛已兑现，本片不能代替 F05/F06 的应用、受限账号与关闭验收。详见 [DB-F04 评审](../../../docs/history/completed-work.md#db-f04-review)及 DB-016～019 问题记录。
 
 DB-F05a 已将 SQL/ORM/事务迁至 PostgresSessionStore，Domain 端口只传普通数据，应用保留参数与缓存。Container 最小包装旧工厂、共享持久化错误是本片必要依赖；完整 runtime/readiness/503 仍归 F05b，排空归 F05c。当前普通工厂不具备 runtime 的未关闭 Session 最终回收登记，不能提前宣称应用生命周期全部闭合。
 
-每个 worker 独占 Session，参照 [SQLAlchemy AsyncSession 每任务独占](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#using-asyncsession-with-concurrent-tasks)；调用方使用 [asyncio.wait](https://docs.python.org/3/library/asyncio-task.html#asyncio.wait) 有界等待，迟到任务保留引用。缓存 await 后再次检查准入；单次连接失败不永久封锁全局，清理失败则禁止新准入。真实 PostgreSQL 证明 CRUD、窗口/过滤/统计、硬删回滚、提交响应丢失事实、慢查询超时及缓存前归还连接。具体结果见 [F05a 评审](../../../docs/todo.md#db-f05a-review)。
+每个 worker 独占 Session，参照 [SQLAlchemy AsyncSession 每任务独占](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#using-asyncsession-with-concurrent-tasks)；调用方使用 [asyncio.wait](https://docs.python.org/3/library/asyncio-task.html#asyncio.wait) 有界等待，迟到任务保留引用。缓存 await 后再次检查准入；单次连接失败不永久封锁全局，清理失败则禁止新准入。真实 PostgreSQL 证明 CRUD、窗口/过滤/统计、硬删回滚、提交响应丢失事实、慢查询超时及缓存前归还连接。具体结果见 [F05a 评审](../../../docs/history/completed-work.md#db-f05a-review)。
 
 ## 关联记录
 

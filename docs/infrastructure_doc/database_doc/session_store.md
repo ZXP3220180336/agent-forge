@@ -42,4 +42,4 @@ operation 总预算包含清理，业务预留不超过 cleanup 配置及总预�
 
 [应用单测](../../../tests/unit/test_session_manager.py) 验证参数、缓存与不可用边界；[Store 单测](../../../tests/unit/test_session_store.py) 验证取消、期限、迟到清理与提交事实；[真实 PostgreSQL 测试](../../../tests/integration/test_session_store.py) 验证 CRUD、消息窗口、过滤统计、硬删原子性、提交响应丢失、慢 SQL 及 Redis IO 前归还连接。
 
-测试环境和命令见[部署说明](../../project/deployment.md#postgresql-隔离测试环境)。设计依据及当前交付边界见 [DB-ADR-001](../../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)，本片实测记录见[计划评审](../../todo.md#db-f05a-review)。
+测试环境和命令见[部署说明](../../project/deployment.md#postgresql-隔离测试环境)。设计依据及当前交付边界见 [DB-ADR-001](../../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)，本片实测记录见[计划评审](../../history/completed-work.md#db-f05a-review)。

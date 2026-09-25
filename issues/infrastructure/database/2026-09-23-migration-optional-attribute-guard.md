@@ -47,4 +47,4 @@ SQLAlchemy 2.0.51 中两者都是可选声明：
 
 ## 关联记录
 
-[迁移核心](../../../docs/infrastructure_doc/database_doc/migrations.md) · [DB-011](2026-09-23-migration-final-deadline-guard.md) · [DB-F03a 评审](../../../docs/todo.md#db-f03a-review)
+[迁移核心](../../../docs/infrastructure_doc/database_doc/migrations.md) · [DB-011](2026-09-23-migration-final-deadline-guard.md) · [DB-F03a 评审](../../../docs/history/completed-work.md#db-f03a-review)

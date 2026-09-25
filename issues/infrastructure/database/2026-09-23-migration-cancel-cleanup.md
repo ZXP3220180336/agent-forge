@@ -13,4 +13,4 @@
 
 ## 验证与边界
 
-该测试修复后转绿，另覆盖文件超时回滚和提交中取消保留未知结果。fake 仅证明调用顺序，不证明远端回滚。全量证据见 [F03b 评审](../../../docs/todo.md#db-f03b-review)，资源契约见[迁移说明](../../../docs/infrastructure_doc/database_doc/migrations.md#离线命令生命周期)。
+该测试修复后转绿，另覆盖文件超时回滚和提交中取消保留未知结果。fake 仅证明调用顺序，不证明远端回滚。全量证据见 [F03b 评审](../../../docs/history/completed-work.md#db-f03b-review)，资源契约见[迁移说明](../../../docs/infrastructure_doc/database_doc/migrations.md#离线命令生命周期)。

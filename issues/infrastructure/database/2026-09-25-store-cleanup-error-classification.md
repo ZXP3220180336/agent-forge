@@ -16,4 +16,4 @@ F05a 开发版清理分支把全部 DBAPIError 归为设施不可用，未知 Va
 
 不增加重试、探针或新资源 Owner。应用参数、缓存键和 TTL 保持原样。工业依据为 [Python asyncio 协作调度](https://docs.python.org/3/library/asyncio-task.html) 与 [SQLAlchemy Session 事务生命周期](https://docs.sqlalchemy.org/en/20/orm/session_basics.html)；本地红绿测试验证项目边界。
 
-教训：错误分类必须覆盖操作和收尾两条出口；清理失败不能抹掉提交确认。全量与真实数据库结果见 [F05a 评审](../../../docs/todo.md#db-f05a-review)，契约见[会话 Store](../../../docs/infrastructure_doc/database_doc/session_store.md)。
+教训：错误分类必须覆盖操作和收尾两条出口；清理失败不能抹掉提交确认。全量与真实数据库结果见 [F05a 评审](../../../docs/history/completed-work.md#db-f05a-review)，契约见[会话 Store](../../../docs/infrastructure_doc/database_doc/session_store.md)。

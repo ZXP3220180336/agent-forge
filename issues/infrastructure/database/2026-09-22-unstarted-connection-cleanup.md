@@ -18,4 +18,4 @@
 
 ## 教训与关联
 
-资源释放必须依据实际取得状态，不依据包装对象已构造。完整实现验证见 [DB-F02 评审](../../../docs/todo.md#db-f02-review)；正式约束见 [G0](../../../docs/engineering/ai-engineering-rules.md#g0) 和 [数据库 ADR](../../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)。
+资源释放必须依据实际取得状态，不依据包装对象已构造。完整实现验证见 [DB-F02 评审](../../../docs/history/completed-work.md#db-f02-review)；正式约束见 [G0](../../../docs/engineering/ai-engineering-rules.md#g0) 和 [数据库 ADR](../../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)。

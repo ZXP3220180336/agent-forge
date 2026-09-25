@@ -16,7 +16,7 @@
 
 ## 实施与验证
 
-`tests/unit/test_database.py` 对提前关闭和并发失败先红后绿。独立审查新增 `tests/unit/test_database_lifecycle_review.py`，用真实 SQLAlchemy Session 验证 close 取消、上下文后台关闭及关闭后复用拒绝，三项通过。其他挂起、迟到、取消与驱动物理释放检查见 [DB-F02 评审](../../../docs/todo.md#db-f02-review)。
+`tests/unit/test_database.py` 对提前关闭和并发失败先红后绿。独立审查新增 `tests/unit/test_database_lifecycle_review.py`，用真实 SQLAlchemy Session 验证 close 取消、上下文后台关闭及关闭后复用拒绝，三项通过。其他挂起、迟到、取消与驱动物理释放检查见 [DB-F02 评审](../../../docs/history/completed-work.md#db-f02-review)。
 
 末次复核另补 ping 超时且探针 Owner 未退出的红测：ping 不更新健康快照，但不能因此放任新工厂调用或 checkout。修复后资源准入同时检查未完成的探针清理，仍保留原有 ping 只观测语义。
 

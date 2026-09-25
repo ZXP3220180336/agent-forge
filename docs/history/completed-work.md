@@ -1,8 +1,78 @@
 # 已完成工作的交接记录
 
-整理日期：2026-09-21。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
+整理日期：2026-09-21；2026-09-25 增补 DB-F 归档。本文件只保留原 `docs/todo.md` 中尚无独立 Issue/ADR 完整承载的有用交接结论，以及指向现行记录的索引。它不是规则正文，也不是旧 todo 全文存档。
 
 原记录中的测试通过、提交和完成状态仅代表当时记录；治理迁移收尾未重跑这些历史业务测试。尚未关闭的事项只维护在[项目待办](../todo.md)。
+
+<a id="db-f-foundation"></a>
+
+## 2026-09-22 至 09-25：DB-F 共享数据库基础设施（DB-010 与 F01～F05a 已完成）
+
+2026-09-22 立项，目标是为已有 Session/Message、未来工具账本与长期记忆元数据提供同一 PostgreSQL 运行时和迁移底座，独立于 C-02 Piece⑥。决策唯一正文为 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md)；组件契约分别维护在[数据库运行时](../infrastructure_doc/database_doc/database.md)、[迁移说明](../infrastructure_doc/database_doc/migrations.md)、[结构校验说明](../infrastructure_doc/database_doc/schema.md)与[会话 Store](../infrastructure_doc/database_doc/session_store.md)。DB-010 与 F01～F05a 已完成；F05b（Container、readiness 与 503）、F05c（消费者排空与关闭顺序）与 F06（真实环境整体验收）仍未关闭，只维护在[项目待办](../todo.md#db-foundation)。
+
+| 片 | 交付 | 提交 |
+| --- | --- | --- |
+| DB-010 | 取消与超时清理显式绑定 worker，停止标记、状态写回与驱动终止按任务身份限定 | `6eb5544` |
+| DB-F01 | asyncpg 正式依赖与锁文件、数据库配置有限时限/池容量/方言校验/凭证保护、失败复现 | `c300400` |
+| DB-F02 | 独立 DatabaseRuntime（init/ping/probe/dispose、受控工厂、Session/驱动 Owner、日志脱敏）与 `DatabaseTimeouts` 参数整理 | `4f719de` |
+| DB-F03a | 迁移核心：不可变文件快照、完整历史与精确 head 校验、只读版本检查、事务内整批执行与登记 | `27be9c0` |
+| DB-F03b | 唯一迁移命令 Owner 与 CLI、spawn 监督、逐文件事务与提交未知保留 | `6a1551f` |
+| DB-F04 | Session/Message 首迁移、版本表准备、严格基线、只读完整检查与 ORM 一致 | `f3f63ad` |
+| DB-F05a | SessionStorePort 与 PostgreSQL 适配器、应用层 SQL 迁出、共享持久化不可用异常 | `1c94946` |
+
+### DB-010：旧探测取消误伤后继任务
+
+取消与超时清理改为显式绑定 worker，停止标记、状态写回与驱动终止按任务身份限定，避免旧探测的清理终止后续驱动。完整时序图、可执行复现、旧代码路径与官方 asyncio 参照见 [DB-010](../../issues/infrastructure/database/2026-09-23-stale-probe-cancellation.md)。当时相关测试 128 passed、全量 1640 passed + 5 xfailed。真实 PostgreSQL 验收仍归 DB-F06，不在本次取消竞态修复中扩展。
+
+<a id="db-f01-review"></a>
+
+### DB-F01：依赖与配置
+
+交付 asyncpg 正式依赖与锁文件、数据库配置（有限时限、有限池容量、方言校验、环境注入与诊断凭证保护），以及缺驱动、空工厂与空 CLI 的自动化失败复现；未实现 Runtime、CLI 或 readiness API。根因闭环见 [DB-001](../../issues/infrastructure/database/2026-09-22-missing-asyncpg-dependency.md)，配置约束现行正文为[配置参考](../config_doc/config.md)。当时全量 1584 passed + 5 xfailed。
+
+当时的 5 个 strict xfail 按去向保留到后续片闭合：CLI 两项归 F03、Container 两项归 F02/F05、SessionManager 一项归 F05，均已随对应片移除。遗留边界：配置导出与结构化 `ValidationError` 仍可能含原始输入，正式文档只声明安全诊断方式。
+
+<a id="db-f02-review"></a>
+
+### DB-F02：DatabaseRuntime 与参数整理
+
+独立 `DatabaseRuntime` 承载唯一 engine/sessionmaker、init/ping/probe/dispose、只读连接探测、受控工厂、Session 与驱动 Owner、有限等待、取消与迟到处理、物理关闭核验及日志脱敏；缺完整 schema 检查器时工厂保持关闭。后续参数整理把六项运行时超时合并为 `frozen=True, kw_only=True` 的 `DatabaseTimeouts`，runtime 直接读取同一对象，未增加兼容分支或业务抽象；组件契约现行正文为[数据库运行时](../infrastructure_doc/database_doc/database.md)。当时全量 1627 passed + 5 xfailed，参数整理相关 115 passed。
+
+审查与复核发现均归正式记录：[DB-002](../../issues/infrastructure/database/2026-09-22-unstarted-connection-cleanup.md)、[DB-003](../../issues/infrastructure/database/2026-09-22-runtime-resource-ownership.md)、[DB-004](../../issues/infrastructure/database/2026-09-23-ping-admission-write.md)、[DB-005](../../issues/infrastructure/database/2026-09-23-runtime-reason-classification.md)、[DB-006](../../issues/infrastructure/database/2026-09-23-idle-driver-termination-guard.md)、[DB-007](../../issues/infrastructure/database/2026-09-23-half-built-engine-admission.md)、[DB-008](../../issues/infrastructure/database/2026-09-23-connect-during-close-assertion.md)、[DB-009](../../issues/infrastructure/database/2026-09-23-pool-logger-name-hardcode.md)。
+
+交接：F03/F04 提供受信只读 schema_check，须核对完整历史、head、结构与权限，并区分探针主动设置的只读事务与账号默认只读；F05 从 Settings 选择 runtime 参数（不全量展开含迁移预算的 `database_config`），先 drain 后以同一绝对 deadline dispose；首次启动未装配消费者仍要求重启。DB-F02 不改变应用的可用性状态。组件内部契约（准入状态机、探测与关闭流程、资源责任、并发与取消边界、原因码分类）维护在[数据库运行时](../infrastructure_doc/database_doc/database.md)，层文档只保留定位与待接线边界。
+
+<a id="db-f03a-review"></a>
+
+### DB-F03a：迁移核心
+
+交付迁移核心：唯一平铺序列发现、UTF-8/LF 原始字节 SHA-256、不可变文件快照、完整历史前缀与精确 head 校验、只读版本检查、调用方已有事务内 NOWAIT 锁后重读、同一 asyncpg driver 整批执行与参数化登记。返回仅表示事务内执行，不表示提交；前置结构/基线验证归 F04，命令提交/回滚、提交不确定性与关闭 Owner 归 F03b，未接入完整 schema_check。现行契约见[迁移说明](../infrastructure_doc/database_doc/migrations.md)。当时全量 1706 passed + 5 xfailed，评审后续修复后 1708 passed。
+
+开发阶段缺陷归 [DB-011](../../issues/infrastructure/database/2026-09-23-migration-final-deadline-guard.md)（同步历史核验后漏检期限）与 [DB-012](../../issues/infrastructure/database/2026-09-23-migration-optional-attribute-guard.md)（IDE 类型诊断发现 `sync_connection`、`driver_connection` 未判空）。真实验收限制：该轮 PATH 未发现 psql/docker/pg_isready，未对任何数据库建表或迁移，DB-F03 整体与 F06 不计完成；F03b/F04 须先补齐命令 Owner、版本表结构与基线门禁。
+
+<a id="db-f03b-review"></a>
+
+### DB-F03b：唯一迁移命令与 CLI
+
+交付唯一 CLI 与 `init_db` 委托、UTF-8 输出与错误脱敏、帮助先于配置加载、Settings 预算消费、独立命令 Owner、逐文件事务提交与回滚、确认前缀与提交未知保留、有限清理及 spawn 进程监督；无 schema preparer 时零引擎、零连接拒绝，无跳过门禁、自动事务重试或 `create_all` 分支。当时全量 1739 passed + 3 xfailed，验证后续修复后 1749 passed。
+
+保留的精确表述：前置配置解析不计入 worker 预算，OS 未确认退出不宣称资源已释放，维护在[迁移说明](../infrastructure_doc/database_doc/migrations.md#离线命令生命周期)；部署文档只覆盖命令与输出契约。进程隔离仅用于离线迁移，避免单进程 `asyncio.run` 在协程吞取消时无法有限退出。取消回滚、主终态保留与验证后续归 [DB-013](../../issues/infrastructure/database/2026-09-23-migration-cancel-cleanup.md)、[DB-014](../../issues/infrastructure/database/2026-09-23-migration-terminal-preservation.md)、[DB-015](../../issues/infrastructure/database/2026-09-24-migration-verification-followups.md)。验收限制：该轮未执行真实 PostgreSQL 迁移，DB-F04 仍须版本表准备/结构/权限、首迁移与严格基线 checker。
+
+<a id="db-f04-review"></a>
+
+### DB-F04：首迁移、基线接管与 ORM 一致性
+
+交付首迁移 SQL、版本表准备、严格基线接管、完整只读检查与共用 catalog 策略，并修正 ORM 客户端默认工厂与 public 映射。结构选择：catalog 是迁移与只读检查两个真实调用方共用的严格策略，独立在 `database_schema.py`，资源与事务责任仍在既有命令 Owner；不新增 Repository、事务重试或通用迁移框架。catalog 契约后续从[迁移说明](../infrastructure_doc/database_doc/migrations.md)迁出为[结构校验说明](../infrastructure_doc/database_doc/schema.md)，`migrations.md#首迁移与严格基线` 锚点保留以免历史链接失效。
+
+用户提供的专用 PostgreSQL 18.6 库完成首迁移、重复、基线与数据/序列保留、DDL/登记失败原子回滚、已提交前缀、提交响应丢失及双 CLI 验证；真实集成 26 passed，当时全量 1837 passed + 3 xfailed。真实测试 fixture 严格限制数据库、账号与可清理对象，缺失配置只标未执行，不计作验收成功；基线操作必须由操作者保证旧 writer 与序列使用者已停止。发现归 [DB-016](../../issues/infrastructure/database/2026-09-24-orm-default-factories.md)～[DB-019](../../issues/infrastructure/database/2026-09-24-incoming-foreign-key-check.md)。
+
+<a id="db-f05a-review"></a>
+
+### DB-F05a：会话 Store 与 SQL 迁出
+
+交付领域 `SessionStorePort` 与 PostgreSQL 适配器，每操作独立事务、硬删原子提交、普通数据进出，SQL/ORM 全部迁出 Application；SessionManager 保留参数、默认值与缓存策略并在缓存 await 后复查准入；Container 最小包装既有工厂；新增共享 `PersistenceUnavailableError` 携带提交确认/未知事实。现行契约见[会话 Store](../infrastructure_doc/database_doc/session_store.md)与[错误处理契约](../shared_doc/error_handling.md#持久化不可用)。当时 Store 21 项、Manager 39 项单测通过，全量 1881 passed + 2 xfailed。
+
+保留的边界：单 worker 独占 Session，总预算含清理，取消与迟到提交保留事实，未结束 worker 保留引用，清理失败封锁准入；单次操作连接失败不永久替代 runtime 全局状态。当前 Container 仍使用普通工厂，runtime 的未关闭 Session 最终登记/回收与完整 readiness/schema/503 归 F05b，消费者排空归 F05c；2 个 strict xfail 正对应未完成装配，不宣称完整应用数据库验收。发现归 [DB-020](../../issues/infrastructure/database/2026-09-25-cache-admission-race.md) 与 [DB-021](../../issues/infrastructure/database/2026-09-25-store-cleanup-error-classification.md)。
 
 <a id="refactoring-plan"></a>
 

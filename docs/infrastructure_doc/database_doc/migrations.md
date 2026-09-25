@@ -210,7 +210,7 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 | `tests/unit/test_database_cli_supervision.py` | 真实 spawn 的正常退出、挂死、崩溃、坏消息；确认/未确认版本保留及晚到结果不覆盖主失败 |
 | `tests/unit/test_database_migrations.py` | 文件名/序列/编码在执行前拒绝、不可变字节快照与文件名保留、历史前缀与损坏历史拒绝、非法待执行文件阻断全部数据库工作、只读版本检查无写入且要求精确 head、锁后重读而非缓存、整批 SQL 与登记共用同一事务、无真实事务与 AUTOCOMMIT 与执行选项不可读与驱动连接缺失的拒绝、逐阶段取消与超时、吞掉超时或外部取消后不得登记、数据库错误脱敏、未知程序错误不可恢复、`transaction_lost` 不登记、批次或登记失败不提交、缺表不建表、同步历史校验后不得越过期限返回成功 |
 
-fake 只证明控制流，不证明 PostgreSQL DDL 原子性。DB-F04 已在专用 PostgreSQL 18.6 库验证首 SQL 与登记回滚、已提交前缀及提交响应丢失；F03 的真实事务门槛已有本片证据。应用 Store/runtime/权限账号矩阵的完整验收仍归 F05/F06。当前接线以 [ALIGNMENT](../../ALIGNMENT.md) 为准，运行结果归 [DB-F04 评审](../../todo.md#db-f04-review)。测试环境配置与清理授权只在[部署说明](../../project/deployment.md#postgresql-隔离测试环境)维护。
+fake 只证明控制流，不证明 PostgreSQL DDL 原子性。DB-F04 已在专用 PostgreSQL 18.6 库验证首 SQL 与登记回滚、已提交前缀及提交响应丢失；F03 的真实事务门槛已有本片证据。应用 Store/runtime/权限账号矩阵的完整验收仍归 F05/F06。当前接线以 [ALIGNMENT](../../ALIGNMENT.md) 为准，运行结果归 [DB-F04 评审](../../history/completed-work.md#db-f04-review)。测试环境配置与清理授权只在[部署说明](../../project/deployment.md#postgresql-隔离测试环境)维护。
 
 ---
 
