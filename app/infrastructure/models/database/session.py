@@ -3,6 +3,7 @@
 # ============================================
 
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from sqlalchemy import JSON, Column, DateTime, String, Text
 
@@ -12,12 +13,13 @@ from .base import Base
 # ===== 数据库模型 =====
 class SessionModel(Base):
     __tablename__ = "sessions"
+    __table_args__: ClassVar[dict[str, str]] = {"schema": "public"}
 
     id = Column(String(36), primary_key=True)  # UUID
     user_id = Column(String(64), nullable=False, index=True)
     title = Column(String(200), default="新对话")
     system_prompt = Column(Text, default="你是一个友好的AI助手")
-    created_at = Column(DateTime(timezone=True), default=datetime.now(UTC))
-    updated_at = Column(DateTime(timezone=True), onupdate=datetime.now(UTC))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime(timezone=True), onupdate=lambda: datetime.now(UTC))
     status = Column(String(20), default="active")  # active, archived, deleted
-    meta = Column(JSON, default={})  # 扩展字段
+    meta = Column(JSON, default=dict)  # 扩展字段

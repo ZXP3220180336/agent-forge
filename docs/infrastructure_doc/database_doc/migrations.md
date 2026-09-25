@@ -1,6 +1,7 @@
 # 数据库迁移核心设计说明
 
 > 对应代码：`app/infrastructure/database_migrations.py`
+> 结构校验：`app/infrastructure/database_schema.py`，契约见[数据库结构校验说明](schema.md)；首迁移：`migrations/0001_sessions_and_messages.sql`
 > 文档定位：唯一迁移序列核心的内部协作契约与维护说明
 > 更新日期：2026-09-23
 > 状态与映射：[ALIGNMENT](../../ALIGNMENT.md) 的 `app/infrastructure/database_migrations.py` 条目；层次定位与模块地图见[基础设施说明](../infrastructure.md)
@@ -21,6 +22,7 @@
   - [关键实现说明](#关键实现说明)
   - [行为边界](#行为边界)
   - [离线命令生命周期](#离线命令生命周期)
+  - [首迁移与严格基线](#首迁移与严格基线)
   - [配置关联](#配置关联)
   - [验证入口](#验证入口)
   - [设计决策与问题记录](#设计决策与问题记录)
@@ -36,14 +38,14 @@
 
 ## 设计目标与边界
 
-本组件是唯一迁移序列的文件与历史事实来源，负责文件快照、完整历史比对和事务内单文件执行。DB-F03a 交付这些核心函数，DB-F03b 增加同文件的 `MigrationCommand` 管理离线资源与逐文件事务。它仍不提供完整 schema/readiness 检查；生产门禁缺失时 CLI 拒绝升级。
+本组件是唯一迁移序列的文件与历史事实来源，负责文件快照、完整历史比对和事务内单文件执行。DB-F03a 交付核心函数，DB-F03b 增加 `MigrationCommand` 管理离线资源与逐文件事务，DB-F04 接入首迁移、严格基线和只读 `check_schema`。完整检查器已提供，应用 readiness 装配仍归 F05。
 
 连接和逐文件事务的 Owner 在上层：
 
 | 责任 | 归属 |
 | --- | --- |
-| 命令生命周期、逐文件事务的提交/回滚、提交结果未知、有界关闭与 CLI | DB-F03b 已实现；生产使用等待 F04 |
-| 版本表自身结构、首迁移、旧表接管与受管结构/权限核验 | DB-F04 |
+| 命令生命周期、逐文件事务的提交/回滚、提交结果未知、有界关闭与 CLI | DB-F03b 已实现，F04 已接入结构门禁 |
+| 版本表自身结构、首迁移、旧表接管与受管结构/权限核验 | DB-F04 已实现并完成本片真实 PostgreSQL 验证 |
 | 应用装配、readiness API 与运行入口 | DB-F05 |
 | 真实 PostgreSQL 原子性与多语句回滚验收 | DB-F03 整体及 DB-F06 |
 
@@ -159,15 +161,29 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 
 `scripts.migrate` 解析参数后读取 Settings，`scripts.init_db` 只调用同一个 `main`。`--help` 不加载配置。正式命令、输出字段与命令层原因码清单统一见[部署文档](../../project/deployment.md#工具-schema-迁移)（`MIGRATION_REASONS` 是同一清单的代码载体，不在此重复枚举）。
 
-`SCHEMA_PREPARER` 是 F04 的内部接线点，当前为 `None`；CLI 在创建引擎和连接之前返回 `schema_gate_unavailable`，没有跳过检查参数。测试注入仅证明命令控制流。受信 preparer 接收当前事务连接、完整快照、`baseline_existing` 和裁剪期限，验证/准备结构；通常返回 `None`，严格基线登记后仅返回版本 `1`。基线单独提交后下一事务才执行后续 SQL，preparer 本身不得提交、关闭或另开连接。门禁返回值不符合该契约时报 `internal_error`。
+`SCHEMA_PREPARER` 已接入 `prepare_schema`，没有跳过检查参数；缺失接线仍以 `schema_gate_unavailable` 在创建引擎前拒绝。preparer 接收当前事务连接、完整快照、`baseline_existing` 和裁剪期限，验证/准备结构；通常返回 `None`，严格基线登记后返回版本 `1`。基线单独提交后下一事务才执行后续 SQL，preparer 不提交、关闭或另开连接。门禁返回值不符合该契约时报 `internal_error`。
 
 `MigrationCommand` 是一次性 Owner：持有一个引擎/连接，为每个文件建立独立事务，调用核心后提交，到 head 的只读核验事务回滚退出。失败只回滚当前事务，保留已经收到 commit 成功响应的版本；提交请求发出后才登记未确认版本（此前耗尽预算属未发出提交，报 `timeout`），响应丢失、取消或失败均不自动重试，也不声称回滚已证明远端未提交。复用同一命令对象是调用方缺陷，报 `internal_error`，不借用事务原因码。收尾依次回滚、关闭已启动连接、dispose；进入收尾时预算已过则不执行回滚、直接保守报告未完成，超过清理期限时尝试终止已登记驱动。
+
+事务刻意显式 `begin()`，不依赖 SQLAlchemy 的 autobegin，也不用连接级的 `commit()`/`rollback()` 代替：`in_transaction()` 在第一条语句执行前为假，显式开启才能让核心的前置条件由契约满足，而不是靠上一条语句碰巧开事务；autobegin 下提交后下一条语句会静默开新事务，边界就变成由语句序列涌现；收尾还要用 `self._transaction` 这个直接事实判断有无未提交事务。提交与回滚最终落到同一批调用，显式事务对象不改变数据库侧行为。
 
 `MigrationTimeouts` 是不可变、关键字构造的预算集合，数值由 Settings 校验，模块不维护第二套默认值；`scripts.migrate` 由配置键直接构造它，键名漂移会在启动时失败。命令总期限覆盖 worker 启动、文件发现、连接、全部事务和退出；参数/配置解析属于前置检查。每个文件另裁剪事务期限并预留清理，失败清理不延长该文件期限。业务取消不能阻止必要回滚，重复取消仍传播；成功响应先保存，再检查期限，避免丢失已经发生的事实。
 
 单靠 `asyncio.timeout_at` 不能终止吞取消的协程，`asyncio.run` 的退出也会等待残留任务。CLI 因而由父进程监督一个 spawn worker，worker 独占数据库资源，父进程仅接管最多 128 字节的白名单管道消息。总预算预留 terminate/join/kill 时间，迟到消息不能覆盖父进程已选定的失败。强退标记提交结果未知并保留已确认版本；没有强退且没有未确认提交时，父进程终态标签才改写原因码，避免用 `cancelled` 之类标签盖掉“提交结果未知”。若操作系统仍未确认子进程退出，输出 PID 后直接结束父进程，不宣称物理释放成功。这是进程调度条件下的有界等待机制，不是操作系统故障时的硬实时保证。
 
 开发阶段的取消/收尾问题见 [DB-013](../../../issues/infrastructure/database/2026-09-23-migration-cancel-cleanup.md)，主终态覆盖问题见 [DB-014](../../../issues/infrastructure/database/2026-09-23-migration-terminal-preservation.md)，本轮验证发现的原因码语义与文档校正见 [DB-015](../../../issues/infrastructure/database/2026-09-24-migration-verification-followups.md)。
+
+## 首迁移与严格基线
+
+`prepare_schema` 在已有非 AUTOCOMMIT 事务内核验全部本地文件，发现三张受管表。新库创建 `public.schema_versions`，与首 SQL、版本行同事务提交；旧版本表先 NOWAIT 锁定，再验证自身结构和完整历史。允许无关表存在，但不接管它们；受管同名视图、只有一张业务表、历史损坏或结构不兼容均拒绝。已有两表而无历史时，普通升级返回 `baseline_required`。
+
+显式基线先锁定两表，严格验证后只登记版本 1，不执行首 SQL、不修改数据、不调用 nextval/setval。`--baseline-existing` 同时表示操作者已停止旧 writer 和所有序列使用者；表锁无法替操作者证明此前提。已登记历史永远先校验，基线参数不能绕过历史错误。
+
+受管结构的 catalog 判据由独立的 `database_schema.py` 维护，本组件只决定何时调用它、失败如何归类，不重复其比较规则：列、约束、索引、序列、入向外键与权限契约见[数据库结构校验说明](schema.md)。迁移准备与只读检查共用同一判据，因此不存在升级与 readiness 两套标准。基线的序列取值核对也在该组件内完成，同样只读 `last_value/is_called`。
+
+首 SQL 与 ORM 都明确使用 public，保持 VARCHAR 长度、JSON、带时区时间、BIGSERIAL、nullable 及非级联 FK。版本表使用 integer 主键、非空 text 名称/校验和、非空 timestamptz applied_at；无隐式 server default，登记语句显式填时间。ORM 时间/dict 默认及 schema 限定见[模型说明](../model_doc/model.md)。
+
+`check_schema(connection, migrations, deadline=...)` 只读验证版本表、精确 head、业务结构、schema USAGE、两表 CRUD、版本表 SELECT、序列 USAGE 或 UPDATE 以及非只读事务，返回版本号。它不写探针行、不获取迁移排他锁、不要求应用账号拥有 DDL 或序列 SELECT 权限；它提供时点准入证据，不保证后续写入绝不失败。当前 catalog 契约针对版本 1 的两张表，未来新增全局迁移必须同步受管结构验证，不能仅增加 SQL 就声称新结构受检。
 
 ## 配置关联
 
@@ -186,12 +202,15 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 
 | 测试文件 | 覆盖的可观察行为 |
 | --- | --- |
+| `tests/unit/test_database_schema_preparation.py` | 准备路径的事务前置条件，以及取消、期限耗尽或 catalog 拒绝时不得登记版本行（catalog 判据本身的用例见[结构校验说明](schema.md#验证入口)） |
+| `tests/integration/test_database_migrations.py` | PostgreSQL 首迁移、重复、严格基线/历史、序列保留、真实 DDL 与登记失败回滚、已提交前缀、误并发、提交响应丢失、双 CLI |
+| `tests/integration/test_database_models.py` | ORM DDL 与 catalog 比对、真实逐次时间/JSON 写入、直接 SQL 默认边界、search_path 同名表隔离 |
 | `tests/unit/test_database_command.py` | 逐文件独立事务、基线独立提交、后续失败保留确认版本、提交未知不重试、取消/文件超时回滚、未启动连接、收尾挂死与主失败保留 |
 | `tests/unit/test_database_cli.py` | 双入口、UTF-8、帮助不加载配置、路径独立于 cwd、配置/参数脱敏、缺失 schema gate 零引擎/零连接 |
 | `tests/unit/test_database_cli_supervision.py` | 真实 spawn 的正常退出、挂死、崩溃、坏消息；确认/未确认版本保留及晚到结果不覆盖主失败 |
 | `tests/unit/test_database_migrations.py` | 文件名/序列/编码在执行前拒绝、不可变字节快照与文件名保留、历史前缀与损坏历史拒绝、非法待执行文件阻断全部数据库工作、只读版本检查无写入且要求精确 head、锁后重读而非缓存、整批 SQL 与登记共用同一事务、无真实事务与 AUTOCOMMIT 与执行选项不可读与驱动连接缺失的拒绝、逐阶段取消与超时、吞掉超时或外部取消后不得登记、数据库错误脱敏、未知程序错误不可恢复、`transaction_lost` 不登记、批次或登记失败不提交、缺表不建表、同步历史校验后不得越过期限返回成功 |
 
-测试用 fake 只证明控制流，不能证明 PostgreSQL DDL 与版本行实际提交/回滚；连续 fake 调用也不授权在同一真实事务运行多份迁移。当前没有首个 SQL 迁移文件或真实 PostgreSQL 成功证据，多语句中途失败与版本行的真实原子性仍是 DB-F03 整体及后续真实验收门槛，不能因核心单测或真实 spawn 测试通过而关闭。当前实现与接线状态以 [ALIGNMENT](../../ALIGNMENT.md) 为准，运行结果见 [DB-F03a 评审](../../todo.md#db-f03a-review)与 [DB-F03b 评审](../../todo.md#db-f03b-review)。
+fake 只证明控制流，不证明 PostgreSQL DDL 原子性。DB-F04 已在专用 PostgreSQL 18.6 库验证首 SQL 与登记回滚、已提交前缀及提交响应丢失；F03 的真实事务门槛已有本片证据。应用 Store/runtime/权限账号矩阵的完整验收仍归 F05/F06。当前接线以 [ALIGNMENT](../../ALIGNMENT.md) 为准，运行结果归 [DB-F04 评审](../../todo.md#db-f04-review)。测试环境配置与清理授权只在[部署说明](../../project/deployment.md#postgresql-隔离测试环境)维护。
 
 ---
 
@@ -227,7 +246,7 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 
 | 术语 | 说明 |
 | --- | --- |
-| `public.schema_versions` | 记录已应用迁移的唯一版本表。本核心只读它并追加版本行，不创建它（归 DB-F04）。 |
+| `public.schema_versions` | 记录已应用迁移的唯一版本表；prepare_schema 首次建立，核心读取/追加，命令 Owner 提交。 |
 | 整批执行与分号 | 一份迁移的 SQL 作为单个字符串交给驱动，不按分号切割，因此注释、字符串与 dollar quoting 内的分号原样保留。 |
 | dollar quoting | PostgreSQL 的 `$$...$$` 字符串字面量，内部可含分号与引号；按分号切分 SQL 的实现会在这里出错。 |
 | `EXCLUSIVE` 锁与 `NOWAIT` | 表级排他锁与“拿不到立即失败”。本核心用它在执行前拒绝第二个并发执行器，拿不到即报 `migration_locked`。 |
@@ -240,6 +259,7 @@ SQLAlchemy 的 begin 可以只建立逻辑事务；先经方言执行锁语句�
 | 术语 | 说明 |
 | --- | --- |
 | 逻辑事务与物理事务 | SQLAlchemy 的 `in_transaction()` 表示“已开始记账”，不等于驱动层已发出 `BEGIN`；asyncpg 的 `is_in_transaction()` 才是物理事实。两者都要验。 |
+| autobegin | SQLAlchemy 2.0 的行为：第一条语句执行时自动开始事务，提交后下一条语句会再开一个新事务。`MigrationCommand` 因此显式 `begin()` 来固定每文件的事务边界。（`begin()` 本身不是协程函数，返回的 `AsyncTransaction` 继承 `StartableContext`，`await` 它等于 `await start()`。） |
 | AUTOCOMMIT | 每条语句单独提交的执行模式。它会让迁移脱离调用方事务，因此被显式拒绝。 |
 | DBAPI 驱动与 asyncpg | 真正与数据库通信的库；DBAPI 是这套接口的标准，本项目唯一后端是 asyncpg。 |
 | raw connection proxy | `get_raw_connection()` 返回的代理对象，用来取到底层 asyncpg 连接。本核心只借用它，不关闭它，也不另开 asyncpg 事务。 |

@@ -225,7 +225,9 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     parser = _Parser(description="执行共享数据库迁移；结构/基线门禁不完整时拒绝升级。")
-    parser.add_argument("--baseline-existing", action="store_true", help="严格验证后接管已有兼容表")
+    parser.add_argument(
+        "--baseline-existing", action="store_true", help="确认旧 writer 及序列使用者已停止，严格验证后接管已有兼容表"
+    )
     parser.add_argument("--migrations-dir", type=Path, default=Path(__file__).resolve().parents[1] / "migrations")
     args = parser.parse_args(argv)
     # 帮助路径不导入 Settings；包括其模块级实例的校验异常在此统一脱敏。

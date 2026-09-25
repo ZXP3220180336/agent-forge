@@ -51,7 +51,7 @@
 
 不在应用启动时自动迁移，不自动重试业务事务，不建设后台重连或排队机制，不接管消费者排空，也不承诺强制退出进程。真实 PG 交付前，本组件的连接与事务假设只有 fake 边界和连接拒绝路径的证据。
 
-**交接**：完整检查器尚未存在，缺失时即使 `SELECT 1` 成功也不得开放工厂；消费方先 drain 再 dispose 归 DB-F05；ADR D5 契约中的 `restart_required`（首次启动失败后要求重启）由装配期产生，本模块只做原因分类。
+**交接**：DB-F04 已提供迁移模块的 `check_schema`，只读核验完整历史、结构和权限；回调装配、预算传递和异常原因映射归 DB-F05。未接入检查器时即使 `SELECT 1` 成功也不得开放工厂；消费方先 drain 再 dispose 归 DB-F05；ADR D5 契约中的 `restart_required` 由装配期产生，本模块只做原因分类。
 
 ---
 
@@ -259,7 +259,7 @@ dispose(deadline=None)
 
 ## 配置关联
 
-迁移组件已提供[只读版本核验](migrations.md)，但它不检查业务表结构和权限，不可单独替代本组件的完整 `schema_check`；组合检查及异常原因映射由 DB-F04/05 接入。
+迁移组件的 `check_version_history` 仅核对历史，不可单独替代完整 `schema_check`。DB-F04 的[组合检查 check_schema](migrations.md#首迁移与严格基线)已包含结构与权限；回调装配及异常原因映射由 DB-F05 接入。
 
 构造参数全部来自 Settings 已校验的字段，其中六项超时经不可变 `DatabaseTimeouts` 聚合传入；键、类型、默认值与约束只在[配置参考](../../config_doc/config.md#7-数据库配置)维护。映射关系：
 

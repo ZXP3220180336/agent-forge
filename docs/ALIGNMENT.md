@@ -59,14 +59,16 @@
 | app/domain/reasoning/react.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_strategy.py | ReAct 策略实现；批次部分成果、完整协议回执、类型化控制传播与真实线程路径（经 handle.run_sync 的完整批次）另经 test_tool_lifecycle_wiring.py 覆盖；流式/非流式双通道 |
 | app/domain/reasoning/_react_protocol.py | ✅ | docs/domain_doc/reasoning_doc/react.md | tests/unit/test_react_protocol.py | ReAct final_answer、调用身份与动作指纹纯协议转换；不接管协议预算、历史或工具执行 |
 | app/domain/reasoning/tool_batch.py | ✅ | docs/domain_doc/reasoning_doc/tool_batch.md | tests/unit/test_tool_lifecycle_contract.py | Collector 负责 revision 去重、深快照与关闭；Runner 负责并行结果、控制时兄弟有界收尾；跨层接管及协议配对经 test_tool_lifecycle_wiring.py 覆盖 |
-| app/infrastructure/database.py | ✅ | docs/infrastructure_doc/database_doc/database.md | tests/unit/test_database.py | DB-F02 独立生命周期、受控工厂、只读探测、有界清理与日志脱敏；实例日志脱敏入口 `configure_database_logging` 供迁移命令复用；tests/unit/test_database_lifecycle_review.py 覆盖真实 Session Owner；schema 校验、Container 接线和真实 PostgreSQL 验收未完成 |
-| app/infrastructure/database_migrations.py | ✅ | docs/infrastructure_doc/database_doc/migrations.md | tests/unit/test_database_migrations.py | DB-F03a/b 文件/全历史校验与整批执行、离线命令 Owner；事务/取消/提交未知另见 test_database_command.py；版本表结构/首迁移/基线及真实原子性验收待后续片 |
-| scripts/migrate.py | 🔶 | docs/project/deployment.md | tests/unit/test_database_cli.py | DB-F03b 唯一 CLI，UTF-8/脱敏/配置消费与预算映射；真实 spawn 监督见 test_database_cli_supervision.py；F04 gate 缺失时零连接拒绝升级 |
+| app/infrastructure/database.py | ✅ | docs/infrastructure_doc/database_doc/database.md | tests/unit/test_database.py | DB-F02 独立生命周期、受控工厂、只读探测、有界清理与日志脱敏；实例日志脱敏供迁移复用；test_database_lifecycle_review.py 覆盖真实 Session Owner；F04 已提供独立 schema 检查，回调/Container 接线及 runtime 真实验收仍待 F05/F06 |
+| app/infrastructure/database_migrations.py | ✅ | docs/infrastructure_doc/database_doc/migrations.md | tests/unit/test_database_migrations.py | DB-F03/04 文件/历史、事务核心及命令 Owner；版本表准备、基线与完整只读检查；真实事务与 CLI 见 tests/integration/test_database_migrations.py |
+| app/infrastructure/database_schema.py | ✅ | docs/infrastructure_doc/database_doc/schema.md | tests/unit/test_database_schema.py | 严格 PostgreSQL catalog、序列和权限检查；迁移及只读检查共用，不持有资源或自动修复；集成证据见 tests/integration/test_database_migrations.py |
+| migrations/0001_sessions_and_messages.sql | ✅ | docs/infrastructure_doc/database_doc/migrations.md | tests/integration/test_database_models.py | Session/Message 首迁移，与 public ORM 类型、默认、索引和非级联 FK 一致 |
+| scripts/migrate.py | ✅ | docs/project/deployment.md | tests/unit/test_database_cli.py | 唯一 CLI，UTF-8/脱敏/预算监督；F04 gate 已接入，双入口真实迁移经 PostgreSQL 集成验证 |
 | scripts/init_db.py | ✅ | docs/project/deployment.md | tests/unit/test_database_cli.py | 仅委托 scripts.migrate.main，无第二套建表机制 |
 | app/infrastructure/redis_client.py | ⬜ | docs/infrastructure_doc/infrastructure.md | (无) | 空文件，Redis 由 container 直管 |
 | app/infrastructure/models/database/base.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | 共享 declarative_base |
-| app/infrastructure/models/database/messages.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | Message ORM |
-| app/infrastructure/models/database/session.py | 🔶 | docs/infrastructure_doc/model_doc/model.md | (无) | Session ORM |
+| app/infrastructure/models/database/messages.py | ✅ | docs/infrastructure_doc/model_doc/model.md | tests/integration/test_database_models.py | public Message ORM；callable 时间/dict 默认，BIGSERIAL 与首迁移一致 |
+| app/infrastructure/models/database/session.py | ✅ | docs/infrastructure_doc/model_doc/model.md | tests/integration/test_database_models.py | public Session ORM；逐次时间/dict 默认，updated_at 仅客户端更新默认 |
 | app/infrastructure/models/database/task.py | ⬜ | docs/infrastructure_doc/model_doc/model.md | (无) | 空文件待实现 |
 | app/infrastructure/models/database/tool_log.py | ⬜ | docs/infrastructure_doc/model_doc/model.md | (无) | 空文件待实现 |
 | app/integration/vector_store/base.py | ⬜ | docs/integration_doc/README.md | (无) | 空文件待实现 |

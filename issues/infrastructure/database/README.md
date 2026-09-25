@@ -17,5 +17,9 @@
 | [DB-013](2026-09-23-migration-cancel-cleanup.md) | 业务取消 Guard 阻止迁移必要回滚 | 已修复；DB-F03b 开发阶段发现 | 2026-09-23 |
 | [DB-014](2026-09-23-migration-terminal-preservation.md) | 迁移迟到消息或收尾取消覆盖主失败 | 已修复；DB-F03b 开发阶段独立复审发现 | 2026-09-23 |
 | [DB-015](2026-09-24-migration-verification-followups.md) | 命令原因码语义与行为边界表述不符，且收尾/终态分支缺断言 | 已修复；DB-F03b 工作区验证发现 | 2026-09-24 |
+| [DB-016](2026-09-24-orm-default-factories.md) | ORM 时间与可变默认值在导入时求值 | 已修复；DB-F04 真实写入复现 | 2026-09-24 |
+| [DB-017](2026-09-24-catalog-char-decoding.md) | 内部 char 解码导致 catalog 误判 | 已修复；DB-F04 真实 PostgreSQL 发现 | 2026-09-24 |
+| [DB-018](2026-09-24-orm-schema-shadowing.md) | ORM 未限定 public 导致同名表遮蔽 | 已修复；DB-F04 独立复审 | 2026-09-24 |
+| [DB-019](2026-09-24-incoming-foreign-key-check.md) | 严格基线遗漏改变写入语义的入向外键 | 已修复；DB-F04 独立复审 | 2026-09-24 |
 
 [问题导航](../../README.md) · [数据库决策](../../../adr/infrastructure/database/README.md)

@@ -19,6 +19,8 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from app.infrastructure import database_schema as schema
+
 _FILENAME = re.compile(r"([0-9]{4})_([a-z][a-z0-9]*(?:_[a-z0-9]+)*)\.sql")
 _HISTORY_SQL = "SELECT version, name, checksum FROM public.schema_versions ORDER BY version"
 _LOCK_SQL = "LOCK TABLE public.schema_versions IN EXCLUSIVE MODE NOWAIT"
@@ -277,15 +279,115 @@ async def _read_history(connection: AsyncConnection, deadline: float) -> tuple[A
     )
 
 
-# F04 将提供唯一受信检查器；CLI 不提供跳过结构/基线门禁的选项。
+async def prepare_schema(
+    connection: AsyncConnection,
+    migrations: Sequence[Migration],
+    *,
+    baseline_existing: bool = False,
+    deadline: float,
+) -> int | None:
+    """锁内核验完整历史及结构；首次建版本表或显式接管，不提交调用方事务。
+
+    baseline_existing 表示操作者已停止旧 writer 和所有序列使用者。
+    表锁无法证明外部序列使用者已停止，不能以自动 nextval/setval 修复序列。
+    """
+    _validate_migrations(migrations)
+    if not connection.in_transaction() or connection.sync_connection is None:
+        raise MigrationError("transaction_required")
+    if connection.sync_connection.get_execution_options().get("isolation_level") == "AUTOCOMMIT":
+        raise MigrationError("transaction_required")
+    try:
+        _guard(deadline)
+        async with asyncio.timeout_at(deadline):
+            present = await schema.managed_tables(connection, deadline)
+            if "schema_versions" not in present:
+                if present and present != {"sessions", "messages"}:
+                    raise MigrationError("schema_mismatch")
+                if present and not baseline_existing:
+                    raise MigrationError("baseline_required")
+                _guard(deadline)
+                # 无 IF NOT EXISTS：首建竞争失败即退出，由 Owner 回滚，不自动重试。
+                await connection.execute(
+                    text(
+                        "CREATE TABLE public.schema_versions (version INTEGER NOT NULL PRIMARY KEY, "
+                        "name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TIMESTAMP WITH TIME ZONE NOT NULL)"
+                    )
+                )
+            _guard(deadline)
+            await connection.execute(text(_LOCK_SQL))
+            await schema.validate_version_table(connection, deadline)
+            count = validate_history(migrations, await _read_history(connection, deadline))
+            present = await schema.managed_tables(connection, deadline)
+            business = present & {"sessions", "messages"}
+            if not business:
+                if count:
+                    raise MigrationError("schema_missing")
+                _guard(deadline)
+                return None
+            if business != {"sessions", "messages"}:
+                raise MigrationError("schema_mismatch")
+            if not count and not baseline_existing:
+                raise MigrationError("baseline_required")
+            _guard(deadline)
+            await connection.execute(text("LOCK TABLE public.sessions, public.messages IN EXCLUSIVE MODE NOWAIT"))
+            await schema.validate_session_tables(connection, deadline, baseline=not count)
+            _guard(deadline)
+            if count:
+                return None
+            first = migrations[0]
+            await connection.execute(
+                text(_REGISTER_SQL),
+                {
+                    "version": first.version,
+                    "name": first.name,
+                    "checksum": first.checksum,
+                },
+            )
+            _guard(deadline)
+            return first.version
+    except schema.SchemaError as error:
+        raise MigrationError(str(error)) from None
+    except TimeoutError:
+        raise MigrationError("timeout") from None
+    except (SQLAlchemyError, PostgresError, OSError) as error:
+        raise _database_failure(error) from None
+
+
+async def check_schema(
+    connection: AsyncConnection,
+    migrations: Sequence[Migration],
+    *,
+    deadline: float,
+) -> int:
+    """只读检查版本表、精确 head、两表结构与 CRUD 权限；不获取迁移排他锁。"""
+    _validate_migrations(migrations)
+    try:
+        _guard(deadline)
+        async with asyncio.timeout_at(deadline):
+            await schema.validate_version_table(connection, deadline)
+            version = await check_version_history(connection, migrations, deadline=deadline)
+            await schema.validate_session_tables(connection, deadline)
+            await schema.check_permissions(connection, deadline)
+            _guard(deadline)
+            return version
+    except schema.SchemaError as error:
+        raise MigrationError(str(error)) from None
+    except TimeoutError:
+        raise MigrationError("timeout") from None
+    except (SQLAlchemyError, PostgresError, OSError) as error:
+        raise _database_failure(error) from None
+
+
+# 唯一受信检查器；CLI 不提供跳过结构/基线门禁的选项。
 SchemaPreparer = Callable[..., Awaitable[int | None]]
-SCHEMA_PREPARER: SchemaPreparer | None = None
+SCHEMA_PREPARER: SchemaPreparer | None = prepare_schema
 
 MIGRATION_REASONS = frozenset(
     {
         "ok",
         "starting",
         "schema_gate_unavailable",
+        "baseline_required",
         "configuration_invalid",
         "internal_error",
         "migration_files_unavailable",

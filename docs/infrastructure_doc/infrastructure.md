@@ -16,7 +16,7 @@
     - [驱动与数据库就绪边界](#驱动与数据库就绪边界)
   - [规划说明](#规划说明)
     - [database.py](#databasepy)
-    - [database_migrations.py](#database_migrationspy)
+    - [database\_migrations.py](#database_migrationspy)
     - [redis\_client.py](#redis_clientpy)
     - [message\_queue/](#message_queue)
   - [相关文档链接](#相关文档链接)
@@ -40,7 +40,8 @@
 app/infrastructure/
 ├── __init__.py             ← 包入口，规划导出统一封装接口
 ├── database.py             ← DatabaseRuntime（已实现，尚未接入 Container）
-├── database_migrations.py  ← 文件/历史校验及事务内迁移核心
+├── database_migrations.py  ← 文件/历史、事务核心与结构检查编排
+├── database_schema.py      ← PostgreSQL catalog、序列与权限策略
 ├── redis_client.py         ← Redis 封装（规划：连接池 / 编解码 / 重连）
 ├── message_queue/          ← 消息队列子包
 │   └── __init__.py         ← 子包入口
@@ -63,7 +64,8 @@ app/infrastructure/
 | --- | --- | --- |
 | `app/infrastructure/__init__.py` | 空（0 行） | 基础设施层包入口，规划统一导出封装接口 |
 | `app/infrastructure/database.py` | [见对齐表](../ALIGNMENT.md) | 独立 engine / session factory / 探测 / 有界关闭，见 [database.md](database_doc/database.md)；schema 校验与业务装配待接入 |
-| `app/infrastructure/database_migrations.py` | [见对齐表](../ALIGNMENT.md) | 唯一迁移序列核心及离线命令 Owner，见 [migrations.md](database_doc/migrations.md)；首迁移与结构/基线门禁待 F04 |
+| `app/infrastructure/database_migrations.py` | [见对齐表](../ALIGNMENT.md) | 唯一迁移序列核心及离线命令 Owner，见 [migrations.md](database_doc/migrations.md)；首迁移、严格基线与只读 schema 检查已由 F04 交付 |
+| `app/infrastructure/database_schema.py` | [见对齐表](../ALIGNMENT.md) | 受管表、约束、索引、序列与权限的 catalog 判据，见 [schema.md](database_doc/schema.md)；迁移与只读检查共用 |
 | `app/infrastructure/redis_client.py` | 空（0 行） | Redis 客户端封装（连接池 / 编解码 / 超时 / 重连 / 命名空间） |
 | `app/infrastructure/message_queue/__init__.py` | 空（0 行） | 消息队列子包入口，规划抽象统一消息发布 / 消费接口 |
 | `app/infrastructure/models/database/base.py` | [见对齐表](../ALIGNMENT.md) | 共享 `Base`（唯一 declarative_base 实例），见 [model.md](model_doc/model.md) |
@@ -150,7 +152,7 @@ Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权�
 
 ### database_migrations.py
 
-**定位**：统一迁移序列的文件与全历史校验、只读版本核验、单文件事务内执行及离线命令 Owner。内部调用顺序、期限及结算责任见 [migrations.md](database_doc/migrations.md)。核心借用连接，`MigrationCommand` 持有命令资源；CLI 用单个 worker 和父进程期限监督处理不合作取消。版本表结构、首迁移与基线归 DB-F04，当前 gate 缺失时零连接拒绝升级，不能把本核心单独接为完整 readiness 检查器。
+**定位**：统一迁移序列的文件与全历史校验、只读版本核验、单文件事务内执行及离线命令 Owner。内部调用顺序、期限及结算责任见 [migrations.md](database_doc/migrations.md)。核心借用连接，`MigrationCommand` 持有命令资源；CLI 用单个 worker 和父进程期限监督处理不合作取消。F04 已提供版本表准备、首迁移、严格基线与 check_schema；底层 catalog 判据由 [database_schema.py](database_doc/schema.md) 复用。完整检查器尚未接入应用 readiness，装配归 F05。
 
 ### redis_client.py
 
@@ -174,6 +176,7 @@ Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权�
 ## 相关文档链接
 
 - [数据库运行时（database.py）](database_doc/database.md) — 组件级内部协作契约与维护说明
+- [数据库结构校验（database_schema.py）](database_doc/schema.md) — 受管结构、序列与权限的 catalog 契约
 - [数据模型层说明](model_doc/model.md) — ORM 模型、会话与消息表契约
 - [配置参考](../config_doc/config.md) — `DATABASE_URL` / `REDIS_URL` 等基础设施相关配置
 - [系统架构](../project/architecture.md) — 整体架构中基础设施层的定位

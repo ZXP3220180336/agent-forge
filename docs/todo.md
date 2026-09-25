@@ -18,7 +18,11 @@
 
 <a id="db-foundation"></a>
 
-## DB-F：共享数据库基础设施（DB-F01/02/03a/03b 已完成，后续待实施）
+## DB-F：共享数据库基础设施（DB-F01～04 已完成，后续待实施）
+
+**DB-F04 当前授权与拆分（2026-09-24）**：用户授权实施已批准 F04。① 先补默认值与 schema/基线失败复现；② 新建 `migrations/0001_sessions_and_messages.sql`，在 `database_migrations.py` 接入版本表准备、严格基线及只读完整检查；③ 用 `database_schema.py` 独立承载迁移与只读检查共用的 catalog 验证策略，避免将目录查询混入事务编排；④ `session.py`/`messages.py` 修复客户端时间和 dict 默认，保持 SQL 语义；⑤ 新增 PostgreSQL 集成测试，更新 CLI 保护测试、组件/部署/模型说明、ADR、ALIGNMENT 和评审。子智能体独占 ORM 与 catalog 测试/实现，主执行者负责 SQL、编排、集成和文档。
+
+可选项无；不接入 Container/Store/API，不创建工具迁移、不自动修复旧库或序列。真实验收仅使用显式声明的隔离测试数据库；尚无环境时保留未完成验收，不将 fake 或 skip 当通过。基线操作必须由操作者保证旧 writer 与序列使用者已停止，锁和只读序列检查不能证明外部写入方已经排空。
 
 **DB-F03b 当前授权与拆分**：用户继续授权命令 Owner 与 CLI。① 移除两个帮助入口 strict xfail 跑红测，扩充 `tests/unit/test_database_cli.py`，另以 `tests/unit/test_database_command.py` 验证事务及失败收尾；② 在 `database_migrations.py` 增加独立离线命令 Owner，`scripts/migrate.py` 提供惟一参数/配置/监督入口，`init_db.py` 仅委托；③ 将 runtime 现有实例日志脱敏提取为同文件函数供命令引擎复用；④ 同步组件、部署、配置消费、ALIGNMENT、ADR 与本计划。继续使用 code-change / agent-lifecycle-review / documentation-maintenance；子智能体只读核验官方进程/asyncio语义并复审。
 
@@ -55,7 +59,7 @@ F02 接口沿用 init/ping/probe/dispose。完整 schema 验证通过受控异�
 - [x] DB-F02：DatabaseRuntime 与独立资源生命周期；结果见[本片评审](#db-f02-review)。
 - [x] DB-F03a：迁移核心的文件/历史/只读版本校验与事务内整批执行；见[本片评审](#db-f03a-review)。
 - [x] DB-F03b：唯一迁移命令 Owner 与 CLI；见[本片评审](#db-f03b-review)，DB-F03 整体验收仍需真实多语句回滚证据。
-- [ ] DB-F04：Session/Message 首迁移、基线接管及 ORM 一致性。
+- [x] DB-F04：Session/Message 首迁移、基线接管及 ORM 一致性；见[本片评审](#db-f04-review)。
 - [ ] DB-F05a：会话专用 Store Port / PostgreSQL 适配器，迁出应用层 SQL。
 - [ ] DB-F05b：Container、readiness 与 503 错误边界；保持 A/B 能力分道。
 - [ ] DB-F05c：聊天消费者停止准入、运行/finalizer 排空与数据库关闭顺序。
@@ -210,6 +214,27 @@ pytest 简写均经 `uv run --no-sync` 执行。全量回归按最后一次实�
 | --- | --- | --- | --- | --- |
 | P3 | `_connect` 的关闭期拦截（行为已登记在组件文档的行为边界） | 关闭已开始时连接池新建连接 | 该连接被 `terminate()` 并抛 `DatabaseRuntimeError("closing")`，此路径无直接断言；现有用例只覆盖“初始化期外部连接使 dispose 报 close_incomplete”，两者不是同一时序 | 用真实引擎并发关闭观察池在关闭期新建连接；fake 边界只能直接调用事件处理器，证明不了这个时序。已改为 fake 边界的直接断言（`closing` / `closed` 两态），并用“移除拦截分支”确认判别力；真实时序留 DB-F06，见 [DB-008](../issues/infrastructure/database/2026-09-23-connect-during-close-assertion.md) |
 | P3 | `_build_engine` 的脱敏过滤器名 | `_engine_options` 出现 `poolclass`，或方言默认池变化 | 过滤器只挂在 `sqlalchemy.pool.impl.AsyncAdaptedQueuePool.<name>`：池实现一变，池事件日志不再脱敏，且不会有任何测试失败（echo 仍由 engine 实例 logger 覆盖） | 从 engine 实例读实际池 logger 名（`sync_engine.pool.logger.name`）而不是拼字符串，并补一条断言该名字已被过滤器覆盖的用例。已按此修复，见 [DB-009](../issues/infrastructure/database/2026-09-23-pool-logger-name-hardcode.md) |
+
+<a id="db-f04-review"></a>
+
+### DB-F04 实施评审（2026-09-24）
+
+用户已创建并授权专用测试库，凭证仅放被 Git 忽略的 `.env.test`；首次脱敏连接核验为 PostgreSQL 18.6、预期账号/数据库、空 public，清理授权为 true。未读取或修改业务库。
+
+- [x] 首 SQL 与 preparer 接线缺失的两项红测；真实首次升级先失败后实现。
+- [x] 首迁移、版本表准备、严格基线、完整只读检查与 catalog 策略；无自动 ALTER/DROP/nextval/setval 修补。
+- [x] ORM 默认工厂及 public 映射；默认参数处理器先 5 failed/1 passed，真实旧默认两次 INSERT 时间相等复现，修复版转绿。
+- [x] 真实 PostgreSQL 验证新库/重复/基线与数据保留、结构不兼容/序列落后、批次和登记失败回滚、已提交前缀、提交响应丢失、已有版本锁与首建竞争、双 CLI、ORM DDL/catalog 和 SQL 默认边界。
+- [x] 独立复审驱动类型、ORM shadow、入向 FK；红绿闭环分别归 DB-016～019，均更新索引。
+- [x] 真实 PostgreSQL 集成最终 26 passed；最终全量 1837 passed、3 xfailed、1 条既有 Starlette 警告（75.78 秒）。全库 Ruff check/format（245 文件）、ALIGNMENT/Markdown 链接与 diff 检查通过。相关组合首轮 403 passed/1 failed 的唯一失败是测试消费预期超时后未回滚失效事务；修正测试 Owner 后真实集成及全量均通过。命令均经 `uv run --no-sync` 执行。
+
+结构选择：catalog 是迁移与只读检查两个真实调用方共用的严格策略，独立在 `database_schema.py`，资源和事务责任仍在既有命令 Owner；不新增 Repository、事务重试或通用迁移框架。真实测试 fixture 严格限制数据库/账号与可清理对象，缺失配置仅标未执行，不计作验收成功。
+
+最终独立只读复核未发现当前版本 1 范围内剩余可证实阻断问题。全量测试后，通过正式 CLI 将用户专用测试库保留在版本 1；输出 confirmed_versions=[1]、cleanup_complete=true、无未知提交/强退，查询确认 sessions/messages 均为 0 行，便于 pgAdmin 查看。`.env.test` 已确认被 Git 忽略，未输出凭证。
+
+F03 的多语句/版本行真实原子性门槛已有本片证据。F05 应用接线及 F06 runtime/受限权限账号/Store/关闭整体验收仍未完成；本片没有开放工具 B。未来全局迁移必须同时扩展 catalog 契约。可选项无，本轮未提交。
+
+**文档拆分（2026-09-25）**：`database_schema.py` 的 catalog 契约从[迁移说明](infrastructure_doc/database_doc/migrations.md)迁出，独立为[数据库结构校验说明](infrastructure_doc/database_doc/schema.md)：受管列/约束/索引/序列/权限表、`baseline` 前提与行为边界归入新文档，迁移说明只保留"何时调用、失败如何归类"的摘要与链接。层文档、ALIGNMENT 与 docs/catalog.md 同步指向新文档。无源码、测试、迁移 SQL 或运行契约变化，因此未重跑测试；Issue DB-017/DB-019 引用的 `migrations.md#首迁移与严格基线` 锚点保留，历史链接不失效。
 
 <a id="db-f03b-review"></a>
 

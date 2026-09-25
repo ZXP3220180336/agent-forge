@@ -16,6 +16,7 @@ wheels/
 # Environment / secrets
 # 注意：.env.example 是模板需上传，不在此忽略
 .env
+.env.test
 
 # IDE / 编辑器
 .idea/

@@ -3,7 +3,7 @@
 > **ID**：DB-ADR-001
 > **日期**：2026-09-22
 > **决策状态**：已批准。用户已审批本 ADR 及相关计划；D7 所列 TOOLS-ADR-008 条款替代生效。
-> **实现状态**：分片实施中；DB-F01 依赖配置与 DB-F02 独立运行时已实现，迁移、完整 schema 校验和应用接线待实施，当前状态以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 为准。
+> **实现状态**：分片实施中；DB-F01～04 已交付依赖配置、独立运行时、迁移与完整 schema 检查；应用接线及整体验收仍归 F05/F06，当前状态以 [ALIGNMENT](../../../docs/ALIGNMENT.md) 为准。
 > **范围**：共享数据库运行时、统一迁移、已有 Session/Message 接入、可用性与资源关闭。
 > **计划与授权**：[独立 DB-F01～DB-F06](../../../docs/todo.md#db-foundation)。设计文档已提交，用户随后授权实施 DB-F01；后续分片按计划推进。
 
@@ -181,6 +181,10 @@ DB-F03a 已交付文件发现/原始字节 SHA-256、完整历史与精确 head 
 DB-F03b 已交付唯一 CLI、命令资源 Owner、逐文件事务提交/回滚、提交未知与确认事实保留；两个入口共用同一路径。生产 preparer 未接入时，在引擎创建前以 `schema_gate_unavailable` 拒绝，F04 的版本表/基线责任不提前实现。命令预算从 Settings 注入 `MigrationTimeouts`，引擎复用运行时实例日志脱敏。
 
 为兑现有限退出，离线命令采用一个 spawn worker 独占数据库资源、父进程监督期限；范围仅本 CLI。备选的单进程 `asyncio.run` 在协程吞取消时仍可能无限等待退出，不能满足 D6；参照 [Python asyncio Runner](https://docs.python.org/3/library/asyncio-runner.html) 与 [multiprocessing 进程终止](https://docs.python.org/3/library/multiprocessing.html#multiprocessing.Process.terminate)。代价是进程启动与小型事实传递协议；强退不保证远端未提交，也不保证运行 finally，因此保留确认版本并明确输出未知结果与释放状态，不自动重试。真实 spawn 验证不能替代 PostgreSQL 原子性验收；结果见 [DB-F03b 评审](../../../docs/todo.md#db-f03b-review)。
+
+DB-F04 已交付首 SQL、版本表准备、严格基线和只读 check_schema。目录策略提取为 `database_schema.py`：迁移和只读检查是两个真实调用方，目录查询/比较与事务编排有独立变化原因，符合 E9；没有增加资源 Owner 或第二迁移机制。依照 [PostgreSQL pg_constraint](https://www.postgresql.org/docs/current/catalog-pg-constraint.html)、[pg_index](https://www.postgresql.org/docs/current/catalog-pg-index.html) 和 [pg_sequence](https://www.postgresql.org/docs/current/catalog-pg-sequence.html) 验证目录事实，不将 IF NOT EXISTS 或同名表当兼容证明。未知差异保守拒绝，未来迁移须同步扩展目录契约。
+
+两 ORM 明确映射 public，默认值改为客户端 callable，未添加服务端时间/JSON 默认。用户已提供专用 PostgreSQL 18.6，真实验证首迁移、重复、基线及数据/序列保留、DDL/登记失败原子回滚、前缀保留和提交响应丢失；提交未知试验中真实版本行已提交而命令仍报告未知，未自动重放。F03 的真实事务门槛已兑现，本片不能代替 F05/F06 的应用、受限账号与关闭验收。详见 [DB-F04 评审](../../../docs/todo.md#db-f04-review)及 DB-016～019 问题记录。
 
 ## 关联记录
 

@@ -48,12 +48,17 @@ def test_invalid_arguments_are_redacted(module: str, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("module", ["scripts.migrate", "scripts.init_db"])
-def test_baseline_requires_schema_gate_without_connection(module: str, tmp_path: Path) -> None:
-    """门禁缺失时 baseline 也不能绕过检查；工作目录不决定迁移路径。"""
-    result = _run_cli(module, ["--baseline-existing"], tmp_path, "postgresql+asyncpg://localhost/gate_test")
+def test_baseline_requires_valid_files_before_connection(module: str, tmp_path: Path) -> None:
+    """baseline 不能绕过文件校验；连接前拒绝不存在的迁移目录。"""
+    result = _run_cli(
+        module,
+        ["--baseline-existing", "--migrations-dir", str(tmp_path / "missing")],
+        tmp_path,
+        "postgresql+asyncpg://localhost/gate_test",
+    )
     assert result.returncode == 1
     report = json.loads(result.stdout)
-    assert report["reason"] == "schema_gate_unavailable"
+    assert report["reason"] == "migration_files_unavailable"
     assert report["confirmed_versions"] == []
     assert report["worker_pid"] is None
 

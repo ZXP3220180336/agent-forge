@@ -80,7 +80,7 @@ app.infrastructure.models（__init__.py）
         └── database/__init__.py
               ├── base.py      ← Base
               ├── session.py   ← SessionModel
-              └── messages.py  ← MessageModel（FK → sessions.id）
+              └── messages.py  ← MessageModel（FK → public.sessions.id）
 
 API 层（schemas）
         ▼
@@ -114,7 +114,7 @@ Base = declarative_base()
 
 ### SessionModel — 会话
 
-**文件**：`app/infrastructure/models/database/session.py`（23 行），表名 `sessions`
+**文件**：`app/infrastructure/models/database/session.py`，表名 `public.sessions`。模型明确声明 `schema="public"`，避免 `search_path` 中的同名表改变实际读写目标。
 
 会话是**多轮对话的基本单位**：一个会话绑定一个用户、一组历史消息和一段系统提示词。`SessionManager` 围绕它做创建 / 查询 / 列表 / 删除（软删）等操作，并通过 Redis 缓存热会话。
 
@@ -126,10 +126,10 @@ Base = declarative_base()
 | `user_id`       | `String(64)`                | NOT NULL，索引                  | 所属用户 ID，鉴权隔离的依据         |
 | `title`         | `String(200)`               | 默认 `"新对话"`                 | 会话标题                            |
 | `system_prompt` | `Text`                      | 默认 `"你是一个友好的AI助手"`   | 系统提示词，驱动 Agent 行为         |
-| `created_at`    | `DateTime(timezone=True)`   | 默认 `datetime.now(UTC)`        | 创建时间（UTC）                     |
-| `updated_at`    | `DateTime(timezone=True)`   | `onupdate=datetime.now(UTC)`    | 更新时间（更新时自动刷新，可手动置） |
+| `created_at`    | `DateTime(timezone=True)`   | `default=lambda: datetime.now(UTC)` | 每次插入执行时取 UTC 时间         |
+| `updated_at`    | `DateTime(timezone=True)`   | `onupdate=lambda: datetime.now(UTC)` | 更新时取 UTC 时间，无插入默认    |
 | `status`        | `String(20)`                | 默认 `"active"`                 | `active` / `archived` / `deleted`   |
-| `meta`          | `JSON`                      | 默认 `{}`                       | 扩展字段（如缓存 Token 统计）       |
+| `meta`          | `JSON`                      | `default=dict`                 | 每次执行创建独立字典，扩展字段     |
 
 #### 设计说明
 
@@ -141,7 +141,7 @@ Base = declarative_base()
 
 ### MessageModel — 消息
 
-**文件**：`app/infrastructure/models/database/messages.py`（31 行），表名 `messages`
+**文件**：`app/infrastructure/models/database/messages.py`，表名 `public.messages`。模型明确声明 `schema="public"`，外键目标为 `public.sessions.id`。
 
 消息是**每一轮对话的持久化记录**，外键关联会话。`SessionManager.get_messages()` 读取历史喂给 Agent，`add_message()` 写入每一轮交互。
 
@@ -150,13 +150,13 @@ Base = declarative_base()
 | 字段                | 类型                      | 约束 / 默认                   | 说明                                    |
 | ------------------- | ------------------------- | ----------------------------- | --------------------------------------- |
 | `id`                | `BigInteger`              | 主键，自增                    | 自增主键，内部引用                       |
-| `session_id`        | `String(36)`              | FK → `sessions.id`，索引      | 所属会话                                |
+| `session_id`        | `String(36)`              | FK → `public.sessions.id`，索引 | 所属会话，保持非级联外键                |
 | `role`              | `String(20)`              | NOT NULL                      | `system` / `user` / `assistant`         |
 | `content`           | `Text`                    | NOT NULL                      | 消息内容                                |
 | `reasoning_content` | `Text`                    | 可空                          | 思考过程（**不进入历史**，见下）        |
 | `token_count`       | `Integer`                 | 默认 `0`                      | 消息 Token 数，用于成本与上下文统计     |
-| `created_at`        | `DateTime(timezone=True)` | 默认 `datetime.now(UTC)`      | 创建时间（UTC）                         |
-| `meta`              | `JSON`                    | 默认 `{}`                     | 扩展字段                                |
+| `created_at`        | `DateTime(timezone=True)` | `default=lambda: datetime.now(UTC)` | 每次插入执行时取 UTC 时间         |
+| `meta`              | `JSON`                    | `default=dict`               | 每次执行创建独立字典                    |
 
 #### 设计说明
 
@@ -182,7 +182,7 @@ Base = declarative_base()
 | `list_sessions_v2` | 同上 + 条件查询                  | 支持关键词 / 日期 / 排序 / 状态筛选，额外返回总数                 |
 | `_get_session_stats` | `func.count` / `func.sum` / `func.max` 聚合 | 统计消息数、Token 总数、最后消息时间，结果缓存 60 秒    |
 
-> **注意**：`updated_at` 通过 `onupdate` 自动刷新，但软删除（`delete_session`）是显式 UPDATE，因此代码中手动设置了 `updated_at=datetime.now(UTC)`，两者并不冲突。
+> **注意**：通过 SQLAlchemy 模型构造 UPDATE 且未显式提供 `updated_at` 时，客户端 `onupdate` 才会求值。软删除显式提供时间时使用该值。直接 SQL 不执行此 Python 默认逻辑。
 
 ---
 
@@ -236,29 +236,21 @@ Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 
 
 - 所有 ORM 模型继承 `database/base.py` 的共享 `Base`
 - 扩展字段一律叫 `meta`（JSON），不用保留字 `metadata`
-- 时间字段用 `DateTime(timezone=True)` + UTC；`created_at` 用 `default`，`updated_at` 用 `onupdate`
+- 时间字段用 `DateTime(timezone=True)` + UTC；`created_at` 的 `default` 和 `updated_at` 的 `onupdate` 都传入 callable，在执行时求值；`meta` 使用 `dict` 工厂
+- Session/Message 及其外键明确指向 `public`，与结构检查和迁移目标一致
 - 对外导出走 `app/infrastructure/models/__init__.py` 与 `app/infrastructure/models/database/__init__.py`
+
+首迁移 [0001_sessions_and_messages.sql](../../../migrations/0001_sessions_and_messages.sql) 保留 ORM 的 VARCHAR 长度、JSON、带时区时间、可空性、索引及非级联外键；消息主键使用 BIGSERIAL 和所属序列。上述 Python 默认不是 `server_default`：直接 SQL 省略可空列时仍得到 NULL，`updated_at` 也没有插入默认或数据库触发器。建表和旧库接管只走[迁移入口](../database_doc/migrations.md)，应用启动不调用 `create_all`。
+
+验证入口：[默认参数单测](../../../tests/unit/test_database_model_defaults.py) 使用 PostgreSQL 编译器及 SQLAlchemy 默认参数处理器，检查逐次时间求值和字典对象隔离；[真实 PostgreSQL 模型测试](../../../tests/integration/test_database_models.py) 核对 ORM DDL 与首迁移 catalog 契约、两个时刻的写入、直接 SQL 默认行为，以及同名临时表不会重定向 ORM 读写。真实测试配置与运行方式见[部署文档](../../project/deployment.md)，结果状态以[对齐表](../../ALIGNMENT.md)为准。
 
 ---
 
 ## 当前状态与遗留
 
-| 项目                 | 状态 | 说明                                                                 |
-| -------------------- | ---- | -------------------------------------------------------------------- |
-| `base.py`            | ✅   | 共享 `Base` 已落地，唯一 declarative_base 实例                       |
-| `session.py`         | ✅   | `SessionModel` 已实现并被 `SessionManager` 使用                       |
-| `messages.py`        | ✅   | `MessageModel` 已实现并被 `SessionManager` 使用                       |
-| `task.py`            | ❌   | 预留任务表，待任务落库需求出现后实现                                   |
-| `tool_log.py`        | ❌   | 预留工具调用日志表                                                     |
-| `app/api/schemas/`   | 🔶   | Pydantic 模型在 API 层（request/response 已实现，agent 预留），见 [routes.md](../../api_doc/routes_doc/routes.md) |
-| **DB 运行环境**      | 🔶   | `asyncpg` 驱动未安装，数据库恒降级（项目级遗留）；模型已就绪但未连真库验证 |
+实现、接线和测试状态统一见[对齐表](../../ALIGNMENT.md)。`asyncpg` 已纳入正式依赖；DB-F04 修复了 import 时固定时间及共享字典默认，首迁移与模型在专用 PostgreSQL 测试库核验。模型和迁移验收不代表应用启动、Store 或 readiness 已接线，这些后续工作由[当前计划](../../todo.md)管理。
 
-**下一步计划**：
-
-1. 补 `asyncpg` 依赖并连通 PostgreSQL，验证 `SessionModel` / `MessageModel` 建表与增删查改
-2. 依据 `task_doc/task.md` 落地 `task.py` 任务表
-3. 依据 `integration_doc/tools_doc/tools.md` 落地 `tool_log.py` 工具调用日志表
-4. API 层补充 `agent.py` 等剩余 Pydantic Schema（见 [routes.md](../../api_doc/routes_doc/routes.md)）
+`task.py`、`tool_log.py` 仍是预留位置，不包含在本次首迁移中；出现已批准的持久化需求后再定义表和领取后续迁移版本。
 
 ---
 
@@ -273,7 +265,7 @@ Pydantic Schema 位于 **`app/api/schemas/`**（不属于本层），用于 API 
 
 ### Q: `updated_at` 什么时候被刷新？
 
-通过 `onupdate=datetime.now(UTC)`，在任何 UPDATE 语句执行时由 SQLAlchemy 自动刷新。软删除（`delete_session`）虽也是 UPDATE，但代码里已显式设置 `updated_at`，行为一致。
+通过 `onupdate=lambda: datetime.now(UTC)`，在 SQLAlchemy 模型 UPDATE 未显式提供该列时，按本次执行时刻生成 UTC 时间。显式提供的时间优先；直接 SQL 不触发客户端默认，插入省略 `updated_at` 时仍为 NULL。
 
 ### Q: 为什么 `reasoning_content` 单独存一列，且读历史时不返回？
 
