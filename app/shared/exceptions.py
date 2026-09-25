@@ -27,6 +27,7 @@ class AppErrorCode(StrEnum):
     UNAUTHORIZED = "UNAUTHORIZED"  # 未认证（UnauthorizedError，401）
     FORBIDDEN = "FORBIDDEN"  # 权限不足（ForbiddenError，403）
     NOT_FOUND = "NOT_FOUND"  # 资源不存在（NotFoundError，404）
+    PERSISTENCE_UNAVAILABLE = "PERSISTENCE_UNAVAILABLE"
     CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED"  # 请求超出模型上下文窗口
     LLM_CANCELLED = "LLM_CANCELLED"  # LLM 调用被业务取消（LLMCancelledError，领域可识别执行终止）
     LLM_DEADLINE = "LLM_DEADLINE"  # LLM 调用整体执行期限耗尽（LLMDeadlineExceededError）
@@ -61,6 +62,29 @@ class NonRetryableError(AppError):
 
 class BusinessError(AppError):
     """业务边界错误：具名短路，调用方差异化处理（截断/拒答/工具调用等非传输错误）。"""
+
+
+class PersistenceUnavailableError(BusinessError):
+    """持久化操作不可用；原因只接受固定码，提交未确认不表示远端未写入。"""
+
+    code = AppErrorCode.PERSISTENCE_UNAVAILABLE
+
+    def __init__(self, reason: str = "unavailable", *, commit_unknown: bool = False, committed: bool = False) -> None:
+        allowed = {
+            "unavailable",
+            "timeout",
+            "connection_failed",
+            "permission_denied",
+            "schema_missing",
+            "schema_mismatch",
+            "commit_unknown",
+            "cleanup_incomplete",
+            "closing",
+        }
+        self.reason = reason if reason in allowed else "unavailable"
+        self.commit_unknown = commit_unknown
+        self.committed = committed
+        super().__init__("持久化暂不可用")
 
 
 # =====================================================================

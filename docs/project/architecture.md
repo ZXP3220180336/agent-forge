@@ -440,7 +440,7 @@ tiktoken 计数由集成层 `token_counter.py` 实现，并经 `LLMGateway.count
 | 关注点 | 需要验证的边界 | 有需求时的处理方向 |
 | --- | --- | --- |
 | C1 资源创建职责 | DB/Redis 工厂和容器组装是否清晰 | 将具体连接创建放基础设施，容器只组装和管理生命周期；不重复创建已有 container |
-| C2 会话数据访问 | SessionManager 业务、缓存、SQL 的变化原因与测试成本 | 在直接受影响范围内评估 Repository/CachePort，不能为蓝图自动新增 NullCache |
+| C2 会话数据访问 | SessionManager 业务、缓存、SQL 的变化原因与测试成本 | DB-F05a 已提取 SessionStorePort/PostgresSessionStore，保留应用缓存；不为蓝图新增 CachePort/NullCache |
 | C3/C4 领域依赖 | 领域是否通过 LLMGateway/ToolGateway，而非具体服务或旧 core/services 路径 | 使用现有端口，消除新增反向耦合 |
 | C5 配置 | 业务模块是否自读 settings；日志 bootstrap 是否是明确例外 | 保持构造/register_config 注入，记录有范围的例外 |
 | C6 共享事件 | 共享格式、传输序列化和事件发布是否混同 | 按消费者和生命周期划分，不能因为目标图而预建事件总线 |
@@ -459,14 +459,14 @@ tiktoken 计数由集成层 `token_counter.py` 实现，并经 `LLMGateway.count
 
 目标：在产品需要时改善资源创建与会话访问边界，验证真实降级能力。
 
-- `infrastructure/db/engine.py` + `redis/client.py`：engine/factory 从 container 迁出
-- `domain/ports/repositories.py` + `cache.py`：Repository / CachePort 协议
-- `infrastructure/db/repos/`：SqlAlchemy Repository 实现
+- `infrastructure/database.py`：共享 runtime 已实现，Container 接入归 DB-F05b
+- `domain/ports/session_store.py`：会话专用普通数据端口（DB-F05a 已实现）
+- `infrastructure/session_store.py`：PostgreSQL 适配器，逐操作事务与有界清理（DB-F05a 已实现）
 - 缓存边界：评估已有 `_cache_*` 降级是否充分；独立 CachePort/NullCache 仅在职责与消费需求成立时采用
 - `container.py`：维护已有装配根和资源关闭责任
-- `SessionManager` 重构：只留业务，注入 Repos + CachePort
+- `SessionManager`：已迁出 SQL/ORM，注入 SessionStorePort；保留现有 Redis 缓存策略，不增建 CachePort
 
-验收目标：装配根与基础设施工厂分离；Repository 层落地；Redis 真降级。
+验收目标：装配根与基础设施工厂分离；会话 Store 事务边界可验证；无 Redis 时可持久化，数据库已知不可用时缓存不得伪装成功。上文通用 Repository 图为历史蓝图，数据库部分以 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md) 和[会话 Store](../infrastructure_doc/database_doc/session_store.md) 为当前契约，不实施通用 Repository。
 进度和验证状态仅查 [ALIGNMENT.md](../ALIGNMENT.md)。
 
 ### Phase B 解耦改造

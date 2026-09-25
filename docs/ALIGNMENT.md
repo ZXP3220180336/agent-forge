@@ -25,7 +25,7 @@
 | app/application/chat/chat_service.py | ✅ | docs/application_doc/chat_doc/chat.md | tests/unit/test_chat_service.py | 聊天预检、消息快照、run/Agent Owner、停止与结果提交 |
 | app/application/context/context_manager.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_context_manager.py | 消息组装与 Token 截断；以当前消息 ID 固定历史快照边界 |
 | app/application/context/cost_limiter.py | ✅ | docs/application_doc/context_doc/context.md | tests/unit/test_cost_limiter.py | 成本上限判定（CostLimiterPort 实现，经 LLMGateway.calculate_cost 取成本估算） |
-| app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 会话/缓存/SQL；消息主键与 `before_message_id` 快照查询契约 |
+| app/application/session/session_manager.py | ✅ | docs/application_doc/session_doc/session.md | tests/unit/test_session_manager.py | 会话/缓存/Store 编排；消息主键与 `before_message_id` 快照查询契约 |
 | app/application/task/task_service.py | ✅ | docs/application_doc/task_doc/task.md | tests/unit/test_task_service.py | Agent 并发闸门；run 级取消索引；显式关闭 Agent 子流 |
 | app/domain/agent/base.py | ✅ | docs/domain_doc/agent_doc/agent.md | tests/unit/test_agent.py | Agent 运行身份、实例并发拒绝与结果生命周期；策略跨层继承另见 test_tool_lifecycle_wiring.py |
 | app/domain/agent/executor.py | ✅ | docs/domain_doc/agent_doc/executor.md | tests/unit/test_agent.py | ReActAgent 桥接（ReActStrategy 到 BaseAgent 生命周期） |
@@ -36,6 +36,7 @@
 | app/domain/memory/memory_service.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/short_term.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
 | app/domain/memory/working.py | ⬜ | docs/domain_doc/memory_doc/memory.md | (无) | 空文件待实现 |
+| app/domain/ports/session_store.py | ✅ | docs/infrastructure_doc/database_doc/session_store.md | tests/unit/test_session_manager.py | 普通数据会话持久化端口；同步准入检查 |
 | app/domain/ports/context_budget.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议：count_tokens + trim_messages；随 ContextManager/Agent 测试覆盖 |
 | app/domain/ports/cost_limiter.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 CostLimiter/Agent 测试覆盖 |
 | app/domain/ports/embedding_port.py | 🔶 | docs/domain_doc/ports_doc/ports.md | (无) | 端口协议；随 EmbeddingService 测试覆盖 |
@@ -61,6 +62,7 @@
 | app/domain/reasoning/tool_batch.py | ✅ | docs/domain_doc/reasoning_doc/tool_batch.md | tests/unit/test_tool_lifecycle_contract.py | Collector 负责 revision 去重、深快照与关闭；Runner 负责并行结果、控制时兄弟有界收尾；跨层接管及协议配对经 test_tool_lifecycle_wiring.py 覆盖 |
 | app/infrastructure/database.py | ✅ | docs/infrastructure_doc/database_doc/database.md | tests/unit/test_database.py | DB-F02 独立生命周期、受控工厂、只读探测、有界清理与日志脱敏；实例日志脱敏供迁移复用；test_database_lifecycle_review.py 覆盖真实 Session Owner；F04 已提供独立 schema 检查，回调/Container 接线及 runtime 真实验收仍待 F05/F06 |
 | app/infrastructure/database_migrations.py | ✅ | docs/infrastructure_doc/database_doc/migrations.md | tests/unit/test_database_migrations.py | DB-F03/04 文件/历史、事务核心及命令 Owner；版本表准备、基线与完整只读检查；真实事务与 CLI 见 tests/integration/test_database_migrations.py |
+| app/infrastructure/session_store.py | ✅ | docs/infrastructure_doc/database_doc/session_store.md | tests/unit/test_session_store.py | PostgreSQL 会话适配器；真实事务证据见 tests/integration/test_session_store.py |
 | app/infrastructure/database_schema.py | ✅ | docs/infrastructure_doc/database_doc/schema.md | tests/unit/test_database_schema.py | 严格 PostgreSQL catalog、序列和权限检查；迁移及只读检查共用，不持有资源或自动修复；集成证据见 tests/integration/test_database_migrations.py |
 | migrations/0001_sessions_and_messages.sql | ✅ | docs/infrastructure_doc/database_doc/migrations.md | tests/integration/test_database_models.py | Session/Message 首迁移，与 public ORM 类型、默认、索引和非级联 FK 一致 |
 | scripts/migrate.py | ✅ | docs/project/deployment.md | tests/unit/test_database_cli.py | 唯一 CLI，UTF-8/脱敏/预算监督；F04 gate 已接入，双入口真实迁移经 PostgreSQL 集成验证 |

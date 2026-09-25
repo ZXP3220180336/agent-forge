@@ -304,3 +304,9 @@ AppError（根，code 默认 INTERNAL）
 - [结构化输出](../integration_doc/llm_doc/structure.md)（四态分类、`StructuredTruncationError`/`RefusalError`/`ToolCallError`）
 - [限流器](../integration_doc/llm_doc/limiter.md)（reserve/settle 资源清理、取消兜底）
 - [全局日志框架](../platform_doc/observability/logging.md)（`log_event_async("llm_call")` 错误记录）
+
+## 持久化不可用
+
+`PersistenceUnavailableError` 继承 BusinessError，code 为 `PERSISTENCE_UNAVAILABLE`，公共消息固定为“持久化暂不可用”。reason 只接受允许集合，未知值归一为 unavailable，不携带 URL、SQL 或驱动消息。`committed` 表示确认提交，`commit_unknown` 表示开始提交但结果未知；均不构成重试授权。
+
+DB-F05a Store 将已知连接/权限/schema/超时故障转为此异常，未知编程与约束异常原样抛出，取消仍保持 CancelledError 并携带提交事实。完整分类与资源边界见[会话 Store](../infrastructure_doc/database_doc/session_store.md)。API 503 专用映射属于 F05b，当前尚未接入。

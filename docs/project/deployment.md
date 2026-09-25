@@ -183,7 +183,7 @@ DATABASE_TEST_ALLOW_CLEANUP=true
 
 只有确认这是可清理的测试库才设置 true。fixture 验证库名/账号及显式清理授权；public 存在非受管表/视图/序列时拒绝清理，测试仅清理 sessions/messages/schema_versions 及其所属对象，不使用 CASCADE。不要把业务库凭证填入此文件，密码不写入版本控制或测试日志。
 
-执行 `uv run --no-sync pytest tests/integration/test_database_migrations.py tests/integration/test_database_models.py -q`。未配置环境时明确 skip，不能计作真实验收通过。双入口子进程测试通过环境变量注入同一 DATABASE_URL，不覆盖应用 `.env`。本轮实测平台为 Windows + PostgreSQL 18.6；受限账号/应用生命周期矩阵仍按 F06 单独验收。
+执行 `uv run --no-sync pytest tests/integration/test_database_migrations.py tests/integration/test_database_models.py tests/integration/test_session_store.py -q`。未配置环境时明确 skip，不能计作真实验收通过。双入口子进程测试通过环境变量注入同一 DATABASE_URL，不覆盖应用 `.env`。本轮实测平台为 Windows + PostgreSQL 18.6；受限账号/应用生命周期矩阵仍按 F06 单独验收。
 
 ### 单主机单活动执行进程
 

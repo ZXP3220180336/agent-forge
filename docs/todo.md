@@ -20,6 +20,10 @@
 
 ## DB-F：共享数据库基础设施（DB-F01～04 已完成，后续待实施）
 
+**DB-F05a 当前授权与拆分（2026-09-25）**：用户授权 Store 与应用 SQL 迁出。① 新增领域 `session_store.py` Protocol 与基础设施同名 PostgreSQL 适配器，保持普通 dict/标识接口、逐操作独立事务和硬删原子性；② SessionManager 改注入 Store，缓存/参数策略留应用层，已知不可用先于缓存拒绝；③ 新增真实 Store 集成与生命周期单测，应用测试改端口 fake；④ 最小调整 Container 将现有工厂包装为 Store，并新增共享持久化不可用异常供边界传递，HTTP 503/runtime/readiness 仍归 F05b；⑤ 更新组件、层导航、ALIGNMENT、ADR 和评审。子智能体分别独占适配器/单测与管理器/单测，主执行者负责端口、异常、最小装配、真实集成及文档。
+
+可选项无。只消费现有 Settings 操作/清理预算，不新增配置默认、数据库/事务自动重试、缓存失效策略或通用 Repository。继续使用已授权隔离测试库；保持 F04 schema，不新增迁移文件。
+
 **DB-F04 当前授权与拆分（2026-09-24）**：用户授权实施已批准 F04。① 先补默认值与 schema/基线失败复现；② 新建 `migrations/0001_sessions_and_messages.sql`，在 `database_migrations.py` 接入版本表准备、严格基线及只读完整检查；③ 用 `database_schema.py` 独立承载迁移与只读检查共用的 catalog 验证策略，避免将目录查询混入事务编排；④ `session.py`/`messages.py` 修复客户端时间和 dict 默认，保持 SQL 语义；⑤ 新增 PostgreSQL 集成测试，更新 CLI 保护测试、组件/部署/模型说明、ADR、ALIGNMENT 和评审。子智能体独占 ORM 与 catalog 测试/实现，主执行者负责 SQL、编排、集成和文档。
 
 可选项无；不接入 Container/Store/API，不创建工具迁移、不自动修复旧库或序列。真实验收仅使用显式声明的隔离测试数据库；尚无环境时保留未完成验收，不将 fake 或 skip 当通过。基线操作必须由操作者保证旧 writer 与序列使用者已停止，锁和只读序列检查不能证明外部写入方已经排空。
@@ -60,7 +64,7 @@ F02 接口沿用 init/ping/probe/dispose。完整 schema 验证通过受控异�
 - [x] DB-F03a：迁移核心的文件/历史/只读版本校验与事务内整批执行；见[本片评审](#db-f03a-review)。
 - [x] DB-F03b：唯一迁移命令 Owner 与 CLI；见[本片评审](#db-f03b-review)，DB-F03 整体验收仍需真实多语句回滚证据。
 - [x] DB-F04：Session/Message 首迁移、基线接管及 ORM 一致性；见[本片评审](#db-f04-review)。
-- [ ] DB-F05a：会话专用 Store Port / PostgreSQL 适配器，迁出应用层 SQL。
+- [x] DB-F05a：会话专用 Store Port / PostgreSQL 适配器，迁出应用层 SQL；见[本片评审](#db-f05a-review)。
 - [ ] DB-F05b：Container、readiness 与 503 错误边界；保持 A/B 能力分道。
 - [ ] DB-F05c：聊天消费者停止准入、运行/finalizer 排空与数据库关闭顺序。
 - [ ] DB-F06：真实 PostgreSQL 验收、全量回归与正式文档同步。
@@ -214,6 +218,20 @@ pytest 简写均经 `uv run --no-sync` 执行。全量回归按最后一次实�
 | --- | --- | --- | --- | --- |
 | P3 | `_connect` 的关闭期拦截（行为已登记在组件文档的行为边界） | 关闭已开始时连接池新建连接 | 该连接被 `terminate()` 并抛 `DatabaseRuntimeError("closing")`，此路径无直接断言；现有用例只覆盖“初始化期外部连接使 dispose 报 close_incomplete”，两者不是同一时序 | 用真实引擎并发关闭观察池在关闭期新建连接；fake 边界只能直接调用事件处理器，证明不了这个时序。已改为 fake 边界的直接断言（`closing` / `closed` 两态），并用“移除拦截分支”确认判别力；真实时序留 DB-F06，见 [DB-008](../issues/infrastructure/database/2026-09-23-connect-during-close-assertion.md) |
 | P3 | `_build_engine` 的脱敏过滤器名 | `_engine_options` 出现 `poolclass`，或方言默认池变化 | 过滤器只挂在 `sqlalchemy.pool.impl.AsyncAdaptedQueuePool.<name>`：池实现一变，池事件日志不再脱敏，且不会有任何测试失败（echo 仍由 engine 实例 logger 覆盖） | 从 engine 实例读实际池 logger 名（`sync_engine.pool.logger.name`）而不是拼字符串，并补一条断言该名字已被过滤器覆盖的用例。已按此修复，见 [DB-009](../issues/infrastructure/database/2026-09-23-pool-logger-name-hardcode.md) |
+
+<a id="db-f05a-review"></a>
+
+### DB-F05a 实施评审（2026-09-25）
+
+- [x] 领域 SessionStorePort 与 PostgreSQL 适配器；每操作独立事务，硬删原子提交，普通数据进出，SQL/ORM 全部迁出 Application。
+- [x] SessionManager 保留参数、默认值与缓存策略；入口及缓存 await 后检查准入。Container 最小包装既有工厂，operation/cleanup 来自 Settings；共享异常携带提交确认/未知事实。
+- [x] 失败复现：适配器缺失时真实测试 1 failed/4 errors；应用迁移前 34 failed/1 passed。审查缓存竞态 3 failed，清理未知异常分类/事实 2 failed，修复详情见 [DB-020](../issues/infrastructure/database/2026-09-25-cache-admission-race.md)、[DB-021](../issues/infrastructure/database/2026-09-25-store-cleanup-error-classification.md)。
+- [x] Store 21 项、Manager 39 项单测通过；定向组合 85 passed/2 xfailed，其中真实 PostgreSQL Store 7 项均执行通过。涵盖 CRUD、过滤/排序/统计、同时间消息 ID 窗口、两表硬删失败回滚、真实提交后响应丢失不重试、pg_sleep 超时及缓存 IO 前连接归还。
+- [x] 全量 `uv run --no-sync pytest -q --tb=short`：1881 passed、2 xfailed、1 条既有 Starlette 警告，82.20 秒。独立只读复核 Store/Manager 60 passed，未发现本片剩余可证实阻断问题。
+
+结构与生命周期评审：端口来自会话真实消费需求，无通用 Repository/CachePort。单 worker 独占 Session；总预算含清理，取消/迟到提交保留事实，未结束 worker 保留引用，清理失败封锁准入。单操作连接失败不永久替代 runtime 全局状态。当前 Container 仍使用普通工厂，runtime 的未关闭 Session 最终登记/回收、完整 readiness/schema/503 为 F05b，消费者排空为 F05c；2 个 strict xfail 正对应未完成装配，不宣称完整应用数据库验收或开放工具 B。F06 的权限与整体验收仍待实施。
+
+文档已同步端口、组件、应用、配置、部署、架构、ADR、索引及 ALIGNMENT。本次 10 个 Python 文件 Ruff check/format、ALIGNMENT/链接及 git diff --check 通过。全量后通过正式 CLI 恢复测试库版本 1，cleanup_complete=true、无未知提交；只读确认 sessions/messages 均为 0 行。凭证未输出或提交。可选项无，本轮未提交。
 
 <a id="db-f04-review"></a>
 

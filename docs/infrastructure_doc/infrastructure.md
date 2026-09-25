@@ -1,6 +1,6 @@
 # 基础设施层说明文档
 
-> 数据库规划已按用户确认的文档对照结论收敛；当前实现状态见 [ALIGNMENT](../ALIGNMENT.md)。设计取舍及确认范围见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)。DB-F02 已实现独立运行时，完整 schema 校验、迁移与应用装配仍待后续分片。
+> 数据库规划已按用户确认的文档对照结论收敛；当前实现状态见 [ALIGNMENT](../ALIGNMENT.md)。设计取舍及确认范围见 [DB-ADR-001](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#infrastructure-alignment)。DB-F02～F04 已实现独立运行时、迁移与完整 schema 校验；F05a 已迁出会话 SQL，完整 runtime 应用装配仍待 F05b。
 
 ## 目录
 
@@ -39,6 +39,7 @@
 ```text
 app/infrastructure/
 ├── __init__.py             ← 包入口，规划导出统一封装接口
+├── session_store.py        ← PostgreSQL 会话专用 Store（DB-F05a 已实现）
 ├── database.py             ← DatabaseRuntime（已实现，尚未接入 Container）
 ├── database_migrations.py  ← 文件/历史、事务核心与结构检查编排
 ├── database_schema.py      ← PostgreSQL catalog、序列与权限策略
@@ -54,7 +55,7 @@ app/infrastructure/
         └── tool_log.py     ← ⏳ 预留：工具调用日志表
 ```
 
-> **当前状态**：ORM 模型已被 `SessionManager` 使用；`database.py` 已实现独立资源生命周期，尚未替换 Container 的直接管理；`redis_client.py` / `message_queue/` 仍为空占位。应用当前连接管理见[现状说明](#现状说明)。
+> **当前状态**：ORM 模型由 `PostgresSessionStore` 使用；`database.py` 已实现独立资源生命周期，尚未替换 Container 的直接管理；`redis_client.py` / `message_queue/` 仍为空占位。应用当前连接管理见[现状说明](#现状说明)。
 
 ---
 
@@ -63,6 +64,7 @@ app/infrastructure/
 | 文件 | 状态 | 定位 |
 | --- | --- | --- |
 | `app/infrastructure/__init__.py` | 空（0 行） | 基础设施层包入口，规划统一导出封装接口 |
+| `app/infrastructure/session_store.py` | [见对齐表](../ALIGNMENT.md) | [会话 Store](database_doc/session_store.md)，独立事务与有界清理；Application 只依赖领域端口 |
 | `app/infrastructure/database.py` | [见对齐表](../ALIGNMENT.md) | 独立 engine / session factory / 探测 / 有界关闭，见 [database.md](database_doc/database.md)；schema 校验与业务装配待接入 |
 | `app/infrastructure/database_migrations.py` | [见对齐表](../ALIGNMENT.md) | 唯一迁移序列核心及离线命令 Owner，见 [migrations.md](database_doc/migrations.md)；首迁移、严格基线与只读 schema 检查已由 F04 交付 |
 | `app/infrastructure/database_schema.py` | [见对齐表](../ALIGNMENT.md) | 受管表、约束、索引、序列与权限的 catalog 判据，见 [schema.md](database_doc/schema.md)；迁移与只读检查共用 |
@@ -80,7 +82,7 @@ app/infrastructure/
 
 ### DB / Redis 由 container 直接管理
 
-当前基础设施资源**未经过** `infrastructure/` 层封装，而是由 `app/container.py` 的 `Container.initialize()` 直接创建：
+当前 engine 与 Redis 仍由 `app/container.py` 的 `Container.initialize()` 直接创建：
 
 **数据库**（`container.py` L103-119）：
 
@@ -107,7 +109,7 @@ self.redis = Redis.from_url(
 await self.redis.ping()
 ```
 
-**调用链现状**：`Container` 将 `redis` / `db_session_factory` 直接注入各服务（如 `SessionManager`），服务层拿到的是裸客户端对象。`shutdown()` 先等待 ToolService 关闭，再将 `redis.close()`、`engine.dispose()` 与 `ClientManager.close_all()` 并入 `asyncio.gather(return_exceptions=True)`。收集清理异常不等于资源均已释放，也不能证明整体优雅退出；当前缺少聊天运行及最终消息落库的完整排空边界。
+**调用链现状**：`Container` 将原 `db_session_factory` 包装为 `PostgresSessionStore`，再与 Redis 一起注入 `SessionManager`；管理器仅保留业务参数与缓存，不再持有 ORM/SQL。运行时尚未接入，当前 Store 的外部准入回调只检查工厂存在。`shutdown()` 先等待 ToolService 关闭，再将 `redis.close()`、`engine.dispose()` 与 `ClientManager.close_all()` 并入 `asyncio.gather(return_exceptions=True)`。收集清理异常不等于资源均已释放，也不能证明整体优雅退出；当前缺少聊天运行及最终消息落库的完整排空边界。
 
 **已确认的目标边界（待实施）**：先停止新业务准入，等待使用方收尾，再释放数据库；仍有使用方未结束时保留其依赖并报告关闭未完成。具体责任与验证见 [DB-ADR-001 D6](../../adr/infrastructure/database/2026-09-22-shared-database-foundation.md#d6生命周期接线)。
 
@@ -127,7 +129,7 @@ await self.redis.ping()
 
 DB-F01 已将 asyncpg 纳入正式依赖与锁文件，驱动缺失问题的复现与修复见 [DB-001](../../issues/infrastructure/database/2026-09-22-missing-asyncpg-dependency.md)。不能继续将驱动缺失描述为当前必然降级原因；实际模块与验证状态见 [ALIGNMENT](../ALIGNMENT.md)。
 
-Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权限检查；`/api/health` 仍不能证明数据库就绪。空工厂消费者、虚假可用性和空迁移 CLI 已有严格预期失败测试，分别由 DB-F02/03/05 继续闭合，不因安装驱动就宣称持久化可用。
+Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权限检查；`/api/health` 仍不能证明数据库就绪。空工厂消费者已由 F05a 显式拒绝，迁移 CLI 已由 F03/F04 完成；虚假 readiness 的严格预期失败仍待 F05b 闭合，不因安装驱动就宣称持久化可用。
 
 数据库预算字段与消费阶段由[配置参考](../config_doc/config.md#7-数据库配置)统一定义，DB-F02 独立运行时已消费连接、取池、探测、清理和关闭预算，现有 Container 尚未改造。统一迁移及 PostgreSQL 验收归独立 [DB-F 任务](../todo.md#db-foundation)；Piece⑥消费底座，再实现工具账本与恢复业务。
 
@@ -139,12 +141,12 @@ Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权�
 
 ### database.py
 
-**定位**：数据库资源唯一 Owner，替代 Container 的直接创建（归 DB-F05），不在应用启动时自动迁移。DB-F02 已实现独立运行时；生产 schema 检查器、迁移与应用装配仍待后续分片。
+**定位**：数据库资源唯一 Owner，替代 Container 的直接创建（归 DB-F05），不在应用启动时自动迁移。独立运行时与生产 schema 检查器/迁移已实现；应用装配仍待 F05b。
 
 准入状态机、探测与关闭流程、资源责任、并发/取消边界与原因码分类见组件文档 [database.md](database_doc/database.md)。进入本层维护的边界：
 
 - 输入为 Settings 已校验的连接/池参数与不可变 `DatabaseTimeouts`；六项超时通过 `timeouts` 聚合传入，不接受 migration 两项预算。`database_config` 含迁移参数与凭证，不能整体展开或日志化，完整键表见[配置参考](../config_doc/config.md#7-数据库配置)。
-- 完整 schema 校验经受信只读异步回调接入，缺失时即使 `SELECT 1` 成功也不开放工厂；当前生产装配不存在该检查器。
+- 完整 schema 校验经受信只读异步回调接入，缺失时即使 `SELECT 1` 成功也不开放工厂；检查器已由 F04 实现，当前应用尚未注入。
 - 仍有 Session 或业务连接 Owner 时不 dispose、不强关；消费方 drain 与「首次启动失败需重启」的装配语义归 DB-F05。
 - PostgreSQL / asyncpg 是唯一后端，不引入降级后端。
 
@@ -175,6 +177,7 @@ Container 仍只构造 engine/sessionmaker，没有真实连接、schema 或权�
 
 ## 相关文档链接
 
+- [会话持久化 Store](database_doc/session_store.md) — 领域端口、事务、清理与提交事实
 - [数据库运行时（database.py）](database_doc/database.md) — 组件级内部协作契约与维护说明
 - [数据库结构校验（database_schema.py）](database_doc/schema.md) — 受管结构、序列与权限的 catalog 契约
 - [数据模型层说明](model_doc/model.md) — ORM 模型、会话与消息表契约

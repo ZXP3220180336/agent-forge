@@ -49,6 +49,7 @@
 - [docs/history/completed-work.md](history/completed-work.md)
 - [docs/infrastructure_doc/database_doc/database.md](infrastructure_doc/database_doc/database.md)
 - [docs/infrastructure_doc/database_doc/migrations.md](infrastructure_doc/database_doc/migrations.md)
+- [docs/infrastructure_doc/database_doc/session_store.md](infrastructure_doc/database_doc/session_store.md)
 - [docs/infrastructure_doc/database_doc/schema.md](infrastructure_doc/database_doc/schema.md)
 - [docs/infrastructure_doc/infrastructure.md](infrastructure_doc/infrastructure.md)
 - [docs/infrastructure_doc/model_doc/model.md](infrastructure_doc/model_doc/model.md)

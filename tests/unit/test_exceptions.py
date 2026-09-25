@@ -109,3 +109,15 @@ def test_execution_abort_error_codes():
     assert LLMCancelledError.code == AppErrorCode.LLM_CANCELLED
     assert LLMDeadlineExceededError.code == AppErrorCode.LLM_DEADLINE
     assert LLMCancelledError.code != LLMDeadlineExceededError.code
+
+
+def test_persistence_error_preserves_commit_facts_without_raw_diagnostics():
+    """已确认提交与结果未知分别保留，异常出口不携带原始凭证/驱动文本。"""
+    from app.shared.exceptions import PersistenceUnavailableError
+
+    error = PersistenceUnavailableError("secret-sentinel", committed=True)
+    assert error.code == "PERSISTENCE_UNAVAILABLE"
+    assert error.reason == "unavailable" and error.committed and not error.commit_unknown
+    assert "secret-sentinel" not in repr(error)
+    unknown = PersistenceUnavailableError("commit_unknown", commit_unknown=True)
+    assert unknown.commit_unknown and not unknown.committed

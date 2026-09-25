@@ -195,6 +195,7 @@ app/integration/（LLMService / ToolService / EmbeddingService / ...）
 | `ToolGateway` / `ToolResult` | [tool_gateway.py](../../app/domain/ports/tool_gateway.py) | 工具 Schema 导出 + 执行 | [ToolService](../integration_doc/tools_doc/tools.md) |
 | `ContextBudgetPort` | [context_budget.py](../../app/domain/ports/context_budget.py) | 上下文预算（轮次 + token 双层护栏） | [ContextManager](../application_doc/context_doc/context.md) |
 | `CostLimiterPort` | [cost_limiter.py](../../app/domain/ports/cost_limiter.py) | 成本上限（美元） | [CostLimiter](../application_doc/context_doc/context.md) |
+| `SessionStorePort` | [session_store.py](../../app/domain/ports/session_store.py) | 会话、消息、统计与准入；普通数据进出 | [PostgresSessionStore](../infrastructure_doc/database_doc/session_store.md) |
 | `EmbeddingPort` | [embedding_port.py](../../app/domain/ports/embedding_port.py) | 文本向量化（单条 / 批量） | [EmbeddingService](../integration_doc/embedding_doc/embedding.md) |
 
 ---

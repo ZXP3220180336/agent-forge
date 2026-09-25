@@ -21,5 +21,7 @@
 | [DB-017](2026-09-24-catalog-char-decoding.md) | 内部 char 解码导致 catalog 误判 | 已修复；DB-F04 真实 PostgreSQL 发现 | 2026-09-24 |
 | [DB-018](2026-09-24-orm-schema-shadowing.md) | ORM 未限定 public 导致同名表遮蔽 | 已修复；DB-F04 独立复审 | 2026-09-24 |
 | [DB-019](2026-09-24-incoming-foreign-key-check.md) | 严格基线遗漏改变写入语义的入向外键 | 已修复；DB-F04 独立复审 | 2026-09-24 |
+| [DB-020](2026-09-25-cache-admission-race.md) | 缓存等待期间准入状态变化被遗漏 | 已修复；DB-F05a 独立审查 | 2026-09-25 |
+| [DB-021](2026-09-25-store-cleanup-error-classification.md) | 清理错误分类掩盖未知异常及提交事实 | 已修复；DB-F05a 独立审查 | 2026-09-25 |
 
 [问题导航](../../README.md) · [数据库决策](../../../adr/infrastructure/database/README.md)

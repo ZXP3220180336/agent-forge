@@ -1,7 +1,7 @@
 # 应用层说明文档
 
 > **对应代码**：`app/application/`
-> **更新日期**：2026-09-16
+> **更新日期**：2026-09-25
 > **文档定位**：应用层（`app/application/`）—— 聊天用例、会话、上下文与任务调度，是 API 层与核心层（Agent）之间的用例调度层。
 > 状态与验证见 [ALIGNMENT](../ALIGNMENT.md)。
 
@@ -77,7 +77,7 @@ ReActAgent（app/domain/，经 ContextBudgetPort 复用 ContextManager.trim_mess
 LLMService / ToolService（app/integration/）
 ```
 
-应用层内部依赖：`ChatService` 编排 SessionManager、ContextManager、TaskService 与领域 Agent；`ContextManager` 依赖 `SessionManager`，`TaskService` 保持并发与取消登记职责。基础设施（Redis / DB）由 `container` 管理并注入。
+应用层内部依赖：`ChatService` 编排 SessionManager、ContextManager、TaskService 与领域 Agent；`ContextManager` 依赖 `SessionManager`，`TaskService` 保持并发与取消登记职责。SessionManager 接收 Redis 和 `SessionStorePort`，不接收数据库会话工厂、不导入 SQL 或 ORM。基础设施由装配根管理并注入。
 
 ---
 
@@ -118,13 +118,15 @@ POST /api/chat/send
 
 **代码**：`app/application/session/session_manager.py` · **文档**：[会话管理详解](session_doc/session.md)
 
-负责会话与消息两条数据链路的完整生命周期，Redis 热缓存 + DB 持久化双存储：
+负责会话与消息的用例编排、默认参数及 Redis 缓存；数据库操作通过普通数据接口 `SessionStorePort` 委托 [SessionStore](../infrastructure_doc/database_doc/session_store.md)。Store 返回后才读写后续缓存，不跨缓存 I/O 持有数据库连接。
 
 | 能力 | 说明 |
 | --- | --- |
 | 生命周期 | 创建 / 查询 / 软删除 / 硬删除 |
-| 持久化 | Redis 热缓存 + DB 双存储，cache-through 读路径 |
+| 持久化 | Store 返回普通数据；缓存读取前及命中返回前检查持久化可用性，缺失/已知不可用时明确失败 |
 | 查询 | 最新历史窗口、分页 / 搜索 / 筛选 / 排序 / 统计聚合 |
+
+缓存键、TTL 和失效策略保持原有行为，详见组件文档。runtime 就绪装配和 HTTP 503 映射属于 DB-F05b，接线与验证状态统一见 [ALIGNMENT](../ALIGNMENT.md)。
 
 ## ContextManager 上下文管理
 

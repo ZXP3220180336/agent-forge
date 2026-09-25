@@ -7,6 +7,7 @@ from .context_budget import ContextBudgetPort
 from .cost_limiter import CostLimiterPort
 from .embedding_port import EmbeddingPort
 from .llm_gateway import LLMGateway, StreamResult
+from .session_store import SessionStorePort
 from .tool_execution import (
     ToolCallContext,
     ToolCleanupState,
@@ -22,6 +23,7 @@ __all__ = [
     "CostLimiterPort",
     "EmbeddingPort",
     "LLMGateway",
+    "SessionStorePort",
     "StreamResult",
     "ToolCallContext",
     "ToolCleanupState",

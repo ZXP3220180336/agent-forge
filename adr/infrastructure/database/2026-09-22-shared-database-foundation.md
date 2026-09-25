@@ -186,6 +186,10 @@ DB-F04 已交付首 SQL、版本表准备、严格基线和只读 check_schema�
 
 两 ORM 明确映射 public，默认值改为客户端 callable，未添加服务端时间/JSON 默认。用户已提供专用 PostgreSQL 18.6，真实验证首迁移、重复、基线及数据/序列保留、DDL/登记失败原子回滚、前缀保留和提交响应丢失；提交未知试验中真实版本行已提交而命令仍报告未知，未自动重放。F03 的真实事务门槛已兑现，本片不能代替 F05/F06 的应用、受限账号与关闭验收。详见 [DB-F04 评审](../../../docs/todo.md#db-f04-review)及 DB-016～019 问题记录。
 
+DB-F05a 已将 SQL/ORM/事务迁至 PostgresSessionStore，Domain 端口只传普通数据，应用保留参数与缓存。Container 最小包装旧工厂、共享持久化错误是本片必要依赖；完整 runtime/readiness/503 仍归 F05b，排空归 F05c。当前普通工厂不具备 runtime 的未关闭 Session 最终回收登记，不能提前宣称应用生命周期全部闭合。
+
+每个 worker 独占 Session，参照 [SQLAlchemy AsyncSession 每任务独占](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#using-asyncsession-with-concurrent-tasks)；调用方使用 [asyncio.wait](https://docs.python.org/3/library/asyncio-task.html#asyncio.wait) 有界等待，迟到任务保留引用。缓存 await 后再次检查准入；单次连接失败不永久封锁全局，清理失败则禁止新准入。真实 PostgreSQL 证明 CRUD、窗口/过滤/统计、硬删回滚、提交响应丢失事实、慢查询超时及缓存前归还连接。具体结果见 [F05a 评审](../../../docs/todo.md#db-f05a-review)。
+
 ## 关联记录
 
 [基础设施说明](../../../docs/infrastructure_doc/infrastructure.md)是既有职责与当前说明入口，本 ADR 是数据库决策正文。

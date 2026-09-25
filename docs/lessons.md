@@ -18,6 +18,7 @@
 
 | 触发条件 | 已遇到的误判与经验 | 事实依据 / 正式规则入口 |
 | --- | --- | --- |
+| 准入检查后等待外部缓存，或清理异常需要跨层传播 | await 后原状态可能失效，缓存返回前须复查；操作与清理须共用已知故障分类，未知异常不能伪装不可用，提交事实独立保留。 | [DB-020](../issues/infrastructure/database/2026-09-25-cache-admission-race.md)、[DB-021](../issues/infrastructure/database/2026-09-25-store-cleanup-error-classification.md)；[G0](engineering/ai-engineering-rules.md#g0)。 |
 | 数据库 schema 准入与 ORM 接线 | catalog 合法不等于 ORM 必然读写该对象：未限定 schema 可被 search_path 同名表遮蔽；只查本表出向约束也会遗漏改变 DELETE 语义的入向 FK。用真实 PostgreSQL 验证驱动类型、目标对象与约束两端，不能以 fake 行值替代。 | [DB-017](../issues/infrastructure/database/2026-09-24-catalog-char-decoding.md)、[DB-018](../issues/infrastructure/database/2026-09-24-orm-schema-shadowing.md)、[DB-019](../issues/infrastructure/database/2026-09-24-incoming-foreign-key-check.md)；[E8](engineering/ai-engineering-rules.md#gates)。 |
 | 业务取消后进入必要清理，或父进程排空迟到消息 | 业务取消 Guard 不能直接复用于回滚入口；清理只受剩余期限与重复取消约束。已选定的主失败要与迟到提交事实、清理状态分别保存，接管事实不能改写失败。 | [DB-013](../issues/infrastructure/database/2026-09-23-migration-cancel-cleanup.md)、[DB-014](../issues/infrastructure/database/2026-09-23-migration-terminal-preservation.md)；[G0](engineering/ai-engineering-rules.md#g0)。 |
 | 一次循环可因多个协议错误再次付费 | 只有总循环上限，或按错误分支分别清零，都会漏掉跨分支恢复消耗；合法工具协议才是该预算的恢复信号。空输出与 LLM 失败不是协议恢复。 | [REASON-017](../issues/domain/reasoning/2026-09-10-tool-protocol-retry-limit.md)；[重试规范](engineering/agent-runtime-rules.md#retry)。 |

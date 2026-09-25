@@ -17,6 +17,7 @@ from app.application.context.context_manager import ContextManager
 from app.application.context.cost_limiter import CostLimiter
 from app.application.session.session_manager import SessionManager
 from app.application.task.task_service import TaskService
+from app.infrastructure.session_store import PostgresSessionStore
 from app.integration.embedding import EmbeddingService
 from app.integration.llm.client import ClientManager
 from app.integration.llm.llm_service import LLMService
@@ -135,7 +136,12 @@ class Container:
         # 3. 创建管理器实例
         self.session_manager = SessionManager(
             redis_client=self.redis,
-            db_session_factory=self.db_session_factory,
+            store=PostgresSessionStore(
+                self.db_session_factory,
+                operation_timeout_seconds=settings.database_operation_timeout_seconds,
+                cleanup_timeout_seconds=settings.database_cleanup_timeout_seconds,
+                is_available=lambda: self.db_session_factory is not None,
+            ),
         )
 
         # 3. 注册 LLM 客户端配置 & 创建服务

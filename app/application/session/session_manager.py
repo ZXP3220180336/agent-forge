@@ -1,76 +1,53 @@
-"""
-会话管理模块
-- 负责会话的创建、查询、删除
-- 会话与用户绑定，支持权限控制
-- 会话有过期时间，自动清理
+"""会话应用服务：生成会话 ID、应用默认值并维护 Redis 缓存。
 
-会话管理模块是整个多轮对话系统的入口与基石，它负责：
-1、会话生命周期管理：创建、查询、删除
-2、消息持久化：存储用户和 AI 的每一轮对话
-3、缓存加速：通过 Redis 减少数据库查询压力
-4、安全隔离：确保用户只能访问自己的会话
+数据库查询、事务及 ORM 映射由 SessionStorePort 适配器承担；端口返回时
+数据库资源已经释放，缓存访问不会占用数据库会话。
 """
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 
 import redis.asyncio as redis
 
+from app.domain.ports.session_store import SessionStorePort
 from app.platform.observability.logger import get_logger
+from app.shared.exceptions import PersistenceUnavailableError
+from app.shared.types import SessionId, UserId
 
 logger = get_logger("services.session_manager")
-from sqlalchemy import (
-    delete,
-    func,
-    insert,
-    select,
-    update,
-)
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.infrastructure.models.database import MessageModel, SessionModel
-from app.shared.types import SessionId, UserId
 
 
 class SessionManager:
-    """
-    会话管理器
-    使用 Redis 作为热缓存，Database 作为持久化存储
-    """
+    """使用 Redis 热缓存和会话持久化端口的应用服务。"""
 
-    def __init__(self, redis_client: redis.Redis | None, db_session_factory):
+    def __init__(self, redis_client: redis.Redis | None, store: SessionStorePort | None):
         self.redis = redis_client
-        self.db_session = db_session_factory
-        self.session_ttl = 3600 * 24 * 7  # 7天过期
-
+        self.store = store
+        self.session_ttl = 3600 * 24 * 7
         if self.redis is None:
             logger.warning("Redis 不可用，缓存降级")
 
-    # ===== Redis 缓存辅助（redis 不可用时降级，不崩溃）=====
-    # 统一判空入口：消除 `self.redis: Redis | None` 的 Optional 访问，且
-    # 服务降级语义正确（redis 为 None 时跳过缓存，直查 DB）。
+    def _available_store(self) -> SessionStorePort:
+        """缓存命中也不能掩盖已知的持久化不可用状态。"""
+        store = self.store
+        if store is None:
+            raise PersistenceUnavailableError()
+        store.ensure_available()
+        return store
 
     async def _cache_get(self, key: str) -> bytes | str | None:
-        """Redis 缓存读取（redis 不可用时返回 None）。"""
-        r = self.redis
-        if r is None:
+        if self.redis is None:
             return None
-        return await r.get(key)
+        return await self.redis.get(key)
 
     async def _cache_set(self, key: str, value: str, ex: int | None = None) -> None:
-        """Redis 缓存写入（redis 不可用时降级跳过）。"""
-        r = self.redis
-        if r is None:
-            return
-        await r.set(key, value, ex)
+        if self.redis is not None:
+            await self.redis.set(key, value, ex)
 
     async def _cache_delete(self, key: str) -> None:
-        """Redis 缓存删除（redis 不可用时降级跳过）。"""
-        r = self.redis
-        if r is None:
-            return
-        await r.delete(key)
+        if self.redis is not None:
+            await self.redis.delete(key)
 
     async def create_session(
         self,
@@ -78,93 +55,28 @@ class SessionManager:
         system_prompt: str | None = None,
         title: str | None = None,
     ) -> dict:
-        """创建新会话"""
-        session_id = str(uuid.uuid4())
-
-        # 持久化到数据库
-        async with self.db_session() as db:
-            stmt = insert(SessionModel).values(
-                id=session_id,
-                user_id=user_id,
-                system_prompt=system_prompt or "你是一个友好的AI助手",
-                title=title or "新对话",
-            )
-            await db.execute(stmt)
-            await db.commit()
-
-        # 预热 Redis 缓存
-        session_data = {
-            "id": session_id,
-            "user_id": user_id,
-            "system_prompt": system_prompt or "你是一个友好的AI助手",
-            "created_at": datetime.now(UTC).isoformat(),
-            "message_count": 0,
-            "total_tokens": 0,
-        }
-        await self._cache_set(
-            f"session:{session_id}",
-            json.dumps(session_data),
-            self.session_ttl,
+        """创建会话，持久化成功后预热缓存。"""
+        store = self._available_store()
+        session_data = await store.create_session(
+            session_id=SessionId(str(uuid.uuid4())),
+            user_id=user_id,
+            system_prompt=system_prompt or "你是一个友好的AI助手",
+            title=title or "新对话",
         )
-
+        await self._cache_set(f"session:{session_data['id']}", json.dumps(session_data), self.session_ttl)
         return session_data
 
     async def get_session(self, session_id: SessionId) -> dict | None:
-        """获取会话信息（Redis → DB 缓存穿透保护）"""
-        # 1. 查 Redis
+        """优先读取缓存；缺失会话不缓存空值。"""
+        store = self._available_store()
         cached = await self._cache_get(f"session:{session_id}")
         if cached:
+            store.ensure_available()
             return json.loads(cached)
-
-        # 2. 查数据库
-        async with self.db_session() as db:
-            result = await db.execute(select(SessionModel).where(SessionModel.id == session_id))
-            session = result.scalar_one_or_none()
-            if not session:
-                return None
-
-            # 回写 Redis
-            session_data = {
-                "id": session.id,
-                "user_id": session.user_id,
-                "system_prompt": session.system_prompt,
-                "created_at": session.created_at.isoformat(),
-                "message_count": 0,  # 懒加载
-                "total_tokens": 0,
-            }
-            await self._cache_set(
-                f"session:{session_id}",
-                json.dumps(session_data),
-                self.session_ttl,
-            )
-            return session_data
-
-    """
-    # 增强版：缓存空值防止穿透攻击
-    async def get_session(self, session_id, enable_bloom_filter=True):
-        # 布隆过滤器快速过滤（可选）
-        if enable_bloom_filter and not self.bloom_filter.might_contain(session_id):
-            return None
-
-        # 查 Redis
-        cached = await self._cache_get(f"session:{session_id}")
-        if cached:
-            if cached == "NULL":  # 空值标记
-                return None
-            return json.loads(cached)
-
-        # 查数据库
-        session = await self._query_db(session_id)
-        if not session:
-            # 缓存空值，TTL 设置较短（如 60 秒）
-            await self.redis.setex(f"session:{session_id}", 60, "NULL")
-            return None
-
-        # 回写缓存
-        await self.redis.setex(f"session:{session_id}", self.session_ttl, json.dumps(session))
-        return session
-
-    """
+        session_data = await store.get_session(session_id)
+        if session_data is not None:
+            await self._cache_set(f"session:{session_id}", json.dumps(session_data), self.session_ttl)
+        return session_data
 
     async def get_messages(
         self,
@@ -173,56 +85,9 @@ class SessionManager:
         offset: int = 0,
         before_message_id: int | None = None,
     ) -> list[dict]:
-        """
-        获取最近一段 user/assistant 历史消息，并按创建时间升序返回。
-
-        `before_message_id` 传入时只读取 ID 更小的消息，用作已持久化当前消息的
-        快照上界；`limit` 从最新消息向更早消息截取，`offset` 也以最新消息为起点
-        继续控制分页。查询阶段使用倒序保证窗口确实是最新窗口，返回前恢复时间正序，
-        使 ContextManager 和模型继续按对话发生顺序消费历史。
-        """
-        async with self.db_session() as db:
-            # 只返回 user 和 assistant 的消息（不包含 system 和 reasoning）
-            conditions = [
-                MessageModel.session_id == session_id,
-                MessageModel.role.in_(["user", "assistant"]),
-            ]
-            if before_message_id is not None:
-                conditions.append(MessageModel.id < before_message_id)
-            stmt = (
-                select(MessageModel)
-                .where(*conditions)
-                .order_by(
-                    MessageModel.created_at.desc(),
-                    MessageModel.id.desc(),
-                )
-                .offset(offset)
-                .limit(limit)
-            )
-            result = await db.execute(stmt)
-            # 先取最新窗口，再恢复成对话时间顺序；id 作为同一时间戳下的稳定次序。
-            messages = list(reversed(result.scalars().all()))
-
-            return [{"role": msg.role, "content": msg.content} for msg in messages]
-
-    """
-    # 注意：OFFSET 分页在数据量很大时（超过几十万行）性能会下降，因为数据库需要跳过 offset 行。
-    # 对于超大规模数据，推荐使用游标分页（Cursor-based Pagination），游标分页（推荐用于大规模数据）
-    async def get_messages_cursor(self, session_id, cursor=None, limit=50):
-        stmt = select(MessageModel).where(
-            MessageModel.session_id == session_id,
-            MessageModel.role.in_(["user", "assistant"]),
-        )
-        if cursor:
-            stmt = stmt.where(MessageModel.id > cursor)  # 基于 ID 的游标
-        stmt = stmt.order_by(MessageModel.created_at.asc()).limit(limit)
-
-        result = await db.execute(stmt)
-        messages = result.scalars().all()
-
-        next_cursor = messages[-1].id if len(messages) == limit else None
-        return [{"role": msg.role, "content": msg.content} for msg in messages], next_cursor
-    """
+        """获取最新 user/assistant 消息窗口，返回时间正序；消息 ID 上界排他。"""
+        store = self._available_store()
+        return await store.get_messages(session_id, limit=limit, offset=offset, before_message_id=before_message_id)
 
     async def add_message(
         self,
@@ -232,55 +97,27 @@ class SessionManager:
         reasoning_content: str | None = None,
         token_count: int = 0,
     ) -> int:
-        """添加消息并返回正整数主键；数据库未返回有效主键时抛 RuntimeError。"""
-        async with self.db_session() as db:
-            stmt = insert(MessageModel).values(
-                session_id=session_id,
-                role=role,
-                content=content,
-                reasoning_content=reasoning_content,
-                token_count=token_count,
-            )
-            result = await db.execute(stmt)
-            await db.commit()
-            if not result.inserted_primary_key:
-                raise RuntimeError("消息写入成功但数据库未返回主键")
-            message_id = result.inserted_primary_key[0]
-            if not isinstance(message_id, int) or message_id <= 0:
-                raise RuntimeError("数据库返回了无效消息主键")
-            return message_id
+        """持久化消息并返回端口已确认的正整数主键，不自动重试。"""
+        store = self._available_store()
+        return await store.add_message(
+            session_id,
+            role,
+            content,
+            reasoning_content=reasoning_content,
+            token_count=token_count,
+        )
 
-    """
-    async def delete_session(self, session_id: str):
-        # 删除会话（软删除）
+    async def delete_session(self, session_id: SessionId) -> None:
+        """软删除会话，保留先失效单会话缓存的既有顺序。"""
+        store = self._available_store()
         await self._cache_delete(f"session:{session_id}")
-        async with self.db_session() as db:
-            stmt = delete(SessionModel).where(SessionModel.id == session_id)
-            await db.execute(stmt)
-            await db.commit()
-    """
+        await store.delete_session(session_id)
 
-    async def delete_session(self, session_id: SessionId):
-        """软删除会话（推荐）"""
+    async def hard_delete_session(self, session_id: SessionId) -> None:
+        """物理删除会话及消息；两表删除的事务由端口实现持有。"""
+        store = self._available_store()
         await self._cache_delete(f"session:{session_id}")
-        async with self.db_session() as db:
-            stmt = (
-                update(SessionModel)
-                .where(SessionModel.id == session_id)
-                .values(status="deleted", updated_at=datetime.now(UTC))
-            )
-            await db.execute(stmt)
-            await db.commit()
-
-    async def hard_delete_session(self, session_id: SessionId):
-        """物理删除（仅管理员/定时任务使用）"""
-        await self._cache_delete(f"session:{session_id}")
-        async with self.db_session() as db:
-            # 先删除消息（外键约束）
-            await db.execute(delete(MessageModel).where(MessageModel.session_id == session_id))
-            # 再删除会话
-            await db.execute(delete(SessionModel).where(SessionModel.id == session_id))
-            await db.commit()
+        await store.hard_delete_session(session_id)
 
     async def list_sessions(
         self,
@@ -289,115 +126,37 @@ class SessionManager:
         offset: int = 0,
         include_stats: bool = True,
     ) -> list[dict]:
-        """
-        获取用户的所有会话列表。
-
-        策略：
-        1. 先从 Redis 缓存中尝试获取热点会话列表
-        2. 缓存未命中时从数据库查询
-        3. 分页查询，避免全表扫描
-        4. 可选：附带消息数量和 Token 消耗统计
-
-        Args:
-            user_id: 用户ID
-            limit: 每页数量，默认20，最大100
-            offset: 偏移量，用于分页
-            include_stats: 是否包含统计信息（消息数、Token数）
-
-        Returns:
-            会话列表，按 updated_at 降序排列
-        """
-        # 参数校验
-        limit = min(max(1, limit), 100)  # 限制最大100条
+        """获取活跃会话及可选统计，沿用第一页 30 秒缓存。"""
+        store = self._available_store()
+        limit = min(max(1, limit), 100)
         offset = max(0, offset)
-
-        # 1. 尝试从缓存读取（仅限第一页热门数据）
         cache_key = f"user_sessions:{user_id}:page:{offset // limit}"
-        if offset == 0:  # 仅缓存第一页
+        if offset == 0:
             cached = await self._cache_get(cache_key)
             if cached:
+                store.ensure_available()
                 return json.loads(cached)
-
-        # 2. 从数据库查询
-        async with self.db_session() as db:
-            # 查询活跃会话，按更新时间降序
-            stmt = (
-                select(SessionModel)
-                .where(
-                    SessionModel.user_id == user_id,
-                    SessionModel.status == "active",
-                )
-                .order_by(SessionModel.updated_at.desc().nullslast())
-                .offset(offset)
-                .limit(limit)
-            )
-            result = await db.execute(stmt)
-            sessions = result.scalars().all()
-
-            # 3. 构建返回数据
-            session_list = []
-            for session in sessions:
-                item = {
-                    "id": session.id,
-                    "title": session.title,
-                    "system_prompt": session.system_prompt,
-                    "created_at": session.created_at.isoformat() if session.created_at else None,
-                    "updated_at": session.updated_at.isoformat() if session.updated_at else None,
-                    "status": session.status,
-                }
-
-                # 可选：填充统计信息
-                if include_stats:
-                    stats = await self._get_session_stats(session.id, db)
-                    item.update(stats)
-
-                session_list.append(item)
-
-        # 4. 缓存第一页数据（TTL 短一些，因为列表频繁变化）
+        sessions = await store.list_sessions(user_id, limit=limit, offset=offset)
+        session_list = []
+        for session in sessions:
+            item = dict(session)
+            if include_stats:
+                item.update(await self._get_session_stats(item["id"]))
+            session_list.append(item)
         if offset == 0:
-            await self._cache_set(cache_key, json.dumps(session_list), 30)  # 30秒缓存
-
+            await self._cache_set(cache_key, json.dumps(session_list), 30)
         return session_list
 
-    async def _get_session_stats(
-        self,
-        session_id: SessionId,
-        db: AsyncSession,
-    ) -> dict:
-        """
-        获取会话的统计信息（消息数、Token数）。
-
-        优先从 Redis 缓存获取，避免频繁聚合查询。
-        """
+    async def _get_session_stats(self, session_id: SessionId) -> dict:
+        """聚合统计沿用 60 秒缓存，不跨缓存持有数据库会话。"""
+        store = self._available_store()
         cache_key = f"session_stats:{session_id}"
-
-        # 1. 查缓存
         cached = await self._cache_get(cache_key)
         if cached:
+            store.ensure_available()
             return json.loads(cached)
-
-        # 2. 查数据库（聚合查询）
-
-        stmt = select(
-            func.count(MessageModel.id).label("message_count"),
-            func.coalesce(func.sum(MessageModel.token_count), 0).label("total_tokens"),
-            func.max(MessageModel.created_at).label("last_message_at"),
-        ).where(
-            MessageModel.session_id == session_id,
-            MessageModel.role.in_(["user", "assistant"]),
-        )
-        result = await db.execute(stmt)
-        row = result.one()
-
-        stats = {
-            "message_count": row.message_count,
-            "total_tokens": row.total_tokens,
-            "last_message_at": row.last_message_at.isoformat() if row.last_message_at else None,
-        }
-
-        # 3. 缓存统计信息（60秒过期）
+        stats = await store.get_session_stats(session_id)
         await self._cache_set(cache_key, json.dumps(stats), 60)
-
         return stats
 
     async def list_sessions_v2(
@@ -405,77 +164,31 @@ class SessionManager:
         user_id: UserId,
         limit: int = 20,
         offset: int = 0,
-        status: str | None = "active",  # active / archived / deleted / None(全部)
-        keyword: str | None = None,  # 标题关键词搜索
-        start_date: datetime | None = None,  # 起始日期
-        end_date: datetime | None = None,  # 结束日期
-        sort_by: str = "updated_at",  # created_at / updated_at / title
-        sort_order: str = "desc",  # asc / desc
+        status: str | None = "active",
+        keyword: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        sort_by: str = "updated_at",
+        sort_order: str = "desc",
         include_stats: bool = True,
     ) -> tuple[list[dict], int]:
-        """
-        增强版：支持搜索、筛选、排序、统计总数。
-
-        Returns:
-            (session_list, total_count): 会话列表和符合条件的总数（用于分页）
-        """
-        limit = min(max(1, limit), 100)
-        offset = max(0, offset)
-
-        async with self.db_session() as db:
-            # 构建基础查询条件
-            conditions = [SessionModel.user_id == user_id]
-            if status:
-                if status == "active":
-                    conditions.append(SessionModel.status == "active")
-                elif status == "archived":
-                    conditions.append(SessionModel.status == "archived")
-                elif status == "deleted":
-                    conditions.append(SessionModel.status == "deleted")
-            else:
-                # 查询所有状态（排除彻底删除的）
-                conditions.append(SessionModel.status != "deleted")
-
-            if keyword:
-                conditions.append(SessionModel.title.ilike(f"%{keyword}%"))
-            if start_date:
-                conditions.append(SessionModel.created_at >= start_date)
-            if end_date:
-                conditions.append(SessionModel.created_at <= end_date)
-
-            # 构建排序
-            sort_column = getattr(SessionModel, sort_by, SessionModel.updated_at)
-            if sort_order == "desc":
-                order_by = sort_column.desc().nullslast()
-            else:
-                order_by = sort_column.asc().nullsfirst()
-
-            # 查询总数（用于分页）
-            count_stmt = select(func.count(SessionModel.id)).where(*conditions)
-            total_result = await db.execute(count_stmt)
-            total_count = total_result.scalar() or 0
-
-            # 查询分页数据
-            stmt = select(SessionModel).where(*conditions).order_by(order_by).offset(offset).limit(limit)
-            result = await db.execute(stmt)
-            sessions = result.scalars().all()
-
-            # 构建返回数据
-            session_list = []
-            for session in sessions:
-                item = {
-                    "id": session.id,
-                    "title": session.title,
-                    "system_prompt": session.system_prompt,
-                    "created_at": session.created_at.isoformat() if session.created_at else None,
-                    "updated_at": session.updated_at.isoformat() if session.updated_at else None,
-                    "status": session.status,
-                }
-
-                if include_stats:
-                    stats = await self._get_session_stats(session.id, db)
-                    item.update(stats)
-
-                session_list.append(item)
-
-            return session_list, total_count
+        """按搜索、筛选、排序条件查询分页，并在端口返回后合并可选统计。"""
+        store = self._available_store()
+        sessions, total = await store.list_sessions_v2(
+            user_id,
+            limit=min(max(1, limit), 100),
+            offset=max(0, offset),
+            status=status,
+            keyword=keyword,
+            start_date=start_date,
+            end_date=end_date,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        session_list = []
+        for session in sessions:
+            item = dict(session)
+            if include_stats:
+                item.update(await self._get_session_stats(item["id"]))
+            session_list.append(item)
+        return session_list, total

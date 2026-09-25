@@ -2,7 +2,7 @@
 
 > **对应代码**：`app/domain/ports/`
 > **更新日期**：2026-09-13
-> **文档定位**：领域端口契约模块——领域层拥有的 5 个抽象契约（依赖倒置），由集成层 / 应用层结构实现、装配根注入；服务对象为领域层 Agent / 推理策略（调用方）与集成层实现方
+> **文档定位**：领域端口契约模块——领域层拥有的抽象契约（依赖倒置），由集成层 / 应用层 / 基础设施层结构实现、装配根注入；服务对象为领域层 Agent / 推理策略（调用方）与集成层实现方
 > 状态与验证见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
@@ -37,9 +37,10 @@
 
 ```text
 app/domain/ports/
-├── __init__.py          # 子包导出（5 端口 + 结果载体）
+├── __init__.py          # 子包导出（端口 + 结果载体）
 ├── llm_gateway.py       # LLMGateway / StreamResult —— LLM 调用 + 成本估算 + Token 计量契约
 ├── tool_gateway.py      # ToolGateway / ToolResult / ErrorCode —— 工具执行契约
+├── session_store.py     # SessionStorePort —— 普通数据会话持久化端口
 ├── tool_execution.py    # ToolCallContext / ToolFact / ToolFactSink —— 工具生命周期契约
 ├── context_budget.py    # ContextBudgetPort —— 上下文预算管理（横切）
 ├── cost_limiter.py      # CostLimiterPort —— 成本上限护栏（横切）
@@ -70,7 +71,11 @@ app/application/   ContextBudgetPort→ContextManager · CostLimiterPort→CostL
 
 ## 对外接口
 
-> 端口无单一 Facade——5 个 Protocol 各自是领域层的独立依赖面。契约 = 方法签名 + 返回 + 语义，全部与当前 `.py` 代码一致。
+> 端口无单一 Facade——各 Protocol 各自是领域层的独立依赖面。契约 = 方法签名 + 返回 + 语义，全部与当前 `.py` 代码一致。
+
+### `SessionStorePort`
+
+Application 的 SessionManager 消费本端口，Infrastructure 的 PostgresSessionStore 实现；同步准入检查及异步会话/消息/统计方法只传普通数据。完整签名与事务、错误契约统一见[会话 Store](../../infrastructure_doc/database_doc/session_store.md)。
 
 ### `LLMGateway` / `StreamResult`
 

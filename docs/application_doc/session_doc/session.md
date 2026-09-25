@@ -1,6 +1,6 @@
 # SessionManager 会话管理说明文档
 
-> **更新日期**：2026-09-17
+> **更新日期**：2026-09-25
 > **模块**：`app/application/session/session_manager.py`
 > **文档定位**：SessionManager 独立说明 —— 会话生命周期管理、消息持久化、Redis 热缓存 + DB 持久化、分页 / 搜索 / 统计。
 
@@ -13,6 +13,7 @@
 - [关键实现详解](#关键实现详解)
 - [使用示例](#使用示例)
 - [配置关联](#配置关联)
+- [验证入口](#验证入口)
 - [相关文档](#相关文档)
 
 ---
@@ -21,7 +22,7 @@
 
 ### 定位与职责
 
-SessionManager 是多轮对话系统的**入口与基石**，负责会话与消息两条数据链路的完整生命周期：
+SessionManager 负责会话与消息用例的参数、返回数据和缓存编排，数据库操作委托持久化端口：
 
 1. **会话生命周期**：创建、查询、软删除 / 硬删除
 2. **消息持久化**：存储 user / assistant 历史消息，支持分页读取
@@ -36,10 +37,15 @@ API 层（session / chat 路由）
         ▼
 SessionManager ──► Redis（热缓存：session:{id} / user_sessions:... / session_stats:...）
         │
-        └──────► Database（SessionModel / MessageModel，SQLAlchemy async）
+        └──────► SessionStorePort（普通 dict / list / int / None）
+                         ▲
+                         │ 实现
+                 SQLAlchemySessionStore → DatabaseRuntime
 ```
 
-- 构造依赖 `redis_client`（`redis.asyncio.Redis | None`）与 `db_session_factory`（`async_sessionmaker`），均由 `Container.initialize()` 创建后注入，本模块不直接读取配置
+- 构造依赖 `redis_client`（`redis.asyncio.Redis | None`）与 `store`（`SessionStorePort | None`），由装配根注入；本模块不直接读取配置，不导入 SQLAlchemy、ORM 或数据库驱动。
+- Store 只交换普通数据，不暴露会话、事务或 ORM。每次调用结束后释放数据库资源，再由 Manager 访问缓存。适配器的 SQL、事务及错误分类见 [SessionStore](../../infrastructure_doc/database_doc/session_store.md)。
+- runtime 就绪装配和 API 503 接线属于 DB-F05b，实施与验证状态统一见 [ALIGNMENT](../../ALIGNMENT.md)。
 - 上游调用方：`app/api/routes/session.py`（会话 CRUD）与 `ChatService`（聊天预检、消息与结果提交）
 
 ### 构造参数
@@ -47,7 +53,7 @@ SessionManager ──► Redis（热缓存：session:{id} / user_sessions:... / 
 | 参数 | 默认值 | 来源 | 说明 |
 | --- | --- | --- | --- |
 | `redis_client` | 必填 | `Container` 注入 | `redis.asyncio.Redis \| None`，热缓存；为 None 时缓存降级直查 DB |
-| `db_session_factory` | 必填 | `Container` 注入 | `async_sessionmaker`，DB 会话工厂 |
+| `store` | 必填 | 装配根注入 | `SessionStorePort \| None`；为 None 时允许构造，操作时抛 `PersistenceUnavailableError` |
 
 > `session_ttl = 3600 * 24 * 7`（7 天）在 `__init__` 中硬编码，配置项 `redis_session_ttl` 未引用（数值恰好相等）。
 
@@ -74,6 +80,12 @@ SessionManager ──► Redis（热缓存：session:{id} / user_sessions:... / 
 
 ### Redis 缓存键设计
 
+所有公开操作先经 `_available_store()` 同步检查 `store.ensure_available()`，再访问缓存或调用 Store。已知持久化不可用时，即使缓存命中也抛 `PersistenceUnavailableError`；异常码为 `PERSISTENCE_UNAVAILABLE`，不返回空列表或伪造成功。
+
+单会话、列表和统计缓存命中后，在返回前再次同步检查可用性，防止等待 Redis 期间数据库状态已变为不可用却仍返回缓存成功。
+
+`create_session` 在 Manager 生成 UUID 并应用提示词、标题默认值。`created_at` 来自 Store 实际写入并返回的数据，不另取应用时钟。写入失败或取消时不预热缓存，也不自动重试。
+
 | 缓存键 | TTL | 内容 | 失效策略 |
 | --- | --- | --- | --- |
 | `session:{session_id}` | 7 天 | 会话元数据（id / user_id / system_prompt / created_at / message_count / total_tokens） | 删除会话时主动清除 |
@@ -94,21 +106,21 @@ SessionManager ──► Redis（热缓存：session:{id} / user_sessions:... / 
 
 ```text
 get_session(session_id)
-  1. Redis 查 session:{id} → 命中返回
-  2. 未命中 → 查 DB（SELECT SessionModel WHERE id = session_id）
+  1. 检查 Store 可用性
+  2. Redis 查 session:{id} → 命中返回
+  3. 未命中 → await store.get_session(session_id)
      · 不存在 → return None
      · 存在 → 回写 Redis（message_count / total_tokens 置 0，懒加载）→ 返回
 ```
 
-- DB 未命中**不缓存空值**，存在缓存穿透攻击面（文件内注释「布隆过滤器 + 空值缓存」增强方案作为演进参考）
+- DB 未命中**不缓存空值**；本次未增加布隆过滤器或空值缓存。
 - 回写时 `message_count` / `total_tokens` 固定为 0，实际统计走 `_get_session_stats` 懒加载
 
 ### `get_messages`：最近历史窗口
 
 `get_messages` 的 `limit` 表示“从最新消息向前取多少条”，而不是从会话首条消息开始
-截取。数据库查询按 `created_at DESC, id DESC` 排序后应用 `offset/limit`，因此同一时间戳
-下仍有稳定顺序；查询结果返回前反转为创建时间正序，供历史接口和 `ContextManager` 按
-对话发生顺序消费。
+截取。Manager 将分页和快照参数传给 Store，由其选择最新窗口并恢复时间正序，供历史接口和
+`ContextManager` 按对话发生顺序消费。SQL 排序及边界实现见 [SessionStore](../../infrastructure_doc/database_doc/session_store.md)。
 
 - `before_message_id` 是排他的快照上界，先过滤 `id < before_message_id`，再从该快照中取
   最近窗口。
@@ -120,45 +132,41 @@ get_session(session_id)
 
 - 参数防护：`limit` 收敛到 `[1, 100]`，`offset` 下限为 0
 - 仅当 `offset == 0` 时尝试读 / 写缓存（热点第一页），后续页直接查 DB
-- 查询条件：`user_id` + `status == "active"`，按 `updated_at.desc().nullslast()` 排序
+- Store 返回指定用户的活跃会话，按更新时间降序排列，空时间排在最后。
 - `include_stats=True` 时逐会话调用 `_get_session_stats`
+- 沿用现有缓存键：键中不区分 `limit` 或 `include_stats`，本次未改变该策略；创建和消息追加也不新增列表或统计键的主动失效。
 
 ### 统计聚合 `_get_session_stats`
 
-```sql
-SELECT count(id) AS message_count,
-       coalesce(sum(token_count), 0) AS total_tokens,
-       max(created_at) AS last_message_at
-FROM messages
-WHERE session_id = ? AND role IN ('user', 'assistant')
-```
-
-- 先查 `session_stats:{id}` 缓存，未命中再聚合，结果写缓存（60s）
+- 签名为 `_get_session_stats(session_id) -> dict`，不接收数据库会话。
+- 先检查 Store 可用性，再查 `session_stats:{id}` 缓存；未命中调用 `store.get_session_stats(session_id)`，返回后写缓存（60s）。
 - 只统计 user / assistant 角色（排除 system / reasoning）
 
 ### 软删除 vs 硬删除
 
 | 操作 | 实现 | 适用场景 |
 | --- | --- | --- |
-| `delete_session`（软） | 删 Redis 键 + `UPDATE sessions SET status='deleted', updated_at=now` | 常规删除（推荐），可回溯 |
-| `hard_delete_session`（硬） | 删 Redis 键 + `DELETE FROM messages`（先子表，外键约束）+ `DELETE FROM sessions` | 管理员 / 定时清理 |
+| `delete_session`（软） | 检查可用性 → 删单会话 Redis 键 → Store 更新状态 | 常规删除，可回溯 |
+| `hard_delete_session`（硬） | 检查可用性 → 删单会话 Redis 键 → Store 在同一事务内先删消息再删会话 | 管理员 / 定时清理 |
 
 ### `list_sessions_v2`：增强查询
 
 - **状态筛选**：`status="active" / "archived" / "deleted"`；传 `None` 查全部（排除 `deleted`）
-- **关键词**：`SessionModel.title.ilike(f"%{keyword}%")`
+- **关键词**：标题不区分大小写匹配，参数原样委托 Store。
 - **日期范围**：`created_at >= start_date` / `<= end_date`
-- **排序**：`sort_by` 白名单 `created_at / updated_at / title`，`desc` 用 `nullslast`、`asc` 用 `nullsfirst`
-- **总数**：先 `SELECT count(id)` 再分页，返回 `(session_list, total_count)`
+- **排序**：支持 `created_at / updated_at / title`；具体排序及回退由 Store 承担。
+- **总数**：Store 返回无统计的分页与匹配总数；Manager 根据 `include_stats` 合并统计，返回 `(session_list, total_count)`，不缓存整页 v2 结果。
 
 ### 边缘情况
 
 | 场景 | 行为 |
 | --- | --- |
 | Redis 不可用（`redis_client=None`） | 缓存读写经 `_cache_*` 判空辅助降级，直查 DB |
+| Store 缺失或已知不可用 | 在缓存访问前抛 `PersistenceUnavailableError`，不借缓存掩盖不可用 |
 | `limit` 越界 | 收敛到 `[1, 100]` |
 | `offset` 为负 | 归零 |
-| `add_message` 无有效主键回读 | 抛 `RuntimeError`，调用方不得继续构建无边界上下文 |
+| `add_message` 无有效主键回读 | 由 Store 拒绝并传播失败，调用方不得继续构建无边界上下文 |
+| Store 取消或提交未确认 | 传播取消/明确错误；不自动重试，未确认创建不写缓存 |
 | `get_session` DB 未命中 | 返回 `None`（不缓存空值，存在穿透攻击面） |
 | 消息查询 | 只返回 `role` / `content` 两字段，`reasoning_content` / `token_count` 不随历史返回 |
 | 统计开启 | 逐会话一次聚合查询（或缓存命中），列表较长时注意 N+1 压力 |
@@ -195,18 +203,13 @@ sessions, total = await container.session_manager.list_sessions_v2(
 
 ## 配置关联
 
-相关配置集中在 `app/config/settings.py`（详见 [config 文档](../../config_doc/config.md)）：
-
-| 配置项 | 默认值 | 当前是否被引用 | 说明 |
-| --- | --- | --- | --- |
-| `redis_url` | `redis://localhost:6379/0` | ✅ | Redis 连接地址（`Container` 读取） |
-| `redis_session_ttl` | `604800`（7 天） | ❌ | 会话缓存 TTL —— 代码中硬编码 `3600 * 24 * 7`，未读取此配置 |
-| `database_url` | `postgresql+asyncpg://...` | ✅ | DB 连接地址（`Container` 读取） |
-| `database_pool_size` / `database_max_overflow` | `20` / `10` | ✅ | DB 连接池（`Container` 读取） |
-
-> SessionManager 本身**不直接读取任何配置**：Redis / DB 连接均由 `Container.initialize()` 创建后注入，本模块只负责缓存键与 TTL 的定义。
+连接、池与超时配置集中在 [config 文档](../../config_doc/config.md)。SessionManager 不读取配置，只接收 Redis 和 Store；数据库资源由 runtime 与适配器管理。会话缓存 TTL 仍使用 `session_ttl` 常量，未接入 `redis_session_ttl`。DB-F05b 的装配就绪检查及 HTTP 错误映射状态见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ---
+
+## 验证入口
+
+`tests/unit/test_session_manager.py` 使用端口假对象验证可用性检查早于缓存、创建默认值与 UUID、缓存键/TTL、第一页策略、消息窗口参数、统计合并以及取消/提交未知不重试。SQL 与真实事务验证由 [SessionStore](../../infrastructure_doc/database_doc/session_store.md) 的测试承担；验证状态见 [ALIGNMENT](../../ALIGNMENT.md)。
 
 ## 相关文档
 
@@ -214,4 +217,5 @@ sessions, total = await container.session_manager.list_sessions_v2(
 - [ContextManager 上下文管理](../context_doc/context.md)（下游依赖方：经 `get_session` / `get_messages` 组装上下文）
 - [ChatService](../chat_doc/chat.md)（聊天用例调用方）与[路由模块](../../api_doc/routes_doc/routes.md)（会话 CRUD）
 - [配置说明](../../config_doc/config.md)
+- [SessionStore 持久化适配器](../../infrastructure_doc/database_doc/session_store.md)（SQL、事务、资源和错误边界）
 - [架构设计](../../project/architecture.md)
